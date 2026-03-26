@@ -8,6 +8,7 @@ import { Equipment } from '@/types';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { mockUsers } from '@/mocks/users';
 import { mockCities } from '@/mocks/categories';
+import { getFirstImageUrl } from '@/utils/imageHelpers';
 
 interface EquipmentCardProps {
   equipment: Equipment;
@@ -30,7 +31,7 @@ export default React.memo(function EquipmentCard({ equipment, compact }: Equipme
   if (compact) {
     return (
       <Pressable style={styles.compactCard} onPress={handlePress} testID={`equipment-card-${equipment.id}`}>
-        <Image source={{ uri: equipment.images[0] }} style={styles.compactImage} contentFit="cover" />
+        <Image source={{ uri: getFirstImageUrl(equipment.images) }} style={styles.compactImage} contentFit="cover" />
         <View style={styles.compactInfo}>
           <Text style={[styles.compactTitle, { textAlign: isRTL ? 'right' : 'left' }]} numberOfLines={1}>{title}</Text>
           <View style={[styles.locationRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -48,7 +49,7 @@ export default React.memo(function EquipmentCard({ equipment, compact }: Equipme
   return (
     <Pressable style={styles.card} onPress={handlePress} testID={`equipment-card-${equipment.id}`}>
       <View style={styles.imageContainer}>
-        <Image source={{ uri: equipment.images[0] }} style={styles.image} contentFit="cover" />
+        <Image source={{ uri: getFirstImageUrl(equipment.images) }} style={styles.image} contentFit="cover" />
         {!equipment.availability && (
           <View style={styles.unavailableBadge}>
             <Text style={styles.unavailableText}>{t('unavailable')}</Text>

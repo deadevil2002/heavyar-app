@@ -1,14 +1,15 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Camera, X, ChevronDown } from 'lucide-react-native';
+import { Camera, X, ChevronDown, Upload } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
 import { createEquipment } from '@/services/firestoreService';
+import { uploadMultipleImages, CloudinaryImage } from '@/services/cloudinaryService';
 
 export default function CreateListingScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -24,6 +25,8 @@ export default function CreateListingScreen() {
   const [images, setImages] = useState<string[]>([]);
   const [showCategoryPicker, setShowCategoryPicker] = useState<boolean>(false);
   const [showCityPicker, setShowCityPicker] = useState<boolean>(false);
+  const [_uploading, setUploading] = useState<boolean>(false);
+  const [uploadProgress, setUploadProgress] = useState<string>('');
 
   const pickImage = useCallback(async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -40,15 +43,33 @@ export default function CreateListingScreen() {
     setImages(prev => prev.filter((_, i) => i !== index));
   }, []);
 
-  const [_publishing, setPublishing] = useState<boolean>(false);
+  const [publishing, setPublishing] = useState<boolean>(false);
 
   const handlePublish = useCallback(async () => {
     if (!titleAr || !category || !city || !price || !user) {
       Alert.alert(t('error_occurred'), t('try_again'));
       return;
     }
+    if (images.length === 0) {
+      Alert.alert(t('error_occurred'), t('add_images'));
+      return;
+    }
     setPublishing(true);
+    setUploading(true);
+    setUploadProgress(`${t('uploading_images')} 0/${images.length}`);
     try {
+      console.log('[CreateListing] Uploading', images.length, 'images to Cloudinary');
+      const cloudinaryImages: CloudinaryImage[] = await uploadMultipleImages(
+        images,
+        (completed, total) => {
+          setUploadProgress(`${t('uploading_images')} ${completed}/${total}`);
+          console.log('[CreateListing] Upload progress:', completed, '/', total);
+        }
+      );
+      setUploading(false);
+      setUploadProgress(t('saving'));
+      console.log('[CreateListing] All images uploaded, saving to Firestore');
+
       await createEquipment({
         ownerUid: user.uid,
         titleAr,
@@ -60,7 +81,7 @@ export default function CreateListingScreen() {
         district,
         location: { lat: 0, lng: 0 },
         pricePerDay: parseFloat(price) || 0,
-        images,
+        images: cloudinaryImages,
         availability: true,
         isActive: true,
       });
@@ -76,9 +97,11 @@ export default function CreateListingScreen() {
       setImages([]);
     } catch (e) {
       console.log('[CreateListing] Error:', e);
-      Alert.alert(t('error_occurred'), t('try_again'));
+      Alert.alert(t('error_occurred'), t('upload_failed'));
     } finally {
       setPublishing(false);
+      setUploading(false);
+      setUploadProgress('');
     }
   }, [titleAr, titleEn, descAr, descEn, category, city, district, price, images, user, t]);
 
@@ -241,8 +264,22 @@ export default function CreateListingScreen() {
               />
             </View>
 
-            <Pressable style={styles.publishButton} onPress={handlePublish}>
-              <Text style={styles.publishText}>{t('publish')}</Text>
+            <Pressable
+              style={[styles.publishButton, publishing && styles.publishButtonDisabled]}
+              onPress={handlePublish}
+              disabled={publishing}
+            >
+              {publishing ? (
+                <View style={styles.publishingRow}>
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                  <Text style={styles.publishText}>{uploadProgress || t('processing')}</Text>
+                </View>
+              ) : (
+                <View style={styles.publishingRow}>
+                  <Upload size={18} color={Colors.primary} />
+                  <Text style={styles.publishText}>{t('publish')}</Text>
+                </View>
+              )}
             </Pressable>
           </View>
 
@@ -395,6 +432,14 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     alignItems: 'center',
     marginTop: 8,
+  },
+  publishButtonDisabled: {
+    opacity: 0.7,
+  },
+  publishingRow: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 8,
   },
   publishText: {
     color: Colors.primary,

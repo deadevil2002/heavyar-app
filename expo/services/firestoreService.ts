@@ -16,13 +16,25 @@ import {
   limit,
 } from 'firebase/firestore';
 import { getFirebaseDb } from './firebaseConfig';
-import { Equipment, EquipmentRequest, ChatMessage, Rating, User } from '@/types';
+import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User } from '@/types';
 
 function toISOString(val: unknown): string {
   if (!val) return '';
   if (val instanceof Timestamp) return val.toDate().toISOString();
   if (typeof val === 'string') return val;
   return '';
+}
+
+function parseImages(raw: unknown): EquipmentImage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item: unknown) => {
+    if (typeof item === 'string') return item;
+    if (item && typeof item === 'object' && 'url' in item) {
+      const obj = item as Record<string, unknown>;
+      return { url: (obj.url as string) || '', publicId: (obj.publicId as string) || '' };
+    }
+    return '';
+  }).filter((img): img is EquipmentImage => img !== '');
 }
 
 function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
@@ -38,7 +50,7 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
     district: (data.district as string) || '',
     location: (data.location as { lat: number; lng: number }) || { lat: 0, lng: 0 },
     pricePerDay: (data.pricePerDay as number) || 0,
-    images: (data.images as string[]) || [],
+    images: parseImages(data.images),
     availability: (data.availability as boolean) ?? true,
     isActive: (data.isActive as boolean) ?? true,
     createdAt: toISOString(data.createdAt),

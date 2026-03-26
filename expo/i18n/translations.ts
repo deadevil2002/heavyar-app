@@ -165,6 +165,9 @@ export const translations = {
     change_language_restart: 'يرجى إعادة تشغيل التطبيق لتطبيق تغيير اللغة بالكامل',
     edit_profile: 'تعديل الملف الشخصي',
     version: 'الإصدار',
+    uploading_images: 'جاري رفع الصور',
+    upload_failed: 'فشل رفع الصور، حاول مجدداً',
+    saving: 'جاري الحفظ...',
   },
   en: {
     app_name: 'Heavyar',
@@ -332,6 +335,9 @@ export const translations = {
     change_language_restart: 'Please restart the app to fully apply the language change',
     edit_profile: 'Edit Profile',
     version: 'Version',
+    uploading_images: 'Uploading images',
+    upload_failed: 'Image upload failed, please try again',
+    saving: 'Saving...',
   },
 } as const;
 

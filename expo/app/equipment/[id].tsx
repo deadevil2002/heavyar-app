@@ -10,6 +10,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
 import { fetchEquipmentById, fetchUserById, createRequest } from '@/services/firestoreService';
 import { Equipment, User } from '@/types';
+import { getImageUrl } from '@/utils/imageHelpers';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -125,7 +126,7 @@ export default function EquipmentDetailScreen() {
             }}
           >
             {equipment.images.map((img, i) => (
-              <Image key={i} source={{ uri: img }} style={styles.carouselImage} contentFit="cover" />
+              <Image key={i} source={{ uri: getImageUrl(img) }} style={styles.carouselImage} contentFit="cover" />
             ))}
           </ScrollView>
 

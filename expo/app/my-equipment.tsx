@@ -10,6 +10,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { fetchEquipmentByOwner } from '@/services/firestoreService';
 import EmptyState from '@/components/EmptyState';
 import { Equipment } from '@/types';
+import { getFirstImageUrl } from '@/utils/imageHelpers';
 
 export default function MyEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -40,7 +41,7 @@ export default function MyEquipmentScreen() {
     return (
       <View style={styles.card}>
         <View style={[styles.cardContent, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-          <Image source={{ uri: item.images[0] }} style={styles.image} contentFit="cover" />
+          <Image source={{ uri: getFirstImageUrl(item.images) }} style={styles.image} contentFit="cover" />
           <View style={[styles.info, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
             <Text style={[styles.itemTitle, { textAlign: isRTL ? 'right' : 'left' }]} numberOfLines={1}>{title}</Text>
             <Text style={styles.price}>{item.pricePerDay.toLocaleString()} {t('per_day')}</Text>

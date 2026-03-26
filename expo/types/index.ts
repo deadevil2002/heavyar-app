@@ -19,6 +19,13 @@ export interface User {
   isVerified: boolean;
 }
 
+export interface CloudinaryImage {
+  url: string;
+  publicId: string;
+}
+
+export type EquipmentImage = string | CloudinaryImage;
+
 export interface Equipment {
   id: string;
   ownerUid: string;
@@ -34,7 +41,7 @@ export interface Equipment {
     lng: number;
   };
   pricePerDay: number;
-  images: string[];
+  images: EquipmentImage[];
   availability: boolean;
   isActive: boolean;
   createdAt: string;
