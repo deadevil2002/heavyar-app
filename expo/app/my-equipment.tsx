@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { ArrowLeft, ArrowRight, Plus, Edit3, Trash2, Eye, EyeOff } from 'lucide-react-native';
@@ -7,7 +7,7 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchEquipmentByOwner } from '@/services/firestoreService';
+import { fetchEquipmentByOwner, deleteEquipmentWithCleanup } from '@/services/firestoreService';
 import EmptyState from '@/components/EmptyState';
 import { Equipment } from '@/types';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
@@ -19,6 +19,7 @@ export default function MyEquipmentScreen() {
 
   const currentUid = user?.uid || '';
   const [myEquipment, setMyEquipment] = useState<Equipment[]>([]);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -36,10 +37,40 @@ export default function MyEquipmentScreen() {
   }, [currentUid]);
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
+  const handleDelete = useCallback((item: Equipment) => {
+    const title = localizedText(item.titleAr, item.titleEn);
+    Alert.alert(
+      t('confirm_delete'),
+      `${title}\n\n${t('confirm_delete_equipment')}`,
+      [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('delete'),
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingId(item.id);
+            try {
+              console.log('[MyEquipment] Deleting equipment:', item.id);
+              await deleteEquipmentWithCleanup(item.id);
+              setMyEquipment(prev => prev.filter(e => e.id !== item.id));
+              Alert.alert(t('success'), t('delete_success'));
+            } catch (e) {
+              console.log('[MyEquipment] Delete error:', e);
+              Alert.alert(t('error_occurred'), t('delete_failed'));
+            } finally {
+              setDeletingId(null);
+            }
+          },
+        },
+      ]
+    );
+  }, [t, localizedText]);
+
   const renderItem = useCallback(({ item }: { item: Equipment }) => {
     const title = localizedText(item.titleAr, item.titleEn);
+    const isDeleting = deletingId === item.id;
     return (
-      <View style={styles.card}>
+      <View style={[styles.card, isDeleting && styles.cardDeleting]}>
         <View style={[styles.cardContent, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
           <Image source={{ uri: getFirstImageUrl(item.images) }} style={styles.image} contentFit="cover" />
           <View style={[styles.info, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
@@ -58,14 +89,22 @@ export default function MyEquipmentScreen() {
             <Edit3 size={16} color={Colors.gold} />
             <Text style={styles.editText}>{t('edit')}</Text>
           </Pressable>
-          <Pressable style={styles.deleteButton}>
-            <Trash2 size={16} color={Colors.error} />
-            <Text style={styles.deleteText}>{t('delete')}</Text>
+          <Pressable
+            style={[styles.deleteButton, isDeleting && styles.deleteButtonDisabled]}
+            onPress={() => handleDelete(item)}
+            disabled={isDeleting}
+          >
+            {isDeleting ? (
+              <ActivityIndicator size="small" color={Colors.error} />
+            ) : (
+              <Trash2 size={16} color={Colors.error} />
+            )}
+            <Text style={styles.deleteText}>{isDeleting ? t('deleting') : t('delete')}</Text>
           </Pressable>
         </View>
       </View>
     );
-  }, [isRTL, t, localizedText, router]);
+  }, [isRTL, t, localizedText, router, deletingId, handleDelete]);
 
   return (
     <View style={styles.container}>
@@ -120,4 +159,6 @@ const styles = StyleSheet.create({
   editText: { color: Colors.gold, fontSize: 13, fontWeight: '600' as const },
   deleteButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8, borderRadius: 10, backgroundColor: 'rgba(231, 76, 60, 0.1)' },
   deleteText: { color: Colors.error, fontSize: 13, fontWeight: '600' as const },
+  cardDeleting: { opacity: 0.5 },
+  deleteButtonDisabled: { opacity: 0.6 },
 });

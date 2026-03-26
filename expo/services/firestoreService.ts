@@ -17,6 +17,8 @@ import {
 } from 'firebase/firestore';
 import { getFirebaseDb } from './firebaseConfig';
 import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User } from '@/types';
+import { deleteMultipleCloudinaryImages } from './cloudinaryService';
+import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
 
 function toISOString(val: unknown): string {
   if (!val) return '';
@@ -160,6 +162,51 @@ export async function updateEquipment(id: string, updates: Partial<Equipment>): 
     ...updates,
     updatedAt: serverTimestamp(),
   });
+}
+
+export async function updateEquipmentWithImageCleanup(
+  id: string,
+  updates: Partial<Equipment>,
+  oldImages: EquipmentImage[]
+): Promise<void> {
+  const db = getFirebaseDb();
+  console.log('[Firestore] Updating equipment with image cleanup:', id);
+
+  if (updates.images) {
+    const removedPublicIds = getRemovedImages(oldImages, updates.images);
+    if (removedPublicIds.length > 0) {
+      console.log('[Firestore] Cleaning up', removedPublicIds.length, 'removed images');
+      const result = await deleteMultipleCloudinaryImages(removedPublicIds);
+      console.log('[Firestore] Image cleanup result:', result);
+    }
+  }
+
+  await updateDoc(doc(db, 'equipment', id), {
+    ...updates,
+    updatedAt: serverTimestamp(),
+  });
+  console.log('[Firestore] Equipment updated:', id);
+}
+
+export async function deleteEquipmentWithCleanup(id: string): Promise<void> {
+  const db = getFirebaseDb();
+  console.log('[Firestore] Deleting equipment with Cloudinary cleanup:', id);
+
+  const snap = await getDoc(doc(db, 'equipment', id));
+  if (snap.exists()) {
+    const data = snap.data() as Record<string, unknown>;
+    const images = parseImages(data.images);
+    const publicIds = extractPublicIds(images);
+
+    if (publicIds.length > 0) {
+      console.log('[Firestore] Cleaning up', publicIds.length, 'Cloudinary images');
+      const result = await deleteMultipleCloudinaryImages(publicIds);
+      console.log('[Firestore] Cloudinary cleanup result:', result);
+    }
+  }
+
+  await deleteDoc(doc(db, 'equipment', id));
+  console.log('[Firestore] Equipment deleted:', id);
 }
 
 export async function deleteEquipment(id: string): Promise<void> {

@@ -87,3 +87,49 @@ export function getImageUrl(image: string | CloudinaryImage): string {
   if (typeof image === 'string') return image;
   return image.url;
 }
+
+const WORKER_BASE_URL = 'https://heavyar-api.heavyar-official.workers.dev';
+
+export async function deleteCloudinaryImage(publicId: string): Promise<boolean> {
+  if (!publicId) {
+    console.log('[Cloudinary] Skipping deletion: no publicId');
+    return false;
+  }
+
+  console.log('[Cloudinary] Deleting image via worker:', publicId);
+  try {
+    const response = await fetch(`${WORKER_BASE_URL}/cloudinary/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publicId }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.log('[Cloudinary] Delete failed:', response.status, errorText);
+      return false;
+    }
+
+    const result = await response.json();
+    console.log('[Cloudinary] Delete result:', result);
+    return true;
+  } catch (error) {
+    console.log('[Cloudinary] Delete error:', error);
+    return false;
+  }
+}
+
+export async function deleteMultipleCloudinaryImages(publicIds: string[]): Promise<{ succeeded: number; failed: number }> {
+  console.log('[Cloudinary] Deleting', publicIds.length, 'images');
+  let succeeded = 0;
+  let failed = 0;
+
+  for (const publicId of publicIds) {
+    const ok = await deleteCloudinaryImage(publicId);
+    if (ok) succeeded++;
+    else failed++;
+  }
+
+  console.log('[Cloudinary] Deletion complete:', succeeded, 'succeeded,', failed, 'failed');
+  return { succeeded, failed };
+}
