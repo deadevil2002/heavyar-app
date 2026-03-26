@@ -1,0 +1,97 @@
+export type Language = 'ar' | 'en';
+
+export type RequestStatus = 'pending' | 'accepted' | 'in_progress' | 'completed' | 'rejected' | 'cancelled';
+
+export type PaymentStatus = 'unpaid' | 'pending_payment' | 'paid' | 'failed' | 'refunded';
+
+export interface User {
+  uid: string;
+  nameAr: string;
+  nameEn: string;
+  email: string;
+  phone: string;
+  avatar: string;
+  city: string;
+  rating: number;
+  totalRatings: number;
+  equipmentCount: number;
+  joinedAt: string;
+  isVerified: boolean;
+}
+
+export interface Equipment {
+  id: string;
+  ownerUid: string;
+  titleAr: string;
+  titleEn: string;
+  descriptionAr: string;
+  descriptionEn: string;
+  category: string;
+  city: string;
+  district: string;
+  location: {
+    lat: number;
+    lng: number;
+  };
+  pricePerDay: number;
+  images: string[];
+  availability: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EquipmentRequest {
+  id: string;
+  equipmentId: string;
+  customerUid: string;
+  providerUid: string;
+  status: RequestStatus;
+  startDate: string;
+  endDate: string;
+  notes: string;
+  amount: number;
+  platformFee: number;
+  providerAmount: number;
+  paymentStatus: PaymentStatus;
+  paymentId: string;
+  paidAt: string | null;
+  currency: string;
+  allowChat: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  requestId: string;
+  senderUid: string;
+  text: string;
+  createdAt: string;
+  read: boolean;
+}
+
+export interface Rating {
+  id: string;
+  requestId: string;
+  fromUid: string;
+  toUid: string;
+  equipmentId: string;
+  stars: number;
+  comment: string;
+  createdAt: string;
+}
+
+export interface Category {
+  id: string;
+  nameAr: string;
+  nameEn: string;
+  icon: string;
+  count: number;
+}
+
+export interface AppSettings {
+  language: Language;
+  notifications: boolean;
+  hasSeenOnboarding: boolean;
+}

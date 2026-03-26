@@ -1,0 +1,10 @@
+{
+  "$schema": "https://rork.com/schema/rork.json",
+  "apps": [
+    {
+      "name": "Heavyar",
+      "path": "expo",
+      "framework": "react-native"
+    }
+  ]
+}
