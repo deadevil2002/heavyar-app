@@ -1,0 +1,7 @@
+{
+  "id": "uh3umysm6yurvtkcs78at",
+  "role": "user",
+  "content": "Phase 3.1 – Cloudflare Worker backend foundation\r\n\r\nWe already created a Cloudflare Worker called heavyar-api.\r\n\r\nNow prepare the backend foundation for secure operations.\r\n\r\nIMPORTANT:\r\n- Do NOT rebuild the mobile app\r\n- Do NOT change UI\r\n- Do NOT change Expo app structure\r\n- Only prepare the Cloudflare Worker backend foundation\r\n\r\nGoal:\r\nReplace the default Hello World worker with a real minimal API foundation.\r\n\r\nRequirements:\r\n\r\n1. Create a clean Cloudflare Worker structure for heavyar-api\r\n2. Add these endpoints:\r\n\r\nGET /health\r\n- returns JSON:\r\n  { success: true, service: \"heavyar-api\" }\r\n\r\nPOST /cloudinary/delete\r\n- secure server-side endpoint placeholder for deleting a Cloudinary asset later\r\n- for now, only scaffold it properly\r\n- read Cloudflare environment bindings:\r\n  CLOUDINARY_CLOUD_NAME\r\n  CLOUDINARY_API_KEY\r\n  CLOUDINARY_API_SECRET\r\n  CLOUDINARY_FOLDER\r\n\r\n3. Add CORS handling so the mobile app can call this API later\r\n4. Return JSON responses only\r\n5. Keep the code minimal and clean\r\n6. Do not implement unrelated business logic yet\r\n\r\nAt the end, return only:\r\n1. files created/modified\r\n2. final endpoints\r\n3. any manual deployment steps needed",
+  "attachments": [],
+  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
+}
