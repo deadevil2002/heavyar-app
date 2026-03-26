@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -7,9 +7,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockRequests } from '@/mocks/requests';
-import { mockEquipment } from '@/mocks/equipment';
-import { mockUsers } from '@/mocks/users';
+import { subscribeToRequest, fetchEquipmentById, fetchUserById, updateRequestStatus } from '@/services/firestoreService';
+import { Equipment, User, EquipmentRequest } from '@/types';
 import StatusBadge from '@/components/StatusBadge';
 
 export default function RequestDetailScreen() {
@@ -18,13 +17,35 @@ export default function RequestDetailScreen() {
   const { user } = useAuth();
   const router = useRouter();
 
-  const request = mockRequests.find(r => r.id === id);
-  const equipment = request ? mockEquipment.find(e => e.id === request.equipmentId) : null;
-  const currentUid = user?.uid || 'user-001';
+  const [request, setRequest] = useState<EquipmentRequest | null>(null);
+  const [equipment, setEquipment] = useState<Equipment | null>(null);
+  const [otherUserData, setOtherUserData] = useState<User | null>(null);
+  const [_loading, setLoading] = useState<boolean>(true);
+  const currentUid = user?.uid || '';
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
-  if (!request || !equipment) {
+  useEffect(() => {
+    if (!id) return;
+    const unsub = subscribeToRequest(id, async (req) => {
+      setRequest(req);
+      if (req) {
+        try {
+          const eq = await fetchEquipmentById(req.equipmentId);
+          setEquipment(eq);
+          const otherUid = req.providerUid === currentUid ? req.customerUid : req.providerUid;
+          const otherU = await fetchUserById(otherUid);
+          setOtherUserData(otherU);
+        } catch (e) {
+          console.log('[RequestDetail] Error loading related data:', e);
+        }
+      }
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [id, currentUid]);
+
+  if (_loading || !request || !equipment) {
     return (
       <View style={styles.container}>
         <SafeAreaView edges={['top']} style={styles.centered}>
@@ -36,8 +57,7 @@ export default function RequestDetailScreen() {
 
   const isProvider = request.providerUid === currentUid;
   const title = localizedText(equipment.titleAr, equipment.titleEn);
-  const otherUserUid = isProvider ? request.customerUid : request.providerUid;
-  const otherUser = mockUsers.find(u => u.uid === otherUserUid);
+  const otherUser = otherUserData;
   const otherUserName = otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
 
   const canChat = request.allowChat && ['accepted', 'in_progress'].includes(request.status);
@@ -49,7 +69,23 @@ export default function RequestDetailScreen() {
   const handleAction = (action: string) => {
     Alert.alert(t('confirm'), '', [
       { text: t('cancel'), style: 'cancel' },
-      { text: t('confirm'), onPress: () => console.log(action) },
+      {
+        text: t('confirm'),
+        onPress: async () => {
+          try {
+            let newStatus: EquipmentRequest['status'] = 'pending';
+            if (action === 'accept') newStatus = 'accepted';
+            else if (action === 'reject') newStatus = 'rejected';
+            else if (action === 'complete') newStatus = 'completed';
+            else if (action === 'cancel') newStatus = 'cancelled';
+            await updateRequestStatus(request.id, newStatus, currentUid);
+            console.log('[RequestDetail] Status updated to:', newStatus);
+          } catch (e) {
+            console.log('[RequestDetail] Action error:', e);
+            Alert.alert(t('error_occurred'), t('try_again'));
+          }
+        },
+      },
     ]);
   };
 

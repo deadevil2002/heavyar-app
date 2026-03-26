@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Animated } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -7,8 +7,9 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockEquipment } from '@/mocks/equipment';
 import { mockCategories } from '@/mocks/categories';
+import { fetchEquipmentList } from '@/services/firestoreService';
+import { Equipment } from '@/types';
 import EquipmentCard from '@/components/EquipmentCard';
 import CategoryCard from '@/components/CategoryCard';
 
@@ -17,17 +18,35 @@ export default function HomeScreen() {
   const { user, isAuthenticated } = useAuth();
   const router = useRouter();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [equipmentList, setEquipmentList] = useState<Equipment[]>([]);
+  const [_loading, setLoading] = useState<boolean>(true);
   const scrollAnim = useRef(new Animated.Value(0)).current;
 
-  const featuredEquipment = mockEquipment.filter(e => e.availability && e.isActive).slice(0, 5);
-  const recentEquipment = mockEquipment.filter(e => e.isActive).slice(0, 6);
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        const items = await fetchEquipmentList();
+        if (mounted) setEquipmentList(items);
+      } catch (e) {
+        console.log('[Home] Error fetching equipment:', e);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+    void load();
+    return () => { mounted = false; };
+  }, []);
+
+  const featuredEquipment = equipmentList.filter(e => e.availability && e.isActive).slice(0, 5);
+  const recentEquipment = equipmentList.filter(e => e.isActive).slice(0, 6);
 
   const handleCategoryPress = useCallback((categoryId: string) => {
     setSelectedCategory(prev => prev === categoryId ? null : categoryId);
   }, []);
 
   const handleSearch = useCallback(() => {
-    router.push('/(tabs)/(search)');
+    router.push('/(tabs)/search');
   }, [router]);
 
   const handleNotifications = useCallback(() => {

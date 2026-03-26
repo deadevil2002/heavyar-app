@@ -1,11 +1,11 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, FlatList, Pressable, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Search as SearchIcon, SlidersHorizontal, X } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { mockEquipment } from '@/mocks/equipment';
 import { mockCategories, mockCities } from '@/mocks/categories';
+import { fetchEquipmentList } from '@/services/firestoreService';
 import EquipmentCard from '@/components/EquipmentCard';
 import EmptyState from '@/components/EmptyState';
 import { Equipment } from '@/types';
@@ -16,9 +16,24 @@ export default function SearchScreen() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState<boolean>(false);
+  const [allEquipment, setAllEquipment] = useState<Equipment[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        const items = await fetchEquipmentList();
+        if (mounted) setAllEquipment(items);
+      } catch (e) {
+        console.log('[Search] Error fetching equipment:', e);
+      }
+    };
+    void load();
+    return () => { mounted = false; };
+  }, []);
 
   const filteredEquipment = useMemo(() => {
-    return mockEquipment.filter(eq => {
+    return allEquipment.filter(eq => {
       if (!eq.isActive) return false;
       if (query) {
         const searchText = `${eq.titleAr} ${eq.titleEn} ${eq.descriptionAr} ${eq.descriptionEn}`.toLowerCase();
@@ -28,7 +43,7 @@ export default function SearchScreen() {
       if (selectedCity && eq.city !== selectedCity) return false;
       return true;
     });
-  }, [query, selectedCategory, selectedCity]);
+  }, [query, selectedCategory, selectedCity, allEquipment]);
 
   const toggleFilters = useCallback(() => {
     setShowFilters(prev => !prev);

@@ -1,11 +1,12 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, CreditCard, Lock, Shield } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { mockRequests } from '@/mocks/requests';
+import { fetchRequestById, updatePaymentStatus } from '@/services/firestoreService';
+import { EquipmentRequest } from '@/types';
 
 export default function PaymentScreen() {
   const { requestId } = useLocalSearchParams<{ requestId: string }>();
@@ -17,22 +18,45 @@ export default function PaymentScreen() {
   const [cardHolder, setCardHolder] = useState<string>('');
   const [processing, setProcessing] = useState<boolean>(false);
 
-  const request = mockRequests.find(r => r.id === requestId);
+  const [request, setRequest] = useState<EquipmentRequest | null>(null);
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
-  const handlePay = useCallback(() => {
-    if (!cardNumber || !expiry || !cvv || !cardHolder) {
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      if (!requestId) return;
+      try {
+        const req = await fetchRequestById(requestId);
+        if (mounted) setRequest(req);
+      } catch (e) {
+        console.log('[Payment] Error loading request:', e);
+      }
+    };
+    void load();
+    return () => { mounted = false; };
+  }, [requestId]);
+
+  const handlePay = useCallback(async () => {
+    if (!cardNumber || !expiry || !cvv || !cardHolder || !requestId) {
       Alert.alert(t('error_occurred'), t('try_again'));
       return;
     }
     setProcessing(true);
-    setTimeout(() => {
+    try {
+      await updatePaymentStatus(requestId, 'pending_payment');
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const mockPaymentId = `tap_${Date.now()}`;
+      await updatePaymentStatus(requestId, 'paid', mockPaymentId);
       setProcessing(false);
       Alert.alert(t('payment_success'), '', [
         { text: t('confirm'), onPress: () => router.back() },
       ]);
-    }, 2000);
-  }, [cardNumber, expiry, cvv, cardHolder, t, router]);
+    } catch (e) {
+      console.log('[Payment] Error:', e);
+      setProcessing(false);
+      Alert.alert(t('error_occurred'), t('try_again'));
+    }
+  }, [cardNumber, expiry, cvv, cardHolder, requestId, t, router]);
 
   if (!request) {
     return (

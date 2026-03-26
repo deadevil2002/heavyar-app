@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -7,7 +7,7 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockEquipment } from '@/mocks/equipment';
+import { fetchEquipmentByOwner } from '@/services/firestoreService';
 import EmptyState from '@/components/EmptyState';
 import { Equipment } from '@/types';
 
@@ -16,8 +16,23 @@ export default function MyEquipmentScreen() {
   const { user } = useAuth();
   const router = useRouter();
 
-  const currentUid = user?.uid || 'user-001';
-  const myEquipment = mockEquipment.filter(e => e.ownerUid === currentUid);
+  const currentUid = user?.uid || '';
+  const [myEquipment, setMyEquipment] = useState<Equipment[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      if (!currentUid) return;
+      try {
+        const items = await fetchEquipmentByOwner(currentUid);
+        if (mounted) setMyEquipment(items);
+      } catch (e) {
+        console.log('[MyEquipment] Error:', e);
+      }
+    };
+    void load();
+    return () => { mounted = false; };
+  }, [currentUid]);
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
   const renderItem = useCallback(({ item }: { item: Equipment }) => {

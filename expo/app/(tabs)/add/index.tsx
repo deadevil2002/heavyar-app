@@ -6,10 +6,13 @@ import { Camera, X, ChevronDown } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
+import { createEquipment } from '@/services/firestoreService';
 
 export default function CreateListingScreen() {
   const { isRTL, t, localizedText } = useLanguage();
+  const { user } = useAuth();
   const [titleAr, setTitleAr] = useState<string>('');
   const [titleEn, setTitleEn] = useState<string>('');
   const [descAr, setDescAr] = useState<string>('');
@@ -37,13 +40,47 @@ export default function CreateListingScreen() {
     setImages(prev => prev.filter((_, i) => i !== index));
   }, []);
 
-  const handlePublish = useCallback(() => {
-    if (!titleAr || !category || !city || !price) {
+  const [_publishing, setPublishing] = useState<boolean>(false);
+
+  const handlePublish = useCallback(async () => {
+    if (!titleAr || !category || !city || !price || !user) {
       Alert.alert(t('error_occurred'), t('try_again'));
       return;
     }
-    Alert.alert(t('success'), '', [{ text: t('confirm') }]);
-  }, [titleAr, category, city, price, t]);
+    setPublishing(true);
+    try {
+      await createEquipment({
+        ownerUid: user.uid,
+        titleAr,
+        titleEn: titleEn || titleAr,
+        descriptionAr: descAr,
+        descriptionEn: descEn || descAr,
+        category,
+        city,
+        district,
+        location: { lat: 0, lng: 0 },
+        pricePerDay: parseFloat(price) || 0,
+        images,
+        availability: true,
+        isActive: true,
+      });
+      Alert.alert(t('success'), '', [{ text: t('confirm') }]);
+      setTitleAr('');
+      setTitleEn('');
+      setDescAr('');
+      setDescEn('');
+      setCategory('');
+      setCity('');
+      setDistrict('');
+      setPrice('');
+      setImages([]);
+    } catch (e) {
+      console.log('[CreateListing] Error:', e);
+      Alert.alert(t('error_occurred'), t('try_again'));
+    } finally {
+      setPublishing(false);
+    }
+  }, [titleAr, titleEn, descAr, descEn, category, city, district, price, images, user, t]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
   const selectedCity = mockCities.find(c => c.id === city);

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, FlatList, TextInput, Pressable, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, Send, Lock } from 'lucide-react-native';
@@ -6,8 +6,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockRequests, mockMessages } from '@/mocks/requests';
-import { mockUsers } from '@/mocks/users';
+import { subscribeToMessages, subscribeToRequest, fetchUserById, sendMessage } from '@/services/firestoreService';
+import { EquipmentRequest, User } from '@/types';
 import { ChatMessage } from '@/types';
 
 export default function ChatScreen() {
@@ -17,41 +17,54 @@ export default function ChatScreen() {
   const router = useRouter();
   const [message, setMessage] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [request, setRequest] = useState<EquipmentRequest | null>(null);
+  const [otherUser, setOtherUser] = useState<User | null>(null);
   const flatListRef = useRef<FlatList>(null);
 
-  const currentUid = user?.uid || 'user-001';
-  const request = mockRequests.find(r => r.id === requestId);
+  const currentUid = user?.uid || '';
 
   const isChatActive = request && ['accepted', 'in_progress'].includes(request.status);
 
-  const otherUserUid = request
-    ? (request.customerUid === currentUid ? request.providerUid : request.customerUid)
-    : '';
-  const otherUser = mockUsers.find(u => u.uid === otherUserUid);
-  const otherUserName = otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
+  const otherUserName = useMemo(() => {
+    return otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
+  }, [otherUser, localizedText]);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
   useEffect(() => {
-    const requestMessages = mockMessages.filter(m => m.requestId === requestId);
-    setMessages(requestMessages);
+    if (!requestId) return;
+    const unsub = subscribeToRequest(requestId, async (req) => {
+      setRequest(req);
+      if (req) {
+        const otherUid = req.customerUid === currentUid ? req.providerUid : req.customerUid;
+        const u = await fetchUserById(otherUid);
+        setOtherUser(u);
+      }
+    });
+    return () => unsub();
+  }, [requestId, currentUid]);
+
+  useEffect(() => {
+    if (!requestId) return;
+    const unsub = subscribeToMessages(requestId, (msgs) => {
+      setMessages(msgs);
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: true });
+      }, 100);
+    });
+    return () => unsub();
   }, [requestId]);
 
-  const handleSend = useCallback(() => {
-    if (!message.trim()) return;
-    const newMsg: ChatMessage = {
-      id: `msg-${Date.now()}`,
-      requestId: requestId || '',
-      senderUid: currentUid,
-      text: message.trim(),
-      createdAt: new Date().toISOString(),
-      read: false,
-    };
-    setMessages(prev => [...prev, newMsg]);
+  const handleSend = useCallback(async () => {
+    if (!message.trim() || !requestId) return;
+    const text = message.trim();
     setMessage('');
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
+    try {
+      await sendMessage(requestId, currentUid, text);
+    } catch (e) {
+      console.log('[Chat] Send error:', e);
+      setMessage(text);
+    }
   }, [message, requestId, currentUid]);
 
   const renderMessage = useCallback(({ item }: { item: ChatMessage }) => {

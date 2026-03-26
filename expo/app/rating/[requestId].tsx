@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, Pressable, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight } from 'lucide-react-native';
@@ -6,29 +6,67 @@ import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { mockRequests } from '@/mocks/requests';
-import { mockUsers } from '@/mocks/users';
+import { fetchRequestById, fetchUserById, submitRating } from '@/services/firestoreService';
+import { useAuth } from '@/contexts/AuthContext';
+import { EquipmentRequest, User } from '@/types';
 import RatingStars from '@/components/RatingStars';
 
 export default function RatingScreen() {
   const { requestId } = useLocalSearchParams<{ requestId: string }>();
   const { isRTL, t, localizedText } = useLanguage();
+  const { user: currentUser } = useAuth();
   const router = useRouter();
   const [rating, setRating] = useState<number>(0);
   const [review, setReview] = useState<string>('');
+  const [request, setRequest] = useState<EquipmentRequest | null>(null);
+  const [provider, setProvider] = useState<User | null>(null);
+  const [submitting, setSubmitting] = useState<boolean>(false);
 
-  const request = mockRequests.find(r => r.id === requestId);
-  const provider = request ? mockUsers.find(u => u.uid === request.providerUid) : null;
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      if (!requestId) return;
+      try {
+        const req = await fetchRequestById(requestId);
+        if (mounted && req) {
+          setRequest(req);
+          const prov = await fetchUserById(req.providerUid);
+          if (mounted) setProvider(prov);
+        }
+      } catch (e) {
+        console.log('[Rating] Error loading:', e);
+      }
+    };
+    void load();
+    return () => { mounted = false; };
+  }, [requestId]);
+
   const providerName = provider ? localizedText(provider.nameAr, provider.nameEn) : '';
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
-  const handleSubmit = useCallback(() => {
-    if (rating === 0) return;
-    Alert.alert(t('success'), '', [
-      { text: t('confirm'), onPress: () => router.back() },
-    ]);
-  }, [rating, t, router]);
+  const handleSubmit = useCallback(async () => {
+    if (rating === 0 || !request || !currentUser || submitting) return;
+    setSubmitting(true);
+    try {
+      await submitRating({
+        requestId: request.id,
+        fromUid: currentUser.uid,
+        toUid: request.providerUid,
+        equipmentId: request.equipmentId,
+        stars: rating,
+        comment: review,
+      });
+      Alert.alert(t('success'), '', [
+        { text: t('confirm'), onPress: () => router.back() },
+      ]);
+    } catch (e) {
+      console.log('[Rating] Submit error:', e);
+      Alert.alert(t('error_occurred'), t('try_again'));
+    } finally {
+      setSubmitting(false);
+    }
+  }, [rating, review, request, currentUser, submitting, t, router]);
 
   return (
     <View style={styles.container}>

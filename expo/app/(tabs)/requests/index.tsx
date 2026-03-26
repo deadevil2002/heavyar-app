@@ -1,10 +1,10 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockRequests } from '@/mocks/requests';
+import { subscribeToUserRequests } from '@/services/firestoreService';
 import RequestCard from '@/components/RequestCard';
 import EmptyState from '@/components/EmptyState';
 import { EquipmentRequest } from '@/types';
@@ -13,15 +13,18 @@ export default function RequestsScreen() {
   const { isRTL, t } = useLanguage();
   const { user } = useAuth();
   const [tab, setTab] = useState<'customer' | 'provider'>('customer');
+  const [requests, setRequests] = useState<EquipmentRequest[]>([]);
 
-  const currentUid = user?.uid || 'user-001';
+  const currentUid = user?.uid || '';
 
-  const filteredRequests = useMemo(() => {
-    if (tab === 'customer') {
-      return mockRequests.filter(r => r.customerUid === currentUid);
-    }
-    return mockRequests.filter(r => r.providerUid === currentUid);
-  }, [tab, currentUid]);
+  useEffect(() => {
+    if (!currentUid) return;
+    console.log('[Requests] Subscribing to', tab, 'requests');
+    const unsub = subscribeToUserRequests(currentUid, tab, (items) => {
+      setRequests(items);
+    });
+    return () => unsub();
+  }, [currentUid, tab]);
 
   const renderItem = useCallback(({ item }: { item: EquipmentRequest }) => (
     <RequestCard request={item} />
@@ -50,7 +53,7 @@ export default function RequestsScreen() {
         </View>
 
         <FlatList
-          data={filteredRequests}
+          data={requests}
           renderItem={renderItem}
           keyExtractor={item => item.id}
           contentContainerStyle={styles.listContent}
