@@ -3,6 +3,7 @@ export interface Env {
   CLOUDINARY_API_KEY: string;
   CLOUDINARY_API_SECRET: string;
   CLOUDINARY_FOLDER: string;
+  CLOUDINARY_UPLOAD_PRESET: string;
 }
 
 const CORS_HEADERS: Record<string, string> = {
