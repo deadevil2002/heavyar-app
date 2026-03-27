@@ -1,7 +1,0 @@
-{
-  "id": "dksu9dndfac7f1uyogyan",
-  "role": "user",
-  "content": "Set up GitHub backup for the Heavyar project.\r\n\r\nRepository:\r\nhttps://github.com/deadevil2002/heavyar-app.git\r\n\r\nGoal:\r\nPush the current Heavyar project to this GitHub repository as a clean baseline backup after Phase 3.5.1 UI/UX fixes.\r\n\r\nImportant constraints:\r\n- Do NOT change app logic\r\n- Do NOT refactor anything\r\n- Do NOT modify working flows\r\n- This task is strictly for version control and backup\r\n\r\nTasks:\r\n\r\n1. Initialize Git if not already initialized\r\n2. Add a proper .gitignore for Expo / React Native / Firebase environment\r\n3. Ensure the following are NOT committed:\r\n   - node_modules\r\n   - .env files or secrets\r\n   - API keys or sensitive config\r\n   - local system files\r\n   - build/cache folders\r\n4. Connect the project to:\r\n   https://github.com/deadevil2002/heavyar-app.git\r\n5. Commit the current project state with message:\r\n   \"Baseline: Phase 3.5.1 UI fixes + marketplace working + cloudinary integration\"\r\n6. Push to the main branch\r\n7. If the repository is empty, set it up cleanly\r\n8. If any issue occurs, explain clearly instead of making risky changes\r\n\r\nReturn:\r\n1. Push status\r\n2. Branch name\r\n3. Commit hash\r\n4. Any files excluded for safety",
-  "attachments": [],
-  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
-}
