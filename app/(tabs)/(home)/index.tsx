@@ -13,7 +13,6 @@ import { Equipment } from '@/types';
 import EquipmentCard from '@/components/EquipmentCard';
 import CategoryCard from '@/components/CategoryCard';
 import EmptyState from '@/components/EmptyState';
-import LanguageSelector from '@/components/LanguageSelector';
 
 export default function HomeScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -75,7 +74,6 @@ export default function HomeScreen() {
               <Text style={[styles.subtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('browse_equipment')}</Text>
             </View>
             <View style={[styles.headerActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <LanguageSelector />
               <Pressable style={styles.notifButton} onPress={handleNotifications}>
                 <Bell size={22} color={Colors.textPrimary} />
                 <View style={styles.notifDot} />

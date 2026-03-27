@@ -69,8 +69,6 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     customerUid: (data.customerUid as string) || '',
     providerUid: (data.providerUid as string) || '',
     status: (data.status as EquipmentRequest['status']) || 'pending',
-    requestMode: (data.requestMode as EquipmentRequest['requestMode']) || 'fixed_days',
-    numberOfDays: (data.numberOfDays as number) ?? null,
     startDate: toISOString(data.startDate) || (data.startDate as string) || '',
     endDate: toISOString(data.endDate) || (data.endDate as string) || '',
     notes: (data.notes as string) || '',

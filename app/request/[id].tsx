@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { ArrowLeft, ArrowRight, MessageCircle, CreditCard, Star, Calendar, Receipt, Clock } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, MessageCircle, CreditCard, Star, Calendar, Receipt } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -95,8 +95,9 @@ export default function RequestDetailScreen() {
     ]);
   };
 
-  const isOpenEnded = request.requestMode === 'open_ended';
-  const days = request.numberOfDays || (request.startDate && request.endDate ? Math.ceil((new Date(request.endDate).getTime() - new Date(request.startDate).getTime()) / (1000 * 60 * 60 * 24)) : 0);
+  const startDate = new Date(request.startDate);
+  const endDate = new Date(request.endDate);
+  const days = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
 
   return (
     <View style={styles.container}>
@@ -119,30 +120,23 @@ export default function RequestDetailScreen() {
           </View>
 
           <View style={styles.card}>
-            <View style={[styles.modeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              {isOpenEnded ? <Clock size={16} color={Colors.gold} /> : <Calendar size={16} color={Colors.gold} />}
-              <Text style={styles.modeText}>
-                {isOpenEnded ? t('until_work_completion') : `${days} ${t('days')}`}
-              </Text>
-            </View>
-            {!isOpenEnded && (
-              <View style={[styles.infoRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                <View style={[styles.infoItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                  <Calendar size={16} color={Colors.gold} />
-                  <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
-                    <Text style={styles.infoLabel}>{t('start_date')}</Text>
-                    <Text style={styles.infoValue}>{request.startDate ? new Date(request.startDate).toLocaleDateString() : '-'}</Text>
-                  </View>
-                </View>
-                <View style={[styles.infoItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                  <Calendar size={16} color={Colors.gold} />
-                  <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
-                    <Text style={styles.infoLabel}>{t('end_date')}</Text>
-                    <Text style={styles.infoValue}>{request.endDate ? new Date(request.endDate).toLocaleDateString() : '-'}</Text>
-                  </View>
+            <View style={[styles.infoRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <View style={[styles.infoItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <Calendar size={16} color={Colors.gold} />
+                <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
+                  <Text style={styles.infoLabel}>{t('start_date')}</Text>
+                  <Text style={styles.infoValue}>{request.startDate}</Text>
                 </View>
               </View>
-            )}
+              <View style={[styles.infoItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <Calendar size={16} color={Colors.gold} />
+                <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
+                  <Text style={styles.infoLabel}>{t('end_date')}</Text>
+                  <Text style={styles.infoValue}>{request.endDate}</Text>
+                </View>
+              </View>
+            </View>
+            <Text style={[styles.daysText, { textAlign: isRTL ? 'right' : 'left' }]}>{days} {t('days')}</Text>
           </View>
 
           <View style={styles.card}>
@@ -263,8 +257,7 @@ const styles = StyleSheet.create({
   infoItem: { alignItems: 'center', gap: 8 },
   infoLabel: { fontSize: 12, color: Colors.textMuted },
   infoValue: { fontSize: 14, fontWeight: '600' as const, color: Colors.textPrimary },
-  modeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
-  modeText: { color: Colors.gold, fontSize: 15, fontWeight: '600' as const },
+  daysText: { color: Colors.gold, fontSize: 14, fontWeight: '600' as const },
   paymentRows: { gap: 10, marginBottom: 12 },
   paymentRow: { justifyContent: 'space-between' },
   paymentLabel: { color: Colors.textSecondary, fontSize: 14 },

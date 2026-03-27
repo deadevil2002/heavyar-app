@@ -16,7 +16,7 @@ import { saudiRegions, getCitiesByRegion } from '@/mocks/saudiRegions';
 type RegistrationStep = 'email' | 'info' | 'role';
 
 export default function RegisterScreen() {
-  const { isRTL, t, localizedText, language } = useLanguage();
+  const { isRTL, t, localizedText } = useLanguage();
   const { register } = useAuth();
   const router = useRouter();
   const [step, setStep] = useState<RegistrationStep>('email');
@@ -72,8 +72,7 @@ export default function RegisterScreen() {
     }
     setSendingOtp(true);
     try {
-      const result = await sendEmailOtp(email.trim(), language);
-      console.log('[Register] OTP send result:', JSON.stringify(result));
+      const result = await sendEmailOtp(email.trim());
       if (result.success) {
         setOtpSent(true);
         showDialog(t('success'), t('otp_sent'), [{ text: t('ok'), style: 'default' }]);

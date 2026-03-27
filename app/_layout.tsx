@@ -25,14 +25,14 @@ function RootLayoutNav() {
       <Stack.Screen name="equipment/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="request/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="chat/[requestId]" options={{ headerShown: false }} />
-      <Stack.Screen name="payment/[requestId]" options={{ headerShown: false, presentation: "modal", animation: "slide_from_bottom" }} />
-      <Stack.Screen name="rating/[requestId]" options={{ headerShown: false, presentation: "modal", animation: "slide_from_bottom" }} />
+      <Stack.Screen name="payment/[requestId]" options={{ headerShown: false, presentation: "modal" }} />
+      <Stack.Screen name="rating/[requestId]" options={{ headerShown: false, presentation: "modal" }} />
       <Stack.Screen name="my-equipment" options={{ headerShown: false }} />
       <Stack.Screen name="settings" options={{ headerShown: false }} />
-      <Stack.Screen name="login" options={{ headerShown: false, presentation: "modal", animation: "slide_from_bottom" }} />
-      <Stack.Screen name="register" options={{ headerShown: false, presentation: "modal", animation: "slide_from_bottom" }} />
+      <Stack.Screen name="login" options={{ headerShown: false, presentation: "modal" }} />
+      <Stack.Screen name="register" options={{ headerShown: false, presentation: "modal" }} />
       <Stack.Screen name="onboarding" options={{ headerShown: false }} />
-      <Stack.Screen name="create-listing" options={{ headerShown: false, presentation: "modal", animation: "slide_from_bottom" }} />
+      <Stack.Screen name="create-listing" options={{ headerShown: false, presentation: "modal" }} />
       <Stack.Screen name="edit-equipment" options={{ headerShown: false }} />
       <Stack.Screen name="invoices" options={{ headerShown: false }} />
     </Stack>

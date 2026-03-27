@@ -16,17 +16,15 @@ import {
   updateRequestInvoiceId,
 } from '@/services/firestoreService';
 import { createPayment, verifyPayment } from '@/services/paymentService';
-import { sendInvoiceEmail } from '@/services/otpService';
-import { EquipmentRequest, Equipment } from '@/types';
+import { EquipmentRequest } from '@/types';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
-import { useLanguage } from '@/contexts/LanguageContext';
 
 type PaymentStep = 'summary' | 'processing' | 'redirecting' | 'verifying' | 'success' | 'failed';
 
 export default function PaymentScreen() {
   const { requestId } = useLocalSearchParams<{ requestId: string }>();
-  const { isRTL, t, language, localizedText } = useLanguage();
+  const { isRTL, t } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
@@ -158,29 +156,6 @@ export default function PaymentScreen() {
 
             await updateRequestInvoiceId(requestId, invoiceId);
             console.log('[Payment] Invoice created:', invoiceId, invoiceNumber);
-
-            try {
-              const eqName = _equipment ? localizedText(_equipment.titleAr, _equipment.titleEn) : '';
-              await sendInvoiceEmail({
-                language,
-                customerEmail: customer?.email || user?.email || '',
-                customerName: customer ? (customer.nameAr || customer.nameEn) : '',
-                invoiceNumber,
-                issueDate: new Date().toLocaleDateString(language === 'ar' ? 'ar-SA' : 'en-GB'),
-                equipmentName: eqName,
-                requestMode: req.requestMode || 'fixed_days',
-                numberOfDays: req.numberOfDays ?? null,
-                pricePerDay: _equipment?.pricePerDay || 0,
-                subtotal,
-                vatAmount,
-                totalAmount,
-                currency: req.currency || 'SAR',
-                paymentReference: id,
-              });
-              console.log('[Payment] Invoice email sent');
-            } catch (emailErr) {
-              console.log('[Payment] Invoice email error (non-critical):', emailErr);
-            }
           }
         } catch (invoiceErr) {
           console.error('[Payment] Invoice creation error (payment still succeeded):', invoiceErr);

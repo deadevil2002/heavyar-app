@@ -1,15 +1,15 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, TextInput, Animated } from 'react-native';
+import React, { useState, useRef, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { ArrowLeft, ArrowRight, MapPin, Star, Calendar, Shield, Share2, Heart, Lock, Clock, CalendarDays } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, MapPin, Star, Calendar, Shield, Share2, Heart, Lock } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
 import { fetchEquipmentById, fetchUserById, createRequest } from '@/services/firestoreService';
-import { Equipment, User, RequestMode } from '@/types';
+import { Equipment, User } from '@/types';
 import { getImageUrl } from '@/utils/imageHelpers';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
@@ -28,13 +28,6 @@ export default function EquipmentDetailScreen() {
   const [_loading, setLoading] = useState<boolean>(true);
   const scrollRef = useRef<ScrollView>(null);
   const { dialog, showDialog, hideDialog } = useAppDialog();
-
-  const [showRequestForm, setShowRequestForm] = useState<boolean>(false);
-  const [requestMode, setRequestMode] = useState<RequestMode>('fixed_days');
-  const [numberOfDays, setNumberOfDays] = useState<string>('');
-  const [requestNotes, setRequestNotes] = useState<string>('');
-  const [submitting, setSubmitting] = useState<boolean>(false);
-  const formAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     let mounted = true;
@@ -57,25 +50,28 @@ export default function EquipmentDetailScreen() {
     return () => { mounted = false; };
   }, [id]);
 
-  useEffect(() => {
-    Animated.timing(formAnim, {
-      toValue: showRequestForm ? 1 : 0,
-      duration: 300,
-      useNativeDriver: false,
-    }).start();
-  }, [showRequestForm, formAnim]);
-
   const categoryObj = equipment ? mockCategories.find(c => c.id === equipment.category) : null;
   const cityObj = equipment ? mockCities.find(c => c.id === equipment.city) : null;
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
-  const calculatedAmount = requestMode === 'fixed_days' && numberOfDays
-    ? (equipment?.pricePerDay || 0) * parseInt(numberOfDays, 10)
-    : 0;
-  const platformFee = Math.round(calculatedAmount * 0.1);
+  if (!equipment) {
+    return (
+      <View style={styles.container}>
+        <SafeAreaView edges={['top']} style={styles.safeArea}>
+          <Text style={styles.errorText}>{t('error_occurred')}</Text>
+        </SafeAreaView>
+      </View>
+    );
+  }
 
-  const handleRequestRental = useCallback(() => {
+  const title = localizedText(equipment.titleAr, equipment.titleEn);
+  const description = localizedText(equipment.descriptionAr, equipment.descriptionEn);
+  const cityName = cityObj ? localizedText(cityObj.nameAr, cityObj.nameEn) : equipment.city;
+  const categoryName = categoryObj ? localizedText(categoryObj.nameAr, categoryObj.nameEn) : equipment.category;
+  const ownerName = owner ? localizedText(owner.nameAr, owner.nameEn) : '';
+
+  const handleRequestRental = () => {
     if (!isAuthenticated || !currentUser) {
       showDialog(
         t('login_required'),
@@ -99,65 +95,54 @@ export default function EquipmentDetailScreen() {
       return;
     }
 
-    setShowRequestForm(true);
-  }, [isAuthenticated, currentUser, equipment, showDialog, t, router]);
-
-  const handleSubmitRequest = useCallback(async () => {
-    if (!equipment || !currentUser) return;
-
-    if (requestMode === 'fixed_days') {
-      const days = parseInt(numberOfDays, 10);
-      if (!days || days <= 0) {
-        showDialog(t('validation_error'), t('validation_days_required'), [{ text: t('ok'), style: 'default' }]);
-        return;
-      }
-    }
-
-    setSubmitting(true);
-    try {
-      const days = requestMode === 'fixed_days' ? parseInt(numberOfDays, 10) : null;
-      const amount = days ? equipment.pricePerDay * days : 0;
-      const fee = Math.round(amount * 0.1);
-
-      await createRequest({
-        equipmentId: equipment.id,
-        customerUid: currentUser.uid,
-        providerUid: equipment.ownerUid,
-        status: 'pending',
-        requestMode,
-        numberOfDays: days,
-        startDate: new Date().toISOString(),
-        endDate: days ? new Date(Date.now() + days * 86400000).toISOString() : '',
-        notes: requestNotes.trim(),
-        amount,
-        platformFee: fee,
-        providerAmount: amount - fee,
-        paymentStatus: 'unpaid',
-        paymentId: '',
-        paidAt: null,
-        currency: 'SAR',
-        allowChat: false,
-      });
-
-      setShowRequestForm(false);
-      setNumberOfDays('');
-      setRequestNotes('');
-      showDialog(
-        t('success'),
-        t('request_sent_success'),
-        [{ text: t('ok'), style: 'default', onPress: () => router.back() }]
-      );
-    } catch (e) {
-      console.log('[EquipmentDetail] Request error:', e);
-      showDialog(
-        t('error_title'),
-        t('error_generic_message'),
-        [{ text: t('ok'), style: 'default' }]
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  }, [equipment, currentUser, requestMode, numberOfDays, requestNotes, showDialog, t, router]);
+    showDialog(
+      t('request_rental'),
+      t('confirm'),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('confirm'),
+          style: 'default',
+          onPress: async () => {
+            try {
+              const days = 5;
+              const amount = equipment.pricePerDay * days;
+              const platformFee = Math.round(amount * 0.1);
+              await createRequest({
+                equipmentId: equipment.id,
+                customerUid: currentUser.uid,
+                providerUid: equipment.ownerUid,
+                status: 'pending',
+                startDate: new Date().toISOString(),
+                endDate: new Date(Date.now() + days * 86400000).toISOString(),
+                notes: '',
+                amount,
+                platformFee,
+                providerAmount: amount - platformFee,
+                paymentStatus: 'unpaid',
+                paymentId: '',
+                paidAt: null,
+                currency: 'SAR',
+                allowChat: false,
+              });
+              showDialog(
+                t('success'),
+                t('request_sent_success'),
+                [{ text: t('ok'), style: 'default', onPress: () => router.back() }]
+              );
+            } catch (e) {
+              console.error('[EquipmentDetail] Request error:', e);
+              showDialog(
+                t('error_title'),
+                t('error_generic_message'),
+                [{ text: t('ok'), style: 'default' }]
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const handleContactProvider = () => {
     if (!isAuthenticated) {
@@ -172,27 +157,6 @@ export default function EquipmentDetailScreen() {
       return;
     }
   };
-
-  if (!equipment) {
-    return (
-      <View style={styles.container}>
-        <SafeAreaView edges={['top']} style={styles.safeArea}>
-          <Text style={styles.errorText}>{t('error_occurred')}</Text>
-        </SafeAreaView>
-      </View>
-    );
-  }
-
-  const title = localizedText(equipment.titleAr, equipment.titleEn);
-  const description = localizedText(equipment.descriptionAr, equipment.descriptionEn);
-  const cityName = cityObj ? localizedText(cityObj.nameAr, cityObj.nameEn) : equipment.city;
-  const categoryName = categoryObj ? localizedText(categoryObj.nameAr, categoryObj.nameEn) : equipment.category;
-  const ownerName = owner ? localizedText(owner.nameAr, owner.nameEn) : '';
-
-  const formHeight = formAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 380],
-  });
 
   return (
     <View style={styles.container}>
@@ -274,7 +238,7 @@ export default function EquipmentDetailScreen() {
             <>
               <Text style={[styles.sectionTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('owner')}</Text>
               <Pressable style={[styles.ownerCard, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={handleContactProvider}>
-                <Image source={{ uri: owner.avatar || undefined }} style={styles.ownerAvatar} contentFit="cover" />
+                <Image source={{ uri: owner.avatar }} style={styles.ownerAvatar} contentFit="cover" />
                 <View style={[styles.ownerInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
                   <View style={[styles.ownerNameRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                     <Text style={styles.ownerName}>{ownerName}</Text>
@@ -288,90 +252,6 @@ export default function EquipmentDetailScreen() {
                 </View>
               </Pressable>
             </>
-          )}
-
-          {showRequestForm && (
-            <Animated.View style={[styles.requestFormContainer, { maxHeight: formHeight, opacity: formAnim }]}>
-              <View style={styles.requestForm}>
-                <Text style={[styles.sectionTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('rental_mode')}</Text>
-
-                <View style={styles.modeSelector}>
-                  <Pressable
-                    style={[styles.modeButton, requestMode === 'fixed_days' && styles.modeButtonActive]}
-                    onPress={() => setRequestMode('fixed_days')}
-                  >
-                    <CalendarDays size={20} color={requestMode === 'fixed_days' ? Colors.primary : Colors.textMuted} />
-                    <Text style={[styles.modeText, requestMode === 'fixed_days' && styles.modeTextActive]}>
-                      {t('fixed_days')}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.modeButton, requestMode === 'open_ended' && styles.modeButtonActive]}
-                    onPress={() => setRequestMode('open_ended')}
-                  >
-                    <Clock size={20} color={requestMode === 'open_ended' ? Colors.primary : Colors.textMuted} />
-                    <Text style={[styles.modeText, requestMode === 'open_ended' && styles.modeTextActive]}>
-                      {t('open_ended')}
-                    </Text>
-                  </Pressable>
-                </View>
-
-                {requestMode === 'fixed_days' && (
-                  <View style={styles.daysInput}>
-                    <Text style={[styles.inputLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('number_of_days')}</Text>
-                    <TextInput
-                      style={[styles.daysField, { textAlign: isRTL ? 'right' : 'left' }]}
-                      placeholder={t('enter_days')}
-                      placeholderTextColor={Colors.textMuted}
-                      value={numberOfDays}
-                      onChangeText={setNumberOfDays}
-                      keyboardType="number-pad"
-                      maxLength={4}
-                    />
-                  </View>
-                )}
-
-                <TextInput
-                  style={[styles.notesField, { textAlign: isRTL ? 'right' : 'left' }]}
-                  placeholder={t('request_notes_placeholder')}
-                  placeholderTextColor={Colors.textMuted}
-                  value={requestNotes}
-                  onChangeText={setRequestNotes}
-                  multiline
-                  numberOfLines={3}
-                />
-
-                {requestMode === 'fixed_days' && numberOfDays && parseInt(numberOfDays, 10) > 0 ? (
-                  <View style={styles.pricePreview}>
-                    <View style={[styles.pricePreviewRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                      <Text style={styles.pricePreviewLabel}>{t('estimated_total')}</Text>
-                      <Text style={styles.pricePreviewValue}>{calculatedAmount.toLocaleString()} {t('sar')}</Text>
-                    </View>
-                    <View style={[styles.pricePreviewRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                      <Text style={styles.pricePreviewLabel}>{t('platform_fee')}</Text>
-                      <Text style={styles.pricePreviewFee}>{platformFee.toLocaleString()} {t('sar')}</Text>
-                    </View>
-                  </View>
-                ) : requestMode === 'open_ended' ? (
-                  <View style={styles.pricePreview}>
-                    <Text style={styles.openEndedNote}>{t('price_on_completion')}</Text>
-                  </View>
-                ) : null}
-
-                <View style={styles.formActions}>
-                  <Pressable style={styles.cancelFormButton} onPress={() => setShowRequestForm(false)}>
-                    <Text style={styles.cancelFormText}>{t('cancel')}</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.submitFormButton, submitting && { opacity: 0.6 }]}
-                    onPress={handleSubmitRequest}
-                    disabled={submitting}
-                  >
-                    <Text style={styles.submitFormText}>{submitting ? t('processing') : t('submit_request')}</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </Animated.View>
           )}
 
           {!isAuthenticated && (
@@ -388,7 +268,7 @@ export default function EquipmentDetailScreen() {
         </View>
       </ScrollView>
 
-      {equipment.availability && !showRequestForm && (
+      {equipment.availability && (
         <View style={styles.bottomBar}>
           <SafeAreaView edges={['bottom']}>
             <View style={[styles.bottomContent, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -618,135 +498,6 @@ const styles = StyleSheet.create({
   ownerEquipment: {
     fontSize: 12,
     color: Colors.textMuted,
-  },
-  requestFormContainer: {
-    marginTop: 20,
-    overflow: 'hidden',
-  },
-  requestForm: {
-    backgroundColor: Colors.card,
-    borderRadius: 16,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: Colors.gold,
-    gap: 14,
-  },
-  modeSelector: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  modeButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: Colors.inputBg,
-    borderWidth: 2,
-    borderColor: Colors.border,
-  },
-  modeButtonActive: {
-    borderColor: Colors.gold,
-    backgroundColor: Colors.gold,
-  },
-  modeText: {
-    fontSize: 13,
-    fontWeight: '600' as const,
-    color: Colors.textMuted,
-  },
-  modeTextActive: {
-    color: Colors.primary,
-  },
-  daysInput: {
-    gap: 6,
-  },
-  inputLabel: {
-    fontSize: 13,
-    fontWeight: '600' as const,
-    color: Colors.textSecondary,
-  },
-  daysField: {
-    backgroundColor: Colors.inputBg,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: Colors.textPrimary,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  notesField: {
-    backgroundColor: Colors.inputBg,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: Colors.textPrimary,
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    minHeight: 60,
-    textAlignVertical: 'top',
-  },
-  pricePreview: {
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    padding: 14,
-    gap: 6,
-  },
-  pricePreviewRow: {
-    justifyContent: 'space-between',
-  },
-  pricePreviewLabel: {
-    color: Colors.textSecondary,
-    fontSize: 14,
-  },
-  pricePreviewValue: {
-    color: Colors.gold,
-    fontSize: 16,
-    fontWeight: '700' as const,
-  },
-  pricePreviewFee: {
-    color: Colors.warning,
-    fontSize: 14,
-    fontWeight: '600' as const,
-  },
-  openEndedNote: {
-    color: Colors.textSecondary,
-    fontSize: 14,
-    textAlign: 'center',
-    fontStyle: 'italic',
-  },
-  formActions: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  cancelFormButton: {
-    flex: 1,
-    backgroundColor: Colors.surface,
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  cancelFormText: {
-    color: Colors.textSecondary,
-    fontSize: 15,
-    fontWeight: '600' as const,
-  },
-  submitFormButton: {
-    flex: 2,
-    backgroundColor: Colors.gold,
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  submitFormText: {
-    color: Colors.primary,
-    fontSize: 15,
-    fontWeight: '700' as const,
   },
   authBanner: {
     marginTop: 20,

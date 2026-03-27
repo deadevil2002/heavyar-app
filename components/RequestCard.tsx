@@ -1,7 +1,7 @@
 import React, { useCallback, useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { Image } from 'expo-image';
-import { Calendar, ChevronLeft, ChevronRight, Clock } from 'lucide-react-native';
+import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { EquipmentRequest, Equipment } from '@/types';
@@ -43,8 +43,6 @@ export default React.memo(function RequestCard({ request }: RequestCardProps) {
   const imageUrl = equipment ? getFirstImageUrl(equipment.images) : '';
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
 
-  const isOpenEnded = request.requestMode === 'open_ended';
-
   const formatDate = (dateStr: string) => {
     try {
       const d = new Date(dateStr);
@@ -65,10 +63,8 @@ export default React.memo(function RequestCard({ request }: RequestCardProps) {
         <View style={[styles.info, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
           <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]} numberOfLines={1}>{title}</Text>
           <View style={[styles.dateRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-            {isOpenEnded ? <Clock size={14} color={Colors.gold} /> : <Calendar size={14} color={Colors.textMuted} />}
-            <Text style={[styles.dateText, isOpenEnded && { color: Colors.gold }]}>
-              {isOpenEnded ? t('until_work_completion') : `${formatDate(request.startDate)} - ${formatDate(request.endDate)}`}
-            </Text>
+            <Calendar size={14} color={Colors.textMuted} />
+            <Text style={styles.dateText}>{formatDate(request.startDate)} - {formatDate(request.endDate)}</Text>
           </View>
           <View style={[styles.bottomRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <StatusBadge status={request.status} />
