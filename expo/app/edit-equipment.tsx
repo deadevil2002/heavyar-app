@@ -123,13 +123,25 @@ export default function EditEquipmentScreen() {
   const handleSave = useCallback(async () => {
     if (!id || !originalEquipment || !user) return;
 
-    if (!titleAr || !category || !city || !price) {
-      Alert.alert(t('error_occurred'), t('try_again'));
+    if (!titleAr.trim()) {
+      Alert.alert(t('validation_error'), t('validation_title_ar_required'));
       return;
     }
-
+    if (!category) {
+      Alert.alert(t('validation_error'), t('validation_category_required'));
+      return;
+    }
+    if (!city) {
+      Alert.alert(t('validation_error'), t('validation_city_required'));
+      return;
+    }
+    const parsedPrice = parseFloat(price);
+    if (!price.trim() || isNaN(parsedPrice) || parsedPrice <= 0) {
+      Alert.alert(t('validation_error'), t('validation_price_required'));
+      return;
+    }
     if (existingImages.length === 0 && newImageUris.length === 0) {
-      Alert.alert(t('error_occurred'), t('add_images'));
+      Alert.alert(t('validation_error'), t('validation_images_required'));
       return;
     }
 
@@ -165,7 +177,7 @@ export default function EditEquipmentScreen() {
           category,
           city,
           district,
-          pricePerDay: parseFloat(price) || 0,
+          pricePerDay: parsedPrice,
           images: finalImages,
         },
         oldImages
@@ -176,8 +188,9 @@ export default function EditEquipmentScreen() {
         { text: t('confirm'), onPress: () => router.back() },
       ]);
     } catch (e) {
-      console.log('[EditEquipment] Save error:', e);
-      Alert.alert(t('error_occurred'), t('update_failed'));
+      console.error('[EditEquipment] Save error:', e);
+      const message = e instanceof Error ? e.message : t('unexpected_error');
+      Alert.alert(t('error_occurred'), message);
     } finally {
       setSaving(false);
       setUploadProgress('');

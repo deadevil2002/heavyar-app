@@ -46,12 +46,27 @@ export default function CreateListingScreen() {
   const [publishing, setPublishing] = useState<boolean>(false);
 
   const handlePublish = useCallback(async () => {
-    if (!titleAr || !category || !city || !price || !user) {
-      Alert.alert(t('error_occurred'), t('try_again'));
+    if (!user) return;
+
+    if (!titleAr.trim()) {
+      Alert.alert(t('validation_error'), t('validation_title_ar_required'));
+      return;
+    }
+    if (!category) {
+      Alert.alert(t('validation_error'), t('validation_category_required'));
+      return;
+    }
+    if (!city) {
+      Alert.alert(t('validation_error'), t('validation_city_required'));
+      return;
+    }
+    const parsedPrice = parseFloat(price);
+    if (!price.trim() || isNaN(parsedPrice) || parsedPrice <= 0) {
+      Alert.alert(t('validation_error'), t('validation_price_required'));
       return;
     }
     if (images.length === 0) {
-      Alert.alert(t('error_occurred'), t('add_images'));
+      Alert.alert(t('validation_error'), t('validation_images_required'));
       return;
     }
     setPublishing(true);
@@ -80,7 +95,7 @@ export default function CreateListingScreen() {
         city,
         district,
         location: { lat: 0, lng: 0 },
-        pricePerDay: parseFloat(price) || 0,
+        pricePerDay: parsedPrice,
         images: cloudinaryImages,
         availability: true,
         isActive: true,
@@ -96,8 +111,9 @@ export default function CreateListingScreen() {
       setPrice('');
       setImages([]);
     } catch (e) {
-      console.log('[CreateListing] Error:', e);
-      Alert.alert(t('error_occurred'), t('upload_failed'));
+      console.error('[CreateListing] Error:', e);
+      const message = e instanceof Error ? e.message : t('unexpected_error');
+      Alert.alert(t('error_occurred'), message);
     } finally {
       setPublishing(false);
       setUploading(false);
