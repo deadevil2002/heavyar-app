@@ -1,0 +1,191 @@
+{
+  "id": "rvlkkuif98khdhl2zea5j",
+  "role": "assistant",
+  "responseMessageContents": [
+    {
+      "type": "reasoning",
+      "text": "The user has provided a new Cloudflare API token. Based on the previous messages, they want me to redeploy the Heavyar Cloudflare Worker. Let me read the worker code first, then deploy it.",
+      "id": "ql1riqyp2gdpadmwyypqb",
+      "createdAt": 1774624187575,
+      "completedAt": 1774624188228
+    },
+    {
+      "type": "text",
+      "text": "Let me read the worker code and deploy it with the new token.",
+      "id": "91dz8ue1l73v40jjy6fmo",
+      "createdAt": 1774624188228
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01XsSKQaCtmRknKMfktzQQJQ",
+      "toolName": "read",
+      "input": {
+        "filePath": "worker/index.ts"
+      },
+      "output": {
+        "error": "File worker/index.ts not found"
+      },
+      "error": null,
+      "inputArgsStr": "{\"filePath\": \"worker/index.ts\"}",
+      "createdAt": 1774624188470,
+      "completedAt": 1774624188476
+    },
+    {
+      "type": "tool",
+      "id": "toolu_014EAvFgU6A5AceH3HNdg6wL",
+      "toolName": "read",
+      "input": {
+        "filePath": "worker/wrangler.toml"
+      },
+      "output": {
+        "path": "worker/wrangler.toml",
+        "content": "     1|name = \"heavyar-api\"\n     2|main = \"src/index.ts\"\n     3|compatibility_date = \"2024-12-01\"\n     4|\n     5|[vars]\n     6|CLOUDINARY_FOLDER = \"heavyar\"\n     7|\n\n(End of file - total 7 lines)"
+      },
+      "error": null,
+      "inputArgsStr": "{\"filePath\": \"worker/wrangler.toml\"}",
+      "createdAt": 1774624188474,
+      "completedAt": 1774624188477
+    },
+    {
+      "type": "tool",
+      "id": "toolu_012232yWxhCoDD2CSsxuRcNV",
+      "toolName": "read",
+      "input": {
+        "filePath": "worker/src/index.ts"
+      },
+      "output": {
+        "path": "worker/src/index.ts",
+        "content": "     1|export interface Env {\n     2|  CLOUDINARY_CLOUD_NAME: string;\n     3|  CLOUDINARY_API_KEY: string;\n     4|  CLOUDINARY_API_SECRET: string;\n     5|  CLOUDINARY_FOLDER: string;\n     6|  CLOUDINARY_UPLOAD_PRESET: string;\n     7|  TAP_SECRET_KEY_TEST: string;\n     8|  RESEND_API_KEY: string;\n     9|}\n    10|\n    11|interface OtpStore {\n    12|  code: string;\n    13|  expiresAt: number;\n    14|}\n    15|\n    16|const otpStore = new Map<string, OtpStore>();\n    17|\n    18|function generateOtp(): string {\n    19|  const digits = '0123456789';\n    20|  let otp = '';\n    21|  const array = new Uint8Array(6);\n    22|  crypto.getRandomValues(array);\n    23|  for (let i = 0; i < 6; i++) {\n    24|    otp += digits[array[i] % 10];\n    25|  }\n    26|  return otp;\n    27|}\n    28|\n    29|function cleanExpiredOtps(): void {\n    30|  const now = Date.now();\n    31|  for (const [key, value] of otpStore.entries()) {\n    32|    if (value.expiresAt < now) {\n    33|      otpStore.delete(key);\n    34|    }\n    35|  }\n    36|}\n    37|\n    38|const CORS_HEADERS: Record<string, string> = {\n    39|  'Access-Control-Allow-Origin': '*',\n    40|  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',\n    41|  'Access-Control-Allow-Headers': 'Content-Type, Authorization',\n    42|  'Access-Control-Max-Age': '86400',\n    43|};\n    44|\n    45|function jsonResponse(data: unknown, status = 200): Response {\n    46|  return new Response(JSON.stringify(data), {\n    47|    status,\n    48|    headers: {\n    49|      'Content-Type': 'application/json',\n    50|      ...CORS_HEADERS,\n    51|    },\n    52|  });\n    53|}\n    54|\n    55|function handleOptions(): Response {\n    56|  return new Response(null, {\n    57|    status: 204,\n    58|    headers: CORS_HEADERS,\n    59|  });\n    60|}\n    61|\n    62|async function handleHealthCheck(): Promise<Response> {\n    63|  return jsonResponse({ success: true, service: 'heavyar-api' });\n    64|}\n    65|\n    66|interface CreatePaymentBody {\n    67|  amount: number;\n    68|  currency?: string;\n    69|  requestId: string;\n    70|  customerName?: string;\n    71|  customerEmail?: string;\n    72|  customerPhone?: string;\n    73|  description?: string;\n    74|  redirectUrl?: string;\n    75|}\n    76|\n    77|interface VerifyPaymentBody {\n    78|  chargeId: string;\n    79|}\n    80|\n    81|const TAP_API_BASE = 'https://api.tap.company/v2';\n    82|\n    83|async function handleCreatePayment(request: Request, env: Env): Promise<Response> {\n    84|  try {\n    85|    const body = await request.json() as CreatePaymentBody;\n    86|\n    87|    if (!body.amount || !body.requestId) {\n    88|      return jsonResponse({ success: false, error: 'amount and requestId are required' }, 400);\n    89|    }\n    90|\n    91|    if (!env.TAP_SECRET_KEY_TEST) {\n    92|      return jsonResponse({ success: false, error: 'Payment service not configured' }, 500);\n    93|    }\n    94|\n    95|    const chargePayload = {\n    96|      amount: body.amount,\n    97|      currency: body.currency || 'SAR',\n    98|      customer_initiated: true,\n    99|      threeDSecure: true,\n   100|      save_card: false,\n   101|      description: body.description || `Heavyar rental payment - ${body.requestId}`,\n   102|      metadata: {\n   103|        requestId: body.requestId,\n   104|      },\n   105|      receipt: {\n   106|        email: true,\n   107|        sms: true,\n   108|      },\n   109|      customer: {\n   110|        first_name: body.customerName || 'Customer',\n   111|        email: body.customerEmail || '',\n   112|        phone: {\n   113|          country_code: '966',\n   114|          number: body.customerPhone || '',\n   115|        },\n   116|      },\n   117|      source: { id: 'src_all' },\n   118|      redirect: {\n   119|        url: body.redirectUrl || 'https://heavyar.app/payment/callback',\n   120|      },\n   121|    };\n   122|\n   123|    const tapResponse = await fetch(`${TAP_API_BASE}/charges`, {\n   124|      method: 'POST',\n   125|      headers: {\n   126|        'Authorization': `Bearer ${env.TAP_SECRET_KEY_TEST}`,\n   127|        'Content-Type': 'application/json',\n   128|      },\n   129|      body: JSON.stringify(chargePayload),\n   130|    });\n   131|\n   132|    const tapResult = await tapResponse.json() as Record<string, unknown>;\n   133|\n   134|    if (!tapResponse.ok) {\n   135|      console.error('Tap create charge error:', JSON.stringify(tapResult));\n   136|      return jsonResponse({ success: false, error: 'Failed to create payment', details: tapResult }, tapResponse.status);\n   137|    }\n   138|\n   139|    const transaction = tapResult.transaction as Record<string, string> | undefined;\n   140|    const redirect = tapResult.redirect as Record<string, string> | undefined;\n   141|\n   142|    return jsonResponse({\n   143|      success: true,\n   144|      chargeId: tapResult.id,\n   145|      status: tapResult.status,\n   146|      paymentUrl: redirect?.url || '',\n   147|      transactionUrl: transaction?.url || '',\n   148|      amount: tapResult.amount,\n   149|      currency: tapResult.currency,\n   150|    });\n   151|  } catch (error) {\n   152|    console.error('Create payment error:', error);\n   153|    return jsonResponse({ success: false, error: 'Failed to create payment' }, 500);\n   154|  }\n   155|}\n   156|\n   157|async function handleVerifyPayment(request: Request, env: Env): Promise<Response> {\n   158|  try {\n   159|    const body = await request.json() as VerifyPaymentBody;\n   160|\n   161|    if (!body.chargeId) {\n   162|      return jsonResponse({ success: false, error: 'chargeId is required' }, 400);\n   163|    }\n   164|\n   165|    if (!env.TAP_SECRET_KEY_TEST) {\n   166|      return jsonResponse({ success: false, error: 'Payment service not configured' }, 500);\n   167|    }\n   168|\n   169|    const tapResponse = await fetch(`${TAP_API_BASE}/charges/${body.chargeId}`, {\n   170|      method: 'GET',\n   171|      headers: {\n   172|        'Authorization': `Bearer ${env.TAP_SECRET_KEY_TEST}`,\n   173|      },\n   174|    });\n   175|\n   176|    const tapResult = await tapResponse.json() as Record<string, unknown>;\n   177|\n   178|    if (!tapResponse.ok) {\n   179|      console.error('Tap verify charge error:', JSON.stringify(tapResult));\n   180|      return jsonResponse({ success: false, error: 'Failed to verify payment', details: tapResult }, tapResponse.status);\n   181|    }\n   182|\n   183|    const metadata = tapResult.metadata as Record<string, string> | undefined;\n   184|    const receipt = tapResult.receipt as Record<string, string> | undefined;\n   185|\n   186|    return jsonResponse({\n   187|      success: true,\n   188|      chargeId: tapResult.id,\n   189|      status: tapResult.status,\n   190|      isPaid: tapResult.status === 'CAPTURED',\n   191|      amount: tapResult.amount,\n   192|      currency: tapResult.currency,\n   193|      requestId: metadata?.requestId || '',\n   194|      receiptId: receipt?.id || '',\n   195|      paymentMethod: tapResult.source,\n   196|    });\n   197|  } catch (error) {\n   198|    console.error('Verify payment error:', error);\n   199|    return jsonResponse({ success: false, error: 'Failed to verify payment' }, 500);\n   200|  }\n   201|}\n   202|\n   203|async function handleCloudinaryDelete(request: Request, env: Env): Promise<Response> {\n   204|  try {\n   205|    const body = await request.json() as { publicId?: string };\n   206|\n   207|    if (!body.publicId) {\n   208|      return jsonResponse({ success: false, error: 'publicId is required' }, 400);\n   209|    }\n   210|\n   211|    const timestamp = Math.floor(Date.now() / 1000).toString();\n   212|\n   213|    const signaturePayload = `public_id=${body.publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`;\n   214|    const encoder = new TextEncoder();\n   215|    const data = encoder.encode(signaturePayload);\n   216|    const hashBuffer = await crypto.subtle.digest('SHA-1', data);\n   217|    const hashArray = Array.from(new Uint8Array(hashBuffer));\n   218|    const signature = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');\n   219|\n   220|    const formData = new FormData();\n   221|    formData.append('public_id', body.publicId);\n   222|    formData.append('timestamp', timestamp);\n   223|    formData.append('api_key', env.CLOUDINARY_API_KEY);\n   224|    formData.append('signature', signature);\n   225|\n   226|    const cloudinaryUrl = `https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`;\n   227|\n   228|    const cloudinaryResponse = await fetch(cloudinaryUrl, {\n   229|      method: 'POST',\n   230|      body: formData,\n   231|    });\n   232|\n   233|    const result = await cloudinaryResponse.json();\n   234|\n   235|    return jsonResponse({ success: true, result });\n   236|  } catch (error) {\n   237|    console.error('Cloudinary delete error:', error);\n   238|    return jsonResponse({ success: false, error: 'Failed to delete asset' }, 500);\n   239|  }\n   240|}\n   241|\n   242|interface SendOtpBody {\n   243|  email: string;\n   244|}\n   245|\n   246|interface VerifyOtpBody {\n   247|  email: string;\n   248|  code: string;\n   249|}\n   250|\n   251|async function handleSendEmailOtp(request: Request, env: Env): Promise<Response> {\n   252|  try {\n   253|    const body = await request.json() as SendOtpBody;\n   254|\n   255|    if (!body.email || !body.email.includes('@')) {\n   256|      return jsonResponse({ success: false, error: 'Valid email is required', errorCode: 'INVALID_EMAIL' }, 400);\n   257|    }\n   258|\n   259|    if (!env.RESEND_API_KEY) {\n   260|      return jsonResponse({ success: false, error: 'Email service not configured' }, 500);\n   261|    }\n   262|\n   263|    cleanExpiredOtps();\n   264|\n   265|    const email = body.email.toLowerCase().trim();\n   266|    const otp = generateOtp();\n   267|    const expiresAt = Date.now() + 10 * 60 * 1000;\n   268|\n   269|    otpStore.set(email, { code: otp, expiresAt });\n   270|\n   271|    const resendResponse = await fetch('https://api.resend.com/emails', {\n   272|      method: 'POST',\n   273|      headers: {\n   274|        'Authorization': `Bearer ${env.RESEND_API_KEY}`,\n   275|        'Content-Type': 'application/json',\n   276|      },\n   277|      body: JSON.stringify({\n   278|        from: 'Heavyar <noreply@heavyar.app>',\n   279|        to: [email],\n   280|        subject: 'Heavyar - رمز التحقق / Verification Code',\n   281|        html: `<div dir=\"rtl\" style=\"font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0B1A2F; color: #fff; border-radius: 16px;\">\n   282|          <div style=\"text-align: center; margin-bottom: 24px;\">\n   283|            <h1 style=\"color: #D4A843; margin: 0;\">هيفيار - Heavyar</h1>\n   284|            <p style=\"color: #8BA3C7; margin: 8px 0 0;\">منصة تأجير المعدات الثقيلة</p>\n   285|          </div>\n   286|          <div style=\"background: #132744; border-radius: 12px; padding: 24px; text-align: center;\">\n   287|            <p style=\"color: #8BA3C7; margin: 0 0 12px;\">رمز التحقق الخاص بك / Your verification code</p>\n   288|            <div style=\"font-size: 36px; font-weight: bold; color: #D4A843; letter-spacing: 8px; padding: 16px;\">${otp}</div>\n   289|            <p style=\"color: #5A7A9F; margin: 12px 0 0; font-size: 13px;\">صالح لمدة 10 دقائق / Valid for 10 minutes</p>\n   290|          </div>\n   291|          <p style=\"color: #5A7A9F; text-align: center; margin: 16px 0 0; font-size: 12px;\">إذا لم تطلب هذا الرمز، تجاهل هذا البريد<br/>If you didn't request this code, ignore this email</p>\n   292|        </div>`,\n   293|      }),\n   294|    });\n   295|\n   296|    if (!resendResponse.ok) {\n   297|      const errData = await resendResponse.text();\n   298|      console.error('Resend error:', errData);\n   299|      return jsonResponse({ success: false, error: 'Failed to send verification email' }, 500);\n   300|    }\n   301|\n   302|    return jsonResponse({ success: true, message: 'OTP sent successfully' });\n   303|  } catch (error) {\n   304|    console.error('Send OTP error:', error);\n   305|    return jsonResponse({ success: false, error: 'Failed to send OTP' }, 500);\n   306|  }\n   307|}\n   308|\n   309|async function handleVerifyEmailOtp(request: Request): Promise<Response> {\n   310|  try {\n   311|    const body = await request.json() as VerifyOtpBody;\n   312|\n   313|    if (!body.email || !body.code) {\n   314|      return jsonResponse({ success: false, error: 'Email and code are required', errorCode: 'OTP_REQUIRED' }, 400);\n   315|    }\n   316|\n   317|    const email = body.email.toLowerCase().trim();\n   318|    const stored = otpStore.get(email);\n   319|\n   320|    if (!stored) {\n   321|      return jsonResponse({ success: false, error: 'No OTP found for this email. Please request a new code.', errorCode: 'OTP_NOT_FOUND' }, 400);\n   322|    }\n   323|\n   324|    if (Date.now() > stored.expiresAt) {\n   325|      otpStore.delete(email);\n   326|      return jsonResponse({ success: false, error: 'OTP has expired. Please request a new code.', errorCode: 'OTP_EXPIRED' }, 400);\n   327|    }\n   328|\n   329|    if (stored.code !== body.code.trim()) {\n   330|      return jsonResponse({ success: false, error: 'Invalid OTP code.', errorCode: 'OTP_INVALID' }, 400);\n   331|    }\n   332|\n   333|    otpStore.delete(email);\n   334|    return jsonResponse({ success: true, verified: true });\n   335|  } catch (error) {\n   336|    console.error('Verify OTP error:', error);\n   337|    return jsonResponse({ success: false, error: 'Failed to verify OTP' }, 500);\n   338|  }\n   339|}\n   340|\n   341|export default {\n   342|  async fetch(request: Request, env: Env): Promise<Response> {\n   343|    const url = new URL(request.url);\n   344|    const method = request.method;\n   345|\n   346|    if (method === 'OPTIONS') {\n   347|      return handleOptions();\n   348|    }\n   349|\n   350|    if (url.pathname === '/health' && method === 'GET') {\n   351|      return handleHealthCheck();\n   352|    }\n   353|\n   354|    if (url.pathname === '/cloudinary/delete' && method === 'POST') {\n   355|      return handleCloudinaryDelete(request, env);\n   356|    }\n   357|\n   358|    if (url.pathname === '/api/create-payment' && method === 'POST') {\n   359|      return handleCreatePayment(request, env);\n   360|    }\n   361|\n   362|    if (url.pathname === '/api/verify-payment' && method === 'POST') {\n   363|      return handleVerifyPayment(request, env);\n   364|    }\n   365|\n   366|    if (url.pathname === '/api/send-email-otp' && method === 'POST') {\n   367|      return handleSendEmailOtp(request, env);\n   368|    }\n   369|\n   370|    if (url.pathname === '/api/verify-email-otp' && method === 'POST') {\n   371|      return handleVerifyEmailOtp(request);\n   372|    }\n   373|\n   374|    return jsonResponse({ success: false, error: 'Not found' }, 404);\n   375|  },\n   376|};\n   377|\n\n(End of file - total 377 lines)"
+      },
+      "error": null,
+      "inputArgsStr": "{\"filePath\": \"worker/src/index.ts\"}",
+      "createdAt": 1774624192519,
+      "completedAt": 1774624192532
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01DUZo592MNHm7BDza76TiDy",
+      "toolName": "read",
+      "input": {
+        "filePath": "worker/package.json"
+      },
+      "output": {
+        "error": "File worker/package.json not found"
+      },
+      "error": null,
+      "inputArgsStr": "{\"filePath\": \"worker/package.json\"}",
+      "createdAt": 1774624192523,
+      "completedAt": 1774624192530
+    },
+    {
+      "type": "reasoning",
+      "text": "The user provided a new Cloudflare API token. Let me deploy the worker using it.",
+      "id": "3ph12331fvcxf8f2sgles",
+      "createdAt": 1774624197127,
+      "completedAt": 1774624197416
+    },
+    {
+      "type": "text",
+      "text": "Deploying the worker now with the new token.",
+      "id": "du44cbvbsnkifrgj65v9u",
+      "createdAt": 1774624197417
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01WCc5FMhw2PAKY25VkVy2DU",
+      "toolName": "bash",
+      "input": {
+        "command": "cd /home/user/rork-app/worker && ls"
+      },
+      "output": {
+        "stdout": "src\ntsconfig.json\nwrangler.toml\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"cd /home/user/rork-app/worker && ls\"}",
+      "createdAt": 1774624197558,
+      "completedAt": 1774624197563
+    },
+    {
+      "type": "tool",
+      "id": "toolu_014HuC27drL5t9UmQ6S2yoKT",
+      "toolName": "bash",
+      "input": {
+        "command": "cd /home/user/rork-app/worker && cat tsconfig.json"
+      },
+      "output": {
+        "stdout": "{\n  \"compilerOptions\": {\n    \"target\": \"ES2022\",\n    \"module\": \"ES2022\",\n    \"moduleResolution\": \"bundler\",\n    \"lib\": [\"ES2022\"],\n    \"types\": [\"@cloudflare/workers-types\"],\n    \"strict\": true,\n    \"noEmit\": true,\n    \"skipLibCheck\": true,\n    \"forceConsistentCasingInFileNames\": true,\n    \"resolveJsonModule\": true,\n    \"isolatedModules\": true\n  },\n  \"include\": [\"src/**/*.ts\"]\n}\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"cd /home/user/rork-app/worker && cat tsconfig.json\"}",
+      "createdAt": 1774624200672,
+      "completedAt": 1774624200719
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01QzbyA6JaUNzR2KCnyQybNQ",
+      "toolName": "bash",
+      "input": {
+        "command": "which wrangler || npm list -g wrangler 2>/dev/null || npx wrangler --version 2>/dev/null"
+      },
+      "output": {
+        "error": "\"npm\" is not allowed. Use bun instead (e.g. \"bun install\", \"bun add\", \"bun x\"). Use the Install tool to add packages."
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"which wrangler || npm list -g wrangler 2>/dev/null || npx wrangler --version 2>/dev/null\"}",
+      "createdAt": 1774624204248,
+      "completedAt": 1774624204254
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01Lv6x9S8sRDqGHzQM22LFoj",
+      "toolName": "bash",
+      "input": {
+        "command": "which wrangler 2>/dev/null || bun x wrangler --version 2>/dev/null"
+      },
+      "output": {
+        "stdout": "4.78.0\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"which wrangler 2>/dev/null || bun x wrangler --version 2>/dev/null\"}",
+      "createdAt": 1774624207483,
+      "completedAt": 1774624210202
+    },
+    {
+      "type": "reasoning",
+      "text": "Let me deploy the worker using wrangler with the new Cloudflare API token.",
+      "id": "cww06jetgjxlou4wvwhp6",
+      "createdAt": 1774624215702,
+      "completedAt": 1774624215947
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01TAcbVA3igFwFYftALNVSk9",
+      "toolName": "bash",
+      "input": {
+        "command": "cd /home/user/rork-app/worker && CLOUDFLARE_API_TOKEN=cfat_CMLk7gDyP7iqTaEJhxaU2H38nrWDA86C2lKeURIq25fb2fab bun x wrangler deploy 2>&1"
+      },
+      "output": {
+        "stdout": "\n ⛅️ wrangler 4.78.0\n───────────────────\n\nCloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md\n\n\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mA request to the Cloudflare API (/memberships) failed.\u001b[0m\n\n  Authentication failed (status: 400) [code: 9106]\n  \n  If you think this is a bug, please open an issue at: \u001b[4mhttps://github.com/cloudflare/workers-sdk/issues/new/choose\u001b[0m\n\n\n🪵  Logs were written to \"/home/user/.config/.wrangler/logs/wrangler-2026-03-27_15-10-16_257.log\"\n",
+        "stderr": "",
+        "exitCode": 1
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"cd /home/user/rork-app/worker && CLOUDFLARE_API_TOKEN=cfat_CMLk7gDyP7iqTaEJhxaU2H38nrWDA86C2lKeURIq25fb2fab bun x wrangler deploy 2>&1\"}",
+      "createdAt": 1774624215947,
+      "completedAt": 1774624218025
+    },
+    {
+      "type": "text",
+      "text": "The Cloudflare API token appears to be invalid or expired — authentication failed with error code 9106.\n\nCould you generate a new Cloudflare API token with **Workers Scripts: Edit** permission and share it? Make sure the token is freshly created and hasn't been revoked.",
+      "id": "ob9erx6qcvqia7j5lw91l",
+      "createdAt": 1774624222029
+    }
+  ],
+  "snapshotId": "rvlkkuif98khdhl2zea5j"
+}
