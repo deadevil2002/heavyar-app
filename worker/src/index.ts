@@ -6,6 +6,7 @@ export interface Env {
   CLOUDINARY_UPLOAD_PRESET: string;
   TAP_SECRET_KEY_TEST: string;
   RESEND_API_KEY: string;
+  RESEND_FROM_EMAIL?: string;
 }
 
 interface OtpStore {
@@ -257,7 +258,8 @@ async function handleSendEmailOtp(request: Request, env: Env): Promise<Response>
     }
 
     if (!env.RESEND_API_KEY) {
-      return jsonResponse({ success: false, error: 'Email service not configured' }, 500);
+      console.error('RESEND_API_KEY is not configured');
+      return jsonResponse({ success: false, error: 'Email service not configured', errorCode: 'SERVICE_ERROR' }, 500);
     }
 
     cleanExpiredOtps();
@@ -268,6 +270,11 @@ async function handleSendEmailOtp(request: Request, env: Env): Promise<Response>
 
     otpStore.set(email, { code: otp, expiresAt });
 
+    const senderEmail = env.RESEND_FROM_EMAIL || 'onboarding@resend.dev';
+    const senderName = 'Heavyar';
+
+    console.log('Sending OTP email via Resend to:', email, 'from:', `${senderName} <${senderEmail}>`);
+
     const resendResponse = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -275,34 +282,42 @@ async function handleSendEmailOtp(request: Request, env: Env): Promise<Response>
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'Heavyar <noreply@heavyar.app>',
+        from: `${senderName} <${senderEmail}>`,
         to: [email],
-        subject: 'Heavyar - رمز التحقق / Verification Code',
+        subject: 'Heavyar - Verification Code',
         html: `<div dir="rtl" style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0B1A2F; color: #fff; border-radius: 16px;">
           <div style="text-align: center; margin-bottom: 24px;">
-            <h1 style="color: #D4A843; margin: 0;">هيفيار - Heavyar</h1>
-            <p style="color: #8BA3C7; margin: 8px 0 0;">منصة تأجير المعدات الثقيلة</p>
+            <h1 style="color: #D4A843; margin: 0;">Heavyar</h1>
+            <p style="color: #8BA3C7; margin: 8px 0 0;">Heavy Equipment Rental Marketplace</p>
           </div>
           <div style="background: #132744; border-radius: 12px; padding: 24px; text-align: center;">
-            <p style="color: #8BA3C7; margin: 0 0 12px;">رمز التحقق الخاص بك / Your verification code</p>
+            <p style="color: #8BA3C7; margin: 0 0 12px;">Your verification code</p>
             <div style="font-size: 36px; font-weight: bold; color: #D4A843; letter-spacing: 8px; padding: 16px;">${otp}</div>
-            <p style="color: #5A7A9F; margin: 12px 0 0; font-size: 13px;">صالح لمدة 10 دقائق / Valid for 10 minutes</p>
+            <p style="color: #5A7A9F; margin: 12px 0 0; font-size: 13px;">Valid for 10 minutes</p>
           </div>
-          <p style="color: #5A7A9F; text-align: center; margin: 16px 0 0; font-size: 12px;">إذا لم تطلب هذا الرمز، تجاهل هذا البريد<br/>If you didn't request this code, ignore this email</p>
+          <p style="color: #5A7A9F; text-align: center; margin: 16px 0 0; font-size: 12px;">If you didn't request this code, ignore this email</p>
         </div>`,
       }),
     });
 
     if (!resendResponse.ok) {
       const errData = await resendResponse.text();
-      console.error('Resend error:', errData);
-      return jsonResponse({ success: false, error: 'Failed to send verification email' }, 500);
+      console.error('Resend API error:', resendResponse.status, errData);
+      let errorDetail = 'Failed to send verification email';
+      try {
+        const errJson = JSON.parse(errData) as { message?: string };
+        if (errJson.message) {
+          errorDetail = errJson.message;
+        }
+      } catch { /* ignore parse error */ }
+      return jsonResponse({ success: false, error: errorDetail, errorCode: 'EMAIL_SEND_FAILED' }, 500);
     }
 
+    console.log('OTP email sent successfully to:', email);
     return jsonResponse({ success: true, message: 'OTP sent successfully' });
   } catch (error) {
     console.error('Send OTP error:', error);
-    return jsonResponse({ success: false, error: 'Failed to send OTP' }, 500);
+    return jsonResponse({ success: false, error: 'Failed to send OTP', errorCode: 'SERVICE_ERROR' }, 500);
   }
 }
 

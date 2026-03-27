@@ -73,14 +73,23 @@ export default function RegisterScreen() {
     setSendingOtp(true);
     try {
       const result = await sendEmailOtp(email.trim());
+      console.log('[Register] OTP send result:', JSON.stringify(result));
       if (result.success) {
         setOtpSent(true);
         showDialog(t('success'), t('otp_sent'), [{ text: t('ok'), style: 'default' }]);
       } else {
-        showDialog(t('error_title'), result.error || t('unexpected_error'), [{ text: t('ok'), style: 'default' }]);
+        let errorMsg = t('otp_send_failed');
+        if (result.errorCode === 'NETWORK_ERROR') {
+          errorMsg = t('network_error');
+        } else if (result.errorCode === 'INVALID_EMAIL') {
+          errorMsg = t('invalid_email');
+        } else if (result.errorCode === 'SERVICE_ERROR') {
+          errorMsg = t('otp_service_error');
+        }
+        showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
       }
     } catch {
-      showDialog(t('error_title'), t('unexpected_error'), [{ text: t('ok'), style: 'default' }]);
+      showDialog(t('error_title'), t('network_error'), [{ text: t('ok'), style: 'default' }]);
     } finally {
       setSendingOtp(false);
     }
