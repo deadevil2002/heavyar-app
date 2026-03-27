@@ -1,8 +1,8 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown } from 'lucide-react-native';
+import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -10,6 +10,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionById, findRegionByCityId } from '@/mocks/saudiRegions';
+import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloudinaryService';
 
 export default function ProfileScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -28,6 +29,45 @@ export default function ProfileScreen() {
   const [showCityPicker, setShowCityPicker] = useState<boolean>(false);
   const [citySearch, setCitySearch] = useState<string>('');
   const [saving, setSaving] = useState<boolean>(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState<boolean>(false);
+
+  const handleAvatarPick = useCallback(async () => {
+    if (!user) return;
+    try {
+      const ImagePicker = await import('expo-image-picker');
+      if (Platform.OS !== 'web') {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+          showDialog(t('gallery_permission_required'), t('gallery_permission_message'), [{ text: t('ok'), style: 'default' }]);
+          return;
+        }
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+
+      setUploadingAvatar(true);
+      try {
+        if (user.avatarPublicId) {
+          await deleteCloudinaryImage(user.avatarPublicId);
+        }
+        const uploaded = await uploadImageToCloudinary(result.assets[0].uri);
+        await updateProfile({ avatar: uploaded.url, avatarPublicId: uploaded.publicId });
+        showDialog(t('success'), t('avatar_updated'), [{ text: t('ok'), style: 'default' }]);
+      } catch (e) {
+        console.log('[Profile] Avatar upload error:', e);
+        showDialog(t('error_title'), t('avatar_update_failed'), [{ text: t('ok'), style: 'default' }]);
+      } finally {
+        setUploadingAvatar(false);
+      }
+    } catch (e) {
+      console.log('[Profile] Image picker error:', e);
+    }
+  }, [user, updateProfile, t, showDialog]);
 
   const handleLogin = useCallback(() => {
     router.push('/login');
@@ -147,7 +187,16 @@ export default function ProfileScreen() {
 
           <View style={styles.profileCard}>
             <View style={[styles.profileHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Image source={{ uri: user.avatar }} style={styles.avatar} contentFit="cover" />
+              <Pressable onPress={handleAvatarPick} disabled={uploadingAvatar}>
+                <Image source={{ uri: user.avatar || undefined }} style={styles.avatar} contentFit="cover" />
+                <View style={styles.avatarBadge}>
+                  {uploadingAvatar ? (
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                  ) : (
+                    <Camera size={14} color={Colors.primary} />
+                  )}
+                </View>
+              </Pressable>
               <View style={[styles.profileInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
                 <View style={[styles.nameRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                   <Text style={styles.name}>{userName}</Text>
@@ -473,6 +522,19 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 2,
     borderColor: Colors.gold,
+  },
+  avatarBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: Colors.gold,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: Colors.card,
   },
   profileInfo: {
     flex: 1,

@@ -9,6 +9,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import LanguageSelector from '@/components/LanguageSelector';
 
 export default function LoginScreen() {
   const { isRTL, t } = useLanguage();
@@ -46,6 +47,9 @@ export default function LoginScreen() {
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             <View style={styles.brandSection}>
+              <View style={styles.langRow}>
+                <LanguageSelector />
+              </View>
               <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
               <Text style={styles.appName}>{t('app_name')}</Text>
               <Text style={styles.tagline}>{t('heavyar_tagline')}</Text>
@@ -142,7 +146,8 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
   scrollContent: { flexGrow: 1, paddingHorizontal: 24, paddingBottom: 40 },
-  brandSection: { alignItems: 'center', paddingTop: 40, paddingBottom: 32 },
+  langRow: { alignSelf: 'flex-end', marginBottom: 12 },
+  brandSection: { alignItems: 'center', paddingTop: 20, paddingBottom: 32 },
   logo: { width: 88, height: 88, borderRadius: 22, marginBottom: 16 },
   appName: { fontSize: 30, fontWeight: '800' as const, color: Colors.gold },
   tagline: { fontSize: 14, color: Colors.textSecondary, marginTop: 4 },
