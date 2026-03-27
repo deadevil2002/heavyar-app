@@ -110,15 +110,38 @@ function parseRating(id: string, data: Record<string, unknown>): Rating {
 export async function fetchEquipmentList(): Promise<Equipment[]> {
   const db = getFirebaseDb();
   console.log('[Firestore] Fetching equipment list');
-  const q = query(
-    collection(db, 'equipment'),
-    where('isActive', '==', true),
-    orderBy('createdAt', 'desc')
-  );
-  const snap = await getDocs(q);
-  const items = snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
-  console.log('[Firestore] Fetched', items.length, 'equipment items');
-  return items;
+  try {
+    const q = query(
+      collection(db, 'equipment'),
+      where('isActive', '==', true),
+      orderBy('createdAt', 'desc')
+    );
+    const snap = await getDocs(q);
+    const items = snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
+    console.log('[Firestore] Fetched', items.length, 'equipment items (indexed)');
+    return items;
+  } catch (indexError: unknown) {
+    console.warn('[Firestore] Indexed query failed, falling back to simple query:', indexError);
+    try {
+      const fallbackQ = query(
+        collection(db, 'equipment'),
+        where('isActive', '==', true)
+      );
+      const fallbackSnap = await getDocs(fallbackQ);
+      console.log('[Firestore] Fallback fetched', fallbackSnap.docs.length, 'equipment items');
+      const items = fallbackSnap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
+      items.sort((a, b) => {
+        if (!a.createdAt && !b.createdAt) return 0;
+        if (!a.createdAt) return 1;
+        if (!b.createdAt) return -1;
+        return b.createdAt.localeCompare(a.createdAt);
+      });
+      return items;
+    } catch (fallbackError) {
+      console.error('[Firestore] fetchEquipmentList fallback also failed:', fallbackError);
+      throw fallbackError;
+    }
+  }
 }
 
 export async function fetchEquipmentById(id: string): Promise<Equipment | null> {

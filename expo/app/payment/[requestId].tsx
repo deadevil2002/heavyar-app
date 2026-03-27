@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, CreditCard, Lock, Shield } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -7,6 +7,8 @@ import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { fetchRequestById, updatePaymentStatus } from '@/services/firestoreService';
 import { EquipmentRequest } from '@/types';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 
 export default function PaymentScreen() {
   const { requestId } = useLocalSearchParams<{ requestId: string }>();
@@ -17,6 +19,7 @@ export default function PaymentScreen() {
   const [cvv, setCvv] = useState<string>('');
   const [cardHolder, setCardHolder] = useState<string>('');
   const [processing, setProcessing] = useState<boolean>(false);
+  const { dialog, showDialog, hideDialog } = useAppDialog();
 
   const [request, setRequest] = useState<EquipmentRequest | null>(null);
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
@@ -38,7 +41,7 @@ export default function PaymentScreen() {
 
   const handlePay = useCallback(async () => {
     if (!cardNumber || !expiry || !cvv || !cardHolder || !requestId) {
-      Alert.alert(t('error_occurred'), t('try_again'));
+      showDialog(t('error_title'), t('error_generic_message'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     setProcessing(true);
@@ -48,15 +51,15 @@ export default function PaymentScreen() {
       const mockPaymentId = `tap_${Date.now()}`;
       await updatePaymentStatus(requestId, 'paid', mockPaymentId);
       setProcessing(false);
-      Alert.alert(t('payment_success'), '', [
-        { text: t('confirm'), onPress: () => router.back() },
+      showDialog(t('payment_success'), '', [
+        { text: t('confirm'), style: 'default', onPress: () => router.back() },
       ]);
     } catch (e) {
-      console.log('[Payment] Error:', e);
+      console.error('[Payment] Error:', e);
       setProcessing(false);
-      Alert.alert(t('error_occurred'), t('try_again'));
+      showDialog(t('error_title'), t('error_generic_message'), [{ text: t('ok'), style: 'default' }]);
     }
-  }, [cardNumber, expiry, cvv, cardHolder, requestId, t, router]);
+  }, [cardNumber, expiry, cvv, cardHolder, requestId, t, router, showDialog]);
 
   if (!request) {
     return (
@@ -164,6 +167,14 @@ export default function PaymentScreen() {
           </Pressable>
         </ScrollView>
       </SafeAreaView>
+
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }

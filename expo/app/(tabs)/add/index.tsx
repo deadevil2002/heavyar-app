@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Camera, X, ChevronDown, Upload } from 'lucide-react-native';
@@ -10,10 +10,13 @@ import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
 import { createEquipment } from '@/services/firestoreService';
 import { uploadMultipleImages, CloudinaryImage } from '@/services/cloudinaryService';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 
 export default function CreateListingScreen() {
   const { isRTL, t, localizedText } = useLanguage();
   const { user } = useAuth();
+  const { dialog, showDialog, hideDialog } = useAppDialog();
   const [titleAr, setTitleAr] = useState<string>('');
   const [titleEn, setTitleEn] = useState<string>('');
   const [descAr, setDescAr] = useState<string>('');
@@ -49,24 +52,24 @@ export default function CreateListingScreen() {
     if (!user) return;
 
     if (!titleAr.trim()) {
-      Alert.alert(t('validation_error'), t('validation_title_ar_required'));
+      showDialog(t('validation_error'), t('validation_title_ar_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (!category) {
-      Alert.alert(t('validation_error'), t('validation_category_required'));
+      showDialog(t('validation_error'), t('validation_category_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (!city) {
-      Alert.alert(t('validation_error'), t('validation_city_required'));
+      showDialog(t('validation_error'), t('validation_city_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     const parsedPrice = parseFloat(price);
     if (!price.trim() || isNaN(parsedPrice) || parsedPrice <= 0) {
-      Alert.alert(t('validation_error'), t('validation_price_required'));
+      showDialog(t('validation_error'), t('validation_price_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (images.length === 0) {
-      Alert.alert(t('validation_error'), t('validation_images_required'));
+      showDialog(t('validation_error'), t('validation_images_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     setPublishing(true);
@@ -100,7 +103,7 @@ export default function CreateListingScreen() {
         availability: true,
         isActive: true,
       });
-      Alert.alert(t('success'), '', [{ text: t('confirm') }]);
+      showDialog(t('success'), '', [{ text: t('confirm'), style: 'default' }]);
       setTitleAr('');
       setTitleEn('');
       setDescAr('');
@@ -113,13 +116,13 @@ export default function CreateListingScreen() {
     } catch (e) {
       console.error('[CreateListing] Error:', e);
       const message = e instanceof Error ? e.message : t('unexpected_error');
-      Alert.alert(t('error_occurred'), message);
+      showDialog(t('error_title'), message, [{ text: t('ok'), style: 'default' }]);
     } finally {
       setPublishing(false);
       setUploading(false);
       setUploadProgress('');
     }
-  }, [titleAr, titleEn, descAr, descEn, category, city, district, price, images, user, t]);
+  }, [titleAr, titleEn, descAr, descEn, category, city, district, price, images, user, t, showDialog]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
   const selectedCity = mockCities.find(c => c.id === city);
@@ -302,6 +305,14 @@ export default function CreateListingScreen() {
           <View style={styles.bottomPadding} />
         </ScrollView>
       </SafeAreaView>
+
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }

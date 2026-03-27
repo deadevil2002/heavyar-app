@@ -6,7 +6,6 @@ import {
   ScrollView,
   TextInput,
   Pressable,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -22,12 +21,15 @@ import { fetchEquipmentById, updateEquipmentWithImageCleanup } from '@/services/
 import { uploadMultipleImages } from '@/services/cloudinaryService';
 import { getImageUrl } from '@/utils/imageHelpers';
 import { Equipment, EquipmentImage } from '@/types';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 
 export default function EditEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
+  const { dialog, showDialog, hideDialog } = useAppDialog();
 
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
@@ -60,15 +62,15 @@ export default function EditEquipmentScreen() {
         const eq = await fetchEquipmentById(id);
         if (!mounted) return;
         if (!eq) {
-          Alert.alert(t('error_occurred'), t('load_failed'), [
-            { text: t('confirm'), onPress: () => router.back() },
+          showDialog(t('error_title'), t('load_failed'), [
+            { text: t('confirm'), style: 'default', onPress: () => router.back() },
           ]);
           return;
         }
         if (user && eq.ownerUid !== user.uid) {
           console.log('[EditEquipment] Not owner, going back');
-          Alert.alert(t('error_occurred'), '', [
-            { text: t('confirm'), onPress: () => router.back() },
+          showDialog(t('error_title'), t('error_generic_message'), [
+            { text: t('confirm'), style: 'default', onPress: () => router.back() },
           ]);
           return;
         }
@@ -87,8 +89,8 @@ export default function EditEquipmentScreen() {
       } catch (e) {
         console.log('[EditEquipment] Load error:', e);
         if (mounted) {
-          Alert.alert(t('error_occurred'), t('load_failed'), [
-            { text: t('confirm'), onPress: () => router.back() },
+          showDialog(t('error_title'), t('load_failed'), [
+            { text: t('confirm'), style: 'default', onPress: () => router.back() },
           ]);
         }
       } finally {
@@ -97,7 +99,7 @@ export default function EditEquipmentScreen() {
     };
     void load();
     return () => { mounted = false; };
-  }, [id, user, t, router]);
+  }, [id, user, t, router, showDialog]);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
@@ -124,24 +126,24 @@ export default function EditEquipmentScreen() {
     if (!id || !originalEquipment || !user) return;
 
     if (!titleAr.trim()) {
-      Alert.alert(t('validation_error'), t('validation_title_ar_required'));
+      showDialog(t('validation_error'), t('validation_title_ar_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (!category) {
-      Alert.alert(t('validation_error'), t('validation_category_required'));
+      showDialog(t('validation_error'), t('validation_category_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (!city) {
-      Alert.alert(t('validation_error'), t('validation_city_required'));
+      showDialog(t('validation_error'), t('validation_city_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     const parsedPrice = parseFloat(price);
     if (!price.trim() || isNaN(parsedPrice) || parsedPrice <= 0) {
-      Alert.alert(t('validation_error'), t('validation_price_required'));
+      showDialog(t('validation_error'), t('validation_price_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (existingImages.length === 0 && newImageUris.length === 0) {
-      Alert.alert(t('validation_error'), t('validation_images_required'));
+      showDialog(t('validation_error'), t('validation_images_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
 
@@ -184,18 +186,18 @@ export default function EditEquipmentScreen() {
       );
 
       console.log('[EditEquipment] Save successful');
-      Alert.alert(t('success'), t('update_success'), [
-        { text: t('confirm'), onPress: () => router.back() },
+      showDialog(t('success'), t('update_success'), [
+        { text: t('confirm'), style: 'default', onPress: () => router.back() },
       ]);
     } catch (e) {
       console.error('[EditEquipment] Save error:', e);
       const message = e instanceof Error ? e.message : t('unexpected_error');
-      Alert.alert(t('error_occurred'), message);
+      showDialog(t('error_title'), message, [{ text: t('ok'), style: 'default' }]);
     } finally {
       setSaving(false);
       setUploadProgress('');
     }
-  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, city, district, price, existingImages, newImageUris, oldImages, t, router]);
+  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, city, district, price, existingImages, newImageUris, oldImages, t, router, showDialog]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
   const selectedCity = mockCities.find(c => c.id === city);
@@ -426,6 +428,14 @@ export default function EditEquipmentScreen() {
           <View style={styles.bottomPadding} />
         </ScrollView>
       </SafeAreaView>
+
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }

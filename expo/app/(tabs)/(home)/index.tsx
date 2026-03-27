@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Animated } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Animated, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Search, Bell, ChevronLeft, ChevronRight } from 'lucide-react-native';
@@ -12,6 +12,7 @@ import { fetchEquipmentList } from '@/services/firestoreService';
 import { Equipment } from '@/types';
 import EquipmentCard from '@/components/EquipmentCard';
 import CategoryCard from '@/components/CategoryCard';
+import EmptyState from '@/components/EmptyState';
 
 export default function HomeScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -19,27 +20,29 @@ export default function HomeScreen() {
   const router = useRouter();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [equipmentList, setEquipmentList] = useState<Equipment[]>([]);
-  const [_loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(true);
   const scrollAnim = useRef(new Animated.Value(0)).current;
 
-  useEffect(() => {
-    let mounted = true;
-    const load = async () => {
-      try {
-        const items = await fetchEquipmentList();
-        if (mounted) setEquipmentList(items);
-      } catch (e) {
-        console.log('[Home] Error fetching equipment:', e);
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    };
-    void load();
-    return () => { mounted = false; };
+  const loadEquipment = useCallback(async () => {
+    setLoading(true);
+    try {
+      console.log('[Home] Fetching public equipment list...');
+      const items = await fetchEquipmentList();
+      console.log('[Home] Fetched', items.length, 'active equipment items');
+      setEquipmentList(items);
+    } catch (e) {
+      console.error('[Home] Error fetching equipment:', e);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const featuredEquipment = equipmentList.filter(e => e.availability && e.isActive).slice(0, 5);
-  const recentEquipment = equipmentList.filter(e => e.isActive).slice(0, 6);
+  useEffect(() => {
+    void loadEquipment();
+  }, [loadEquipment]);
+
+  const featuredEquipment = equipmentList.filter(e => e.availability).slice(0, 5);
+  const recentEquipment = equipmentList.slice(0, 10);
 
   const handleCategoryPress = useCallback((categoryId: string) => {
     setSelectedCategory(prev => prev === categoryId ? null : categoryId);
@@ -98,33 +101,50 @@ export default function HomeScreen() {
             </ScrollView>
           </View>
 
-          <View style={styles.section}>
-            <View style={[styles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Text style={styles.sectionTitle}>{t('featured')}</Text>
-              <Pressable onPress={handleSearch}>
-                <View style={[styles.seeAllRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                  <Text style={styles.seeAll}>{t('see_all')}</Text>
-                  {isRTL ? <ChevronLeft size={16} color={Colors.gold} /> : <ChevronRight size={16} color={Colors.gold} />}
+          {loading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={Colors.gold} />
+            </View>
+          ) : equipmentList.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <EmptyState title={t('no_equipment')} />
+            </View>
+          ) : (
+            <>
+              {featuredEquipment.length > 0 && (
+                <View style={styles.section}>
+                  <View style={[styles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                    <Text style={styles.sectionTitle}>{t('featured')}</Text>
+                    <Pressable onPress={handleSearch}>
+                      <View style={[styles.seeAllRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                        <Text style={styles.seeAll}>{t('see_all')}</Text>
+                        {isRTL ? <ChevronLeft size={16} color={Colors.gold} /> : <ChevronRight size={16} color={Colors.gold} />}
+                      </View>
+                    </Pressable>
+                  </View>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.featuredScroll}>
+                    {featuredEquipment.map(eq => (
+                      <EquipmentCard key={eq.id} equipment={eq} compact />
+                    ))}
+                  </ScrollView>
                 </View>
-              </Pressable>
-            </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.featuredScroll}>
-              {featuredEquipment.map(eq => (
-                <EquipmentCard key={eq.id} equipment={eq} compact />
-              ))}
-            </ScrollView>
-          </View>
+              )}
 
-          <View style={styles.section}>
-            <View style={[styles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Text style={styles.sectionTitle}>{t('recent')}</Text>
-            </View>
-            <View style={styles.recentList}>
-              {recentEquipment.map(eq => (
-                <EquipmentCard key={eq.id} equipment={eq} />
-              ))}
-            </View>
-          </View>
+              <View style={styles.section}>
+                <View style={[styles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  <Text style={styles.sectionTitle}>{t('recent')}</Text>
+                  <Pressable onPress={handleSearch}>
+                    <Text style={styles.seeAll}>{t('see_all')}</Text>
+                  </Pressable>
+                </View>
+                <View style={styles.recentList}>
+                  {recentEquipment.map(eq => (
+                    <EquipmentCard key={eq.id} equipment={eq} />
+                  ))}
+                </View>
+              </View>
+            </>
+          )}
 
           <View style={styles.bottomPadding} />
         </Animated.ScrollView>
@@ -239,5 +259,13 @@ const styles = StyleSheet.create({
   },
   bottomPadding: {
     height: 20,
+  },
+  loadingContainer: {
+    paddingTop: 60,
+    alignItems: 'center',
+  },
+  emptyContainer: {
+    paddingTop: 40,
+    paddingHorizontal: 20,
   },
 });

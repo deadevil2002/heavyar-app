@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { ArrowLeft, ArrowRight, Plus, Edit3, Trash2, Eye, EyeOff } from 'lucide-react-native';
@@ -9,6 +9,8 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchEquipmentByOwner, deleteEquipmentWithCleanup } from '@/services/firestoreService';
 import EmptyState from '@/components/EmptyState';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 import { Equipment } from '@/types';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 
@@ -22,6 +24,7 @@ export default function MyEquipmentScreen() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const { dialog, showDialog, hideDialog } = useAppDialog();
 
   useEffect(() => {
     let mounted = true;
@@ -50,28 +53,37 @@ export default function MyEquipmentScreen() {
     void load();
     return () => { mounted = false; };
   }, [currentUid]);
+
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
   const handleDelete = useCallback((item: Equipment) => {
     const title = localizedText(item.titleAr, item.titleEn);
-    Alert.alert(
-      t('confirm_delete'),
-      `${title}\n\n${t('confirm_delete_equipment')}`,
+    showDialog(
+      t('delete_equipment_title'),
+      `${title}\n\n${t('delete_equipment_message')}`,
       [
         { text: t('cancel'), style: 'cancel' },
         {
           text: t('delete'),
-          style: 'destructive',
+          style: 'danger',
           onPress: async () => {
             setDeletingId(item.id);
             try {
               console.log('[MyEquipment] Deleting equipment:', item.id);
               await deleteEquipmentWithCleanup(item.id);
               setMyEquipment(prev => prev.filter(e => e.id !== item.id));
-              Alert.alert(t('success'), t('delete_success'));
+              showDialog(
+                t('success'),
+                t('delete_success'),
+                [{ text: t('ok'), style: 'default' }]
+              );
             } catch (e) {
-              console.log('[MyEquipment] Delete error:', e);
-              Alert.alert(t('error_occurred'), t('delete_failed'));
+              console.error('[MyEquipment] Delete error:', e);
+              showDialog(
+                t('error_title'),
+                t('delete_failed'),
+                [{ text: t('ok'), style: 'default' }]
+              );
             } finally {
               setDeletingId(null);
             }
@@ -79,7 +91,7 @@ export default function MyEquipmentScreen() {
         },
       ]
     );
-  }, [t, localizedText]);
+  }, [t, localizedText, showDialog]);
 
   const renderItem = useCallback(({ item }: { item: Equipment }) => {
     const title = localizedText(item.titleAr, item.titleEn);
@@ -149,6 +161,14 @@ export default function MyEquipmentScreen() {
           />
         )}
       </SafeAreaView>
+
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }

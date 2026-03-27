@@ -1,15 +1,18 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Switch, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, Globe, Bell, Info, FileText, HelpCircle, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 
 export default function SettingsScreen() {
   const { isRTL, t, language, setLanguage } = useLanguage();
   const router = useRouter();
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(true);
+  const { dialog, showDialog, hideDialog } = useAppDialog();
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
@@ -17,11 +20,12 @@ export default function SettingsScreen() {
   const handleLanguageSwitch = useCallback(async () => {
     const newLang = language === 'ar' ? 'en' : 'ar';
     await setLanguage(newLang);
-    Alert.alert(
+    showDialog(
       newLang === 'ar' ? 'تم تغيير اللغة' : 'Language Changed',
-      t('change_language_restart')
+      t('change_language_restart'),
+      [{ text: t('ok'), style: 'default' }]
     );
-  }, [language, setLanguage, t]);
+  }, [language, setLanguage, t, showDialog]);
 
   return (
     <View style={styles.container}>
@@ -108,6 +112,14 @@ export default function SettingsScreen() {
           </View>
         </ScrollView>
       </SafeAreaView>
+
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }

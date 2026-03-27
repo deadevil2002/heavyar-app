@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, Pressable, Alert } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight } from 'lucide-react-native';
 import { Image } from 'expo-image';
@@ -10,6 +10,8 @@ import { fetchRequestById, fetchUserById, submitRating } from '@/services/firest
 import { useAuth } from '@/contexts/AuthContext';
 import { EquipmentRequest, User } from '@/types';
 import RatingStars from '@/components/RatingStars';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 
 export default function RatingScreen() {
   const { requestId } = useLocalSearchParams<{ requestId: string }>();
@@ -21,6 +23,7 @@ export default function RatingScreen() {
   const [request, setRequest] = useState<EquipmentRequest | null>(null);
   const [provider, setProvider] = useState<User | null>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const { dialog, showDialog, hideDialog } = useAppDialog();
 
   useEffect(() => {
     let mounted = true;
@@ -57,16 +60,16 @@ export default function RatingScreen() {
         stars: rating,
         comment: review,
       });
-      Alert.alert(t('success'), '', [
-        { text: t('confirm'), onPress: () => router.back() },
+      showDialog(t('success'), '', [
+        { text: t('confirm'), style: 'default', onPress: () => router.back() },
       ]);
     } catch (e) {
-      console.log('[Rating] Submit error:', e);
-      Alert.alert(t('error_occurred'), t('try_again'));
+      console.error('[Rating] Submit error:', e);
+      showDialog(t('error_title'), t('error_generic_message'), [{ text: t('ok'), style: 'default' }]);
     } finally {
       setSubmitting(false);
     }
-  }, [rating, review, request, currentUser, submitting, t, router]);
+  }, [rating, review, request, currentUser, submitting, t, router, showDialog]);
 
   return (
     <View style={styles.container}>
@@ -110,6 +113,14 @@ export default function RatingScreen() {
           </Pressable>
         </View>
       </SafeAreaView>
+
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }

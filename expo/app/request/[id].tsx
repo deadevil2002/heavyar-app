@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { ArrowLeft, ArrowRight, MessageCircle, CreditCard, Star, Calendar } from 'lucide-react-native';
@@ -10,6 +10,9 @@ import { useAuth } from '@/contexts/AuthContext';
 import { subscribeToRequest, fetchEquipmentById, fetchUserById, updateRequestStatus } from '@/services/firestoreService';
 import { Equipment, User, EquipmentRequest } from '@/types';
 import StatusBadge from '@/components/StatusBadge';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
+import { getFirstImageUrl } from '@/utils/imageHelpers';
 
 export default function RequestDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -22,6 +25,7 @@ export default function RequestDetailScreen() {
   const [otherUserData, setOtherUserData] = useState<User | null>(null);
   const [_loading, setLoading] = useState<boolean>(true);
   const currentUid = user?.uid || '';
+  const { dialog, showDialog, hideDialog } = useAppDialog();
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
@@ -67,10 +71,11 @@ export default function RequestDetailScreen() {
   const canComplete = isProvider && request.status === 'in_progress';
 
   const handleAction = (action: string) => {
-    Alert.alert(t('confirm'), '', [
+    showDialog(t('confirm'), '', [
       { text: t('cancel'), style: 'cancel' },
       {
         text: t('confirm'),
+        style: 'default',
         onPress: async () => {
           try {
             let newStatus: EquipmentRequest['status'] = 'pending';
@@ -81,8 +86,8 @@ export default function RequestDetailScreen() {
             await updateRequestStatus(request.id, newStatus, currentUid);
             console.log('[RequestDetail] Status updated to:', newStatus);
           } catch (e) {
-            console.log('[RequestDetail] Action error:', e);
-            Alert.alert(t('error_occurred'), t('try_again'));
+            console.error('[RequestDetail] Action error:', e);
+            showDialog(t('error_title'), t('error_generic_message'), [{ text: t('ok'), style: 'default' }]);
           }
         },
       },
@@ -106,7 +111,7 @@ export default function RequestDetailScreen() {
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <View style={[styles.equipmentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-            <Image source={{ uri: equipment.images[0] }} style={styles.equipmentImage} contentFit="cover" />
+            <Image source={{ uri: getFirstImageUrl(equipment.images) }} style={styles.equipmentImage} contentFit="cover" />
             <View style={[styles.equipmentInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
               <Text style={[styles.equipmentTitle, { textAlign: isRTL ? 'right' : 'left' }]} numberOfLines={2}>{title}</Text>
               <StatusBadge status={request.status} />
@@ -215,6 +220,14 @@ export default function RequestDetailScreen() {
           <View style={{ height: 40 }} />
         </ScrollView>
       </SafeAreaView>
+
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }

@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { ArrowLeft, ArrowRight, MapPin, Star, Calendar, Shield, Share2, Heart } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, MapPin, Star, Calendar, Shield, Share2, Heart, Lock } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -11,13 +11,15 @@ import { mockCategories, mockCities } from '@/mocks/categories';
 import { fetchEquipmentById, fetchUserById, createRequest } from '@/services/firestoreService';
 import { Equipment, User } from '@/types';
 import { getImageUrl } from '@/utils/imageHelpers';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function EquipmentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { isRTL, t, localizedText } = useLanguage();
-  const { user: currentUser } = useAuth();
+  const { user: currentUser, isAuthenticated } = useAuth();
   const router = useRouter();
   const [currentImage, setCurrentImage] = useState<number>(0);
   const [liked, setLiked] = useState<boolean>(false);
@@ -25,6 +27,7 @@ export default function EquipmentDetailScreen() {
   const [owner, setOwner] = useState<User | null>(null);
   const [_loading, setLoading] = useState<boolean>(true);
   const scrollRef = useRef<ScrollView>(null);
+  const { dialog, showDialog, hideDialog } = useAppDialog();
 
   useEffect(() => {
     let mounted = true;
@@ -46,6 +49,7 @@ export default function EquipmentDetailScreen() {
     void load();
     return () => { mounted = false; };
   }, [id]);
+
   const categoryObj = equipment ? mockCategories.find(c => c.id === equipment.category) : null;
   const cityObj = equipment ? mockCities.find(c => c.id === equipment.city) : null;
 
@@ -68,47 +72,90 @@ export default function EquipmentDetailScreen() {
   const ownerName = owner ? localizedText(owner.nameAr, owner.nameEn) : '';
 
   const handleRequestRental = () => {
-    if (!currentUser || !equipment) return;
-    if (currentUser.uid === equipment.ownerUid) {
-      Alert.alert(t('error_occurred'), 'Cannot request your own equipment');
+    if (!isAuthenticated || !currentUser) {
+      showDialog(
+        t('login_required'),
+        t('login_required_message'),
+        [
+          { text: t('cancel'), style: 'cancel' },
+          { text: t('go_to_login'), style: 'default', onPress: () => router.push('/login') },
+        ]
+      );
       return;
     }
-    Alert.alert(t('request_rental'), '', [
-      { text: t('cancel'), style: 'cancel' },
-      {
-        text: t('confirm'),
-        onPress: async () => {
-          try {
-            const days = 5;
-            const amount = equipment.pricePerDay * days;
-            const platformFee = Math.round(amount * 0.1);
-            await createRequest({
-              equipmentId: equipment.id,
-              customerUid: currentUser.uid,
-              providerUid: equipment.ownerUid,
-              status: 'pending',
-              startDate: new Date().toISOString(),
-              endDate: new Date(Date.now() + days * 86400000).toISOString(),
-              notes: '',
-              amount,
-              platformFee,
-              providerAmount: amount - platformFee,
-              paymentStatus: 'unpaid',
-              paymentId: '',
-              paidAt: null,
-              currency: 'SAR',
-              allowChat: false,
-            });
-            Alert.alert(t('success'), '', [
-              { text: t('confirm'), onPress: () => router.back() },
-            ]);
-          } catch (e) {
-            console.log('[EquipmentDetail] Request error:', e);
-            Alert.alert(t('error_occurred'), t('try_again'));
-          }
+
+    if (!equipment) return;
+
+    if (currentUser.uid === equipment.ownerUid) {
+      showDialog(
+        t('error_title'),
+        t('cannot_request_own'),
+        [{ text: t('ok'), style: 'default' }]
+      );
+      return;
+    }
+
+    showDialog(
+      t('request_rental'),
+      t('confirm'),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('confirm'),
+          style: 'default',
+          onPress: async () => {
+            try {
+              const days = 5;
+              const amount = equipment.pricePerDay * days;
+              const platformFee = Math.round(amount * 0.1);
+              await createRequest({
+                equipmentId: equipment.id,
+                customerUid: currentUser.uid,
+                providerUid: equipment.ownerUid,
+                status: 'pending',
+                startDate: new Date().toISOString(),
+                endDate: new Date(Date.now() + days * 86400000).toISOString(),
+                notes: '',
+                amount,
+                platformFee,
+                providerAmount: amount - platformFee,
+                paymentStatus: 'unpaid',
+                paymentId: '',
+                paidAt: null,
+                currency: 'SAR',
+                allowChat: false,
+              });
+              showDialog(
+                t('success'),
+                t('request_sent_success'),
+                [{ text: t('ok'), style: 'default', onPress: () => router.back() }]
+              );
+            } catch (e) {
+              console.error('[EquipmentDetail] Request error:', e);
+              showDialog(
+                t('error_title'),
+                t('error_generic_message'),
+                [{ text: t('ok'), style: 'default' }]
+              );
+            }
+          },
         },
-      },
-    ]);
+      ]
+    );
+  };
+
+  const handleContactProvider = () => {
+    if (!isAuthenticated) {
+      showDialog(
+        t('login_required'),
+        t('login_required_message'),
+        [
+          { text: t('cancel'), style: 'cancel' },
+          { text: t('go_to_login'), style: 'default', onPress: () => router.push('/login') },
+        ]
+      );
+      return;
+    }
   };
 
   return (
@@ -190,7 +237,7 @@ export default function EquipmentDetailScreen() {
           {owner && (
             <>
               <Text style={[styles.sectionTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('owner')}</Text>
-              <Pressable style={[styles.ownerCard, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <Pressable style={[styles.ownerCard, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={handleContactProvider}>
                 <Image source={{ uri: owner.avatar }} style={styles.ownerAvatar} contentFit="cover" />
                 <View style={[styles.ownerInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
                   <View style={[styles.ownerNameRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -205,6 +252,16 @@ export default function EquipmentDetailScreen() {
                 </View>
               </Pressable>
             </>
+          )}
+
+          {!isAuthenticated && (
+            <View style={styles.authBanner}>
+              <Lock size={18} color={Colors.gold} />
+              <Text style={styles.authBannerText}>{t('login_required_message')}</Text>
+              <Pressable style={styles.authBannerButton} onPress={() => router.push('/login')}>
+                <Text style={styles.authBannerButtonText}>{t('go_to_login')}</Text>
+              </Pressable>
+            </View>
           )}
 
           <View style={styles.bottomSpacer} />
@@ -227,6 +284,14 @@ export default function EquipmentDetailScreen() {
           </SafeAreaView>
         </View>
       )}
+
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }
@@ -433,6 +498,34 @@ const styles = StyleSheet.create({
   ownerEquipment: {
     fontSize: 12,
     color: Colors.textMuted,
+  },
+  authBanner: {
+    marginTop: 20,
+    backgroundColor: Colors.surface,
+    borderRadius: 16,
+    padding: 18,
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  authBannerText: {
+    color: Colors.textSecondary,
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  authBannerButton: {
+    backgroundColor: Colors.gold,
+    borderRadius: 12,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  authBannerButtonText: {
+    color: Colors.primary,
+    fontSize: 14,
+    fontWeight: '700' as const,
   },
   bottomSpacer: {
     height: 100,
