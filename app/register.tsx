@@ -83,7 +83,7 @@ export default function RegisterScreen() {
           errorMsg = t('network_error');
         } else if (result.errorCode === 'INVALID_EMAIL') {
           errorMsg = t('invalid_email');
-        } else if (result.errorCode === 'SERVICE_ERROR') {
+        } else if (result.errorCode === 'SERVICE_ERROR' || result.errorCode === 'EMAIL_SEND_FAILED') {
           errorMsg = t('otp_service_error');
         }
         showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
@@ -109,10 +109,12 @@ export default function RegisterScreen() {
         showDialog(t('success'), t('email_verified'), [{ text: t('ok'), style: 'default' }]);
       } else {
         const errorCode = result.errorCode;
-        let msg = result.error || t('otp_invalid');
+        let msg = t('otp_invalid');
         if (errorCode === 'OTP_EXPIRED') msg = t('otp_expired');
         else if (errorCode === 'OTP_INVALID') msg = t('otp_invalid');
         else if (errorCode === 'OTP_NOT_FOUND') msg = t('otp_expired');
+        else if (errorCode === 'OTP_REQUIRED') msg = t('otp_required');
+        else if (errorCode === 'NETWORK_ERROR') msg = t('network_error');
         showDialog(t('error_title'), msg, [{ text: t('ok'), style: 'default' }]);
       }
     } catch {

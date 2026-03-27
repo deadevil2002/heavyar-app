@@ -270,7 +270,7 @@ async function handleSendEmailOtp(request: Request, env: Env): Promise<Response>
 
     otpStore.set(email, { code: otp, expiresAt });
 
-    const senderEmail = env.RESEND_FROM_EMAIL || 'onboarding@resend.dev';
+    const senderEmail = env.RESEND_FROM_EMAIL || 'noreply@mail.heavyar.com';
     const senderName = 'Heavyar';
 
     console.log('Sending OTP email via Resend to:', email, 'from:', `${senderName} <${senderEmail}>`);
