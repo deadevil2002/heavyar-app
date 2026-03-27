@@ -1,0 +1,7 @@
+{
+  "id": "hib6ttbrqwh07xirds5a6",
+  "role": "user",
+  "content": "Inspect the current Heavyar payment/request flow and report the exact safest trigger point for invoice creation.\r\n\r\nDo NOT implement anything yet.\r\nDo NOT change code yet.\r\n\r\nI need a precise analysis of:\r\n\r\n1. What happens currently when a customer creates a request\r\n2. Whether there is an actual payment flow already implemented\r\n3. Whether Tap payment is already connected or only placeholder/incomplete\r\n4. Which exact event is the safest trigger for creating an invoice:\r\n   - request creation\r\n   - request acceptance\r\n   - payment success\r\n   - another event\r\n5. What request/payment statuses already exist in the code\r\n6. Whether the current structure is ready for:\r\n   - invoices collection\r\n   - paid/pending invoice states\r\n   - VAT calculation\r\n7. Any missing field that should be added to requests/payments to support invoices cleanly\r\n\r\nReturn:\r\n- exact current flow\r\n- exact files inspected\r\n- recommended invoice trigger\r\n- any missing pieces before Phase 3.8 + 3.9",
+  "attachments": [],
+  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
+}
