@@ -5,6 +5,34 @@ export interface Env {
   CLOUDINARY_FOLDER: string;
   CLOUDINARY_UPLOAD_PRESET: string;
   TAP_SECRET_KEY_TEST: string;
+  RESEND_API_KEY: string;
+}
+
+interface OtpStore {
+  code: string;
+  expiresAt: number;
+}
+
+const otpStore = new Map<string, OtpStore>();
+
+function generateOtp(): string {
+  const digits = '0123456789';
+  let otp = '';
+  const array = new Uint8Array(6);
+  crypto.getRandomValues(array);
+  for (let i = 0; i < 6; i++) {
+    otp += digits[array[i] % 10];
+  }
+  return otp;
+}
+
+function cleanExpiredOtps(): void {
+  const now = Date.now();
+  for (const [key, value] of otpStore.entries()) {
+    if (value.expiresAt < now) {
+      otpStore.delete(key);
+    }
+  }
 }
 
 const CORS_HEADERS: Record<string, string> = {
@@ -211,6 +239,105 @@ async function handleCloudinaryDelete(request: Request, env: Env): Promise<Respo
   }
 }
 
+interface SendOtpBody {
+  email: string;
+}
+
+interface VerifyOtpBody {
+  email: string;
+  code: string;
+}
+
+async function handleSendEmailOtp(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await request.json() as SendOtpBody;
+
+    if (!body.email || !body.email.includes('@')) {
+      return jsonResponse({ success: false, error: 'Valid email is required', errorCode: 'INVALID_EMAIL' }, 400);
+    }
+
+    if (!env.RESEND_API_KEY) {
+      return jsonResponse({ success: false, error: 'Email service not configured' }, 500);
+    }
+
+    cleanExpiredOtps();
+
+    const email = body.email.toLowerCase().trim();
+    const otp = generateOtp();
+    const expiresAt = Date.now() + 10 * 60 * 1000;
+
+    otpStore.set(email, { code: otp, expiresAt });
+
+    const resendResponse = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: 'Heavyar <noreply@heavyar.app>',
+        to: [email],
+        subject: 'Heavyar - رمز التحقق / Verification Code',
+        html: `<div dir="rtl" style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0B1A2F; color: #fff; border-radius: 16px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="color: #D4A843; margin: 0;">هيفيار - Heavyar</h1>
+            <p style="color: #8BA3C7; margin: 8px 0 0;">منصة تأجير المعدات الثقيلة</p>
+          </div>
+          <div style="background: #132744; border-radius: 12px; padding: 24px; text-align: center;">
+            <p style="color: #8BA3C7; margin: 0 0 12px;">رمز التحقق الخاص بك / Your verification code</p>
+            <div style="font-size: 36px; font-weight: bold; color: #D4A843; letter-spacing: 8px; padding: 16px;">${otp}</div>
+            <p style="color: #5A7A9F; margin: 12px 0 0; font-size: 13px;">صالح لمدة 10 دقائق / Valid for 10 minutes</p>
+          </div>
+          <p style="color: #5A7A9F; text-align: center; margin: 16px 0 0; font-size: 12px;">إذا لم تطلب هذا الرمز، تجاهل هذا البريد<br/>If you didn't request this code, ignore this email</p>
+        </div>`,
+      }),
+    });
+
+    if (!resendResponse.ok) {
+      const errData = await resendResponse.text();
+      console.error('Resend error:', errData);
+      return jsonResponse({ success: false, error: 'Failed to send verification email' }, 500);
+    }
+
+    return jsonResponse({ success: true, message: 'OTP sent successfully' });
+  } catch (error) {
+    console.error('Send OTP error:', error);
+    return jsonResponse({ success: false, error: 'Failed to send OTP' }, 500);
+  }
+}
+
+async function handleVerifyEmailOtp(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as VerifyOtpBody;
+
+    if (!body.email || !body.code) {
+      return jsonResponse({ success: false, error: 'Email and code are required', errorCode: 'OTP_REQUIRED' }, 400);
+    }
+
+    const email = body.email.toLowerCase().trim();
+    const stored = otpStore.get(email);
+
+    if (!stored) {
+      return jsonResponse({ success: false, error: 'No OTP found for this email. Please request a new code.', errorCode: 'OTP_NOT_FOUND' }, 400);
+    }
+
+    if (Date.now() > stored.expiresAt) {
+      otpStore.delete(email);
+      return jsonResponse({ success: false, error: 'OTP has expired. Please request a new code.', errorCode: 'OTP_EXPIRED' }, 400);
+    }
+
+    if (stored.code !== body.code.trim()) {
+      return jsonResponse({ success: false, error: 'Invalid OTP code.', errorCode: 'OTP_INVALID' }, 400);
+    }
+
+    otpStore.delete(email);
+    return jsonResponse({ success: true, verified: true });
+  } catch (error) {
+    console.error('Verify OTP error:', error);
+    return jsonResponse({ success: false, error: 'Failed to verify OTP' }, 500);
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -234,6 +361,14 @@ export default {
 
     if (url.pathname === '/api/verify-payment' && method === 'POST') {
       return handleVerifyPayment(request, env);
+    }
+
+    if (url.pathname === '/api/send-email-otp' && method === 'POST') {
+      return handleSendEmailOtp(request, env);
+    }
+
+    if (url.pathname === '/api/verify-email-otp' && method === 'POST') {
+      return handleVerifyEmailOtp(request);
     }
 
     return jsonResponse({ success: false, error: 'Not found' }, 404);
