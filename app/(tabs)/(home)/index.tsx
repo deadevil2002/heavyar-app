@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Animated, ActivityIndica
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Search, Bell, ChevronLeft, ChevronRight } from 'lucide-react-native';
+import LanguageSelector from '@/components/LanguageSelector';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -74,10 +75,13 @@ export default function HomeScreen() {
               <Text style={[styles.subtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('browse_equipment')}</Text>
             </View>
             <View style={[styles.headerActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Pressable style={styles.notifButton} onPress={handleNotifications}>
-                <Bell size={22} color={Colors.textPrimary} />
-                <View style={styles.notifDot} />
-              </Pressable>
+              {!isAuthenticated && <LanguageSelector />}
+              {isAuthenticated && (
+                <Pressable style={styles.notifButton} onPress={handleNotifications}>
+                  <Bell size={22} color={Colors.textPrimary} />
+                  <View style={styles.notifDot} />
+                </Pressable>
+              )}
               <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
             </View>
           </View>

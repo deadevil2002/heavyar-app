@@ -1,8 +1,9 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown } from 'lucide-react-native';
+import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera } from 'lucide-react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -10,6 +11,20 @@ import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionById, findRegionByCityId } from '@/mocks/saudiRegions';
+import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloudinaryService';
+import LanguageSelector from '@/components/LanguageSelector';
+
+function extractAvatarPublicId(url: string): string {
+  if (!url || !url.includes('cloudinary')) return '';
+  try {
+    const parts = url.split('/upload/');
+    if (parts.length < 2) return '';
+    const pathWithExt = parts[1].replace(/^v\d+\//, '');
+    return pathWithExt.replace(/\.[^.]+$/, '');
+  } catch {
+    return '';
+  }
+}
 
 export default function ProfileScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -28,6 +43,7 @@ export default function ProfileScreen() {
   const [showCityPicker, setShowCityPicker] = useState<boolean>(false);
   const [citySearch, setCitySearch] = useState<string>('');
   const [saving, setSaving] = useState<boolean>(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState<boolean>(false);
 
   const handleLogin = useCallback(() => {
     router.push('/login');
@@ -107,6 +123,44 @@ export default function ProfileScreen() {
     }
   }, [user, editName, editPhone, editRegion, editCity, editCustomCity, editCrNumber, updateProfile, t, showDialog]);
 
+  const handleAvatarPick = useCallback(async () => {
+    if (!user) return;
+    try {
+      if (Platform.OS !== 'web') {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+          showDialog(t('gallery_permission_required'), t('gallery_permission_message'), [{ text: t('ok'), style: 'default' }]);
+          return;
+        }
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+
+      setUploadingAvatar(true);
+      const uploaded = await uploadImageToCloudinary(result.assets[0].uri);
+
+      if (user.avatar) {
+        const oldPublicId = extractAvatarPublicId(user.avatar);
+        if (oldPublicId) {
+          void deleteCloudinaryImage(oldPublicId);
+        }
+      }
+
+      await updateProfile({ avatar: uploaded.url });
+      showDialog(t('success'), t('avatar_updated'), [{ text: t('ok'), style: 'default' }]);
+    } catch (e) {
+      console.log('[Profile] Avatar upload error:', e);
+      showDialog(t('error_title'), t('avatar_update_failed'), [{ text: t('ok'), style: 'default' }]);
+    } finally {
+      setUploadingAvatar(false);
+    }
+  }, [user, updateProfile, t, showDialog]);
+
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
 
   const menuItems = [
@@ -120,6 +174,9 @@ export default function ProfileScreen() {
       <View style={styles.container}>
         <SafeAreaView edges={['top']} style={styles.safeArea}>
           <View style={styles.loginContainer}>
+            <View style={styles.guestLangRow}>
+              <LanguageSelector />
+            </View>
             <Image source={require('@/assets/images/logo.png')} style={styles.loginLogo} contentFit="contain" />
             <Text style={styles.loginTitle}>{t('app_name')}</Text>
             <Text style={styles.loginSubtitle}>{t('browse_equipment')}</Text>
@@ -147,7 +204,16 @@ export default function ProfileScreen() {
 
           <View style={styles.profileCard}>
             <View style={[styles.profileHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Image source={{ uri: user.avatar }} style={styles.avatar} contentFit="cover" />
+              <Pressable onPress={handleAvatarPick} style={styles.avatarContainer}>
+                <Image source={{ uri: user.avatar || undefined }} style={styles.avatar} contentFit="cover" />
+                <View style={styles.avatarBadge}>
+                  {uploadingAvatar ? (
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                  ) : (
+                    <Camera size={14} color={Colors.primary} />
+                  )}
+                </View>
+              </Pressable>
               <View style={[styles.profileInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
                 <View style={[styles.nameRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                   <Text style={styles.name}>{userName}</Text>
@@ -467,12 +533,34 @@ const styles = StyleSheet.create({
     gap: 16,
     marginBottom: 20,
   },
+  avatarContainer: {
+    position: 'relative' as const,
+  },
   avatar: {
     width: 72,
     height: 72,
     borderRadius: 20,
     borderWidth: 2,
     borderColor: Colors.gold,
+  },
+  avatarBadge: {
+    position: 'absolute' as const,
+    bottom: -4,
+    right: -4,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: Colors.gold,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
+    borderWidth: 2,
+    borderColor: Colors.card,
+  },
+  guestLangRow: {
+    position: 'absolute' as const,
+    top: 16,
+    right: 20,
+    zIndex: 10,
   },
   profileInfo: {
     flex: 1,

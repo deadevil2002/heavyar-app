@@ -1,15 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, TextInput, Modal, Animated } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { ArrowLeft, ArrowRight, MapPin, Star, Calendar, Shield, Share2, Heart, Lock } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, MapPin, Star, Calendar, Shield, Share2, Heart, Lock, Clock, Hash } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
 import { fetchEquipmentById, fetchUserById, createRequest } from '@/services/firestoreService';
-import { Equipment, User } from '@/types';
+import { Equipment, User, RequestMode } from '@/types';
 import { getImageUrl } from '@/utils/imageHelpers';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
@@ -71,6 +71,32 @@ export default function EquipmentDetailScreen() {
   const categoryName = categoryObj ? localizedText(categoryObj.nameAr, categoryObj.nameEn) : equipment.category;
   const ownerName = owner ? localizedText(owner.nameAr, owner.nameEn) : '';
 
+  const [showRequestModal, setShowRequestModal] = useState<boolean>(false);
+  const [requestMode, setRequestMode] = useState<RequestMode>('fixed_days');
+  const [numberOfDays, setNumberOfDays] = useState<string>('');
+  const [requestNote, setRequestNote] = useState<string>('');
+  const modalAnim = useRef(new Animated.Value(0)).current;
+
+  const openRequestModal = () => {
+    setShowRequestModal(true);
+    Animated.spring(modalAnim, { toValue: 1, tension: 65, friction: 10, useNativeDriver: true }).start();
+  };
+
+  const closeRequestModal = () => {
+    Animated.timing(modalAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start(() => {
+      setShowRequestModal(false);
+      setRequestMode('fixed_days');
+      setNumberOfDays('');
+      setRequestNote('');
+    });
+  };
+
+  const computedDays = requestMode === 'fixed_days' ? parseInt(numberOfDays, 10) || 0 : 0;
+  const computedAmount = requestMode === 'fixed_days' && computedDays > 0 && equipment
+    ? equipment.pricePerDay * computedDays
+    : 0;
+  const computedFee = Math.round(computedAmount * 0.1);
+
   const handleRequestRental = () => {
     if (!isAuthenticated || !currentUser) {
       showDialog(
@@ -95,53 +121,60 @@ export default function EquipmentDetailScreen() {
       return;
     }
 
-    showDialog(
-      t('request_rental'),
-      t('confirm'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('confirm'),
-          style: 'default',
-          onPress: async () => {
-            try {
-              const days = 5;
-              const amount = equipment.pricePerDay * days;
-              const platformFee = Math.round(amount * 0.1);
-              await createRequest({
-                equipmentId: equipment.id,
-                customerUid: currentUser.uid,
-                providerUid: equipment.ownerUid,
-                status: 'pending',
-                startDate: new Date().toISOString(),
-                endDate: new Date(Date.now() + days * 86400000).toISOString(),
-                notes: '',
-                amount,
-                platformFee,
-                providerAmount: amount - platformFee,
-                paymentStatus: 'unpaid',
-                paymentId: '',
-                paidAt: null,
-                currency: 'SAR',
-                allowChat: false,
-              });
-              showDialog(
-                t('success'),
-                t('request_sent_success'),
-                [{ text: t('ok'), style: 'default', onPress: () => router.back() }]
-              );
-            } catch (e) {
-              console.error('[EquipmentDetail] Request error:', e);
-              showDialog(
-                t('error_title'),
-                t('error_generic_message'),
-                [{ text: t('ok'), style: 'default' }]
-              );
-            }
-          },
-        },
-      ]
-    );
+    openRequestModal();
+  };
+
+  const submitRequest = async () => {
+    if (!equipment || !currentUser) return;
+
+    if (requestMode === 'fixed_days' && computedDays <= 0) {
+      showDialog(t('validation_error'), t('days_must_be_positive'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+
+    closeRequestModal();
+
+    try {
+      const days = requestMode === 'fixed_days' ? computedDays : 0;
+      const amount = requestMode === 'fixed_days' ? equipment.pricePerDay * days : 0;
+      const platformFee = Math.round(amount * 0.1);
+      const startDate = new Date().toISOString();
+      const endDate = requestMode === 'fixed_days'
+        ? new Date(Date.now() + days * 86400000).toISOString()
+        : '';
+
+      await createRequest({
+        equipmentId: equipment.id,
+        customerUid: currentUser.uid,
+        providerUid: equipment.ownerUid,
+        status: 'pending',
+        requestMode,
+        numberOfDays: requestMode === 'fixed_days' ? days : null,
+        startDate,
+        endDate,
+        notes: requestNote.trim(),
+        amount,
+        platformFee,
+        providerAmount: amount - platformFee,
+        paymentStatus: 'unpaid',
+        paymentId: '',
+        paidAt: null,
+        currency: 'SAR',
+        allowChat: false,
+      });
+      showDialog(
+        t('success'),
+        t('request_sent_success'),
+        [{ text: t('ok'), style: 'default', onPress: () => router.back() }]
+      );
+    } catch (e) {
+      console.log('[EquipmentDetail] Request error:', e);
+      showDialog(
+        t('error_title'),
+        t('error_generic_message'),
+        [{ text: t('ok'), style: 'default' }]
+      );
+    }
   };
 
   const handleContactProvider = () => {
@@ -284,6 +317,80 @@ export default function EquipmentDetailScreen() {
           </SafeAreaView>
         </View>
       )}
+
+      <Modal visible={showRequestModal} transparent animationType="none" onRequestClose={closeRequestModal} statusBarTranslucent>
+        <View style={styles.modalOverlay}>
+          <Pressable style={styles.modalBackdrop} onPress={closeRequestModal} />
+          <Animated.View style={[styles.modalContent, { transform: [{ scale: modalAnim.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }], opacity: modalAnim }]}>
+            <View style={styles.modalAccent} />
+            <Text style={[styles.modalTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_rental_mode')}</Text>
+
+            <View style={styles.modeSelector}>
+              <Pressable
+                style={[styles.modeOption, requestMode === 'fixed_days' && styles.modeOptionActive]}
+                onPress={() => setRequestMode('fixed_days')}
+              >
+                <Hash size={20} color={requestMode === 'fixed_days' ? Colors.gold : Colors.textMuted} />
+                <Text style={[styles.modeText, requestMode === 'fixed_days' && styles.modeTextActive]}>{t('fixed_days')}</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modeOption, requestMode === 'open_ended' && styles.modeOptionActive]}
+                onPress={() => setRequestMode('open_ended')}
+              >
+                <Clock size={20} color={requestMode === 'open_ended' ? Colors.gold : Colors.textMuted} />
+                <Text style={[styles.modeText, requestMode === 'open_ended' && styles.modeTextActive]}>{t('open_ended')}</Text>
+              </Pressable>
+            </View>
+
+            {requestMode === 'fixed_days' && (
+              <View style={styles.daysInputContainer}>
+                <Text style={[styles.inputLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('number_of_days')}</Text>
+                <TextInput
+                  style={[styles.daysInput, { textAlign: isRTL ? 'right' : 'left' }]}
+                  value={numberOfDays}
+                  onChangeText={setNumberOfDays}
+                  keyboardType="numeric"
+                  placeholder={t('enter_number_of_days')}
+                  placeholderTextColor={Colors.textMuted}
+                  testID="days-input"
+                />
+                {computedAmount > 0 && (
+                  <View style={[styles.estimateRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                    <Text style={styles.estimateLabel}>{t('estimated_total')}</Text>
+                    <Text style={styles.estimateValue}>{computedAmount.toLocaleString()} {t('sar')}</Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {requestMode === 'open_ended' && (
+              <View style={styles.openEndedInfo}>
+                <Clock size={18} color={Colors.gold} />
+                <Text style={styles.openEndedText}>{t('until_work_completion')}</Text>
+              </View>
+            )}
+
+            <TextInput
+              style={[styles.noteInput, { textAlign: isRTL ? 'right' : 'left' }]}
+              value={requestNote}
+              onChangeText={setRequestNote}
+              placeholder={t('notes')}
+              placeholderTextColor={Colors.textMuted}
+              multiline
+              numberOfLines={3}
+            />
+
+            <View style={styles.modalActions}>
+              <Pressable style={styles.modalCancelBtn} onPress={closeRequestModal}>
+                <Text style={styles.modalCancelText}>{t('cancel')}</Text>
+              </Pressable>
+              <Pressable style={styles.modalConfirmBtn} onPress={submitRequest}>
+                <Text style={styles.modalConfirmText}>{t('confirm')}</Text>
+              </Pressable>
+            </View>
+          </Animated.View>
+        </View>
+      </Modal>
 
       <AppDialog
         visible={dialog.visible}
@@ -567,6 +674,163 @@ const styles = StyleSheet.create({
   requestButtonText: {
     color: Colors.primary,
     fontSize: 16,
+    fontWeight: '700' as const,
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+  },
+  modalContent: {
+    width: '90%',
+    maxWidth: 380,
+    backgroundColor: Colors.card,
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  modalAccent: {
+    height: 3,
+    backgroundColor: Colors.gold,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700' as const,
+    color: Colors.textPrimary,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 14,
+  },
+  modeSelector: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    gap: 10,
+    marginBottom: 16,
+  },
+  modeOption: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: Colors.inputBg,
+    borderWidth: 2,
+    borderColor: Colors.border,
+  },
+  modeOptionActive: {
+    borderColor: Colors.gold,
+    backgroundColor: 'rgba(212, 168, 67, 0.1)',
+  },
+  modeText: {
+    fontSize: 13,
+    fontWeight: '600' as const,
+    color: Colors.textMuted,
+  },
+  modeTextActive: {
+    color: Colors.gold,
+  },
+  daysInputContainer: {
+    paddingHorizontal: 20,
+    marginBottom: 12,
+    gap: 8,
+  },
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: '600' as const,
+    color: Colors.textSecondary,
+  },
+  daysInput: {
+    backgroundColor: Colors.inputBg,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: Colors.textPrimary,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  estimateRow: {
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 8,
+  },
+  estimateLabel: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+  },
+  estimateValue: {
+    fontSize: 18,
+    fontWeight: '800' as const,
+    color: Colors.gold,
+  },
+  openEndedInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 20,
+    marginBottom: 12,
+    backgroundColor: 'rgba(212, 168, 67, 0.08)',
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(212, 168, 67, 0.2)',
+  },
+  openEndedText: {
+    fontSize: 14,
+    color: Colors.gold,
+    fontWeight: '600' as const,
+  },
+  noteInput: {
+    marginHorizontal: 20,
+    marginBottom: 16,
+    backgroundColor: Colors.inputBg,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: Colors.textPrimary,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    minHeight: 60,
+    textAlignVertical: 'top',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    gap: 10,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: Colors.surface,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  modalCancelText: {
+    color: Colors.textSecondary,
+    fontSize: 15,
+    fontWeight: '600' as const,
+  },
+  modalConfirmBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: Colors.gold,
+    alignItems: 'center',
+  },
+  modalConfirmText: {
+    color: Colors.primary,
+    fontSize: 15,
     fontWeight: '700' as const,
   },
 });
