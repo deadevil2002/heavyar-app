@@ -4,6 +4,7 @@ export interface Env {
   CLOUDINARY_API_SECRET: string;
   CLOUDINARY_FOLDER: string;
   CLOUDINARY_UPLOAD_PRESET: string;
+  TAP_SECRET_KEY_TEST: string;
 }
 
 const CORS_HEADERS: Record<string, string> = {
@@ -32,6 +33,143 @@ function handleOptions(): Response {
 
 async function handleHealthCheck(): Promise<Response> {
   return jsonResponse({ success: true, service: 'heavyar-api' });
+}
+
+interface CreatePaymentBody {
+  amount: number;
+  currency?: string;
+  requestId: string;
+  customerName?: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  description?: string;
+  redirectUrl?: string;
+}
+
+interface VerifyPaymentBody {
+  chargeId: string;
+}
+
+const TAP_API_BASE = 'https://api.tap.company/v2';
+
+async function handleCreatePayment(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await request.json() as CreatePaymentBody;
+
+    if (!body.amount || !body.requestId) {
+      return jsonResponse({ success: false, error: 'amount and requestId are required' }, 400);
+    }
+
+    if (!env.TAP_SECRET_KEY_TEST) {
+      return jsonResponse({ success: false, error: 'Payment service not configured' }, 500);
+    }
+
+    const chargePayload = {
+      amount: body.amount,
+      currency: body.currency || 'SAR',
+      customer_initiated: true,
+      threeDSecure: true,
+      save_card: false,
+      description: body.description || `Heavyar rental payment - ${body.requestId}`,
+      metadata: {
+        requestId: body.requestId,
+      },
+      receipt: {
+        email: true,
+        sms: true,
+      },
+      customer: {
+        first_name: body.customerName || 'Customer',
+        email: body.customerEmail || '',
+        phone: {
+          country_code: '966',
+          number: body.customerPhone || '',
+        },
+      },
+      source: { id: 'src_all' },
+      redirect: {
+        url: body.redirectUrl || 'https://heavyar.app/payment/callback',
+      },
+    };
+
+    const tapResponse = await fetch(`${TAP_API_BASE}/charges`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.TAP_SECRET_KEY_TEST}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(chargePayload),
+    });
+
+    const tapResult = await tapResponse.json() as Record<string, unknown>;
+
+    if (!tapResponse.ok) {
+      console.error('Tap create charge error:', JSON.stringify(tapResult));
+      return jsonResponse({ success: false, error: 'Failed to create payment', details: tapResult }, tapResponse.status);
+    }
+
+    const transaction = tapResult.transaction as Record<string, string> | undefined;
+    const redirect = tapResult.redirect as Record<string, string> | undefined;
+
+    return jsonResponse({
+      success: true,
+      chargeId: tapResult.id,
+      status: tapResult.status,
+      paymentUrl: redirect?.url || '',
+      transactionUrl: transaction?.url || '',
+      amount: tapResult.amount,
+      currency: tapResult.currency,
+    });
+  } catch (error) {
+    console.error('Create payment error:', error);
+    return jsonResponse({ success: false, error: 'Failed to create payment' }, 500);
+  }
+}
+
+async function handleVerifyPayment(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await request.json() as VerifyPaymentBody;
+
+    if (!body.chargeId) {
+      return jsonResponse({ success: false, error: 'chargeId is required' }, 400);
+    }
+
+    if (!env.TAP_SECRET_KEY_TEST) {
+      return jsonResponse({ success: false, error: 'Payment service not configured' }, 500);
+    }
+
+    const tapResponse = await fetch(`${TAP_API_BASE}/charges/${body.chargeId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${env.TAP_SECRET_KEY_TEST}`,
+      },
+    });
+
+    const tapResult = await tapResponse.json() as Record<string, unknown>;
+
+    if (!tapResponse.ok) {
+      console.error('Tap verify charge error:', JSON.stringify(tapResult));
+      return jsonResponse({ success: false, error: 'Failed to verify payment', details: tapResult }, tapResponse.status);
+    }
+
+    const metadata = tapResult.metadata as Record<string, string> | undefined;
+    const receipt = tapResult.receipt as Record<string, string> | undefined;
+
+    return jsonResponse({
+      success: true,
+      chargeId: tapResult.id,
+      status: tapResult.status,
+      isPaid: tapResult.status === 'CAPTURED',
+      amount: tapResult.amount,
+      currency: tapResult.currency,
+      requestId: metadata?.requestId || '',
+      receiptId: receipt?.id || '',
+      paymentMethod: tapResult.source,
+    });
+  } catch (error) {
+    console.error('Verify payment error:', error);
+    return jsonResponse({ success: false, error: 'Failed to verify payment' }, 500);
+  }
 }
 
 async function handleCloudinaryDelete(request: Request, env: Env): Promise<Response> {
@@ -88,6 +226,14 @@ export default {
 
     if (url.pathname === '/cloudinary/delete' && method === 'POST') {
       return handleCloudinaryDelete(request, env);
+    }
+
+    if (url.pathname === '/api/create-payment' && method === 'POST') {
+      return handleCreatePayment(request, env);
+    }
+
+    if (url.pathname === '/api/verify-payment' && method === 'POST') {
+      return handleVerifyPayment(request, env);
     }
 
     return jsonResponse({ success: false, error: 'Not found' }, 404);

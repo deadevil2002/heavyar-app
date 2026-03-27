@@ -4,6 +4,8 @@ export type RequestStatus = 'pending' | 'accepted' | 'in_progress' | 'completed'
 
 export type PaymentStatus = 'unpaid' | 'pending_payment' | 'paid' | 'failed' | 'refunded';
 
+export type InvoiceStatus = 'paid' | 'pending' | 'refunded';
+
 export type UserRole = 'customer' | 'provider';
 
 export interface User {
@@ -100,6 +102,26 @@ export interface Category {
   nameEn: string;
   icon: string;
   count: number;
+}
+
+export interface Invoice {
+  id: string;
+  invoiceNumber: string;
+  requestId: string;
+  equipmentId: string;
+  providerId: string;
+  customerId: string;
+  sellerName: string;
+  buyerName: string;
+  subtotal: number;
+  vatRate: number;
+  vatAmount: number;
+  totalAmount: number;
+  currency: string;
+  status: InvoiceStatus;
+  createdAt: string;
+  paidAt: string;
+  paymentReference: string;
 }
 
 export interface AppSettings {

@@ -16,7 +16,7 @@ import {
   limit,
 } from 'firebase/firestore';
 import { getFirebaseDb } from './firebaseConfig';
-import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User } from '@/types';
+import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice } from '@/types';
 import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
 
@@ -497,6 +497,120 @@ export async function fetchRatingsForUser(toUid: string): Promise<Rating[]> {
   );
   const snap = await getDocs(q);
   return snap.docs.map(d => parseRating(d.id, d.data() as Record<string, unknown>));
+}
+
+function parseInvoice(id: string, data: Record<string, unknown>): Invoice {
+  return {
+    id,
+    invoiceNumber: (data.invoiceNumber as string) || '',
+    requestId: (data.requestId as string) || '',
+    equipmentId: (data.equipmentId as string) || '',
+    providerId: (data.providerId as string) || '',
+    customerId: (data.customerId as string) || '',
+    sellerName: (data.sellerName as string) || '',
+    buyerName: (data.buyerName as string) || '',
+    subtotal: (data.subtotal as number) || 0,
+    vatRate: (data.vatRate as number) || 0.15,
+    vatAmount: (data.vatAmount as number) || 0,
+    totalAmount: (data.totalAmount as number) || 0,
+    currency: (data.currency as string) || 'SAR',
+    status: (data.status as Invoice['status']) || 'pending',
+    createdAt: toISOString(data.createdAt),
+    paidAt: toISOString(data.paidAt),
+    paymentReference: (data.paymentReference as string) || '',
+  };
+}
+
+export async function createInvoice(data: Omit<Invoice, 'id' | 'createdAt'>): Promise<string> {
+  const db = getFirebaseDb();
+  console.log('[Firestore] Creating invoice for request:', data.requestId);
+  const docRef = await addDoc(collection(db, 'invoices'), {
+    ...data,
+    createdAt: serverTimestamp(),
+  });
+  console.log('[Firestore] Invoice created:', docRef.id);
+  return docRef.id;
+}
+
+export async function generateInvoiceNumber(): Promise<string> {
+  const db = getFirebaseDb();
+  const year = new Date().getFullYear();
+  const q = query(
+    collection(db, 'invoices'),
+    orderBy('createdAt', 'desc'),
+    limit(1)
+  );
+  try {
+    const snap = await getDocs(q);
+    let seq = 1;
+    if (!snap.empty) {
+      const lastInvoice = snap.docs[0].data();
+      const lastNumber = (lastInvoice.invoiceNumber as string) || '';
+      const match = lastNumber.match(/INV-\d{4}-(\d{4})/);
+      if (match) {
+        seq = parseInt(match[1], 10) + 1;
+      }
+    }
+    return `INV-${year}-${seq.toString().padStart(4, '0')}`;
+  } catch {
+    const fallback = Math.floor(Math.random() * 9000) + 1000;
+    return `INV-${year}-${fallback}`;
+  }
+}
+
+export async function fetchUserInvoices(uid: string, role: 'customer' | 'provider'): Promise<Invoice[]> {
+  const db = getFirebaseDb();
+  const field = role === 'customer' ? 'customerId' : 'providerId';
+  console.log('[Firestore] Fetching invoices for', role, uid);
+  try {
+    const q = query(
+      collection(db, 'invoices'),
+      where(field, '==', uid),
+      orderBy('createdAt', 'desc')
+    );
+    const snap = await getDocs(q);
+    const items = snap.docs.map(d => parseInvoice(d.id, d.data() as Record<string, unknown>));
+    console.log('[Firestore] Fetched', items.length, 'invoices');
+    return items;
+  } catch (indexError) {
+    console.warn('[Firestore] Invoice indexed query failed, fallback:', indexError);
+    try {
+      const fallbackQ = query(
+        collection(db, 'invoices'),
+        where(field, '==', uid)
+      );
+      const fallbackSnap = await getDocs(fallbackQ);
+      const items = fallbackSnap.docs.map(d => parseInvoice(d.id, d.data() as Record<string, unknown>));
+      items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return items;
+    } catch (e2) {
+      console.error('[Firestore] fetchUserInvoices fallback failed:', e2);
+      throw e2;
+    }
+  }
+}
+
+export async function fetchInvoiceByRequestId(requestId: string): Promise<Invoice | null> {
+  const db = getFirebaseDb();
+  console.log('[Firestore] Fetching invoice for request:', requestId);
+  const q = query(
+    collection(db, 'invoices'),
+    where('requestId', '==', requestId),
+    limit(1)
+  );
+  const snap = await getDocs(q);
+  if (!snap.empty) {
+    return parseInvoice(snap.docs[0].id, snap.docs[0].data() as Record<string, unknown>);
+  }
+  return null;
+}
+
+export async function updateRequestInvoiceId(requestId: string, invoiceId: string): Promise<void> {
+  const db = getFirebaseDb();
+  await updateDoc(doc(db, 'equipmentRequests', requestId), {
+    invoiceId,
+    updatedAt: serverTimestamp(),
+  });
 }
 
 export async function fetchUserById(uid: string): Promise<User | null> {

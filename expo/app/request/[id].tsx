@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { ArrowLeft, ArrowRight, MessageCircle, CreditCard, Star, Calendar } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, MessageCircle, CreditCard, Star, Calendar, Receipt } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -69,6 +69,7 @@ export default function RequestDetailScreen() {
   const canRate = !isProvider && request.status === 'completed';
   const canAccept = isProvider && request.status === 'pending';
   const canComplete = isProvider && request.status === 'in_progress';
+  const showInvoice = request.paymentStatus === 'paid';
 
   const handleAction = (action: string) => {
     showDialog(t('confirm'), t('confirm_action'), [
@@ -215,6 +216,12 @@ export default function RequestDetailScreen() {
                 <Text style={styles.completeText}>{t('complete')}</Text>
               </Pressable>
             )}
+            {showInvoice && (
+              <Pressable style={styles.invoiceButton} onPress={() => router.push('/invoices')}>
+                <Receipt size={20} color={Colors.primary} />
+                <Text style={styles.invoiceButtonText}>{t('view_invoice')}</Text>
+              </Pressable>
+            )}
           </View>
 
           <View style={{ height: 80 }} />
@@ -279,4 +286,6 @@ const styles = StyleSheet.create({
   rejectText: { color: Colors.white, fontSize: 16, fontWeight: '700' as const },
   completeButton: { backgroundColor: Colors.success, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   completeText: { color: Colors.white, fontSize: 16, fontWeight: '700' as const },
+  invoiceButton: { flexDirection: 'row' as const, backgroundColor: Colors.info, borderRadius: 14, paddingVertical: 14, justifyContent: 'center' as const, alignItems: 'center' as const, gap: 8 },
+  invoiceButtonText: { color: Colors.primary, fontSize: 16, fontWeight: '700' as const },
 });
