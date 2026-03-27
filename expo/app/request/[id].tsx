@@ -71,7 +71,7 @@ export default function RequestDetailScreen() {
   const canComplete = isProvider && request.status === 'in_progress';
 
   const handleAction = (action: string) => {
-    showDialog(t('confirm'), '', [
+    showDialog(t('confirm'), t('confirm_action'), [
       { text: t('cancel'), style: 'cancel' },
       {
         text: t('confirm'),
@@ -217,7 +217,7 @@ export default function RequestDetailScreen() {
             )}
           </View>
 
-          <View style={{ height: 40 }} />
+          <View style={{ height: 80 }} />
         </ScrollView>
       </SafeAreaView>
 

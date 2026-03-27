@@ -201,6 +201,12 @@ export const translations = {
     cannot_request_own: 'لا يمكنك طلب إيجار معداتك الخاصة',
     request_sent_success: 'تم إرسال طلب الإيجار بنجاح',
     ok: 'حسناً',
+    continue_with_google: 'المتابعة مع Google',
+    continue_with_apple: 'المتابعة مع Apple',
+    social_login_coming_soon: 'ستتوفر هذه الميزة قريبا',
+    coming_soon: 'قريبا',
+    language_changed: 'تم تغيير اللغة',
+    confirm_action: 'هل تريد تأكيد هذا الإجراء؟',
   },
   en: {
     app_name: 'Heavyar',
@@ -404,6 +410,12 @@ export const translations = {
     cannot_request_own: 'You cannot request your own equipment',
     request_sent_success: 'Rental request sent successfully',
     ok: 'OK',
+    continue_with_google: 'Continue with Google',
+    continue_with_apple: 'Continue with Apple',
+    social_login_coming_soon: 'This feature will be available soon',
+    coming_soon: 'Coming Soon',
+    language_changed: 'Language Changed',
+    confirm_action: 'Are you sure you want to proceed?',
   },
 } as const;
 

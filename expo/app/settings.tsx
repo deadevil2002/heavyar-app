@@ -21,7 +21,7 @@ export default function SettingsScreen() {
     const newLang = language === 'ar' ? 'en' : 'ar';
     await setLanguage(newLang);
     showDialog(
-      newLang === 'ar' ? 'تم تغيير اللغة' : 'Language Changed',
+      t('language_changed'),
       t('change_language_restart'),
       [{ text: t('ok'), style: 'default' }]
     );
@@ -129,7 +129,7 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 16, paddingVertical: 12, alignItems: 'center', justifyContent: 'space-between' },
   backBtn: { width: 42, height: 42, borderRadius: 14, backgroundColor: Colors.surface, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.border },
   headerTitle: { fontSize: 18, fontWeight: '700' as const, color: Colors.textPrimary },
-  scrollContent: { paddingHorizontal: 20, gap: 20 },
+  scrollContent: { paddingHorizontal: 20, gap: 20, paddingBottom: 40 },
   section: {
     backgroundColor: Colors.card,
     borderRadius: 16,

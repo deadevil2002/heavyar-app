@@ -628,6 +628,6 @@ const styles = StyleSheet.create({
     fontWeight: '700' as const,
   },
   bottomPadding: {
-    height: 40,
+    height: 80,
   },
 });

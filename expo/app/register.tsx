@@ -7,6 +7,8 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 
 export default function RegisterScreen() {
   const { isRTL, t } = useLanguage();
@@ -19,20 +21,41 @@ export default function RegisterScreen() {
   const [confirmPassword, setConfirmPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
+  const { dialog, showDialog, hideDialog } = useAppDialog();
 
   const handleRegister = useCallback(async () => {
-    if (!name || !email || !phone || !password || !confirmPassword) return;
-    if (password !== confirmPassword) return;
+    if (!name.trim()) {
+      showDialog(t('validation_error'), t('validation_name_required'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+    if (!email.trim()) {
+      showDialog(t('validation_error'), t('email'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+    if (!phone.trim()) {
+      showDialog(t('validation_error'), t('validation_phone_required'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+    if (!password) {
+      showDialog(t('validation_error'), t('password'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+    if (password !== confirmPassword) {
+      showDialog(t('validation_error'), t('confirm_password'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
     setLoading(true);
     try {
       await register(name, email, phone, password);
       router.back();
     } catch (e) {
       console.log('Register error:', e);
+      const errorMsg = e instanceof Error ? e.message : t('unexpected_error');
+      showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
     } finally {
       setLoading(false);
     }
-  }, [name, email, phone, password, confirmPassword, register, router]);
+  }, [name, email, phone, password, confirmPassword, register, router, t, showDialog]);
 
   return (
     <View style={styles.container}>
@@ -127,13 +150,20 @@ export default function RegisterScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
-  scrollContent: { flexGrow: 1, paddingHorizontal: 24 },
+  scrollContent: { flexGrow: 1, paddingHorizontal: 24, paddingBottom: 40 },
   brandSection: { alignItems: 'center', paddingTop: 32, paddingBottom: 24 },
   logo: { width: 72, height: 72, borderRadius: 18, marginBottom: 12 },
   appName: { fontSize: 26, fontWeight: '800' as const, color: Colors.gold },

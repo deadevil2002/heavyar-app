@@ -248,7 +248,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingVertical: 18,
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 80,
   },
   payButtonDisabled: { opacity: 0.6 },
   payButtonText: { color: Colors.primary, fontSize: 18, fontWeight: '700' as const },

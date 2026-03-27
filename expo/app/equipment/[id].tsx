@@ -528,7 +528,7 @@ const styles = StyleSheet.create({
     fontWeight: '700' as const,
   },
   bottomSpacer: {
-    height: 100,
+    height: 140,
   },
   bottomBar: {
     position: 'absolute',

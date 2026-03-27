@@ -2,11 +2,13 @@ import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, TextInput, Pressable, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Mail, Lock, Eye, EyeOff } from 'lucide-react-native';
+import { Mail, Lock, Eye, EyeOff, Chrome, Smartphone } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 
 export default function LoginScreen() {
   const { isRTL, t } = useLanguage();
@@ -16,6 +18,7 @@ export default function LoginScreen() {
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
+  const { dialog, showDialog, hideDialog } = useAppDialog();
 
   const handleLogin = useCallback(async () => {
     if (!email || !password) return;
@@ -25,10 +28,17 @@ export default function LoginScreen() {
       router.back();
     } catch (e) {
       console.log('Login error:', e);
+      const errorMsg = e instanceof Error ? e.message : t('unexpected_error');
+      showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
     } finally {
       setLoading(false);
     }
-  }, [email, password, login, router]);
+  }, [email, password, login, router, t, showDialog]);
+
+  const handleSocialLogin = useCallback((provider: string) => {
+    console.log('[Login] Social login tapped:', provider);
+    showDialog(t('coming_soon'), t('social_login_coming_soon'), [{ text: t('ok'), style: 'default' }]);
+  }, [t, showDialog]);
 
   return (
     <View style={styles.container}>
@@ -94,12 +104,18 @@ export default function LoginScreen() {
                 <View style={styles.dividerLine} />
               </View>
 
-              <View style={[styles.socialRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                <Pressable style={styles.socialButton}>
-                  <Text style={styles.socialIcon}>G</Text>
+              <View style={styles.socialColumn}>
+                <Pressable style={[styles.socialButton, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => handleSocialLogin('google')}>
+                  <View style={styles.socialIconWrap}>
+                    <Chrome size={20} color="#DB4437" />
+                  </View>
+                  <Text style={styles.socialLabel}>{t('continue_with_google')}</Text>
                 </Pressable>
-                <Pressable style={styles.socialButton}>
-                  <Text style={styles.socialIcon}>A</Text>
+                <Pressable style={[styles.socialButton, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => handleSocialLogin('apple')}>
+                  <View style={styles.socialIconWrap}>
+                    <Smartphone size={20} color={Colors.textPrimary} />
+                  </View>
+                  <Text style={styles.socialLabel}>{t('continue_with_apple')}</Text>
                 </Pressable>
               </View>
 
@@ -112,13 +128,20 @@ export default function LoginScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
-  scrollContent: { flexGrow: 1, paddingHorizontal: 24 },
+  scrollContent: { flexGrow: 1, paddingHorizontal: 24, paddingBottom: 40 },
   brandSection: { alignItems: 'center', paddingTop: 40, paddingBottom: 32 },
   logo: { width: 88, height: 88, borderRadius: 22, marginBottom: 16 },
   appName: { fontSize: 30, fontWeight: '800' as const, color: Colors.gold },
@@ -145,17 +168,31 @@ const styles = StyleSheet.create({
   dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginVertical: 4 },
   dividerLine: { flex: 1, height: 1, backgroundColor: Colors.divider },
   dividerText: { color: Colors.textMuted, fontSize: 13 },
-  socialRow: { gap: 12, justifyContent: 'center' },
+  socialColumn: { gap: 10 },
   socialButton: {
-    flex: 1,
     paddingVertical: 14,
+    paddingHorizontal: 16,
     borderRadius: 14,
     backgroundColor: Colors.surface,
     alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 1,
     borderColor: Colors.border,
+    gap: 12,
   },
-  socialIcon: { fontSize: 18, fontWeight: '700' as const, color: Colors.textPrimary },
+  socialIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: Colors.inputBg,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  socialLabel: {
+    fontSize: 15,
+    fontWeight: '600' as const,
+    color: Colors.textPrimary,
+  },
   registerRow: { alignItems: 'center', paddingVertical: 16 },
   registerText: { color: Colors.textSecondary, fontSize: 14 },
   registerHighlight: { color: Colors.gold, fontWeight: '600' as const },
