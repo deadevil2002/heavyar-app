@@ -16,7 +16,8 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockCategories, mockCities } from '@/mocks/categories';
+import { mockCategories } from '@/mocks/categories';
+import { saudiRegions, getCitiesByRegion, findCityById, findRegionByCityId } from '@/mocks/saudiRegions';
 import { fetchEquipmentById, updateEquipmentWithImageCleanup } from '@/services/firestoreService';
 import { uploadMultipleImages } from '@/services/cloudinaryService';
 import { getImageUrl } from '@/utils/imageHelpers';
@@ -43,7 +44,9 @@ export default function EditEquipmentScreen() {
   const [descAr, setDescAr] = useState<string>('');
   const [descEn, setDescEn] = useState<string>('');
   const [category, setCategory] = useState<string>('');
+  const [region, setRegion] = useState<string>('');
   const [city, setCity] = useState<string>('');
+  const [customCity, setCustomCity] = useState<string>('');
   const [district, setDistrict] = useState<string>('');
   const [price, setPrice] = useState<string>('');
 
@@ -52,6 +55,17 @@ export default function EditEquipmentScreen() {
 
   const [showCategoryPicker, setShowCategoryPicker] = useState<boolean>(false);
   const [showCityPicker, setShowCityPicker] = useState<boolean>(false);
+  const [showRegionPicker, setShowRegionPicker] = useState<boolean>(false);
+  const [citySearch, setCitySearch] = useState<string>('');
+
+  const selectedRegion = React.useMemo(() => saudiRegions.find(r => r.id === region), [region]);
+  const regionCities = React.useMemo(() => getCitiesByRegion(region), [region]);
+  const filteredCities = React.useMemo(() => {
+    if (!citySearch.trim()) return regionCities;
+    const q = citySearch.toLowerCase();
+    return regionCities.filter(c => c.nameAr.includes(q) || c.nameEn.toLowerCase().includes(q));
+  }, [regionCities, citySearch]);
+  const selectedCityObj = React.useMemo(() => findCityById(city), [city]);
 
   useEffect(() => {
     let mounted = true;
@@ -81,7 +95,15 @@ export default function EditEquipmentScreen() {
         setDescAr(eq.descriptionAr);
         setDescEn(eq.descriptionEn);
         setCategory(eq.category);
+        const existingRegion = eq.region || '';
+        if (existingRegion) {
+          setRegion(existingRegion);
+        } else if (eq.city) {
+          const foundRegion = findRegionByCityId(eq.city);
+          if (foundRegion) setRegion(foundRegion.id);
+        }
         setCity(eq.city);
+        setCustomCity(eq.customCity || '');
         setDistrict(eq.district);
         setPrice(eq.pricePerDay > 0 ? String(eq.pricePerDay) : '');
         setExistingImages([...eq.images]);
@@ -133,7 +155,7 @@ export default function EditEquipmentScreen() {
       showDialog(t('validation_error'), t('validation_category_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
-    if (!city) {
+    if (!city && !customCity.trim()) {
       showDialog(t('validation_error'), t('validation_city_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
@@ -177,7 +199,9 @@ export default function EditEquipmentScreen() {
           descriptionAr: descAr,
           descriptionEn: descEn || descAr,
           category,
+          region,
           city,
+          customCity,
           district,
           pricePerDay: parsedPrice,
           images: finalImages,
@@ -197,10 +221,9 @@ export default function EditEquipmentScreen() {
       setSaving(false);
       setUploadProgress('');
     }
-  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, city, district, price, existingImages, newImageUris, oldImages, t, router, showDialog]);
+  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, region, city, customCity, district, price, existingImages, newImageUris, oldImages, t, router, showDialog]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
-  const selectedCity = mockCities.find(c => c.id === city);
 
   if (loading) {
     return (
@@ -356,32 +379,78 @@ export default function EditEquipmentScreen() {
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_city')}</Text>
+              <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_region')}</Text>
               <Pressable
                 style={[styles.picker, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
-                onPress={() => setShowCityPicker(!showCityPicker)}
+                onPress={() => { setShowRegionPicker(!showRegionPicker); setShowCityPicker(false); }}
               >
-                <Text style={[styles.pickerText, !city && styles.pickerPlaceholder]}>
-                  {selectedCity ? localizedText(selectedCity.nameAr, selectedCity.nameEn) : t('select_city')}
+                <Text style={[styles.pickerText, !region && styles.pickerPlaceholder]}>
+                  {selectedRegion ? localizedText(selectedRegion.nameAr, selectedRegion.nameEn) : t('select_region')}
                 </Text>
                 <ChevronDown size={20} color={Colors.textMuted} />
               </Pressable>
-              {showCityPicker && (
-                <View style={styles.pickerDropdown}>
-                  {mockCities.map(c => (
+              {showRegionPicker && (
+                <ScrollView style={[styles.pickerDropdown, { maxHeight: 200 }]} nestedScrollEnabled>
+                  {saudiRegions.map(r => (
                     <Pressable
-                      key={c.id}
-                      style={[styles.pickerItem, city === c.id && styles.pickerItemSelected]}
-                      onPress={() => { setCity(c.id); setShowCityPicker(false); }}
+                      key={r.id}
+                      style={[styles.pickerItem, region === r.id && styles.pickerItemSelected]}
+                      onPress={() => { setRegion(r.id); setCity(''); setCustomCity(''); setCitySearch(''); setShowRegionPicker(false); }}
                     >
-                      <Text style={[styles.pickerItemText, city === c.id && styles.pickerItemTextSelected]}>
-                        {localizedText(c.nameAr, c.nameEn)}
+                      <Text style={[styles.pickerItemText, region === r.id && styles.pickerItemTextSelected]}>
+                        {localizedText(r.nameAr, r.nameEn)}
                       </Text>
                     </Pressable>
                   ))}
-                </View>
+                </ScrollView>
               )}
             </View>
+
+            {region ? (
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_city')}</Text>
+                <Pressable
+                  style={[styles.picker, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+                  onPress={() => { setShowCityPicker(!showCityPicker); setShowRegionPicker(false); }}
+                >
+                  <Text style={[styles.pickerText, !city && styles.pickerPlaceholder]}>
+                    {selectedCityObj ? localizedText(selectedCityObj.nameAr, selectedCityObj.nameEn) : t('select_city')}
+                  </Text>
+                  <ChevronDown size={20} color={Colors.textMuted} />
+                </Pressable>
+                {showCityPicker && (
+                  <View style={styles.pickerDropdown}>
+                    <TextInput
+                      style={[styles.citySearchInput, { textAlign: isRTL ? 'right' : 'left' }]}
+                      placeholder={t('search_city')}
+                      placeholderTextColor={Colors.textMuted}
+                      value={citySearch}
+                      onChangeText={setCitySearch}
+                    />
+                    <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled>
+                      {filteredCities.map(c => (
+                        <Pressable
+                          key={c.id}
+                          style={[styles.pickerItem, city === c.id && styles.pickerItemSelected]}
+                          onPress={() => { setCity(c.id); setCustomCity(''); setShowCityPicker(false); setCitySearch(''); }}
+                        >
+                          <Text style={[styles.pickerItemText, city === c.id && styles.pickerItemTextSelected]}>
+                            {localizedText(c.nameAr, c.nameEn)}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+                <TextInput
+                  style={[styles.textInput, { textAlign: isRTL ? 'right' : 'left' }]}
+                  placeholder={t('custom_city_placeholder')}
+                  placeholderTextColor={Colors.textMuted}
+                  value={customCity}
+                  onChangeText={(text) => { setCustomCity(text); if (text.trim()) setCity(''); }}
+                />
+              </View>
+            ) : null}
 
             <View style={styles.inputGroup}>
               <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('district_name')}</Text>
@@ -629,5 +698,13 @@ const styles = StyleSheet.create({
   },
   bottomPadding: {
     height: 80,
+  },
+  citySearchInput: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    color: Colors.textPrimary,
+    fontSize: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.divider,
   },
 });

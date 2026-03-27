@@ -2,13 +2,14 @@ import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt } from 'lucide-react-native';
+import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { saudiRegions, getCitiesByRegion, findCityById, findRegionById, findRegionByCityId } from '@/mocks/saudiRegions';
 
 export default function ProfileScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -19,8 +20,13 @@ export default function ProfileScreen() {
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [editName, setEditName] = useState<string>('');
   const [editPhone, setEditPhone] = useState<string>('');
+  const [editRegion, setEditRegion] = useState<string>('');
   const [editCity, setEditCity] = useState<string>('');
+  const [editCustomCity, setEditCustomCity] = useState<string>('');
   const [editCrNumber, setEditCrNumber] = useState<string>('');
+  const [showRegionPicker, setShowRegionPicker] = useState<boolean>(false);
+  const [showCityPicker, setShowCityPicker] = useState<boolean>(false);
+  const [citySearch, setCitySearch] = useState<string>('');
   const [saving, setSaving] = useState<boolean>(false);
 
   const handleLogin = useCallback(() => {
@@ -31,12 +37,32 @@ export default function ProfileScreen() {
     await logout();
   }, [logout]);
 
+  const editRegionObj = React.useMemo(() => findRegionById(editRegion), [editRegion]);
+  const editRegionCities = React.useMemo(() => getCitiesByRegion(editRegion), [editRegion]);
+  const editFilteredCities = React.useMemo(() => {
+    if (!citySearch.trim()) return editRegionCities;
+    const q = citySearch.toLowerCase();
+    return editRegionCities.filter(c => c.nameAr.includes(q) || c.nameEn.toLowerCase().includes(q));
+  }, [editRegionCities, citySearch]);
+  const editCityObj = React.useMemo(() => findCityById(editCity), [editCity]);
+
   const startEditing = useCallback(() => {
     if (!user) return;
     setEditName(user.nameAr || '');
     setEditPhone(user.phone || '');
+    const userRegion = user.region || '';
+    if (userRegion) {
+      setEditRegion(userRegion);
+    } else if (user.city) {
+      const foundRegion = findRegionByCityId(user.city);
+      if (foundRegion) setEditRegion(foundRegion.id);
+    }
     setEditCity(user.city || '');
+    setEditCustomCity(user.customCity || '');
     setEditCrNumber(user.crNumber || '');
+    setShowRegionPicker(false);
+    setShowCityPicker(false);
+    setCitySearch('');
     setIsEditing(true);
   }, [user]);
 
@@ -63,7 +89,9 @@ export default function ProfileScreen() {
         nameAr: editName.trim(),
         nameEn: editName.trim(),
         phone: editPhone.trim(),
-        city: editCity.trim(),
+        region: editRegion,
+        city: editCity,
+        customCity: editCustomCity.trim(),
       };
       if (user.role === 'provider') {
         updates.crNumber = editCrNumber.trim();
@@ -77,7 +105,7 @@ export default function ProfileScreen() {
     } finally {
       setSaving(false);
     }
-  }, [user, editName, editPhone, editCity, editCrNumber, updateProfile, t, showDialog]);
+  }, [user, editName, editPhone, editRegion, editCity, editCustomCity, editCrNumber, updateProfile, t, showDialog]);
 
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
 
@@ -155,7 +183,9 @@ export default function ProfileScreen() {
               </View>
               <View style={styles.statDivider} />
               <View style={styles.stat}>
-                <Text style={styles.statValue}>{user.city === 'riyadh' ? t('riyadh') : user.city || '-'}</Text>
+                <Text style={styles.statValue}>
+                  {user.city ? (findCityById(user.city)?.nameAr || user.city) : user.customCity || '-'}
+                </Text>
                 <Text style={styles.statLabel}>{t('city')}</Text>
               </View>
             </View>
@@ -209,14 +239,78 @@ export default function ProfileScreen() {
               </View>
 
               <View style={styles.editField}>
-                <Text style={[styles.editLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('city')}</Text>
-                <TextInput
-                  style={[styles.editInput, { textAlign: isRTL ? 'right' : 'left' }]}
-                  value={editCity}
-                  onChangeText={setEditCity}
-                  placeholderTextColor={Colors.textMuted}
-                />
+                <Text style={[styles.editLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_region')}</Text>
+                <Pressable
+                  style={[styles.editPicker, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+                  onPress={() => { setShowRegionPicker(!showRegionPicker); setShowCityPicker(false); }}
+                >
+                  <Text style={[styles.editPickerText, !editRegion && { color: Colors.textMuted }]}>
+                    {editRegionObj ? localizedText(editRegionObj.nameAr, editRegionObj.nameEn) : t('select_region')}
+                  </Text>
+                  <ChevronDown size={18} color={Colors.textMuted} />
+                </Pressable>
+                {showRegionPicker && (
+                  <ScrollView style={styles.editPickerDropdown} nestedScrollEnabled>
+                    {saudiRegions.map(r => (
+                      <Pressable
+                        key={r.id}
+                        style={[styles.editPickerItem, editRegion === r.id && styles.editPickerItemSelected]}
+                        onPress={() => { setEditRegion(r.id); setEditCity(''); setEditCustomCity(''); setCitySearch(''); setShowRegionPicker(false); }}
+                      >
+                        <Text style={[styles.editPickerItemText, editRegion === r.id && { color: Colors.gold }]}>
+                          {localizedText(r.nameAr, r.nameEn)}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                )}
               </View>
+
+              {editRegion ? (
+                <View style={styles.editField}>
+                  <Text style={[styles.editLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_city')}</Text>
+                  <Pressable
+                    style={[styles.editPicker, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+                    onPress={() => { setShowCityPicker(!showCityPicker); setShowRegionPicker(false); }}
+                  >
+                    <Text style={[styles.editPickerText, !editCity && { color: Colors.textMuted }]}>
+                      {editCityObj ? localizedText(editCityObj.nameAr, editCityObj.nameEn) : t('select_city')}
+                    </Text>
+                    <ChevronDown size={18} color={Colors.textMuted} />
+                  </Pressable>
+                  {showCityPicker && (
+                    <View style={styles.editPickerDropdown}>
+                      <TextInput
+                        style={[styles.editCitySearch, { textAlign: isRTL ? 'right' : 'left' }]}
+                        placeholder={t('search_city')}
+                        placeholderTextColor={Colors.textMuted}
+                        value={citySearch}
+                        onChangeText={setCitySearch}
+                      />
+                      <ScrollView style={{ maxHeight: 150 }} nestedScrollEnabled>
+                        {editFilteredCities.map(c => (
+                          <Pressable
+                            key={c.id}
+                            style={[styles.editPickerItem, editCity === c.id && styles.editPickerItemSelected]}
+                            onPress={() => { setEditCity(c.id); setEditCustomCity(''); setShowCityPicker(false); setCitySearch(''); }}
+                          >
+                            <Text style={[styles.editPickerItemText, editCity === c.id && { color: Colors.gold }]}>
+                              {localizedText(c.nameAr, c.nameEn)}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  )}
+                  <TextInput
+                    style={[styles.editInput, { textAlign: isRTL ? 'right' : 'left' }]}
+                    placeholder={t('custom_city_placeholder')}
+                    placeholderTextColor={Colors.textMuted}
+                    value={editCustomCity}
+                    onChangeText={(text) => { setEditCustomCity(text); if (text.trim()) setEditCity(''); }}
+                  />
+                </View>
+              ) : null}
 
               {user.role === 'provider' && (
                 <View style={styles.editField}>
@@ -595,5 +689,48 @@ const styles = StyleSheet.create({
   },
   bottomPadding: {
     height: 40,
+  },
+  editPicker: {
+    backgroundColor: Colors.inputBg,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  editPickerText: {
+    color: Colors.textPrimary,
+    fontSize: 15,
+  },
+  editPickerDropdown: {
+    backgroundColor: Colors.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    maxHeight: 200,
+    overflow: 'hidden' as const,
+  },
+  editPickerItem: {
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.divider,
+  },
+  editPickerItemSelected: {
+    backgroundColor: Colors.surface,
+  },
+  editPickerItemText: {
+    color: Colors.textPrimary,
+    fontSize: 14,
+  },
+  editCitySearch: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    color: Colors.textPrimary,
+    fontSize: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.divider,
   },
 });

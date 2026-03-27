@@ -4,7 +4,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Search as SearchIcon, SlidersHorizontal, X } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { mockCategories, mockCities } from '@/mocks/categories';
+import { mockCategories } from '@/mocks/categories';
+import { saudiRegions } from '@/mocks/saudiRegions';
 import { fetchEquipmentList } from '@/services/firestoreService';
 import EquipmentCard from '@/components/EquipmentCard';
 import EmptyState from '@/components/EmptyState';
@@ -40,7 +41,7 @@ export default function SearchScreen() {
         if (!searchText.includes(query.toLowerCase())) return false;
       }
       if (selectedCategory && eq.category !== selectedCategory) return false;
-      if (selectedCity && eq.city !== selectedCity) return false;
+      if (selectedCity && eq.region !== selectedCity && eq.city !== selectedCity) return false;
       return true;
     });
   }, [query, selectedCategory, selectedCity, allEquipment]);
@@ -109,17 +110,17 @@ export default function SearchScreen() {
               </ScrollView>
             </View>
             <View style={[styles.filterSection, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
-              <Text style={styles.filterLabel}>{t('city')}</Text>
+              <Text style={styles.filterLabel}>{t('region')}</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <View style={[styles.chipRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                  {mockCities.map(city => (
+                  {saudiRegions.map(r => (
                     <Pressable
-                      key={city.id}
-                      style={[styles.chip, selectedCity === city.id && styles.chipSelected]}
-                      onPress={() => setSelectedCity(prev => prev === city.id ? null : city.id)}
+                      key={r.id}
+                      style={[styles.chip, selectedCity === r.id && styles.chipSelected]}
+                      onPress={() => setSelectedCity(prev => prev === r.id ? null : r.id)}
                     >
-                      <Text style={[styles.chipText, selectedCity === city.id && styles.chipTextSelected]}>
-                        {localizedText(city.nameAr, city.nameEn)}
+                      <Text style={[styles.chipText, selectedCity === r.id && styles.chipTextSelected]}>
+                        {localizedText(r.nameAr, r.nameEn)}
                       </Text>
                     </Pressable>
                   ))}

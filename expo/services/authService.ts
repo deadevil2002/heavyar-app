@@ -29,7 +29,9 @@ export async function registerWithEmail(
     nameAr: string;
     nameEn: string;
     phone: string;
+    region: string;
     city: string;
+    customCity: string;
     role: 'customer' | 'provider';
     crNumber?: string;
   }
@@ -48,7 +50,9 @@ export async function registerWithEmail(
     email,
     phone: profileData.phone,
     avatar: '',
+    region: profileData.region,
     city: profileData.city,
+    customCity: profileData.customCity,
     role: profileData.role,
     crNumber: profileData.crNumber || '',
     crVerified: false,
@@ -86,7 +90,9 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
       email: data.email || '',
       phone: data.phone || '',
       avatar: data.avatar || '',
+      region: data.region || '',
       city: data.city || '',
+      customCity: data.customCity || '',
       role: data.role || 'customer',
       crNumber: data.crNumber || '',
       crVerified: data.crVerified || false,

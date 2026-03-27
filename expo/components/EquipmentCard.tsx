@@ -7,7 +7,7 @@ import Colors from '@/constants/colors';
 import { Equipment } from '@/types';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { mockUsers } from '@/mocks/users';
-import { mockCities } from '@/mocks/categories';
+import { findCityById } from '@/mocks/saudiRegions';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 
 interface EquipmentCardProps {
@@ -19,14 +19,14 @@ export default React.memo(function EquipmentCard({ equipment, compact }: Equipme
   const { isRTL, t, localizedText } = useLanguage();
   const router = useRouter();
   const owner = mockUsers.find(u => u.uid === equipment.ownerUid);
-  const cityObj = mockCities.find(c => c.id === equipment.city);
+  const cityObj = findCityById(equipment.city);
 
   const handlePress = useCallback(() => {
     router.push(`/equipment/${equipment.id}`);
   }, [equipment.id, router]);
 
   const title = localizedText(equipment.titleAr, equipment.titleEn);
-  const cityName = cityObj ? localizedText(cityObj.nameAr, cityObj.nameEn) : equipment.city;
+  const cityName = cityObj ? localizedText(cityObj.nameAr, cityObj.nameEn) : (equipment.customCity || equipment.city);
 
   if (compact) {
     return (

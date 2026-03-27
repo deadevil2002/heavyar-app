@@ -15,7 +15,9 @@ export interface User {
   email: string;
   phone: string;
   avatar: string;
+  region: string;
   city: string;
+  customCity: string;
   role: UserRole;
   crNumber: string;
   crVerified: boolean;
@@ -41,7 +43,9 @@ export interface Equipment {
   descriptionAr: string;
   descriptionEn: string;
   category: string;
+  region: string;
   city: string;
+  customCity: string;
   district: string;
   location: {
     lat: number;

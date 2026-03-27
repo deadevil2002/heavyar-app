@@ -48,7 +48,7 @@ export default function LoginScreen() {
             <View style={styles.brandSection}>
               <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
               <Text style={styles.appName}>{t('app_name')}</Text>
-              <Text style={styles.tagline}>{t('browse_equipment')}</Text>
+              <Text style={styles.tagline}>{t('heavyar_tagline')}</Text>
             </View>
 
             <View style={styles.formSection}>

@@ -69,7 +69,9 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
               email: firebaseUser.email || '',
               phone: firebaseUser.phoneNumber || '',
               avatar: firebaseUser.photoURL || '',
+              region: '',
               city: '',
+              customCity: '',
               role: 'customer',
               crNumber: '',
               crVerified: false,
@@ -120,7 +122,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     }
   }, []);
 
-  const register = useCallback(async (name: string, email: string, phone: string, password: string, role: 'customer' | 'provider' = 'customer', crNumber?: string) => {
+  const register = useCallback(async (name: string, email: string, phone: string, password: string, role: 'customer' | 'provider' = 'customer', crNumber?: string, region?: string, city?: string, customCity?: string) => {
     console.log('[AuthContext] Register attempt for:', email, 'role:', role);
     setAuthError(null);
     try {
@@ -128,7 +130,9 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         nameAr: name,
         nameEn: name,
         phone,
-        city: '',
+        region: region || '',
+        city: city || '',
+        customCity: customCity || '',
         role,
         crNumber,
       });
