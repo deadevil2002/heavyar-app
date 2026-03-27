@@ -1,0 +1,7 @@
+{
+  "id": "z04fbw2ptcvfjo9tlrx7g",
+  "role": "user",
+  "content": "Connect to GitHub using this Personal Access Token:\r\n\r\nTOKEN: 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\r\n\r\nRepository:\r\nhttps://github.com/deadevil2002/heavyar-app.git\r\n\r\nTasks:\r\n1. Configure Git authentication using the token\r\n2. Set remote origin to the repository\r\n3. Ensure branch is main\r\n4. Push the current project to GitHub\r\n5. Verify the push succeeded\r\n\r\nImportant:\r\n- Do NOT include .env or any sensitive files\r\n- Follow existing .gitignore\r\n- Confirm files are visible in the repository after push",
+  "attachments": [],
+  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
+}
