@@ -20,18 +20,33 @@ export default function MyEquipmentScreen() {
   const currentUid = user?.uid || '';
   const [myEquipment, setMyEquipment] = useState<Equipment[]>([]);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
     const load = async () => {
-      if (!currentUid) return;
+      if (!currentUid) {
+        console.log('[MyEquipment] No currentUid, skipping fetch');
+        if (mounted) setLoading(false);
+        return;
+      }
+      console.log('[MyEquipment] Fetching equipment for uid:', currentUid);
       try {
         const items = await fetchEquipmentByOwner(currentUid);
-        if (mounted) setMyEquipment(items);
+        console.log('[MyEquipment] Fetched', items.length, 'items');
+        if (mounted) {
+          setMyEquipment(items);
+          setLoadError(null);
+        }
       } catch (e) {
-        console.log('[MyEquipment] Error:', e);
+        console.error('[MyEquipment] Fetch error:', e);
+        if (mounted) setLoadError(String(e));
+      } finally {
+        if (mounted) setLoading(false);
       }
     };
+    setLoading(true);
     void load();
     return () => { mounted = false; };
   }, [currentUid]);
@@ -119,14 +134,20 @@ export default function MyEquipmentScreen() {
           </Pressable>
         </View>
 
-        <FlatList
-          data={myEquipment}
-          renderItem={renderItem}
-          keyExtractor={item => item.id}
-          contentContainerStyle={styles.list}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={<EmptyState title={t('no_equipment')} />}
-        />
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={Colors.gold} />
+          </View>
+        ) : (
+          <FlatList
+            data={myEquipment}
+            renderItem={renderItem}
+            keyExtractor={item => item.id}
+            contentContainerStyle={styles.list}
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={<EmptyState title={loadError ? t('error_occurred') : t('no_equipment')} />}
+          />
+        )}
       </SafeAreaView>
     </View>
   );
@@ -159,6 +180,7 @@ const styles = StyleSheet.create({
   editText: { color: Colors.gold, fontSize: 13, fontWeight: '600' as const },
   deleteButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8, borderRadius: 10, backgroundColor: 'rgba(231, 76, 60, 0.1)' },
   deleteText: { color: Colors.error, fontSize: 13, fontWeight: '600' as const },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60 },
   cardDeleting: { opacity: 0.5 },
   deleteButtonDisabled: { opacity: 0.6 },
 });

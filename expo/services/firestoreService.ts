@@ -134,13 +134,37 @@ export async function fetchEquipmentById(id: string): Promise<Equipment | null> 
 export async function fetchEquipmentByOwner(ownerUid: string): Promise<Equipment[]> {
   const db = getFirebaseDb();
   console.log('[Firestore] Fetching equipment by owner:', ownerUid);
-  const q = query(
-    collection(db, 'equipment'),
-    where('ownerUid', '==', ownerUid),
-    orderBy('createdAt', 'desc')
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
+  try {
+    const q = query(
+      collection(db, 'equipment'),
+      where('ownerUid', '==', ownerUid),
+      orderBy('createdAt', 'desc')
+    );
+    const snap = await getDocs(q);
+    console.log('[Firestore] fetchEquipmentByOwner (indexed) returned', snap.docs.length, 'docs');
+    return snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
+  } catch (indexError: unknown) {
+    console.warn('[Firestore] Indexed query failed (likely missing composite index), falling back to simple query:', indexError);
+    try {
+      const fallbackQ = query(
+        collection(db, 'equipment'),
+        where('ownerUid', '==', ownerUid)
+      );
+      const fallbackSnap = await getDocs(fallbackQ);
+      console.log('[Firestore] fetchEquipmentByOwner (fallback) returned', fallbackSnap.docs.length, 'docs');
+      const items = fallbackSnap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
+      items.sort((a, b) => {
+        if (!a.createdAt && !b.createdAt) return 0;
+        if (!a.createdAt) return 1;
+        if (!b.createdAt) return -1;
+        return b.createdAt.localeCompare(a.createdAt);
+      });
+      return items;
+    } catch (fallbackError) {
+      console.error('[Firestore] fetchEquipmentByOwner fallback also failed:', fallbackError);
+      throw fallbackError;
+    }
+  }
 }
 
 export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
