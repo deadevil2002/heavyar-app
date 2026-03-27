@@ -1,3 +1,48 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Environment variables
 .env
-.expo
+.env.*
+.env.local
+.env.production
+
+# Expo
+.expo/
+dist/
+web-build/
+
+# React Native
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+
+# macOS
+.DS_Store
+*.pem
+
+# Local
+*.tsbuildinfo
+*.log
+
+# Build
+ios/
+android/
+
+# Rork internal
+.rork/
+
+# Worker secrets
+worker/wrangler.toml
+
+# Bun
+bun.lockb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
