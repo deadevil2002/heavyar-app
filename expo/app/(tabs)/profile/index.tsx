@@ -1,17 +1,27 @@
-import React, { useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3 } from 'lucide-react-native';
+import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 
 export default function ProfileScreen() {
   const { isRTL, t, localizedText } = useLanguage();
-  const { user, isAuthenticated, logout } = useAuth();
+  const { user, isAuthenticated, logout, updateProfile } = useAuth();
   const router = useRouter();
+  const { dialog, showDialog, hideDialog } = useAppDialog();
+
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [editName, setEditName] = useState<string>('');
+  const [editPhone, setEditPhone] = useState<string>('');
+  const [editCity, setEditCity] = useState<string>('');
+  const [editCrNumber, setEditCrNumber] = useState<string>('');
+  const [saving, setSaving] = useState<boolean>(false);
 
   const handleLogin = useCallback(() => {
     router.push('/login');
@@ -21,10 +31,58 @@ export default function ProfileScreen() {
     await logout();
   }, [logout]);
 
+  const startEditing = useCallback(() => {
+    if (!user) return;
+    setEditName(user.nameAr || '');
+    setEditPhone(user.phone || '');
+    setEditCity(user.city || '');
+    setEditCrNumber(user.crNumber || '');
+    setIsEditing(true);
+  }, [user]);
+
+  const cancelEditing = useCallback(() => {
+    setIsEditing(false);
+  }, []);
+
+  const handleSaveProfile = useCallback(async () => {
+    if (!user) return;
+
+    if (!editName.trim()) {
+      showDialog(t('validation_error'), t('validation_name_required'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+
+    if (user.role === 'provider' && editCrNumber.trim() && !/^\d{10}$/.test(editCrNumber.trim())) {
+      showDialog(t('validation_error'), t('cr_validation_error'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const updates: Record<string, string> = {
+        nameAr: editName.trim(),
+        nameEn: editName.trim(),
+        phone: editPhone.trim(),
+        city: editCity.trim(),
+      };
+      if (user.role === 'provider') {
+        updates.crNumber = editCrNumber.trim();
+      }
+      await updateProfile(updates);
+      setIsEditing(false);
+      showDialog(t('success'), t('profile_updated'), [{ text: t('ok'), style: 'default' }]);
+    } catch (e) {
+      console.log('[Profile] Save error:', e);
+      showDialog(t('error_title'), t('profile_update_failed'), [{ text: t('ok'), style: 'default' }]);
+    } finally {
+      setSaving(false);
+    }
+  }, [user, editName, editPhone, editCity, editCrNumber, updateProfile, t, showDialog]);
+
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
 
   const menuItems = [
-    { icon: Package, label: t('my_equipment'), route: '/my-equipment' as const },
+    ...(user?.role === 'provider' ? [{ icon: Package, label: t('my_equipment'), route: '/my-equipment' as const }] : []),
     { icon: Settings, label: t('settings'), route: '/settings' as const },
   ];
 
@@ -67,6 +125,16 @@ export default function ProfileScreen() {
                   {user.isVerified && <Shield size={16} color={Colors.success} />}
                 </View>
                 <Text style={styles.email}>{user.email}</Text>
+                <View style={[styles.roleBadge, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  {user.role === 'provider' ? (
+                    <Briefcase size={12} color={Colors.gold} />
+                  ) : (
+                    <ShoppingCart size={12} color={Colors.info} />
+                  )}
+                  <Text style={[styles.roleText, { color: user.role === 'provider' ? Colors.gold : Colors.info }]}>
+                    {user.role === 'provider' ? t('provider') : t('customer')}
+                  </Text>
+                </View>
                 <Text style={styles.memberSince}>{t('member_since')} {user.joinedAt}</Text>
               </View>
             </View>
@@ -86,16 +154,105 @@ export default function ProfileScreen() {
               </View>
               <View style={styles.statDivider} />
               <View style={styles.stat}>
-                <Text style={styles.statValue}>{user.city === 'riyadh' ? t('riyadh') : user.city}</Text>
+                <Text style={styles.statValue}>{user.city === 'riyadh' ? t('riyadh') : user.city || '-'}</Text>
                 <Text style={styles.statLabel}>{t('city')}</Text>
               </View>
             </View>
           </View>
 
-          <Pressable style={styles.editProfileButton}>
-            <Edit3 size={18} color={Colors.gold} />
-            <Text style={styles.editProfileText}>{t('edit_profile')}</Text>
-          </Pressable>
+          {user.role === 'provider' && user.crNumber ? (
+            <View style={styles.crCard}>
+              <View style={[styles.crRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <FileText size={18} color={Colors.gold} />
+                <View style={{ flex: 1, alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
+                  <Text style={styles.crLabel}>{t('cr_number')}</Text>
+                  <Text style={styles.crValue}>{user.crNumber}</Text>
+                </View>
+                <View style={[styles.crStatusBadge, { backgroundColor: user.crVerified ? 'rgba(46, 204, 113, 0.15)' : 'rgba(243, 156, 18, 0.15)' }]}>
+                  <Text style={[styles.crStatusText, { color: user.crVerified ? Colors.success : Colors.warning }]}>
+                    {user.crVerified ? t('cr_verified') : t('cr_not_verified')}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          ) : null}
+
+          {isEditing ? (
+            <View style={styles.editSection}>
+              <View style={[styles.editHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <Text style={styles.editTitle}>{t('edit_profile_title')}</Text>
+                <Pressable onPress={cancelEditing}>
+                  <X size={22} color={Colors.textMuted} />
+                </Pressable>
+              </View>
+
+              <View style={styles.editField}>
+                <Text style={[styles.editLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('name')}</Text>
+                <TextInput
+                  style={[styles.editInput, { textAlign: isRTL ? 'right' : 'left' }]}
+                  value={editName}
+                  onChangeText={setEditName}
+                  placeholderTextColor={Colors.textMuted}
+                />
+              </View>
+
+              <View style={styles.editField}>
+                <Text style={[styles.editLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('phone')}</Text>
+                <TextInput
+                  style={[styles.editInput, { textAlign: isRTL ? 'right' : 'left' }]}
+                  value={editPhone}
+                  onChangeText={setEditPhone}
+                  keyboardType="phone-pad"
+                  placeholderTextColor={Colors.textMuted}
+                />
+              </View>
+
+              <View style={styles.editField}>
+                <Text style={[styles.editLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('city')}</Text>
+                <TextInput
+                  style={[styles.editInput, { textAlign: isRTL ? 'right' : 'left' }]}
+                  value={editCity}
+                  onChangeText={setEditCity}
+                  placeholderTextColor={Colors.textMuted}
+                />
+              </View>
+
+              {user.role === 'provider' && (
+                <View style={styles.editField}>
+                  <Text style={[styles.editLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('cr_number')}</Text>
+                  <TextInput
+                    style={[styles.editInput, { textAlign: isRTL ? 'right' : 'left' }]}
+                    value={editCrNumber}
+                    onChangeText={setEditCrNumber}
+                    keyboardType="numeric"
+                    maxLength={10}
+                    placeholder={t('cr_number_placeholder')}
+                    placeholderTextColor={Colors.textMuted}
+                  />
+                </View>
+              )}
+
+              <Pressable
+                style={[styles.saveButton, saving && styles.saveButtonDisabled]}
+                onPress={handleSaveProfile}
+                disabled={saving}
+              >
+                {saving ? (
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                ) : (
+                  <>
+                    <Check size={18} color={Colors.primary} />
+                    <Text style={styles.saveButtonText}>{t('save')}</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable style={styles.editProfileButton} onPress={startEditing}>
+              <Edit3 size={18} color={Colors.gold} />
+              <Text style={styles.editProfileText}>{t('edit_profile')}</Text>
+            </Pressable>
+          )}
 
           <View style={styles.menuSection}>
             {menuItems.map((item, index) => (
@@ -123,6 +280,14 @@ export default function ProfileScreen() {
           <View style={styles.bottomPadding} />
         </ScrollView>
       </SafeAreaView>
+
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }
@@ -231,6 +396,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.textSecondary,
   },
+  roleBadge: {
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  roleText: {
+    fontSize: 12,
+    fontWeight: '600' as const,
+  },
   memberSince: {
     fontSize: 12,
     color: Colors.textMuted,
@@ -264,6 +438,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
   },
+  crCard: {
+    marginHorizontal: 20,
+    marginTop: 12,
+    backgroundColor: Colors.card,
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  crRow: {
+    alignItems: 'center',
+    gap: 12,
+  },
+  crLabel: {
+    fontSize: 12,
+    color: Colors.textMuted,
+  },
+  crValue: {
+    fontSize: 15,
+    fontWeight: '600' as const,
+    color: Colors.textPrimary,
+    marginTop: 2,
+  },
+  crStatusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  crStatusText: {
+    fontSize: 12,
+    fontWeight: '600' as const,
+  },
   editProfileButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -280,6 +486,61 @@ const styles = StyleSheet.create({
     color: Colors.gold,
     fontSize: 15,
     fontWeight: '600' as const,
+  },
+  editSection: {
+    marginHorizontal: 20,
+    marginTop: 12,
+    backgroundColor: Colors.card,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: 14,
+  },
+  editHeader: {
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  editTitle: {
+    fontSize: 17,
+    fontWeight: '700' as const,
+    color: Colors.textPrimary,
+  },
+  editField: {
+    gap: 6,
+  },
+  editLabel: {
+    fontSize: 13,
+    fontWeight: '600' as const,
+    color: Colors.textSecondary,
+  },
+  editInput: {
+    backgroundColor: Colors.inputBg,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: Colors.textPrimary,
+    fontSize: 15,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  saveButton: {
+    flexDirection: 'row',
+    backgroundColor: Colors.gold,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  saveButtonDisabled: {
+    opacity: 0.6,
+  },
+  saveButtonText: {
+    color: Colors.primary,
+    fontSize: 16,
+    fontWeight: '700' as const,
   },
   menuSection: {
     marginTop: 24,

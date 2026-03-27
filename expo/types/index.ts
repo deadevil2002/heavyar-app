@@ -4,6 +4,8 @@ export type RequestStatus = 'pending' | 'accepted' | 'in_progress' | 'completed'
 
 export type PaymentStatus = 'unpaid' | 'pending_payment' | 'paid' | 'failed' | 'refunded';
 
+export type UserRole = 'customer' | 'provider';
+
 export interface User {
   uid: string;
   nameAr: string;
@@ -12,6 +14,9 @@ export interface User {
   phone: string;
   avatar: string;
   city: string;
+  role: UserRole;
+  crNumber: string;
+  crVerified: boolean;
   rating: number;
   totalRatings: number;
   equipmentCount: number;

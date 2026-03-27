@@ -2,8 +2,9 @@ import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Camera, X, ChevronDown, Upload } from 'lucide-react-native';
+import { Camera, X, ChevronDown, Upload, Lock, Briefcase } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -13,9 +14,10 @@ import { uploadMultipleImages, CloudinaryImage } from '@/services/cloudinaryServ
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 
-export default function CreateListingScreen() {
+export default function AddEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
+  const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
   const [titleAr, setTitleAr] = useState<string>('');
   const [titleEn, setTitleEn] = useState<string>('');
@@ -30,6 +32,9 @@ export default function CreateListingScreen() {
   const [showCityPicker, setShowCityPicker] = useState<boolean>(false);
   const [_uploading, setUploading] = useState<boolean>(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
+  const [publishing, setPublishing] = useState<boolean>(false);
+
+  const isProvider = user?.role === 'provider';
 
   const pickImage = useCallback(async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -45,8 +50,6 @@ export default function CreateListingScreen() {
   const removeImage = useCallback((index: number) => {
     setImages(prev => prev.filter((_, i) => i !== index));
   }, []);
-
-  const [publishing, setPublishing] = useState<boolean>(false);
 
   const handlePublish = useCallback(async () => {
     if (!user) return;
@@ -126,6 +129,37 @@ export default function CreateListingScreen() {
 
   const selectedCategory = mockCategories.find(c => c.id === category);
   const selectedCity = mockCities.find(c => c.id === city);
+
+  if (!isAuthenticated || !user) {
+    return (
+      <View style={styles.container}>
+        <SafeAreaView edges={['top']} style={styles.safeArea}>
+          <View style={styles.blockedContainer}>
+            <Lock size={48} color={Colors.textMuted} />
+            <Text style={styles.blockedTitle}>{t('login_required')}</Text>
+            <Text style={styles.blockedDesc}>{t('login_required_message')}</Text>
+            <Pressable style={styles.blockedButton} onPress={() => router.push('/login')}>
+              <Text style={styles.blockedButtonText}>{t('go_to_login')}</Text>
+            </Pressable>
+          </View>
+        </SafeAreaView>
+      </View>
+    );
+  }
+
+  if (!isProvider) {
+    return (
+      <View style={styles.container}>
+        <SafeAreaView edges={['top']} style={styles.safeArea}>
+          <View style={styles.blockedContainer}>
+            <Briefcase size={48} color={Colors.textMuted} />
+            <Text style={styles.blockedTitle}>{t('provider_only')}</Text>
+            <Text style={styles.blockedDesc}>{t('role_provider_desc')}</Text>
+          </View>
+        </SafeAreaView>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -324,6 +358,38 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
+  },
+  blockedContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 40,
+    gap: 12,
+  },
+  blockedTitle: {
+    fontSize: 20,
+    fontWeight: '700' as const,
+    color: Colors.textPrimary,
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  blockedDesc: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  blockedButton: {
+    backgroundColor: Colors.gold,
+    borderRadius: 14,
+    paddingHorizontal: 32,
+    paddingVertical: 12,
+    marginTop: 8,
+  },
+  blockedButtonText: {
+    color: Colors.primary,
+    fontSize: 16,
+    fontWeight: '700' as const,
   },
   headerRow: {
     paddingHorizontal: 20,

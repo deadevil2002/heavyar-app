@@ -2,13 +2,14 @@ import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, TextInput, Pressable, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Mail, Lock, Eye, EyeOff, User, Phone } from 'lucide-react-native';
+import { Mail, Lock, Eye, EyeOff, User, Phone, Briefcase, ShoppingCart, FileText } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { UserRole } from '@/types';
 
 export default function RegisterScreen() {
   const { isRTL, t } = useLanguage();
@@ -20,6 +21,8 @@ export default function RegisterScreen() {
   const [password, setPassword] = useState<string>('');
   const [confirmPassword, setConfirmPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [role, setRole] = useState<UserRole>('customer');
+  const [crNumber, setCrNumber] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
@@ -44,9 +47,17 @@ export default function RegisterScreen() {
       showDialog(t('validation_error'), t('confirm_password'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
+    if (role === 'provider' && crNumber.trim() && crNumber.trim().length !== 10) {
+      showDialog(t('validation_error'), t('cr_validation_error'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+    if (role === 'provider' && crNumber.trim() && !/^\d{10}$/.test(crNumber.trim())) {
+      showDialog(t('validation_error'), t('cr_validation_error'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
     setLoading(true);
     try {
-      await register(name, email, phone, password);
+      await register(name, email, phone, password, role, role === 'provider' ? crNumber.trim() : undefined);
       router.back();
     } catch (e) {
       console.log('Register error:', e);
@@ -55,7 +66,7 @@ export default function RegisterScreen() {
     } finally {
       setLoading(false);
     }
-  }, [name, email, phone, password, confirmPassword, register, router, t, showDialog]);
+  }, [name, email, phone, password, confirmPassword, role, crNumber, register, router, t, showDialog]);
 
   return (
     <View style={styles.container}>
@@ -69,6 +80,28 @@ export default function RegisterScreen() {
 
             <View style={styles.formSection}>
               <Text style={[styles.formTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('register')}</Text>
+
+              <Text style={[styles.roleLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_role')}</Text>
+              <View style={[styles.roleRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <Pressable
+                  style={[styles.roleCard, role === 'customer' && styles.roleCardActive]}
+                  onPress={() => setRole('customer')}
+                  testID="role-customer"
+                >
+                  <ShoppingCart size={24} color={role === 'customer' ? Colors.primary : Colors.textMuted} />
+                  <Text style={[styles.roleCardTitle, role === 'customer' && styles.roleCardTitleActive]}>{t('role_customer')}</Text>
+                  <Text style={[styles.roleCardDesc, role === 'customer' && styles.roleCardDescActive]} numberOfLines={2}>{t('role_customer_desc')}</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.roleCard, role === 'provider' && styles.roleCardActive]}
+                  onPress={() => setRole('provider')}
+                  testID="role-provider"
+                >
+                  <Briefcase size={24} color={role === 'provider' ? Colors.primary : Colors.textMuted} />
+                  <Text style={[styles.roleCardTitle, role === 'provider' && styles.roleCardTitleActive]}>{t('role_provider')}</Text>
+                  <Text style={[styles.roleCardDesc, role === 'provider' && styles.roleCardDescActive]} numberOfLines={2}>{t('role_provider_desc')}</Text>
+                </Pressable>
+              </View>
 
               <View style={[styles.inputRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <User size={20} color={Colors.textMuted} />
@@ -105,6 +138,21 @@ export default function RegisterScreen() {
                   keyboardType="phone-pad"
                 />
               </View>
+
+              {role === 'provider' && (
+                <View style={[styles.inputRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  <FileText size={20} color={Colors.textMuted} />
+                  <TextInput
+                    style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]}
+                    placeholder={t('cr_number_placeholder')}
+                    placeholderTextColor={Colors.textMuted}
+                    value={crNumber}
+                    onChangeText={setCrNumber}
+                    keyboardType="numeric"
+                    maxLength={10}
+                  />
+                </View>
+              )}
 
               <View style={[styles.inputRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Lock size={20} color={Colors.textMuted} />
@@ -164,11 +212,51 @@ export default function RegisterScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
   scrollContent: { flexGrow: 1, paddingHorizontal: 24, paddingBottom: 40 },
-  brandSection: { alignItems: 'center', paddingTop: 32, paddingBottom: 24 },
-  logo: { width: 72, height: 72, borderRadius: 18, marginBottom: 12 },
-  appName: { fontSize: 26, fontWeight: '800' as const, color: Colors.gold },
+  brandSection: { alignItems: 'center', paddingTop: 24, paddingBottom: 16 },
+  logo: { width: 64, height: 64, borderRadius: 16, marginBottom: 8 },
+  appName: { fontSize: 24, fontWeight: '800' as const, color: Colors.gold },
   formSection: { gap: 14 },
-  formTitle: { fontSize: 24, fontWeight: '700' as const, color: Colors.textPrimary, marginBottom: 4 },
+  formTitle: { fontSize: 22, fontWeight: '700' as const, color: Colors.textPrimary, marginBottom: 2 },
+  roleLabel: {
+    fontSize: 14,
+    fontWeight: '600' as const,
+    color: Colors.textSecondary,
+  },
+  roleRow: {
+    gap: 12,
+  },
+  roleCard: {
+    flex: 1,
+    backgroundColor: Colors.inputBg,
+    borderRadius: 14,
+    padding: 14,
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 2,
+    borderColor: Colors.border,
+  },
+  roleCardActive: {
+    borderColor: Colors.gold,
+    backgroundColor: Colors.gold,
+  },
+  roleCardTitle: {
+    fontSize: 14,
+    fontWeight: '700' as const,
+    color: Colors.textPrimary,
+  },
+  roleCardTitleActive: {
+    color: Colors.primary,
+  },
+  roleCardDesc: {
+    fontSize: 11,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 15,
+  },
+  roleCardDescActive: {
+    color: Colors.primary,
+    opacity: 0.7,
+  },
   inputRow: {
     backgroundColor: Colors.inputBg,
     borderRadius: 14,

@@ -30,11 +30,13 @@ export async function registerWithEmail(
     nameEn: string;
     phone: string;
     city: string;
+    role: 'customer' | 'provider';
+    crNumber?: string;
   }
 ): Promise<FirebaseUser> {
   const auth = getFirebaseAuth();
   const db = getFirebaseDb();
-  console.log('[Auth] Attempting registration for:', email);
+  console.log('[Auth] Attempting registration for:', email, 'role:', profileData.role);
 
   const credential = await createUserWithEmailAndPassword(auth, email, password);
   const uid = credential.user.uid;
@@ -47,6 +49,9 @@ export async function registerWithEmail(
     phone: profileData.phone,
     avatar: '',
     city: profileData.city,
+    role: profileData.role,
+    crNumber: profileData.crNumber || '',
+    crVerified: false,
     rating: 0,
     totalRatings: 0,
     equipmentCount: 0,
@@ -82,6 +87,9 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
       phone: data.phone || '',
       avatar: data.avatar || '',
       city: data.city || '',
+      role: data.role || 'customer',
+      crNumber: data.crNumber || '',
+      crVerified: data.crVerified || false,
       rating: data.rating || 0,
       totalRatings: data.totalRatings || 0,
       equipmentCount: data.equipmentCount || 0,

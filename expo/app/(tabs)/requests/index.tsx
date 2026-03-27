@@ -42,13 +42,13 @@ export default function RequestsScreen() {
             style={[styles.tabItem, tab === 'customer' && styles.tabActive]}
             onPress={() => setTab('customer')}
           >
-            <Text style={[styles.tabText, tab === 'customer' && styles.tabTextActive]}>{t('as_customer')}</Text>
+            <Text style={[styles.tabText, tab === 'customer' && styles.tabTextActive]}>{t('my_sent_requests')}</Text>
           </Pressable>
           <Pressable
             style={[styles.tabItem, tab === 'provider' && styles.tabActive]}
             onPress={() => setTab('provider')}
           >
-            <Text style={[styles.tabText, tab === 'provider' && styles.tabTextActive]}>{t('as_provider')}</Text>
+            <Text style={[styles.tabText, tab === 'provider' && styles.tabTextActive]}>{t('incoming_requests')}</Text>
           </Pressable>
         </View>
 
