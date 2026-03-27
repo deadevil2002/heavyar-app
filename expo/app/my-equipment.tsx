@@ -85,7 +85,7 @@ export default function MyEquipmentScreen() {
           </View>
         </View>
         <View style={[styles.actions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-          <Pressable style={styles.editButton} onPress={() => router.push(`/equipment/${item.id}`)}>
+          <Pressable style={styles.editButton} onPress={() => router.push(`/edit-equipment?id=${item.id}`)}>
             <Edit3 size={16} color={Colors.gold} />
             <Text style={styles.editText}>{t('edit')}</Text>
           </Pressable>
