@@ -8,8 +8,9 @@ import Colors from "@/constants/colors";
 import { LanguageProvider } from "@/contexts/LanguageContext";
 import { AuthProvider } from "@/contexts/AuthContext";
 
-const APP_VERSION = 'v3.0.1';
-console.log(`[RootLayout] App loaded - ${APP_VERSION} - ${new Date().toISOString()}`);
+const APP_VERSION = 'v3.1.0';
+const BUILD_TS = '20260328_001';
+console.log(`[RootLayout] App loaded - ${APP_VERSION} build:${BUILD_TS} - ${new Date().toISOString()}`);
 
 void SplashScreen.preventAutoHideAsync();
 
