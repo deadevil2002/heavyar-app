@@ -107,7 +107,7 @@ export default function SettingsScreen() {
                 </View>
                 <Text style={styles.menuLabel}>{t('about')}</Text>
               </View>
-              <Text style={styles.versionText}>{t('version')} 1.0.0</Text>
+              <Text style={styles.versionText}>{t('version')} 3.0.1</Text>
             </Pressable>
           </View>
         </ScrollView>
