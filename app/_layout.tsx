@@ -8,8 +8,10 @@ import Colors from "@/constants/colors";
 import { LanguageProvider } from "@/contexts/LanguageContext";
 import { AuthProvider } from "@/contexts/AuthContext";
 
-void SplashScreen.preventAutoHideAsync();
+const APP_VERSION = 'v2.0.0';
+console.log(`[RootLayout] App loaded - ${APP_VERSION} - ${new Date().toISOString()}`);
 
+void SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient();
 
