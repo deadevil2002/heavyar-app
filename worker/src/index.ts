@@ -6,7 +6,6 @@ export interface Env {
   CLOUDINARY_UPLOAD_PRESET: string;
   TAP_SECRET_KEY_TEST: string;
   RESEND_API_KEY: string;
-  RESEND_FROM_EMAIL?: string;
 }
 
 interface OtpStore {
@@ -41,17 +40,6 @@ const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Access-Control-Max-Age': '86400',
-};
-
-const LOGO_URL = 'https://res.cloudinary.com/dlph6yiz2/image/upload/v1774632552/heavyar/brand_logo.png';
-const LOGO_FALLBACK = 'Heavyar';
-
-const COMPANY_INFO = {
-  nameAr: 'مؤسسة سالم بن علي النعيمي',
-  nameEn: 'Salem bin Ali Al Nuaimi Establishment',
-  crNumber: '7050191290',
-  addressEn: 'Ahmad Ibn Hajar Al Asqalani Street, Building No: 2500, Secondary No: 9074, District: Tebah, Postal Code: 35513, Al Jubail, Saudi Arabia',
-  addressAr: 'شارع أحمد بن حجر العسقلاني، مبنى رقم: 2500، رقم فرعي: 9074، حي: طيبة، الرمز البريدي: 35513، الجبيل، المملكة العربية السعودية',
 };
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -253,49 +241,11 @@ async function handleCloudinaryDelete(request: Request, env: Env): Promise<Respo
 
 interface SendOtpBody {
   email: string;
-  language?: string;
 }
 
 interface VerifyOtpBody {
   email: string;
   code: string;
-}
-
-function buildOtpEmailHtml(otp: string, language: string): string {
-  const isAr = language === 'ar';
-  const dir = isAr ? 'rtl' : 'ltr';
-  const title = isAr ? 'رمز التحقق' : 'Verification Code';
-  const tagline = isAr ? 'منصة تأجير المعدات الثقيلة' : 'Heavy Equipment Rental Marketplace';
-  const codeLabel = isAr ? 'رمز التحقق الخاص بك' : 'Your verification code';
-  const validFor = isAr ? 'صالح لمدة 10 دقائق' : 'Valid for 10 minutes';
-  const ignoreMsg = isAr ? 'إذا لم تطلب هذا الرمز، تجاهل هذه الرسالة' : 'If you did not request this code, ignore this email';
-
-  return `<!DOCTYPE html>
-<html dir="${dir}" lang="${language}">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#060F1C;font-family:Arial,Helvetica,sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#060F1C;padding:32px 16px;">
-<tr><td align="center">
-<table width="480" cellpadding="0" cellspacing="0" style="max-width:480px;background:#0B1A2F;border-radius:16px;overflow:hidden;">
-<tr><td style="background:linear-gradient(135deg,#0B1A2F,#132744);padding:32px 24px 20px;text-align:center;">
-  <img src="${LOGO_URL}" alt="${LOGO_FALLBACK}" width="64" height="64" style="border-radius:16px;display:inline-block;" onerror="this.style.display='none'"/>
-  <h1 style="color:#D4A843;margin:12px 0 0;font-size:24px;">${LOGO_FALLBACK}</h1>
-  <p style="color:#8BA3C7;margin:6px 0 0;font-size:13px;">${tagline}</p>
-</td></tr>
-<tr><td style="padding:24px;">
-  <div style="background:#132744;border-radius:12px;padding:24px;text-align:center;border:1px solid #1E3A5F;">
-    <p style="color:#8BA3C7;margin:0 0 12px;font-size:14px;">${codeLabel}</p>
-    <div style="font-size:36px;font-weight:bold;color:#D4A843;letter-spacing:8px;padding:12px 0;">${otp}</div>
-    <p style="color:#5A7A9F;margin:12px 0 0;font-size:12px;">${validFor}</p>
-  </div>
-</td></tr>
-<tr><td style="padding:0 24px 24px;text-align:center;">
-  <p style="color:#5A7A9F;font-size:11px;margin:0;">${ignoreMsg}</p>
-</td></tr>
-</table>
-</td></tr>
-</table>
-</body></html>`;
 }
 
 async function handleSendEmailOtp(request: Request, env: Env): Promise<Response> {
@@ -307,24 +257,16 @@ async function handleSendEmailOtp(request: Request, env: Env): Promise<Response>
     }
 
     if (!env.RESEND_API_KEY) {
-      console.error('RESEND_API_KEY is not configured');
-      return jsonResponse({ success: false, error: 'Email service not configured', errorCode: 'SERVICE_ERROR' }, 500);
+      return jsonResponse({ success: false, error: 'Email service not configured' }, 500);
     }
 
     cleanExpiredOtps();
 
     const email = body.email.toLowerCase().trim();
-    const language = body.language || 'ar';
     const otp = generateOtp();
     const expiresAt = Date.now() + 10 * 60 * 1000;
 
     otpStore.set(email, { code: otp, expiresAt });
-
-    const senderEmail = env.RESEND_FROM_EMAIL || 'noreply@mail.heavyar.com';
-    const senderName = 'Heavyar';
-    const subject = language === 'ar' ? 'Heavyar - رمز التحقق' : 'Heavyar - Verification Code';
-
-    console.log('Sending OTP email via Resend to:', email, 'from:', `${senderName} <${senderEmail}>`, 'lang:', language);
 
     const resendResponse = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -333,24 +275,34 @@ async function handleSendEmailOtp(request: Request, env: Env): Promise<Response>
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: `${senderName} <${senderEmail}>`,
+        from: 'Heavyar <noreply@heavyar.app>',
         to: [email],
-        subject,
-        html: buildOtpEmailHtml(otp, language),
+        subject: 'Heavyar - رمز التحقق / Verification Code',
+        html: `<div dir="rtl" style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0B1A2F; color: #fff; border-radius: 16px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="color: #D4A843; margin: 0;">هيفيار - Heavyar</h1>
+            <p style="color: #8BA3C7; margin: 8px 0 0;">منصة تأجير المعدات الثقيلة</p>
+          </div>
+          <div style="background: #132744; border-radius: 12px; padding: 24px; text-align: center;">
+            <p style="color: #8BA3C7; margin: 0 0 12px;">رمز التحقق الخاص بك / Your verification code</p>
+            <div style="font-size: 36px; font-weight: bold; color: #D4A843; letter-spacing: 8px; padding: 16px;">${otp}</div>
+            <p style="color: #5A7A9F; margin: 12px 0 0; font-size: 13px;">صالح لمدة 10 دقائق / Valid for 10 minutes</p>
+          </div>
+          <p style="color: #5A7A9F; text-align: center; margin: 16px 0 0; font-size: 12px;">إذا لم تطلب هذا الرمز، تجاهل هذا البريد<br/>If you didn't request this code, ignore this email</p>
+        </div>`,
       }),
     });
 
     if (!resendResponse.ok) {
       const errData = await resendResponse.text();
-      console.error('Resend API error:', resendResponse.status, errData);
-      return jsonResponse({ success: false, error: 'Email service temporarily unavailable', errorCode: 'EMAIL_SEND_FAILED' }, 500);
+      console.error('Resend error:', errData);
+      return jsonResponse({ success: false, error: 'Failed to send verification email' }, 500);
     }
 
-    console.log('OTP email sent successfully to:', email);
     return jsonResponse({ success: true, message: 'OTP sent successfully' });
   } catch (error) {
     console.error('Send OTP error:', error);
-    return jsonResponse({ success: false, error: 'Failed to send OTP', errorCode: 'SERVICE_ERROR' }, 500);
+    return jsonResponse({ success: false, error: 'Failed to send OTP' }, 500);
   }
 }
 
@@ -386,186 +338,6 @@ async function handleVerifyEmailOtp(request: Request): Promise<Response> {
   }
 }
 
-interface InvoiceEmailBody {
-  language: string;
-  customerEmail: string;
-  customerName?: string;
-  invoiceNumber: string;
-  issueDate: string;
-  equipmentName: string;
-  requestMode: string;
-  numberOfDays: number | null;
-  pricePerDay: number;
-  subtotal: number;
-  vatAmount: number;
-  totalAmount: number;
-  currency: string;
-  paymentReference: string;
-}
-
-function formatCurrency(amount: number, currency: string): string {
-  const formatted = amount.toLocaleString('en-SA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return currency === 'SAR' ? `${formatted} SAR` : `${formatted} ${currency}`;
-}
-
-function buildInvoiceEmailHtml(data: InvoiceEmailBody): string {
-  const isAr = data.language === 'ar';
-  const dir = isAr ? 'rtl' : 'ltr';
-
-  const labels = isAr ? {
-    title: 'فاتورة ضريبية مبسطة',
-    invoiceNo: 'رقم الفاتورة',
-    date: 'التاريخ',
-    equipment: 'المعدة',
-    rentalType: 'نوع الإيجار',
-    fixedDays: 'أيام محددة',
-    openEnded: 'حتى انتهاء العمل',
-    days: 'عدد الأيام',
-    pricePerDay: 'السعر لكل يوم',
-    subtotal: 'المبلغ الفرعي',
-    vat: 'ضريبة القيمة المضافة (15%)',
-    total: 'الإجمالي شاملاً الضريبة',
-    paymentRef: 'مرجع الدفع',
-    company: 'معلومات المؤسسة',
-    crNo: 'رقم السجل التجاري',
-    customer: 'العميل',
-    companyName: COMPANY_INFO.nameAr,
-    address: COMPANY_INFO.addressAr,
-  } : {
-    title: 'Simplified Tax Invoice',
-    invoiceNo: 'Invoice Number',
-    date: 'Date',
-    equipment: 'Equipment',
-    rentalType: 'Rental Type',
-    fixedDays: 'Fixed Days',
-    openEnded: 'Until Work Completion',
-    days: 'Number of Days',
-    pricePerDay: 'Price per Day',
-    subtotal: 'Subtotal',
-    vat: 'VAT (15%)',
-    total: 'Total Including VAT',
-    paymentRef: 'Payment Reference',
-    company: 'Company Information',
-    crNo: 'CR Number',
-    customer: 'Customer',
-    companyName: COMPANY_INFO.nameEn,
-    address: COMPANY_INFO.addressEn,
-  };
-
-  const rentalTypeText = data.requestMode === 'open_ended' ? labels.openEnded : labels.fixedDays;
-  const daysRow = data.numberOfDays ? `<tr><td style="color:#8BA3C7;padding:8px 0;border-bottom:1px solid #1E3A5F;">${labels.days}</td><td style="color:#fff;padding:8px 0;border-bottom:1px solid #1E3A5F;text-align:${isAr ? 'left' : 'right'};font-weight:600;">${data.numberOfDays}</td></tr>` : '';
-
-  return `<!DOCTYPE html>
-<html dir="${dir}" lang="${data.language}">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#060F1C;font-family:Arial,Helvetica,sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#060F1C;padding:32px 16px;">
-<tr><td align="center">
-<table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#0B1A2F;border-radius:16px;overflow:hidden;">
-
-<tr><td style="background:#0B1A2F;padding:28px 24px 16px;text-align:center;border-bottom:2px solid #D4A843;">
-  <img src="${LOGO_URL}" alt="${LOGO_FALLBACK}" width="56" height="56" style="border-radius:14px;display:inline-block;" onerror="this.style.display='none'"/>
-  <h1 style="color:#D4A843;margin:10px 0 4px;font-size:22px;">${LOGO_FALLBACK}</h1>
-  <p style="color:#D4A843;margin:0;font-size:16px;font-weight:700;">${labels.title}</p>
-</td></tr>
-
-<tr><td style="padding:24px;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
-    <tr>
-      <td style="color:#8BA3C7;font-size:13px;">${labels.invoiceNo}: <strong style="color:#fff;">${data.invoiceNumber}</strong></td>
-      <td style="color:#8BA3C7;font-size:13px;text-align:${isAr ? 'left' : 'right'};">${labels.date}: <strong style="color:#fff;">${data.issueDate}</strong></td>
-    </tr>
-  </table>
-
-  ${data.customerName ? `<div style="background:#132744;border-radius:10px;padding:14px;margin-bottom:16px;border:1px solid #1E3A5F;">
-    <p style="color:#5A7A9F;font-size:12px;margin:0 0 4px;">${labels.customer}</p>
-    <p style="color:#fff;font-size:14px;margin:0;font-weight:600;">${data.customerName}</p>
-    <p style="color:#8BA3C7;font-size:12px;margin:4px 0 0;">${data.customerEmail}</p>
-  </div>` : ''}
-
-  <div style="background:#132744;border-radius:10px;padding:16px;margin-bottom:16px;border:1px solid #1E3A5F;">
-    <table width="100%" cellpadding="0" cellspacing="0">
-      <tr><td style="color:#8BA3C7;padding:8px 0;border-bottom:1px solid #1E3A5F;">${labels.equipment}</td><td style="color:#fff;padding:8px 0;border-bottom:1px solid #1E3A5F;text-align:${isAr ? 'left' : 'right'};font-weight:600;">${data.equipmentName}</td></tr>
-      <tr><td style="color:#8BA3C7;padding:8px 0;border-bottom:1px solid #1E3A5F;">${labels.rentalType}</td><td style="color:#D4A843;padding:8px 0;border-bottom:1px solid #1E3A5F;text-align:${isAr ? 'left' : 'right'};font-weight:600;">${rentalTypeText}</td></tr>
-      ${daysRow}
-      <tr><td style="color:#8BA3C7;padding:8px 0;border-bottom:1px solid #1E3A5F;">${labels.pricePerDay}</td><td style="color:#fff;padding:8px 0;border-bottom:1px solid #1E3A5F;text-align:${isAr ? 'left' : 'right'};font-weight:600;">${formatCurrency(data.pricePerDay, data.currency)}</td></tr>
-    </table>
-  </div>
-
-  <div style="background:#132744;border-radius:10px;padding:16px;margin-bottom:16px;border:1px solid #D4A843;">
-    <table width="100%" cellpadding="0" cellspacing="0">
-      <tr><td style="color:#8BA3C7;padding:8px 0;border-bottom:1px solid #1E3A5F;">${labels.subtotal}</td><td style="color:#fff;padding:8px 0;border-bottom:1px solid #1E3A5F;text-align:${isAr ? 'left' : 'right'};font-weight:600;">${formatCurrency(data.subtotal, data.currency)}</td></tr>
-      <tr><td style="color:#8BA3C7;padding:8px 0;border-bottom:1px solid #1E3A5F;">${labels.vat}</td><td style="color:#F39C12;padding:8px 0;border-bottom:1px solid #1E3A5F;text-align:${isAr ? 'left' : 'right'};font-weight:600;">${formatCurrency(data.vatAmount, data.currency)}</td></tr>
-      <tr><td style="color:#D4A843;padding:12px 0 4px;font-size:16px;font-weight:700;">${labels.total}</td><td style="color:#D4A843;padding:12px 0 4px;text-align:${isAr ? 'left' : 'right'};font-size:22px;font-weight:800;">${formatCurrency(data.totalAmount, data.currency)}</td></tr>
-    </table>
-  </div>
-
-  ${data.paymentReference ? `<p style="color:#5A7A9F;font-size:12px;text-align:center;margin:0 0 16px;">${labels.paymentRef}: ${data.paymentReference}</p>` : ''}
-
-  <div style="background:#0F2035;border-radius:10px;padding:14px;border:1px solid #1E3A5F;">
-    <p style="color:#5A7A9F;font-size:11px;margin:0 0 4px;">${labels.company}</p>
-    <p style="color:#8BA3C7;font-size:12px;margin:0;line-height:18px;">
-      <strong style="color:#fff;">${labels.companyName}</strong><br/>
-      ${labels.crNo}: ${COMPANY_INFO.crNumber}<br/>
-      ${labels.address}
-    </p>
-  </div>
-</td></tr>
-
-</table>
-</td></tr>
-</table>
-</body></html>`;
-}
-
-async function handleSendInvoiceEmail(request: Request, env: Env): Promise<Response> {
-  try {
-    const body = await request.json() as InvoiceEmailBody;
-
-    if (!body.customerEmail || !body.invoiceNumber) {
-      return jsonResponse({ success: false, error: 'customerEmail and invoiceNumber are required' }, 400);
-    }
-
-    if (!env.RESEND_API_KEY) {
-      return jsonResponse({ success: false, error: 'Email service not configured' }, 500);
-    }
-
-    const senderEmail = env.RESEND_FROM_EMAIL || 'noreply@mail.heavyar.com';
-    const isAr = body.language === 'ar';
-    const subject = isAr
-      ? `Heavyar - فاتورة ضريبية #${body.invoiceNumber}`
-      : `Heavyar - Invoice #${body.invoiceNumber}`;
-
-    console.log('Sending invoice email to:', body.customerEmail, 'invoice:', body.invoiceNumber);
-
-    const resendResponse = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: `Heavyar <${senderEmail}>`,
-        to: [body.customerEmail],
-        subject,
-        html: buildInvoiceEmailHtml(body),
-      }),
-    });
-
-    if (!resendResponse.ok) {
-      const errData = await resendResponse.text();
-      console.error('Resend invoice email error:', resendResponse.status, errData);
-      return jsonResponse({ success: false, error: 'Failed to send invoice email' }, 500);
-    }
-
-    console.log('Invoice email sent successfully to:', body.customerEmail);
-    return jsonResponse({ success: true });
-  } catch (error) {
-    console.error('Send invoice email error:', error);
-    return jsonResponse({ success: false, error: 'Failed to send invoice email' }, 500);
-  }
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -597,10 +369,6 @@ export default {
 
     if (url.pathname === '/api/verify-email-otp' && method === 'POST') {
       return handleVerifyEmailOtp(request);
-    }
-
-    if (url.pathname === '/api/send-invoice-email' && method === 'POST') {
-      return handleSendInvoiceEmail(request, env);
     }
 
     return jsonResponse({ success: false, error: 'Not found' }, 404);

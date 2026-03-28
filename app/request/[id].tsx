@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { ArrowLeft, ArrowRight, MessageCircle, CreditCard, Star, Calendar, Receipt, Clock } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, MessageCircle, CreditCard, Star, Calendar, Receipt } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -95,10 +95,9 @@ export default function RequestDetailScreen() {
     ]);
   };
 
-  const isOpenEnded = request.requestMode === 'open_ended';
   const startDate = new Date(request.startDate);
-  const endDate = request.endDate ? new Date(request.endDate) : null;
-  const days = isOpenEnded ? null : (request.numberOfDays || (endDate ? Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) : 0));
+  const endDate = new Date(request.endDate);
+  const days = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
 
   return (
     <View style={styles.container}>
@@ -121,36 +120,23 @@ export default function RequestDetailScreen() {
           </View>
 
           <View style={styles.card}>
-            {isOpenEnded ? (
-              <View style={[styles.openEndedBanner, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                <Clock size={18} color={Colors.gold} />
-                <Text style={styles.openEndedBannerText}>{t('until_work_completion')}</Text>
-              </View>
-            ) : (
-              <>
-                <View style={[styles.infoRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                  <View style={[styles.infoItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                    <Calendar size={16} color={Colors.gold} />
-                    <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
-                      <Text style={styles.infoLabel}>{t('start_date')}</Text>
-                      <Text style={styles.infoValue}>{request.startDate}</Text>
-                    </View>
-                  </View>
-                  {endDate && (
-                    <View style={[styles.infoItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                      <Calendar size={16} color={Colors.gold} />
-                      <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
-                        <Text style={styles.infoLabel}>{t('end_date')}</Text>
-                        <Text style={styles.infoValue}>{request.endDate}</Text>
-                      </View>
-                    </View>
-                  )}
+            <View style={[styles.infoRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <View style={[styles.infoItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <Calendar size={16} color={Colors.gold} />
+                <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
+                  <Text style={styles.infoLabel}>{t('start_date')}</Text>
+                  <Text style={styles.infoValue}>{request.startDate}</Text>
                 </View>
-                {days !== null && days > 0 && (
-                  <Text style={[styles.daysText, { textAlign: isRTL ? 'right' : 'left' }]}>{days} {t('days')}</Text>
-                )}
-              </>
-            )}
+              </View>
+              <View style={[styles.infoItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <Calendar size={16} color={Colors.gold} />
+                <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
+                  <Text style={styles.infoLabel}>{t('end_date')}</Text>
+                  <Text style={styles.infoValue}>{request.endDate}</Text>
+                </View>
+              </View>
+            </View>
+            <Text style={[styles.daysText, { textAlign: isRTL ? 'right' : 'left' }]}>{days} {t('days')}</Text>
           </View>
 
           <View style={styles.card}>
@@ -302,6 +288,4 @@ const styles = StyleSheet.create({
   completeText: { color: Colors.white, fontSize: 16, fontWeight: '700' as const },
   invoiceButton: { flexDirection: 'row' as const, backgroundColor: Colors.info, borderRadius: 14, paddingVertical: 14, justifyContent: 'center' as const, alignItems: 'center' as const, gap: 8 },
   invoiceButtonText: { color: Colors.primary, fontSize: 16, fontWeight: '700' as const },
-  openEndedBanner: { alignItems: 'center' as const, gap: 10, backgroundColor: 'rgba(212, 168, 67, 0.08)', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(212, 168, 67, 0.2)' },
-  openEndedBannerText: { color: Colors.gold, fontSize: 15, fontWeight: '600' as const },
 });

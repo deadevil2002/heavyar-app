@@ -16,7 +16,7 @@ import {
   limit,
 } from 'firebase/firestore';
 import { getFirebaseDb } from './firebaseConfig';
-import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice, RequestMode } from '@/types';
+import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice } from '@/types';
 import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
 
@@ -69,8 +69,6 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     customerUid: (data.customerUid as string) || '',
     providerUid: (data.providerUid as string) || '',
     status: (data.status as EquipmentRequest['status']) || 'pending',
-    requestMode: (data.requestMode as RequestMode) || 'fixed_days',
-    numberOfDays: (data.numberOfDays as number | null) ?? null,
     startDate: toISOString(data.startDate) || (data.startDate as string) || '',
     endDate: toISOString(data.endDate) || (data.endDate as string) || '',
     notes: (data.notes as string) || '',

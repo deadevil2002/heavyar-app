@@ -1,0 +1,704 @@
+{
+  "id": "8pxae1g5salt4j4lg6k5k",
+  "role": "assistant",
+  "responseMessageContents": [
+    {
+      "type": "reasoning",
+      "text": "The user wants me to clone their GitHub repository and set up the project from it. Let me try cloning it again since they said the repo is now public.",
+      "id": "th6f029acxv5x4wl7y95i",
+      "createdAt": 1774733329559,
+      "completedAt": 1774733330159
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01UUJgLVcF9Bomfyz1rZbPCY",
+      "toolName": "bash",
+      "input": {
+        "command": "git clone https://github.com/deadevil2002/heavyar-app.git /tmp/heavyar-app 2>&1"
+      },
+      "output": {
+        "stdout": "Cloning into '/tmp/heavyar-app'...\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"git clone https://github.com/deadevil2002/heavyar-app.git /tmp/heavyar-app 2>&1\"}",
+      "createdAt": 1774733330159,
+      "completedAt": 1774733330165
+    },
+    {
+      "type": "reasoning",
+      "text": "Good, the clone worked. Now let me see what's in the repo and copy it to the project directory.",
+      "id": "4vvc3ejjas8d5uvdzefxh",
+      "createdAt": 1774733334247,
+      "completedAt": 1774733334615
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01XspmcRPHeVSXRm2mHZpBrf",
+      "toolName": "bash",
+      "input": {
+        "command": "ls /tmp/heavyar-app/ 2>&1"
+      },
+      "output": {
+        "stdout": "(tabs)\n+native-intent.tsx\n+not-found.tsx\n_layout.tsx\nchat\ncreate-listing.tsx\nedit-equipment.tsx\nequipment\ninvoices.tsx\nlogin.tsx\nmy-equipment.tsx\nonboarding.tsx\npayment\nrating\nregister.tsx\nrequest\nsettings.tsx\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"ls /tmp/heavyar-app/ 2>&1\"}",
+      "createdAt": 1774733334616,
+      "completedAt": 1774733334622
+    },
+    {
+      "type": "tool",
+      "id": "toolu_019AmuPSXFxdAKFMH4yT7R4p",
+      "toolName": "bash",
+      "input": {
+        "command": "ls /tmp/heavyar-app/app/ 2>&1"
+      },
+      "output": {
+        "stdout": "(tabs)\n+native-intent.tsx\n+not-found.tsx\n_layout.tsx\nchat\ncreate-listing.tsx\nedit-equipment.tsx\nequipment\ninvoices.tsx\nlogin.tsx\nmy-equipment.tsx\nonboarding.tsx\npayment\nrating\nregister.tsx\nrequest\nsettings.tsx\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"ls /tmp/heavyar-app/app/ 2>&1\"}",
+      "createdAt": 1774733334619,
+      "completedAt": 1774733334622
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01MAsAwUDJhQbnt3k9Rkg6vh",
+      "toolName": "bash",
+      "input": {
+        "command": "ls /tmp/heavyar-app/ -la 2>&1"
+      },
+      "output": {
+        "stdout": "total 360\ndrwxr-xr-x 17 user user    540 Mar 28 21:28 .\ndrwxrwxrwt 10 root root    300 Mar 28 21:28 ..\ndrwxr-xr-x  8 user user    260 Mar 28 21:28 .git\n-rw-r--r--  1 user user    447 Mar 28 21:28 .gitignore\ndrwxr-xr-x  3 user user     60 Mar 28 21:28 .rork\n-rw-r--r--  1 user user  11016 Mar 28 21:28 README.md\ndrwxr-xr-x  8 user user    380 Mar 28 21:28 app\n-rw-r--r--  1 user user   1006 Mar 28 21:28 app.json\ndrwxr-xr-x  3 user user     60 Mar 28 21:28 assets\n-rw-r--r--  1 user user    149 Mar 28 21:28 babel.config.js\n-rw-r--r--  1 user user 319510 Mar 28 21:28 bun.lock\ndrwxr-xr-x  2 user user    180 Mar 28 21:28 components\ndrwxr-xr-x  2 user user     60 Mar 28 21:28 constants\ndrwxr-xr-x  2 user user     80 Mar 28 21:28 contexts\n-rw-r--r--  1 user user    190 Mar 28 21:28 eslint.config.js\ndrwxr-xr-x 13 user user    440 Mar 28 21:28 expo\ndrwxr-xr-x  2 user user     60 Mar 28 21:28 hooks\ndrwxr-xr-x  2 user user     60 Mar 28 21:28 i18n\n-rw-r--r--  1 user user    210 Mar 28 21:28 metro.config.js\ndrwxr-xr-x  2 user user    140 Mar 28 21:28 mocks\n-rw-r--r--  1 user user   1878 Mar 28 21:28 package.json\n-rw-r--r--  1 user user    163 Mar 28 21:28 rork.json\ndrwxr-xr-x  2 user user    180 Mar 28 21:28 services\n-rw-r--r--  1 user user    241 Mar 28 21:28 tsconfig.json\ndrwxr-xr-x  2 user user     60 Mar 28 21:28 types\ndrwxr-xr-x  2 user user     60 Mar 28 21:28 utils\ndrwxr-xr-x  3 user user    100 Mar 28 21:28 worker\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"ls /tmp/heavyar-app/ -la 2>&1\"}",
+      "createdAt": 1774733337737,
+      "completedAt": 1774733337796
+    },
+    {
+      "type": "reasoning",
+      "text": "The user wants me to copy the cloned repo into the project directory. Let me do that now.",
+      "id": "7jkhwdxvhrtvjj450yj1o",
+      "createdAt": 1774733342169,
+      "completedAt": 1774733342517
+    },
+    {
+      "type": "text",
+      "text": "Now let me copy all files from the cloned repo into the project directory.",
+      "id": "n72odjscfwa1y3jkirl24",
+      "createdAt": 1774733342518
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01YFBjTWumBDgJQcaaENxgT3",
+      "toolName": "bash",
+      "input": {
+        "command": "rm -rf /home/user/rork-app/* /home/user/rork-app/.gitignore /home/user/rork-app/.rork 2>&1 && cp -r /tmp/heavyar-app/* /tmp/heavyar-app/.gitignore /tmp/heavyar-app/.rork /home/user/rork-app/ 2>&1"
+      },
+      "output": {
+        "stdout": "",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"rm -rf /home/user/rork-app/* /home/user/rork-app/.gitignore /home/user/rork-app/.rork 2>&1 && cp -r /tmp/heavyar-app/* /tmp/heavyar-app/.gitignore /tmp/heavyar-app/.rork /home/user/rork-app/ 2>&1\"}",
+      "createdAt": 1774733342782,
+      "completedAt": 1774733343213
+    },
+    {
+      "type": "tool",
+      "id": "toolu_013giTNDQt2uYPc57KCdzDW2",
+      "toolName": "bash",
+      "input": {
+        "command": "cd /home/user/rork-app && bun install 2>&1"
+      },
+      "output": {
+        "stdout": "bun install v1.3.9 (cf6cdbbb)\n\n+ @babel/core@7.26.7\n+ @expo/ngrok@4.1.3\n+ @types/react@19.1.17\n+ eslint@9.31.0\n+ eslint-config-expo@10.0.0\n+ typescript@5.9.3\n+ @expo/vector-icons@15.0.3\n+ @nkzw/create-context-hook@1.1.0\n+ @react-native-async-storage/async-storage@2.2.0\n+ @rork-ai/toolkit-sdk@0.2.54\n+ @stardazed/streams-text-encoding@1.0.2\n+ @tanstack/react-query@5.83.0\n+ @ungap/structured-clone@1.3.0\n+ expo@54.0.27\n+ expo-blur@15.0.8\n+ expo-constants@18.0.11\n+ expo-font@14.0.10\n+ expo-haptics@15.0.8\n+ expo-image@3.0.11\n+ expo-image-picker@17.0.9\n+ expo-linear-gradient@15.0.8\n+ expo-linking@8.0.10\n+ expo-location@19.0.8\n+ expo-notifications@0.32.16\n+ expo-router@6.0.17\n+ expo-splash-screen@31.0.12\n+ expo-status-bar@3.0.9\n+ expo-symbols@1.0.8\n+ expo-system-ui@6.0.9\n+ expo-web-browser@15.0.10\n+ firebase@12.11.0\n+ lucide-react-native@0.475.0\n+ react@19.1.0\n+ react-dom@19.1.0\n+ react-native@0.81.5\n+ react-native-gesture-handler@2.28.0\n+ react-native-safe-area-context@5.6.1\n+ react-native-screens@4.16.0\n+ react-native-svg@15.12.1\n+ react-native-web@0.21.2\n+ react-native-worklets@0.5.1\n+ zustand@5.0.3\n\n1064 packages installed [1357.00ms]\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "error": null,
+      "inputArgsStr": "{\"command\": \"cd /home/user/rork-app && bun install 2>&1\"}",
+      "createdAt": 1774733347651,
+      "completedAt": 1774733349065
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01SoLX98ANFjFYexUJ6173FA",
+      "toolName": "read",
+      "input": {
+        "filePath": "tsconfig.json"
+      },
+      "output": {
+        "path": "tsconfig.json",
+        "content": "     1|{\n     2|  \"extends\": \"expo/tsconfig.base\",\n     3|  \"compilerOptions\": {\n     4|    \"strict\": true,\n     5|    \"paths\": {\n     6|      \"@/*\": [\n     7|        \"./*\"\n     8|      ]\n     9|    }\n    10|  },\n    11|  \"include\": [\n    12|    \"**/*.ts\",\n    13|    \"**/*.tsx\",\n    14|    \".expo/types/**/*.ts\",\n    15|    \"expo-env.d.ts\"\n    16|  ]\n    17|}\n\n(End of file - total 17 lines)"
+      },
+      "error": null,
+      "inputArgsStr": "{\"filePath\": \"tsconfig.json\"}",
+      "createdAt": 1774733347657,
+      "completedAt": 1774733347676
+    },
+    {
+      "type": "tool",
+      "id": "toolu_01Bn7BCuAZjkC76ao76Hrgvc",
+      "toolName": "read",
+      "input": {
+        "filePath": "package.json"
+      },
+      "output": {
+        "path": "package.json",
+        "content": "     1|{\n     2|  \"name\": \"expo-app\",\n     3|  \"main\": \"expo-router/entry\",\n     4|  \"version\": \"1.0.0\",\n     5|  \"scripts\": {\n     6|    \"start\": \"bunx rork start -p 8mcv0eg4e2l3to7ex9wvv --tunnel\",\n     7|    \"start-web\": \"bunx rork start -p 8mcv0eg4e2l3to7ex9wvv --web --tunnel\",\n     8|    \"start-web-dev\": \"DEBUG=expo* bunx rork start -p 8mcv0eg4e2l3to7ex9wvv --web --tunnel\",\n     9|    \"lint\": \"expo lint\"\n    10|  },\n    11|  \"dependencies\": {\n    12|    \"@expo/vector-icons\": \"^15.0.3\",\n    13|    \"@nkzw/create-context-hook\": \"^1.1.0\",\n    14|    \"@react-native-async-storage/async-storage\": \"2.2.0\",\n    15|    \"@rork-ai/toolkit-sdk\": \"^0.2.51\",\n    16|    \"@stardazed/streams-text-encoding\": \"^1.0.2\",\n    17|    \"@tanstack/react-query\": \"^5.83.0\",\n    18|    \"@ungap/structured-clone\": \"^1.3.0\",\n    19|    \"expo\": \"~54.0.27\",\n    20|    \"expo-blur\": \"~15.0.8\",\n    21|    \"expo-constants\": \"~18.0.11\",\n    22|    \"expo-font\": \"~14.0.10\",\n    23|    \"expo-haptics\": \"~15.0.8\",\n    24|    \"expo-image\": \"~3.0.11\",\n    25|    \"expo-image-picker\": \"~17.0.9\",\n    26|    \"expo-linear-gradient\": \"~15.0.8\",\n    27|    \"expo-linking\": \"~8.0.10\",\n    28|    \"expo-location\": \"~19.0.8\",\n    29|    \"expo-notifications\": \"~0.32.16\",\n    30|    \"expo-router\": \"~6.0.17\",\n    31|    \"expo-splash-screen\": \"~31.0.12\",\n    32|    \"expo-status-bar\": \"~3.0.9\",\n    33|    \"expo-symbols\": \"~1.0.8\",\n    34|    \"expo-system-ui\": \"~6.0.9\",\n    35|    \"expo-web-browser\": \"~15.0.10\",\n    36|    \"firebase\": \"^12.11.0\",\n    37|    \"lucide-react-native\": \"^0.475.0\",\n    38|    \"react\": \"19.1.0\",\n    39|    \"react-dom\": \"19.1.0\",\n    40|    \"react-native\": \"0.81.5\",\n    41|    \"react-native-gesture-handler\": \"~2.28.0\",\n    42|    \"react-native-safe-area-context\": \"~5.6.0\",\n    43|    \"react-native-screens\": \"~4.16.0\",\n    44|    \"react-native-svg\": \"15.12.1\",\n    45|    \"react-native-web\": \"^0.21.0\",\n    46|    \"react-native-worklets\": \"0.5.1\",\n    47|    \"zustand\": \"^5.0.2\"\n    48|  },\n    49|  \"devDependencies\": {\n    50|    \"@babel/core\": \"^7.25.2\",\n    51|    \"@expo/ngrok\": \"^4.1.0\",\n    52|    \"@types/react\": \"~19.1.10\",\n    53|    \"eslint\": \"^9.31.0\",\n    54|    \"eslint-config-expo\": \"~10.0.0\",\n    55|    \"typescript\": \"~5.9.2\"\n    56|  },\n    57|  \"private\": true\n    58|}\n\n(End of file - total 58 lines)"
+      },
+      "error": null,
+      "inputArgsStr": "{\"filePath\": \"package.json\"}",
+      "createdAt": 1774733347661,
+      "completedAt": 1774733347677
+    },
+    {
+      "type": "text",
+      "text": "\n\nThe project has been successfully cloned from your GitHub repo and all dependencies are installed. Your latest code is now in place and ready to go. The preview should now reflect your current codebase.",
+      "id": "6z0d0cjjtrt6vnrjldkyj",
+      "createdAt": 1774733354047
+    },
+    {
+      "type": "artifact",
+      "id": "cqmk8ppjx7nbhcgwagdm7",
+      "title": "Updated the app to the latest version from GitHub.",
+      "description": "I have downloaded the most recent version of your app from the link you provided. I replaced the old files with the new ones and set everything up so that the preview now shows your latest changes correctly.",
+      "actions": [
+        {
+          "type": "file-edit",
+          "filePath": "app/(tabs)/(home)/index.tsx",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "app/(tabs)/profile/index.tsx",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "app/_layout.tsx",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "app/equipment/[id].tsx",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "app/register.tsx",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "app/request/[id].tsx",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "app/settings.tsx",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "components/RequestCard.tsx",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "expo/app/(tabs)/(home)/index.tsx",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "expo/app/register.tsx",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "expo/i18n/translations.ts",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "expo/services/firebaseConfig.ts",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "i18n/translations.ts",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "services/firebaseConfig.ts",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "services/firestoreService.ts",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "types/index.ts",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-edit",
+          "filePath": "worker/src/index.ts",
+          "content": "",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn8xv0xg000_1mqqeu510wiw6g8fy4sq2_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn8xv0xi000_3n7fa3jl06ue2eotzte0y_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn8y58pn000_tvm3whhenl143xwatwlmq_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn8y58pn001_cweg1y9omjmxpzypbr4vh_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn8ymdd0000_kusz5b7zm86891j40ukng_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn8ymdd1000_s141gzhicoextk5egruhq_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn8zvle9000_aol74d6e613k33ikrteyo_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn8zvlea000_g8c52d4pmp0iisexz1x2n_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn916bgi000_z5msnsqar0z7kh4qkccl0_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn916bgj000_kzqn05v7fgxo6niyirhmp_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn91btfg000_rxd9k1wkr88d6tp4vd0aj_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn91btfh000_4tgijg1qm4ifcb0uztdbj_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn91fy0z000_f39kalktwj1yzx1rr66dt_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn91fy10000_rvlkkuif98khdhl2zea5j_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn91kdam000_quylnq01whaddl4pb5g5d_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn91kdan000_8poby2hoz5as4aik6b5hj_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn9233v2000_vt658e33qeefovwif72u4_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn9233v3000_psotd2zta9q30hyx2wl7s_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn923w1r000_v96bw63xwan4gcgogauqu_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn923w1s000_clycfg2l010umkmnglbcp_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn92gbl8000_o856twjkglp97iffuvl1x_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn92gbl9000_unhhwp4lbufzdb0hq0gwi_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn930vrw000_hm94n4nbmq4q93eklqvgb_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn930vrx000_k1i0vdlfvygrzt5d5ciyb_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn93vbgw000_xbqd4suffrpc9tameupvh_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn93vbgw001_o5u4oy5d70tsycbgqq3dn_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn93z3kl000_ov10p79a4qaqcnzu99m0k_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn93z3km000_am378nafsdluo6i9hcbdi_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn940wq6000_x6ew11k68g6yt06znwyc7_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn940wq7000_hc356irrucealn4kczsos_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn94b8oz000_bpcmulwoaerucuvpo2c8y_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn94b8p1000_e1hrznp3q43z3n2f62pnl_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn94e48k000_06k8dcguhbgea4hwyqugj_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn94e48l000_2o30q7qvapezog8s4av7j_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn94w8cp000_cpdcq2o6gp4jsmqyo7rqt_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn94w8cq000_e5mpzomkgulih39b1bssc_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn96g3l9000_fndj7pdt7ag67cuekdcme_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn96g3la000_qpos4qxd3oxd5x7kkhmls_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn96q6zl000_bp3e4azy5jphk7eju5978_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn96q6zl001_5dbcsft832cp2if54aaio_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn96yszi000_32iujat9kv26ni29fr6ns_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn96yszj000_ti1tolux9tw8d6d5omw9e_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn96zs9n000_pdhlrfnfxuruj1u1p8e66_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn96zs9n001_trqng7rwa60g5xyqjhugs_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn97iazi000_xd6c26qzun0z6bdkcnlz7_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mn97iazj000_25l96fmrkswc66oy7w1jj_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnam09mc000_9vwnbfxixerfkxe53lf2f_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnam09me000_gamox8v1tvtide57bud7f_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnam4pux000_ur6o922l2vcy8zz45wmp3_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnam4puy000_kmm6uvvbarkn43k7nm80a_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnam92v4000_fy1vcylcbtlowau1f8maj_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnam92v6000_7o0gtc0f6p45ijtp033sn_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnamfogl000_um49d0ihq2vgftpbzdwt8_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnamfogn000_wdb19rgxwsizkj2ohp6gx_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnarjqro000_jpd23i36klo0jhd9pmt1f_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnarjqrq000_tweq367lkjjs7xpkxlnrb_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnarrcyj000_cibojgklzqfcjxhp34rxd_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnarrcyk000_65158qov1tqfl4h1803my_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnat48kh000_rwljgu20h54zprl067vr5_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnat48kh001_kjqbje7yiy6tt1sx7b3j5_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnat75pt000_k1xdpmnjfcqsz51insew5_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnat75pu000_t0wrgi5lyvpxjehwjz7u2_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatbqgg000_ixpuami11wfgfm028v1rd_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatbqgg001_ifw1w4b3ow1sp25ygy8xv_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatf5h2000_06c8stekuccqyeof7ry3k_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatf5h4000_wun4j8bih5ca0jda29mx6_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatikdy000_t0jodvwmpjtn44cntw5f9_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatikdz000_nx1d81rwxfnvbzpfm6qxo_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatmng8000_p15movm976e1a2akr8krz_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatmng9000_7a22eamca5sxz90a8ozd1_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatpi4w000_bv21euqk83s67ecehsqs1_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatpi4w001_0uta46b0klleqcg7s325x_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatvurl000_wy9bmuzjrgff7bzyx64or_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatvurm000_sb8i9eio1erzqp2iygxh2_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatyha1000_fkn1byy6ypoijg9xskuto_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnatyha1001_n6qcue6jmfqdlv4gib5c7_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnau577i000_k09xw39w33cpj220r5bxj_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnau577j000_6evdyeeqh5duz80v42edy_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnau9g98000_j9od29rfrvbhydh11eow1_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnau9g99000_smpgnccfi9a9w6czrn4xn_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnaucbju000_jfrt76l0d4k8qvacr4uqv_user.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": ".rork/history/main/00mnaucbjw000_17qrxk3gma469u8x68a1c_assistant.json",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": "components/LanguageSelector.tsx",
+          "completed": true
+        },
+        {
+          "type": "file-delete",
+          "filePath": "worker/.wrangler/cache/wrangler-account.json",
+          "completed": true
+        }
+      ]
+    }
+  ],
+  "snapshotId": "8pxae1g5salt4j4lg6k5k"
+}

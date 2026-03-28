@@ -3,7 +3,6 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Animated, ActivityIndica
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Search, Bell, ChevronLeft, ChevronRight } from 'lucide-react-native';
-import LanguageSelector from '@/components/LanguageSelector';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -16,7 +15,6 @@ import CategoryCard from '@/components/CategoryCard';
 import EmptyState from '@/components/EmptyState';
 
 export default function HomeScreen() {
-  console.log('[HomeScreen] v3.1.0 rendering at:', new Date().toISOString());
   const { isRTL, t, localizedText } = useLanguage();
   const { user, isAuthenticated } = useAuth();
   const router = useRouter();
@@ -70,19 +68,16 @@ export default function HomeScreen() {
         >
           <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start', flex: 1 }}>
-              <Text style={[styles.greeting, { textAlign: isRTL ? 'right' : 'left', writingDirection: isRTL ? 'rtl' : 'ltr' }]}>
-                {isAuthenticated ? t('welcome_back') : t('welcome')}{userName ? ` ${userName}` : ''}
+              <Text style={[styles.greeting, { textAlign: isRTL ? 'right' : 'left' }]}>
+                {isAuthenticated ? `${t('welcome_back')}` : t('welcome')} {userName ? `${userName} 👋` : ''}
               </Text>
               <Text style={[styles.subtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('browse_equipment')}</Text>
             </View>
             <View style={[styles.headerActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              {!isAuthenticated && <LanguageSelector />}
-              {isAuthenticated && (
-                <Pressable style={styles.notifButton} onPress={handleNotifications}>
-                  <Bell size={22} color={Colors.textPrimary} />
-                  <View style={styles.notifDot} />
-                </Pressable>
-              )}
+              <Pressable style={styles.notifButton} onPress={handleNotifications}>
+                <Bell size={22} color={Colors.textPrimary} />
+                <View style={styles.notifDot} />
+              </Pressable>
               <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
             </View>
           </View>

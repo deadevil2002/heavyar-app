@@ -68,8 +68,8 @@ export default function HomeScreen() {
         >
           <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start', flex: 1 }}>
-              <Text style={[styles.greeting, { textAlign: isRTL ? 'right' : 'left', writingDirection: isRTL ? 'rtl' : 'ltr' }]}>
-                {isAuthenticated ? t('welcome_back') : t('welcome')}{userName ? ` ${userName}` : ''}
+              <Text style={[styles.greeting, { textAlign: isRTL ? 'right' : 'left' }]}>
+                {isAuthenticated ? `${t('welcome_back')}` : t('welcome')} {userName ? `${userName} 👋` : ''}
               </Text>
               <Text style={[styles.subtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('browse_equipment')}</Text>
             </View>

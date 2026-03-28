@@ -1,7 +1,0 @@
-{
-  "id": "06k8dcguhbgea4hwyqugj",
-  "role": "user",
-  "content": "Use THIS exact Cloudflare API token for deployment. Do NOT use any previous token.\r\n\r\nToken:\r\ncfat_k1ImskN0T38cJV3JgxsTYTqOINYwhxDmM9OCJmd8746f52ad\r\n\r\n==================================================\r\nDEPLOYMENT INSTRUCTIONS – FOLLOW EXACTLY\r\n==================================================\r\n\r\n1. Go to the worker directory:\r\ncd worker\r\n\r\n2. Set the token explicitly in the environment (DO NOT reuse any cached token):\r\nexport CLOUDFLARE_API_TOKEN=\"cfat_k1ImskN0T38cJV3JgxsTYTqOINYwhxDmM9OCJmd8746f52ad\"\r\n\r\n3. Confirm the token is set:\r\necho $CLOUDFLARE_API_TOKEN\r\n\r\n4. Deploy using wrangler:\r\nnpx wrangler deploy\r\n\r\n==================================================\r\nCRITICAL RULES\r\n==================================================\r\n\r\n- Do NOT use any previously stored token\r\n- Do NOT use any token starting with cfat_yIzi...\r\n- Do NOT skip the export step\r\n- Do NOT modify any code\r\n- Only deploy the current worker\r\n\r\n==================================================\r\nAFTER DEPLOY\r\n==================================================\r\n\r\n1. Confirm deployment success\r\n2. Test:\r\nPOST /api/send-email-otp\r\n3. Return the full response",
-  "attachments": [],
-  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
-}

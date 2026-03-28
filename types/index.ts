@@ -59,16 +59,12 @@ export interface Equipment {
   updatedAt: string;
 }
 
-export type RequestMode = 'fixed_days' | 'open_ended';
-
 export interface EquipmentRequest {
   id: string;
   equipmentId: string;
   customerUid: string;
   providerUid: string;
   status: RequestStatus;
-  requestMode: RequestMode;
-  numberOfDays: number | null;
   startDate: string;
   endDate: string;
   notes: string;

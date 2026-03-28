@@ -2,7 +2,7 @@ import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import { getAuth, Auth, initializeAuth } from 'firebase/auth';
 // @ts-ignore - getReactNativePersistence exists in RN bundle but missing from TS definitions
 import { getReactNativePersistence } from 'firebase/auth';
-import { initializeFirestore, Firestore } from 'firebase/firestore';
+import { getFirestore, Firestore } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
@@ -56,11 +56,8 @@ function getFirebaseAuth(): Auth {
 function getFirebaseDb(): Firestore {
   if (!db) {
     const firebaseApp = getFirebaseApp();
-    db = initializeFirestore(firebaseApp, {
-      experimentalForceLongPolling: true,
-      experimentalAutoDetectLongPolling: false,
-    });
-    console.log('[Firebase] Firestore initialized with long polling');
+    db = getFirestore(firebaseApp);
+    console.log('[Firebase] Firestore initialized');
   }
   return db;
 }

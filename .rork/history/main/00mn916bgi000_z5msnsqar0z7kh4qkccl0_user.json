@@ -1,7 +1,0 @@
-{
-  "id": "z5msnsqar0z7kh4qkccl0",
-  "role": "user",
-  "content": "Redeploy the updated Heavyar Cloudflare Worker with the OTP endpoints.\r\n\r\nUse this fresh Cloudflare API token:\r\ncfat_TEVtdkdwNAQ3KhRJYuBuLLGYsIyFn7HYwU1NGqIR98f02de9\r\n\r\nWorker:\r\nheavyar-api\r\n\r\nTasks:\r\n1. Deploy/redeploy the current worker code to heavyar-api\r\n2. Ensure these endpoints are live:\r\n   - GET /health\r\n   - POST /api/send-email-otp\r\n   - POST /api/verify-email-otp\r\n   - POST /api/create-payment\r\n   - POST /api/verify-payment\r\n3. Test OTP endpoints with empty/invalid requests and confirm they return proper JSON validation errors\r\n4. Confirm the worker is now serving the latest code version\r\n5. Return:\r\n   - deployment success status\r\n   - final worker URL\r\n   - test result for each endpoint\r\n   - whether any Cloudflare binding is missing",
-  "attachments": [],
-  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
-}

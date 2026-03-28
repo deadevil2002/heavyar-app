@@ -1,7 +1,0 @@
-{
-  "id": "cpdcq2o6gp4jsmqyo7rqt",
-  "role": "user",
-  "content": "Use this exact verified Cloudflare USER API token only.\r\n\r\nToken:\r\ncfut_W5hGEOVcuse5LLFYD90hueSI0IbWqh6sntHwU1hX90330d1a\r\n\r\nSteps:\r\n1. cd /home/user/rork-app/worker\r\n2. export CLOUDFLARE_API_TOKEN=\"cfut_W5hGEOVcuse5LLFYD90hueSI0IbWqh6sntHwU1hX90330d1a\"\r\n3. echo $CLOUDFLARE_API_TOKEN\r\n4. npx wrangler deploy\r\n\r\nDo not modify code.\r\nDo not use any previous token.\r\nOnly deploy the current worker and then test:\r\n- /health\r\n- /api/send-email-otp\r\n- /api/verify-email-otp\r\n\r\nReturn:\r\n- deployment status\r\n- worker URL\r\n- actual response from /api/send-email-otp\r\n- actual response from /api/verify-email-otp",
-  "attachments": [],
-  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
-}

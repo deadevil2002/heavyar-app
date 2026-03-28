@@ -283,9 +283,6 @@ export const translations = {
     step_role: 'نوع الحساب',
     heavyar_tagline: 'منصة تأجير المعدات الثقيلة',
     heavyar_tagline_en: 'Heavy Equipment Rental Marketplace',
-    otp_send_failed: 'فشل إرسال رمز التحقق. حاول مرة أخرى',
-    network_error: 'خطأ في الاتصال بالشبكة. تحقق من اتصالك وحاول مجدداً',
-    otp_service_error: 'خدمة البريد الإلكتروني غير متاحة حالياً. حاول لاحقاً',
   },
   en: {
     app_name: 'Heavyar',
@@ -571,9 +568,6 @@ export const translations = {
     step_role: 'Account Type',
     heavyar_tagline: 'منصة تأجير المعدات الثقيلة',
     heavyar_tagline_en: 'Heavy Equipment Rental Marketplace',
-    otp_send_failed: 'Failed to send verification code. Please try again',
-    network_error: 'Network error. Check your connection and try again',
-    otp_service_error: 'Email service is currently unavailable. Please try later',
   },
 } as const;
 

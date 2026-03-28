@@ -1,7 +1,0 @@
-{
-  "id": "rwljgu20h54zprl067vr5",
-  "role": "user",
-  "content": "Please fix the following errors:\nError message:\n[EquipmentDetail] Request error: FirebaseError: [code=permission-denied]: Missing or insufficient permissions.",
-  "attachments": [],
-  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
-}

@@ -1,7 +1,0 @@
-{
-  "id": "9vwnbfxixerfkxe53lf2f",
-  "role": "user",
-  "content": "Please fix the following errors:\nError message:\n[2026-03-28T17:24:46.525Z] @firebase/firestore: Firestore (12.11.0): Could not reach Cloud Firestore backend. Connection failed 1 times. Most recent error: FirebaseError: [code=unavailable]: The operation could not be completed This typically indicates that your device does not have a healthy Internet connection at the moment. The client will operate in offline mode until it is able to successfully connect to the backend.",
-  "attachments": [],
-  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
-}
