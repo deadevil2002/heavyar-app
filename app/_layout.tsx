@@ -10,6 +10,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 
 void SplashScreen.preventAutoHideAsync();
 
+
 const queryClient = new QueryClient();
 
 function RootLayoutNav() {
