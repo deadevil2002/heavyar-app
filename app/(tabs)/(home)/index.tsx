@@ -16,6 +16,7 @@ import CategoryCard from '@/components/CategoryCard';
 import EmptyState from '@/components/EmptyState';
 
 export default function HomeScreen() {
+  console.log('[HomeScreen] Rendering latest version:', Date.now());
   const { isRTL, t, localizedText } = useLanguage();
   const { user, isAuthenticated } = useAuth();
   const router = useRouter();
