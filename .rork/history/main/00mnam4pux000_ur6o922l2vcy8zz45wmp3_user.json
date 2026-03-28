@@ -1,0 +1,7 @@
+{
+  "id": "ur6o922l2vcy8zz45wmp3",
+  "role": "user",
+  "content": "Do not modify any code.\r\n\r\nOnly reset the Expo preview/runtime environment and make sure the phone QR points to the latest session.\r\n\r\nDo exactly this:\r\n1. Stop the current Expo/preview process completely\r\n2. Clear Expo/Metro cache\r\n3. Start Expo again with clean cache\r\n4. Regenerate a fresh QR code\r\n5. Confirm the new session is using the latest codebase\r\n6. Do not reimplement features\r\n7. Do not refactor anything\r\n\r\nAfter that, tell me:\r\n- whether the Expo environment restarted successfully\r\n- whether the QR code is fresh\r\n- whether the latest code is now reflected in preview",
+  "attachments": [],
+  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
+}
