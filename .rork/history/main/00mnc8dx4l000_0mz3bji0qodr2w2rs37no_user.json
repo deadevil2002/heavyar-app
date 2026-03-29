@@ -1,0 +1,7 @@
+{
+  "id": "0mz3bji0qodr2w2rs37no",
+  "role": "user",
+  "content": "Do not add any new features yet.\r\n\r\nThe current preview/test build is broken.\r\nIn the preview I see a black screen / failed runtime state (\"snapshot not found\"), and the QR test on phone also fails.\r\n\r\nYour task now is ONLY to diagnose and fix the preview/build/runtime issue.\r\n\r\nRequirements:\r\n1. Do not implement any new feature\r\n2. Do not refactor unrelated code\r\n3. Find the exact build/runtime error causing the preview to fail\r\n4. Check:\r\n   - app startup path\r\n   - root layout\r\n   - navigation setup\r\n   - any import/export mismatch\r\n   - any newly added component causing runtime failure\r\n   - any broken TypeScript/Metro/Bundler/runtime issue\r\n5. Restore the app to a runnable preview state\r\n6. Confirm whether the current codebase builds/runs successfully after the fix\r\n\r\nReturn:\r\n1. Exact root cause\r\n2. Exact files changed\r\n3. Whether the preview/runtime is now working again\r\n4. Whether the QR test build is now usable",
+  "attachments": [],
+  "userId": "d241c3cc-80c4-4adc-91fb-d45cc492a177"
+}
