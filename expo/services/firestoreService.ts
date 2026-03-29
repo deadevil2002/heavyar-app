@@ -62,15 +62,39 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
   };
 }
 
+function parseRequestMode(raw: unknown): EquipmentRequest['requestMode'] {
+  if (raw === 'fixed_duration' || raw === 'open_ended') return raw;
+  return undefined;
+}
+
+function calculateNumberOfDays(startDate: string, endDate: string): number | undefined {
+  if (!startDate || !endDate) return undefined;
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return undefined;
+  const ms = end.getTime() - start.getTime();
+  if (ms <= 0) return undefined;
+  return Math.max(1, Math.ceil(ms / 86400000));
+}
+
 function parseRequest(id: string, data: Record<string, unknown>): EquipmentRequest {
+  const startDate = toISOString(data.startDate) || (data.startDate as string) || '';
+  const endDate = toISOString(data.endDate) || (data.endDate as string) || '';
+  const requestMode = parseRequestMode(data.requestMode) || 'fixed_duration';
+  const rawDays = typeof data.numberOfDays === 'number' ? data.numberOfDays : undefined;
+  const inferredDays = calculateNumberOfDays(startDate, endDate);
+  const numberOfDays = requestMode === 'fixed_duration' ? (rawDays || inferredDays) : undefined;
+
   return {
     id,
     equipmentId: (data.equipmentId as string) || '',
     customerUid: (data.customerUid as string) || '',
     providerUid: (data.providerUid as string) || '',
     status: (data.status as EquipmentRequest['status']) || 'pending',
-    startDate: toISOString(data.startDate) || (data.startDate as string) || '',
-    endDate: toISOString(data.endDate) || (data.endDate as string) || '',
+    requestMode,
+    numberOfDays,
+    startDate,
+    endDate,
     notes: (data.notes as string) || '',
     amount: (data.amount as number) || 0,
     platformFee: (data.platformFee as number) || 0,

@@ -8,6 +8,8 @@ export type InvoiceStatus = 'paid' | 'pending' | 'refunded';
 
 export type UserRole = 'customer' | 'provider';
 
+export type RequestMode = 'fixed_duration' | 'open_ended';
+
 export interface User {
   uid: string;
   nameAr: string;
@@ -65,6 +67,8 @@ export interface EquipmentRequest {
   customerUid: string;
   providerUid: string;
   status: RequestStatus;
+  requestMode?: RequestMode;
+  numberOfDays?: number;
   startDate: string;
   endDate: string;
   notes: string;

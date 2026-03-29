@@ -63,6 +63,8 @@ export default function RequestDetailScreen() {
   const title = localizedText(equipment.titleAr, equipment.titleEn);
   const otherUser = otherUserData;
   const otherUserName = otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
+  const requestMode = request.requestMode || 'fixed_duration';
+  const isOpenEnded = requestMode === 'open_ended';
 
   const canChat = request.allowChat && ['accepted', 'in_progress'].includes(request.status);
   const canPay = !isProvider && request.status === 'accepted' && request.paymentStatus === 'unpaid';
@@ -95,9 +97,16 @@ export default function RequestDetailScreen() {
     ]);
   };
 
-  const startDate = new Date(request.startDate);
-  const endDate = new Date(request.endDate);
-  const days = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+  const computedDays = (() => {
+    if (!request.startDate || !request.endDate) return undefined;
+    const startDate = new Date(request.startDate);
+    const endDate = new Date(request.endDate);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return undefined;
+    const diff = endDate.getTime() - startDate.getTime();
+    if (diff <= 0) return undefined;
+    return Math.max(1, Math.ceil(diff / 86400000));
+  })();
+  const days = request.numberOfDays || computedDays;
 
   return (
     <View style={styles.container}>
@@ -132,11 +141,13 @@ export default function RequestDetailScreen() {
                 <Calendar size={16} color={Colors.gold} />
                 <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
                   <Text style={styles.infoLabel}>{t('end_date')}</Text>
-                  <Text style={styles.infoValue}>{request.endDate}</Text>
+                  <Text style={styles.infoValue}>{isOpenEnded ? t('until_work_completion') : request.endDate}</Text>
                 </View>
               </View>
             </View>
-            <Text style={[styles.daysText, { textAlign: isRTL ? 'right' : 'left' }]}>{days} {t('days')}</Text>
+            <Text style={[styles.daysText, { textAlign: isRTL ? 'right' : 'left' }]}>
+              {isOpenEnded ? t('until_work_completion') : `${days || 0} ${t('days')}`}
+            </Text>
           </View>
 
           <View style={styles.card}>

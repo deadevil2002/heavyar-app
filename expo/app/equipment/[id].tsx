@@ -13,6 +13,7 @@ import { Equipment, User } from '@/types';
 import { getImageUrl } from '@/utils/imageHelpers';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import RentalRequestModal, { RentalRequestDraft } from '@/components/RentalRequestModal';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -26,6 +27,7 @@ export default function EquipmentDetailScreen() {
   const [equipment, setEquipment] = useState<Equipment | null>(null);
   const [owner, setOwner] = useState<User | null>(null);
   const [_loading, setLoading] = useState<boolean>(true);
+  const [requestModalVisible, setRequestModalVisible] = useState<boolean>(false);
   const scrollRef = useRef<ScrollView>(null);
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
@@ -95,53 +97,61 @@ export default function EquipmentDetailScreen() {
       return;
     }
 
-    showDialog(
-      t('request_rental'),
-      t('confirm'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('confirm'),
-          style: 'default',
-          onPress: async () => {
-            try {
-              const days = 5;
-              const amount = equipment.pricePerDay * days;
-              const platformFee = Math.round(amount * 0.1);
-              await createRequest({
-                equipmentId: equipment.id,
-                customerUid: currentUser.uid,
-                providerUid: equipment.ownerUid,
-                status: 'pending',
-                startDate: new Date().toISOString(),
-                endDate: new Date(Date.now() + days * 86400000).toISOString(),
-                notes: '',
-                amount,
-                platformFee,
-                providerAmount: amount - platformFee,
-                paymentStatus: 'unpaid',
-                paymentId: '',
-                paidAt: null,
-                currency: 'SAR',
-                allowChat: false,
-              });
-              showDialog(
-                t('success'),
-                t('request_sent_success'),
-                [{ text: t('ok'), style: 'default', onPress: () => router.back() }]
-              );
-            } catch (e) {
-              console.error('[EquipmentDetail] Request error:', e);
-              showDialog(
-                t('error_title'),
-                t('error_generic_message'),
-                [{ text: t('ok'), style: 'default' }]
-              );
-            }
-          },
-        },
-      ]
-    );
+    setRequestModalVisible(true);
+  };
+
+  const handleSubmitRequest = async (draft: RentalRequestDraft) => {
+    if (!equipment || !currentUser) return;
+    try {
+      const startDate = new Date().toISOString();
+
+      let endDate = '';
+      let amount = 0;
+      let platformFee = 0;
+      let providerAmount = 0;
+
+      if (draft.requestMode === 'fixed_duration') {
+        const days = draft.numberOfDays || 0;
+        endDate = new Date(Date.now() + days * 86400000).toISOString();
+        amount = equipment.pricePerDay * days;
+        platformFee = Math.round(amount * 0.1);
+        providerAmount = amount - platformFee;
+      }
+
+      await createRequest({
+        equipmentId: equipment.id,
+        customerUid: currentUser.uid,
+        providerUid: equipment.ownerUid,
+        status: 'pending',
+        requestMode: draft.requestMode,
+        numberOfDays: draft.requestMode === 'fixed_duration' ? draft.numberOfDays : undefined,
+        startDate,
+        endDate,
+        notes: draft.notes || '',
+        amount,
+        platformFee,
+        providerAmount,
+        paymentStatus: 'unpaid',
+        paymentId: '',
+        paidAt: null,
+        currency: 'SAR',
+        allowChat: false,
+      });
+
+      showDialog(
+        t('success'),
+        t('request_sent_success'),
+        [{ text: t('ok'), style: 'default', onPress: () => router.back() }]
+      );
+    } catch (e) {
+      console.error('[EquipmentDetail] Request error:', e);
+      showDialog(
+        t('error_title'),
+        t('error_generic_message'),
+        [{ text: t('ok'), style: 'default' }]
+      );
+      throw e;
+    }
   };
 
   const handleContactProvider = () => {
@@ -291,6 +301,12 @@ export default function EquipmentDetailScreen() {
         message={dialog.message}
         buttons={dialog.buttons}
         onClose={hideDialog}
+      />
+
+      <RentalRequestModal
+        visible={requestModalVisible}
+        onClose={() => setRequestModalVisible(false)}
+        onSubmit={handleSubmitRequest}
       />
     </View>
   );

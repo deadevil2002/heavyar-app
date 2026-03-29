@@ -42,6 +42,8 @@ export default React.memo(function RequestCard({ request }: RequestCardProps) {
   const title = equipment ? localizedText(equipment.titleAr, equipment.titleEn) : '...';
   const imageUrl = equipment ? getFirstImageUrl(equipment.images) : '';
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
+  const requestMode = request.requestMode || 'fixed_duration';
+  const isOpenEnded = requestMode === 'open_ended';
 
   const formatDate = (dateStr: string) => {
     try {
@@ -64,7 +66,11 @@ export default React.memo(function RequestCard({ request }: RequestCardProps) {
           <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]} numberOfLines={1}>{title}</Text>
           <View style={[styles.dateRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <Calendar size={14} color={Colors.textMuted} />
-            <Text style={styles.dateText}>{formatDate(request.startDate)} - {formatDate(request.endDate)}</Text>
+            {isOpenEnded ? (
+              <Text style={styles.dateText}>{formatDate(request.startDate)} - {t('until_work_completion')}</Text>
+            ) : (
+              <Text style={styles.dateText}>{formatDate(request.startDate)} - {formatDate(request.endDate)}</Text>
+            )}
           </View>
           <View style={[styles.bottomRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <StatusBadge status={request.status} />
