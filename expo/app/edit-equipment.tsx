@@ -44,6 +44,7 @@ export default function EditEquipmentScreen() {
   const [descAr, setDescAr] = useState<string>('');
   const [descEn, setDescEn] = useState<string>('');
   const [category, setCategory] = useState<string>('');
+  const [customCategory, setCustomCategory] = useState<string>('');
   const [region, setRegion] = useState<string>('');
   const [city, setCity] = useState<string>('');
   const [customCity, setCustomCity] = useState<string>('');
@@ -95,6 +96,7 @@ export default function EditEquipmentScreen() {
         setDescAr(eq.descriptionAr);
         setDescEn(eq.descriptionEn);
         setCategory(eq.category);
+        setCustomCategory(eq.customCategory || '');
         const existingRegion = eq.region || '';
         if (existingRegion) {
           setRegion(existingRegion);
@@ -126,15 +128,20 @@ export default function EditEquipmentScreen() {
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
   const pickImage = useCallback(async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      showDialog('إذن مرفوض', 'يرجى السماح بالوصول للصور لاختيار صور المعدات', [{ text: 'حسناً', style: 'default' }]);
+      return;
+    }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsMultipleSelection: true,
       quality: 0.8,
     });
     if (!result.canceled && result.assets) {
       setNewImageUris(prev => [...prev, ...result.assets.map(a => a.uri)]);
     }
-  }, []);
+  }, [showDialog]);
 
   const removeExistingImage = useCallback((index: number) => {
     setExistingImages(prev => prev.filter((_, i) => i !== index));
@@ -153,6 +160,10 @@ export default function EditEquipmentScreen() {
     }
     if (!category) {
       showDialog(t('validation_error'), t('validation_category_required'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+    if (category === 'other' && !customCategory.trim()) {
+      showDialog(t('validation_error'), 'يرجى إدخال اسم الفئة', [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (!city && !customCity.trim()) {
@@ -199,6 +210,7 @@ export default function EditEquipmentScreen() {
           descriptionAr: descAr,
           descriptionEn: descEn || descAr,
           category,
+          customCategory: category === 'other' ? customCategory.trim() : '',
           region,
           city,
           customCity,
@@ -221,7 +233,7 @@ export default function EditEquipmentScreen() {
       setSaving(false);
       setUploadProgress('');
     }
-  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, region, city, customCity, district, price, existingImages, newImageUris, oldImages, t, router, showDialog]);
+  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, price, existingImages, newImageUris, oldImages, t, router, showDialog]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 
@@ -367,7 +379,7 @@ export default function EditEquipmentScreen() {
                     <Pressable
                       key={cat.id}
                       style={[styles.pickerItem, category === cat.id && styles.pickerItemSelected]}
-                      onPress={() => { setCategory(cat.id); setShowCategoryPicker(false); }}
+                      onPress={() => { setCategory(cat.id); if (cat.id !== 'other') setCustomCategory(''); setShowCategoryPicker(false); }}
                     >
                       <Text style={[styles.pickerItemText, category === cat.id && styles.pickerItemTextSelected]}>
                         {localizedText(cat.nameAr, cat.nameEn)}
@@ -377,6 +389,19 @@ export default function EditEquipmentScreen() {
                 </View>
               )}
             </View>
+
+            {category === 'other' && (
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>اسم الفئة</Text>
+                <TextInput
+                  style={[styles.textInput, { textAlign: isRTL ? 'right' : 'left' }]}
+                  value={customCategory}
+                  onChangeText={setCustomCategory}
+                  placeholder="مثال: معدات زراعية"
+                  placeholderTextColor={Colors.textMuted}
+                />
+              </View>
+            )}
 
             <View style={styles.inputGroup}>
               <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_region')}</Text>

@@ -12,11 +12,11 @@ import {
   createInvoice,
   generateInvoiceNumber,
   fetchEquipmentById,
-  fetchUserById,
   updateRequestInvoiceId,
+  tryBackfillRequestPublicSnapshots,
 } from '@/services/firestoreService';
 import { createPayment, verifyPayment } from '@/services/paymentService';
-import { EquipmentRequest } from '@/types';
+import { EquipmentRequest, PublicUserSnapshot } from '@/types';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 
@@ -43,6 +43,42 @@ export default function PaymentScreen() {
       if (!requestId) return;
       try {
         const req = await fetchRequestById(requestId);
+        if (req && user) {
+          const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
+          if (user.uid === req.customerUid && !req.customerPublic) {
+            updates.customerPublic = {
+              uid: user.uid,
+              nameAr: user.nameAr,
+              nameEn: user.nameEn,
+              avatar: user.avatar,
+              rating: user.rating,
+              totalRatings: user.totalRatings,
+              isVerified: user.isVerified,
+            };
+          }
+          if (user.uid === req.providerUid && !req.providerPublic) {
+            updates.providerPublic = {
+              uid: user.uid,
+              nameAr: user.nameAr,
+              nameEn: user.nameEn,
+              avatar: user.avatar,
+              rating: user.rating,
+              totalRatings: user.totalRatings,
+              isVerified: user.isVerified,
+            };
+          }
+          if (!req.providerPublic) {
+            try {
+              const eq = await fetchEquipmentById(req.equipmentId);
+              if (eq?.ownerPublic && eq.ownerUid === req.providerUid) {
+                updates.providerPublic = eq.ownerPublic;
+              }
+            } catch {}
+          }
+          if ((updates.customerPublic || updates.providerPublic) && req.id) {
+            void tryBackfillRequestPublicSnapshots(req.id, updates);
+          }
+        }
         if (mounted) {
           setRequest(req);
           setLoading(false);
@@ -54,7 +90,7 @@ export default function PaymentScreen() {
     };
     void load();
     return () => { mounted = false; };
-  }, [requestId]);
+  }, [requestId, user]);
 
   const handleVerifyRef = React.useRef<(cId?: string) => Promise<void>>(() => Promise.resolve());
 
@@ -127,11 +163,9 @@ export default function PaymentScreen() {
           const req = await fetchRequestById(requestId);
           if (req) {
             const _equipment = await fetchEquipmentById(req.equipmentId);
-            const provider = await fetchUserById(req.providerUid);
-            const customer = await fetchUserById(req.customerUid);
 
             const invoiceNumber = await generateInvoiceNumber();
-            const subtotal = req.amount;
+            const subtotal = typeof req.finalAmount === 'number' ? req.finalAmount : req.amount;
             const vatRate = 0.15;
             const vatAmount = Math.round(subtotal * vatRate * 100) / 100;
             const totalAmount = Math.round((subtotal + vatAmount) * 100) / 100;
@@ -142,8 +176,8 @@ export default function PaymentScreen() {
               equipmentId: req.equipmentId,
               providerId: req.providerUid,
               customerId: req.customerUid,
-              sellerName: provider ? (provider.nameAr || provider.nameEn) : '',
-              buyerName: customer ? (customer.nameAr || customer.nameEn) : '',
+              sellerName: req.providerPublic ? (req.providerPublic.nameAr || req.providerPublic.nameEn) : '',
+              buyerName: req.customerPublic ? (req.customerPublic.nameAr || req.customerPublic.nameEn) : '',
               subtotal,
               vatRate,
               vatAmount,

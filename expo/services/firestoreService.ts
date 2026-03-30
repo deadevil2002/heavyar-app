@@ -16,7 +16,7 @@ import {
   limit,
 } from 'firebase/firestore';
 import { getFirebaseDb } from './firebaseConfig';
-import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice } from '@/types';
+import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice, PublicUserSnapshot } from '@/types';
 import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
 
@@ -54,15 +54,57 @@ function parseImages(raw: unknown): EquipmentImage[] {
   }).filter((img): img is EquipmentImage => img !== '');
 }
 
+function parsePublicUserSnapshot(raw: unknown, fallbackUid?: string): PublicUserSnapshot | undefined {
+  if (!raw || typeof raw !== 'object') {
+    if (fallbackUid) {
+      return {
+        uid: fallbackUid,
+        nameAr: '',
+        nameEn: '',
+        avatar: '',
+      };
+    }
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const uid = (obj.uid as string) || fallbackUid || '';
+  if (!uid) return undefined;
+  return {
+    uid,
+    nameAr: (obj.nameAr as string) || '',
+    nameEn: (obj.nameEn as string) || '',
+    avatar: (obj.avatar as string) || '',
+    rating: typeof obj.rating === 'number' ? obj.rating : undefined,
+    totalRatings: typeof obj.totalRatings === 'number' ? obj.totalRatings : undefined,
+    isVerified: typeof obj.isVerified === 'boolean' ? obj.isVerified : undefined,
+  };
+}
+
+function sanitizePublicUserSnapshot(snapshot: PublicUserSnapshot): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    uid: snapshot.uid,
+    nameAr: snapshot.nameAr,
+    nameEn: snapshot.nameEn,
+    avatar: snapshot.avatar,
+  };
+  if (typeof snapshot.rating === 'number') out.rating = snapshot.rating;
+  if (typeof snapshot.totalRatings === 'number') out.totalRatings = snapshot.totalRatings;
+  if (typeof snapshot.isVerified === 'boolean') out.isVerified = snapshot.isVerified;
+  return out;
+}
+
 function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
+  const ownerUid = (data.ownerUid as string) || '';
   return {
     id,
-    ownerUid: (data.ownerUid as string) || '',
+    ownerUid,
+    ownerPublic: parsePublicUserSnapshot(data.ownerPublic, ownerUid),
     titleAr: (data.titleAr as string) || '',
     titleEn: (data.titleEn as string) || '',
     descriptionAr: (data.descriptionAr as string) || '',
     descriptionEn: (data.descriptionEn as string) || '',
     category: (data.category as string) || '',
+    customCategory: (data.customCategory as string) || '',
     region: (data.region as string) || '',
     city: (data.city as string) || '',
     customCity: (data.customCity as string) || '',
@@ -105,7 +147,9 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     id,
     equipmentId: (data.equipmentId as string) || '',
     customerUid: (data.customerUid as string) || '',
+    customerPublic: parsePublicUserSnapshot(data.customerPublic, (data.customerUid as string) || ''),
     providerUid: (data.providerUid as string) || '',
+    providerPublic: parsePublicUserSnapshot(data.providerPublic, (data.providerUid as string) || ''),
     status: (data.status as EquipmentRequest['status']) || 'pending',
     requestMode,
     numberOfDays,
@@ -261,6 +305,30 @@ export async function updateEquipment(id: string, updates: Partial<Equipment>): 
   });
 }
 
+export async function tryBackfillEquipmentOwnerPublic(equipmentId: string, ownerPublic: PublicUserSnapshot): Promise<void> {
+  const db = getFirebaseDb();
+  try {
+    await updateDoc(doc(db, 'equipment', equipmentId), {
+      ownerPublic: sanitizePublicUserSnapshot(ownerPublic),
+      updatedAt: serverTimestamp(),
+    });
+  } catch {}
+}
+
+export async function tryBackfillRequestPublicSnapshots(
+  requestId: string,
+  updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot }
+): Promise<void> {
+  const db = getFirebaseDb();
+  try {
+    await updateDoc(doc(db, 'equipmentRequests', requestId), {
+      ...(updates.customerPublic ? { customerPublic: sanitizePublicUserSnapshot(updates.customerPublic) } : {}),
+      ...(updates.providerPublic ? { providerPublic: sanitizePublicUserSnapshot(updates.providerPublic) } : {}),
+      updatedAt: serverTimestamp(),
+    });
+  } catch {}
+}
+
 export async function updateEquipmentWithImageCleanup(
   id: string,
   updates: Partial<Equipment>,
@@ -370,6 +438,8 @@ export async function createRequest(data: Omit<EquipmentRequest, 'id' | 'created
     equipmentId: data.equipmentId,
     customerUid: data.customerUid,
     providerUid: data.providerUid,
+    customerPublic: data.customerPublic ? sanitizePublicUserSnapshot(data.customerPublic) : undefined,
+    providerPublic: data.providerPublic ? sanitizePublicUserSnapshot(data.providerPublic) : undefined,
     status: 'pending',
     requestMode,
     startDate: data.startDate,
@@ -454,8 +524,51 @@ export async function updateRequestStatus(
     updates.allowChat = true;
   }
 
+  if (status === 'in_progress') {
+    updates.startedAt = new Date().toISOString();
+  }
+
   if (status === 'completed' || status === 'rejected' || status === 'cancelled') {
     updates.allowChat = false;
+  }
+
+  if (status === 'completed') {
+    const endedAtIso = new Date().toISOString();
+    updates.endedAt = endedAtIso;
+    updates.closedBy = 'provider';
+    const startedAtIso = (request.startedAt as string) || (request.startDate as string) || '';
+    const started = new Date(startedAtIso);
+    const ended = new Date(endedAtIso);
+    let billedDays = 1;
+    if (!Number.isNaN(started.getTime()) && !Number.isNaN(ended.getTime())) {
+      const diffMs = Math.max(0, ended.getTime() - started.getTime());
+      billedDays = Math.max(1, Math.ceil(diffMs / 86400000));
+    }
+    let pricePerDay = typeof request.pricePerDay === 'number' ? request.pricePerDay : undefined;
+    if (pricePerDay === undefined) {
+      try {
+        const eqSnap = await getDoc(doc(db, 'equipment', request.equipmentId as string));
+        if (eqSnap.exists()) {
+          const eq = eqSnap.data();
+          if (typeof eq.pricePerDay === 'number') pricePerDay = eq.pricePerDay;
+        }
+      } catch {}
+    }
+    if (typeof pricePerDay === 'number') {
+      const finalAmount = Math.trunc(pricePerDay * billedDays);
+      const finalPlatformFee = Math.round(finalAmount * 0.1);
+      const finalProviderAmount = finalAmount - finalPlatformFee;
+      updates.finalAmount = finalAmount;
+      updates.finalPlatformFee = finalPlatformFee;
+      updates.finalProviderAmount = finalProviderAmount;
+    } else {
+      const fallbackAmount = typeof request.amount === 'number' ? request.amount : 0;
+      const finalPlatformFee = Math.round(fallbackAmount * 0.1);
+      const finalProviderAmount = fallbackAmount - finalPlatformFee;
+      updates.finalAmount = fallbackAmount;
+      updates.finalPlatformFee = finalPlatformFee;
+      updates.finalProviderAmount = finalProviderAmount;
+    }
   }
 
   await updateDoc(doc(db, 'equipmentRequests', requestId), updates);

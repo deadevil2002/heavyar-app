@@ -8,8 +8,8 @@ import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
-import { fetchEquipmentById, fetchUserById, createRequest } from '@/services/firestoreService';
-import { Equipment, User } from '@/types';
+import { fetchEquipmentById, createRequest, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
+import { Equipment } from '@/types';
 import { getImageUrl } from '@/utils/imageHelpers';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
@@ -25,7 +25,6 @@ export default function EquipmentDetailScreen() {
   const [currentImage, setCurrentImage] = useState<number>(0);
   const [liked, setLiked] = useState<boolean>(false);
   const [equipment, setEquipment] = useState<Equipment | null>(null);
-  const [owner, setOwner] = useState<User | null>(null);
   const [_loading, setLoading] = useState<boolean>(true);
   const [requestModalVisible, setRequestModalVisible] = useState<boolean>(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -39,8 +38,6 @@ export default function EquipmentDetailScreen() {
         const eq = await fetchEquipmentById(id);
         if (mounted && eq) {
           setEquipment(eq);
-          const ownerUser = await fetchUserById(eq.ownerUid);
-          if (mounted) setOwner(ownerUser);
         }
       } catch (e) {
         console.log('[EquipmentDetail] Error:', e);
@@ -51,6 +48,21 @@ export default function EquipmentDetailScreen() {
     void load();
     return () => { mounted = false; };
   }, [id]);
+
+  useEffect(() => {
+    if (!equipment || !currentUser) return;
+    if (equipment.ownerPublic) return;
+    if (currentUser.uid !== equipment.ownerUid) return;
+    void tryBackfillEquipmentOwnerPublic(equipment.id, {
+      uid: currentUser.uid,
+      nameAr: currentUser.nameAr,
+      nameEn: currentUser.nameEn,
+      avatar: currentUser.avatar,
+      rating: currentUser.rating,
+      totalRatings: currentUser.totalRatings,
+      isVerified: currentUser.isVerified,
+    });
+  }, [currentUser, equipment]);
 
   const categoryObj = equipment ? mockCategories.find(c => c.id === equipment.category) : null;
   const cityObj = equipment ? mockCities.find(c => c.id === equipment.city) : null;
@@ -70,8 +82,26 @@ export default function EquipmentDetailScreen() {
   const title = localizedText(equipment.titleAr, equipment.titleEn);
   const description = localizedText(equipment.descriptionAr, equipment.descriptionEn);
   const cityName = cityObj ? localizedText(cityObj.nameAr, cityObj.nameEn) : equipment.city;
-  const categoryName = categoryObj ? localizedText(categoryObj.nameAr, categoryObj.nameEn) : equipment.category;
-  const ownerName = owner ? localizedText(owner.nameAr, owner.nameEn) : '';
+  const categoryName = equipment.category === 'other' && equipment.customCategory
+    ? equipment.customCategory
+    : (categoryObj ? localizedText(categoryObj.nameAr, categoryObj.nameEn) : equipment.category);
+  const ownerPublic = equipment.ownerPublic || (currentUser && currentUser.uid === equipment.ownerUid ? {
+    uid: currentUser.uid,
+    nameAr: currentUser.nameAr,
+    nameEn: currentUser.nameEn,
+    avatar: currentUser.avatar,
+    rating: currentUser.rating,
+    totalRatings: currentUser.totalRatings,
+    isVerified: currentUser.isVerified,
+  } : undefined);
+  const ownerName = ownerPublic ? localizedText(ownerPublic.nameAr, ownerPublic.nameEn) : '';
+  const canShowOwner = Boolean(ownerPublic && (ownerPublic.nameAr || ownerPublic.nameEn || ownerPublic.avatar));
+  const isEligibleRequester = Boolean(
+    isAuthenticated &&
+      currentUser &&
+      currentUser.role === 'customer' &&
+      currentUser.uid !== equipment.ownerUid
+  );
 
   const handleRequestRental = () => {
     if (!isAuthenticated || !currentUser) {
@@ -87,6 +117,15 @@ export default function EquipmentDetailScreen() {
     }
 
     if (!equipment) return;
+
+    if (currentUser.role !== 'customer') {
+      showDialog(
+        t('request_not_allowed'),
+        t('request_customers_only'),
+        [{ text: t('ok'), style: 'default' }]
+      );
+      return;
+    }
 
     if (currentUser.uid === equipment.ownerUid) {
       showDialog(
@@ -122,6 +161,25 @@ export default function EquipmentDetailScreen() {
         equipmentId: equipment.id,
         customerUid: currentUser.uid,
         providerUid: equipment.ownerUid,
+        pricePerDay: equipment.pricePerDay,
+        customerPublic: {
+          uid: currentUser.uid,
+          nameAr: currentUser.nameAr,
+          nameEn: currentUser.nameEn,
+          avatar: currentUser.avatar,
+          rating: currentUser.rating,
+          totalRatings: currentUser.totalRatings,
+          isVerified: currentUser.isVerified,
+        },
+        providerPublic: {
+          uid: equipment.ownerUid,
+          nameAr: ownerPublic?.nameAr || '',
+          nameEn: ownerPublic?.nameEn || '',
+          avatar: ownerPublic?.avatar || '',
+          rating: ownerPublic?.rating ?? 0,
+          totalRatings: ownerPublic?.totalRatings ?? 0,
+          isVerified: ownerPublic?.isVerified ?? false,
+        },
         status: 'pending' as const,
         requestMode: draft.requestMode,
         startDate,
@@ -246,21 +304,20 @@ export default function EquipmentDetailScreen() {
 
           <View style={styles.divider} />
 
-          {owner && (
+          {canShowOwner && (
             <>
               <Text style={[styles.sectionTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('owner')}</Text>
               <Pressable style={[styles.ownerCard, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={handleContactProvider}>
-                <Image source={{ uri: owner.avatar }} style={styles.ownerAvatar} contentFit="cover" />
+                <Image source={ownerPublic?.avatar ? { uri: ownerPublic.avatar } : require('@/assets/images/logo.png')} style={styles.ownerAvatar} contentFit="cover" />
                 <View style={[styles.ownerInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
                   <View style={[styles.ownerNameRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                     <Text style={styles.ownerName}>{ownerName}</Text>
-                    {owner.isVerified && <Shield size={14} color={Colors.success} />}
+                    {ownerPublic?.isVerified && <Shield size={14} color={Colors.success} />}
                   </View>
                   <View style={[styles.ownerRating, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                     <Star size={14} color={Colors.gold} fill={Colors.gold} />
-                    <Text style={styles.ownerRatingText}>{owner.rating} ({owner.totalRatings} {t('rating_count')})</Text>
+                    <Text style={styles.ownerRatingText}>{ownerPublic?.rating || 0} ({ownerPublic?.totalRatings || 0} {t('rating_count')})</Text>
                   </View>
-                  <Text style={styles.ownerEquipment}>{owner.equipmentCount} {t('equipment_count')}</Text>
                 </View>
               </Pressable>
             </>
@@ -288,7 +345,7 @@ export default function EquipmentDetailScreen() {
                 <Text style={styles.bottomPrice}>{equipment.pricePerDay.toLocaleString()} {t('sar')}</Text>
                 <Text style={styles.bottomPerDay}>{t('per_day')}</Text>
               </View>
-              <Pressable style={styles.requestButton} onPress={handleRequestRental}>
+              <Pressable style={[styles.requestButton, !isEligibleRequester && styles.requestButtonDisabled]} onPress={handleRequestRental}>
                 <Calendar size={18} color={Colors.primary} />
                 <Text style={styles.requestButtonText}>{t('request_rental')}</Text>
               </Pressable>
@@ -581,6 +638,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: 'center',
     gap: 8,
+  },
+  requestButtonDisabled: {
+    opacity: 0.7,
   },
   requestButtonText: {
     color: Colors.primary,

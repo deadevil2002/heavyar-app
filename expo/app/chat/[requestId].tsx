@@ -6,9 +6,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { subscribeToMessages, subscribeToRequest, fetchUserById, sendMessage } from '@/services/firestoreService';
-import { EquipmentRequest, User } from '@/types';
-import { ChatMessage } from '@/types';
+import { subscribeToMessages, subscribeToRequest, sendMessage, fetchEquipmentById, tryBackfillRequestPublicSnapshots } from '@/services/firestoreService';
+import { EquipmentRequest, ChatMessage, PublicUserSnapshot } from '@/types';
 
 export default function ChatScreen() {
   const { requestId } = useLocalSearchParams<{ requestId: string }>();
@@ -18,7 +17,6 @@ export default function ChatScreen() {
   const [message, setMessage] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [request, setRequest] = useState<EquipmentRequest | null>(null);
-  const [otherUser, setOtherUser] = useState<User | null>(null);
   const flatListRef = useRef<FlatList>(null);
 
   const currentUid = user?.uid || '';
@@ -26,8 +24,10 @@ export default function ChatScreen() {
   const isChatActive = request && ['accepted', 'in_progress'].includes(request.status);
 
   const otherUserName = useMemo(() => {
-    return otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
-  }, [otherUser, localizedText]);
+    if (!request) return '';
+    const other = request.customerUid === currentUid ? request.providerPublic : request.customerPublic;
+    return other ? localizedText(other.nameAr, other.nameEn) : '';
+  }, [currentUid, localizedText, request]);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
@@ -35,14 +35,45 @@ export default function ChatScreen() {
     if (!requestId) return;
     const unsub = subscribeToRequest(requestId, async (req) => {
       setRequest(req);
-      if (req) {
-        const otherUid = req.customerUid === currentUid ? req.providerUid : req.customerUid;
-        const u = await fetchUserById(otherUid);
-        setOtherUser(u);
+      if (req && user) {
+        const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
+        if (currentUid === req.customerUid && !req.customerPublic) {
+          updates.customerPublic = {
+            uid: user.uid,
+            nameAr: user.nameAr,
+            nameEn: user.nameEn,
+            avatar: user.avatar,
+            rating: user.rating,
+            totalRatings: user.totalRatings,
+            isVerified: user.isVerified,
+          };
+        }
+        if (currentUid === req.providerUid && !req.providerPublic) {
+          updates.providerPublic = {
+            uid: user.uid,
+            nameAr: user.nameAr,
+            nameEn: user.nameEn,
+            avatar: user.avatar,
+            rating: user.rating,
+            totalRatings: user.totalRatings,
+            isVerified: user.isVerified,
+          };
+        }
+        if (!req.providerPublic) {
+          try {
+            const eq = await fetchEquipmentById(req.equipmentId);
+            if (eq?.ownerPublic && eq.ownerUid === req.providerUid) {
+              updates.providerPublic = eq.ownerPublic;
+            }
+          } catch {}
+        }
+        if ((updates.customerPublic || updates.providerPublic) && req.id) {
+          void tryBackfillRequestPublicSnapshots(req.id, updates);
+        }
       }
     });
     return () => unsub();
-  }, [requestId, currentUid]);
+  }, [requestId, currentUid, user]);
 
   useEffect(() => {
     if (!requestId) return;

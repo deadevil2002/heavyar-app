@@ -7,8 +7,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { subscribeToRequest, fetchEquipmentById, fetchUserById, updateRequestStatus } from '@/services/firestoreService';
-import { Equipment, User, EquipmentRequest } from '@/types';
+import { subscribeToRequest, fetchEquipmentById, updateRequestStatus, tryBackfillRequestPublicSnapshots } from '@/services/firestoreService';
+import { Equipment, EquipmentRequest, PublicUserSnapshot } from '@/types';
 import StatusBadge from '@/components/StatusBadge';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
@@ -22,7 +22,7 @@ export default function RequestDetailScreen() {
 
   const [request, setRequest] = useState<EquipmentRequest | null>(null);
   const [equipment, setEquipment] = useState<Equipment | null>(null);
-  const [otherUserData, setOtherUserData] = useState<User | null>(null);
+  const [otherUserPublic, setOtherUserPublic] = useState<PublicUserSnapshot | null>(null);
   const [_loading, setLoading] = useState<boolean>(true);
   const currentUid = user?.uid || '';
   const { dialog, showDialog, hideDialog } = useAppDialog();
@@ -37,9 +37,43 @@ export default function RequestDetailScreen() {
         try {
           const eq = await fetchEquipmentById(req.equipmentId);
           setEquipment(eq);
-          const otherUid = req.providerUid === currentUid ? req.customerUid : req.providerUid;
-          const otherU = await fetchUserById(otherUid);
-          setOtherUserData(otherU);
+          const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
+
+          if (user && currentUid === req.customerUid && !req.customerPublic) {
+            updates.customerPublic = {
+              uid: user.uid,
+              nameAr: user.nameAr,
+              nameEn: user.nameEn,
+              avatar: user.avatar,
+              rating: user.rating,
+              totalRatings: user.totalRatings,
+              isVerified: user.isVerified,
+            };
+          }
+
+          if (user && currentUid === req.providerUid && !req.providerPublic) {
+            updates.providerPublic = {
+              uid: user.uid,
+              nameAr: user.nameAr,
+              nameEn: user.nameEn,
+              avatar: user.avatar,
+              rating: user.rating,
+              totalRatings: user.totalRatings,
+              isVerified: user.isVerified,
+            };
+          }
+
+          if (!req.providerPublic && eq?.ownerPublic && eq.ownerUid === req.providerUid) {
+            updates.providerPublic = eq.ownerPublic;
+          }
+
+          if ((updates.customerPublic || updates.providerPublic) && req.id) {
+            void tryBackfillRequestPublicSnapshots(req.id, updates);
+          }
+          const effectiveCustomer = req.customerPublic || updates.customerPublic || null;
+          const effectiveProvider = req.providerPublic || updates.providerPublic || null;
+          const other = req.providerUid === currentUid ? effectiveCustomer : effectiveProvider;
+          setOtherUserPublic(other);
         } catch (e) {
           console.log('[RequestDetail] Error loading related data:', e);
         }
@@ -47,7 +81,7 @@ export default function RequestDetailScreen() {
       setLoading(false);
     });
     return () => unsub();
-  }, [id, currentUid]);
+  }, [id, currentUid, user]);
 
   if (_loading || !request || !equipment) {
     return (
@@ -61,15 +95,17 @@ export default function RequestDetailScreen() {
 
   const isProvider = request.providerUid === currentUid;
   const title = localizedText(equipment.titleAr, equipment.titleEn);
-  const otherUser = otherUserData;
+  const otherUser = otherUserPublic;
   const otherUserName = otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
   const requestMode = request.requestMode || 'fixed_days';
   const isOpenEnded = requestMode === 'open_ended';
 
   const canChat = request.allowChat && ['accepted', 'in_progress'].includes(request.status);
-  const canPay = !isProvider && request.status === 'accepted' && request.paymentStatus === 'unpaid';
+  const canPay = !isProvider && request.status === 'completed' && request.paymentStatus === 'unpaid';
   const canRate = !isProvider && request.status === 'completed';
   const canAccept = isProvider && request.status === 'pending';
+  const canStart = isProvider && request.status === 'accepted';
+  const canCancelCustomer = !isProvider && (request.status === 'pending' || (request.status === 'accepted' && !request.startedAt));
   const canComplete = isProvider && request.status === 'in_progress';
   const showInvoice = request.paymentStatus === 'paid';
 
@@ -84,6 +120,7 @@ export default function RequestDetailScreen() {
             let newStatus: EquipmentRequest['status'] = 'pending';
             if (action === 'accept') newStatus = 'accepted';
             else if (action === 'reject') newStatus = 'rejected';
+            else if (action === 'start') newStatus = 'in_progress';
             else if (action === 'complete') newStatus = 'completed';
             else if (action === 'cancel') newStatus = 'cancelled';
             await updateRequestStatus(request.id, newStatus, currentUid);
@@ -174,12 +211,12 @@ export default function RequestDetailScreen() {
             <View style={styles.card}>
               <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isProvider ? t('as_customer') : t('owner')}</Text>
               <View style={[styles.userRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                <Image source={{ uri: otherUser.avatar }} style={styles.userAvatar} contentFit="cover" />
+                <Image source={otherUser.avatar ? { uri: otherUser.avatar } : require('@/assets/images/logo.png')} style={styles.userAvatar} contentFit="cover" />
                 <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start', flex: 1 }}>
                   <Text style={styles.userName}>{otherUserName}</Text>
                   <View style={[styles.ratingRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                     <Star size={14} color={Colors.gold} fill={Colors.gold} />
-                    <Text style={styles.ratingText}>{otherUser.rating}</Text>
+                    <Text style={styles.ratingText}>{otherUser.rating || 0}</Text>
                   </View>
                 </View>
               </View>
@@ -222,9 +259,19 @@ export default function RequestDetailScreen() {
                 </Pressable>
               </View>
             )}
+            {canCancelCustomer && (
+              <Pressable style={styles.rejectButton} onPress={() => handleAction('cancel')}>
+                <Text style={styles.rejectText}>{t('cancel')}</Text>
+              </Pressable>
+            )}
+            {canStart && (
+              <Pressable style={styles.acceptButton} onPress={() => handleAction('start')}>
+                <Text style={styles.acceptText}>{t('start_work')}</Text>
+              </Pressable>
+            )}
             {canComplete && (
               <Pressable style={styles.completeButton} onPress={() => handleAction('complete')}>
-                <Text style={styles.completeText}>{t('complete')}</Text>
+                <Text style={styles.completeText}>{t('end_work')}</Text>
               </Pressable>
             )}
             {showInvoice && (

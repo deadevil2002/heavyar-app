@@ -70,7 +70,7 @@ export default function SettingsScreen() {
           </View>
 
           <View style={styles.section}>
-            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.push({ pathname: '/privacy' } as any)}>
               <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <View style={styles.menuIcon}>
                   <FileText size={20} color={Colors.gold} />
@@ -80,7 +80,7 @@ export default function SettingsScreen() {
               <ChevronIcon size={20} color={Colors.textMuted} />
             </Pressable>
 
-            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.push({ pathname: '/terms' } as any)}>
               <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <View style={styles.menuIcon}>
                   <FileText size={20} color={Colors.gold} />
@@ -90,7 +90,7 @@ export default function SettingsScreen() {
               <ChevronIcon size={20} color={Colors.textMuted} />
             </Pressable>
 
-            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.push({ pathname: '/help' } as any)}>
               <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <View style={styles.menuIcon}>
                   <HelpCircle size={20} color={Colors.gold} />

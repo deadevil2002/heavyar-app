@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -12,6 +12,7 @@ import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionById, findRegionByCityId } from '@/mocks/saudiRegions';
 import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloudinaryService';
+import { fetchEquipmentByOwner, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
 
 export default function ProfileScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -32,6 +33,35 @@ export default function ProfileScreen() {
   const [saving, setSaving] = useState<boolean>(false);
   const [avatarBusy, setAvatarBusy] = useState<boolean>(false);
 
+  useEffect(() => {
+    if (!user) return;
+    if (user.role !== 'provider') return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await fetchEquipmentByOwner(user.uid);
+        if (cancelled) return;
+        const snapshot = {
+          uid: user.uid,
+          nameAr: user.nameAr,
+          nameEn: user.nameEn,
+          avatar: user.avatar,
+          rating: user.rating,
+          totalRatings: user.totalRatings,
+          isVerified: user.isVerified,
+        };
+        await Promise.all(
+          list
+            .filter((eq) => !eq.ownerPublic)
+            .map((eq) => tryBackfillEquipmentOwnerPublic(eq.id, snapshot))
+        );
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
   const handleLogin = useCallback(() => {
     router.push('/login');
   }, [router]);
@@ -45,6 +75,11 @@ export default function ProfileScreen() {
     if (avatarBusy) return;
     setAvatarBusy(true);
     try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        showDialog('إذن مرفوض', 'يرجى السماح بالوصول للصور لتحديث الصورة الشخصية', [{ text: 'حسناً', style: 'default' }]);
+        return;
+      }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         quality: 0.85,
@@ -210,6 +245,9 @@ export default function ProfileScreen() {
   }
 
   const userName = localizedText(user.nameAr, user.nameEn);
+  const providerVerificationStatus = user.role === 'provider'
+    ? (user.crVerified ? 'verified' : (user.crNumber ? 'pending' : 'incomplete'))
+    : null;
 
   return (
     <View style={styles.container}>
@@ -276,17 +314,21 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          {user.role === 'provider' && user.crNumber ? (
+          {user.role === 'provider' ? (
             <View style={styles.crCard}>
               <View style={[styles.crRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <FileText size={18} color={Colors.gold} />
                 <View style={{ flex: 1, alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
-                  <Text style={styles.crLabel}>{t('cr_number')}</Text>
-                  <Text style={styles.crValue}>{user.crNumber}</Text>
+                  <Text style={styles.crLabel}>{t('provider_verification_status')}</Text>
+                  <Text style={styles.crValue}>{user.crNumber ? `${t('cr_number')}: ${user.crNumber}` : t('cr_required')}</Text>
                 </View>
-                <View style={[styles.crStatusBadge, { backgroundColor: user.crVerified ? 'rgba(46, 204, 113, 0.15)' : 'rgba(243, 156, 18, 0.15)' }]}>
-                  <Text style={[styles.crStatusText, { color: user.crVerified ? Colors.success : Colors.warning }]}>
-                    {user.crVerified ? t('cr_verified') : t('cr_not_verified')}
+                <View style={[styles.crStatusBadge, { backgroundColor: providerVerificationStatus === 'verified' ? 'rgba(46, 204, 113, 0.15)' : 'rgba(243, 156, 18, 0.15)' }]}>
+                  <Text style={[styles.crStatusText, { color: providerVerificationStatus === 'verified' ? Colors.success : Colors.warning }]}>
+                    {providerVerificationStatus === 'verified'
+                      ? t('provider_verified')
+                      : providerVerificationStatus === 'pending'
+                        ? t('provider_pending_review')
+                        : t('provider_incomplete')}
                   </Text>
                 </View>
               </View>
