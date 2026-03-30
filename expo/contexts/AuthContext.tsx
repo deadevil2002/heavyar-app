@@ -69,6 +69,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
               email: firebaseUser.email || '',
               phone: firebaseUser.phoneNumber || '',
               avatar: firebaseUser.photoURL || '',
+              avatarPublicId: '',
               region: '',
               city: '',
               customCity: '',
@@ -179,8 +180,31 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const updateProfile = useCallback(async (updates: Partial<User>) => {
     if (!user?.uid) return;
     try {
-      await updateUserProfile(user.uid, updates);
-      const updated = { ...user, ...updates };
+      const ruleSafeUpdates: Partial<User> = { ...updates };
+      delete (ruleSafeUpdates as Partial<User> & { role?: unknown }).role;
+      delete (ruleSafeUpdates as Partial<User> & { createdAt?: unknown }).createdAt;
+      delete (ruleSafeUpdates as Partial<User> & { crVerified?: unknown }).crVerified;
+
+      const normalizeCrNumber = (value: unknown): string | null | undefined => {
+        if (value === null) return null;
+        if (typeof value !== 'string') return undefined;
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        return /^\d{10}$/.test(trimmed) ? trimmed : null;
+      };
+
+      if (Object.prototype.hasOwnProperty.call(ruleSafeUpdates, 'crNumber')) {
+        const normalized = normalizeCrNumber(ruleSafeUpdates.crNumber);
+        if (normalized !== undefined) ruleSafeUpdates.crNumber = normalized as never;
+      } else {
+        const normalizedExisting = normalizeCrNumber(user.crNumber);
+        if (normalizedExisting === null) ruleSafeUpdates.crNumber = null as never;
+      }
+
+      console.log('[ProfileWrite] AuthContext.updateProfile', { incomingKeys: Object.keys(updates), outgoingKeys: Object.keys(ruleSafeUpdates) });
+
+      await updateUserProfile(user.uid, ruleSafeUpdates);
+      const updated = { ...user, ...ruleSafeUpdates };
       setUser(updated);
       await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(updated));
     } catch (e) {

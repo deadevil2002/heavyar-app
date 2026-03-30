@@ -1,4 +1,4 @@
-const WORKER_BASE_URL = 'https://heavyar-api.heavyar-official.workers.dev';
+import { WORKER_BASE_URL } from '@/constants/worker';
 
 export interface CreatePaymentParams {
   amount: number;

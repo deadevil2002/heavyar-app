@@ -63,7 +63,7 @@ export default function RequestDetailScreen() {
   const title = localizedText(equipment.titleAr, equipment.titleEn);
   const otherUser = otherUserData;
   const otherUserName = otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
-  const requestMode = request.requestMode || 'fixed_duration';
+  const requestMode = request.requestMode || 'fixed_days';
   const isOpenEnded = requestMode === 'open_ended';
 
   const canChat = request.allowChat && ['accepted', 'in_progress'].includes(request.status);

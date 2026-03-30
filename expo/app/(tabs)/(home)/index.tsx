@@ -2,7 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Animated, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Search, Bell, ChevronLeft, ChevronRight } from 'lucide-react-native';
+import { Search, Bell, Globe, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -13,11 +13,14 @@ import { Equipment } from '@/types';
 import EquipmentCard from '@/components/EquipmentCard';
 import CategoryCard from '@/components/CategoryCard';
 import EmptyState from '@/components/EmptyState';
+import AppDialog from '@/components/AppDialog';
+import { useAppDialog } from '@/hooks/useAppDialog';
 
 export default function HomeScreen() {
-  const { isRTL, t, localizedText } = useLanguage();
+  const { isRTL, t, localizedText, setLanguage } = useLanguage();
   const { user, isAuthenticated } = useAuth();
   const router = useRouter();
+  const { dialog, showDialog, hideDialog } = useAppDialog();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [equipmentList, setEquipmentList] = useState<Equipment[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -56,6 +59,18 @@ export default function HomeScreen() {
     console.log('Notifications pressed');
   }, []);
 
+  const handleGuestLanguage = useCallback(() => {
+    showDialog(
+      t('language'),
+      t('select_language_prompt'),
+      [
+        { text: t('arabic'), style: 'default', onPress: () => void setLanguage('ar') },
+        { text: t('english'), style: 'default', onPress: () => void setLanguage('en') },
+        { text: t('cancel'), style: 'cancel' },
+      ]
+    );
+  }, [setLanguage, showDialog, t]);
+
   const userName = user ? localizedText(user.nameAr, user.nameEn).split(' ')[0] : '';
 
   return (
@@ -74,10 +89,16 @@ export default function HomeScreen() {
               <Text style={[styles.subtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('browse_equipment')}</Text>
             </View>
             <View style={[styles.headerActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Pressable style={styles.notifButton} onPress={handleNotifications}>
-                <Bell size={22} color={Colors.textPrimary} />
-                <View style={styles.notifDot} />
-              </Pressable>
+              {isAuthenticated ? (
+                <Pressable style={styles.notifButton} onPress={handleNotifications}>
+                  <Bell size={22} color={Colors.textPrimary} />
+                  <View style={styles.notifDot} />
+                </Pressable>
+              ) : (
+                <Pressable style={styles.notifButton} onPress={handleGuestLanguage}>
+                  <Globe size={22} color={Colors.textPrimary} />
+                </Pressable>
+              )}
               <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
             </View>
           </View>
@@ -149,6 +170,14 @@ export default function HomeScreen() {
           <View style={styles.bottomPadding} />
         </Animated.ScrollView>
       </SafeAreaView>
+
+      <AppDialog
+        visible={dialog.visible}
+        title={dialog.title}
+        message={dialog.message}
+        buttons={dialog.buttons}
+        onClose={hideDialog}
+      />
     </View>
   );
 }

@@ -1,4 +1,5 @@
-const WORKER_BASE_URL = 'https://heavyar-api.heavyar-official.workers.dev';
+import type { Language } from '@/types';
+import { WORKER_BASE_URL } from '@/constants/worker';
 
 export interface SendOtpResponse {
   success: boolean;
@@ -14,25 +15,21 @@ export interface VerifyOtpResponse {
   errorCode?: string;
 }
 
-export async function sendEmailOtp(email: string): Promise<SendOtpResponse> {
-  console.log('[OTP] Sending OTP to:', email);
+export async function sendEmailOtp(email: string, language?: Language): Promise<SendOtpResponse> {
   try {
     const response = await fetch(`${WORKER_BASE_URL}/api/send-email-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, language }),
     });
     const result = await response.json() as SendOtpResponse;
-    console.log('[OTP] Send result:', result.success);
     return result;
-  } catch (error) {
-    console.error('[OTP] Send error:', error);
+  } catch {
     return { success: false, error: 'Network error sending OTP' };
   }
 }
 
 export async function verifyEmailOtp(email: string, code: string): Promise<VerifyOtpResponse> {
-  console.log('[OTP] Verifying OTP for:', email);
   try {
     const response = await fetch(`${WORKER_BASE_URL}/api/verify-email-otp`, {
       method: 'POST',
@@ -40,10 +37,8 @@ export async function verifyEmailOtp(email: string, code: string): Promise<Verif
       body: JSON.stringify({ email, code }),
     });
     const result = await response.json() as VerifyOtpResponse;
-    console.log('[OTP] Verify result:', result.success, result.verified);
     return result;
-  } catch (error) {
-    console.error('[OTP] Verify error:', error);
+  } catch {
     return { success: false, error: 'Network error verifying OTP' };
   }
 }

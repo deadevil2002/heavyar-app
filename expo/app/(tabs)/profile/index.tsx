@@ -2,7 +2,8 @@ import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown } from 'lucide-react-native';
+import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera, Trash2 } from 'lucide-react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -10,6 +11,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionById, findRegionByCityId } from '@/mocks/saudiRegions';
+import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloudinaryService';
 
 export default function ProfileScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -28,6 +30,7 @@ export default function ProfileScreen() {
   const [showCityPicker, setShowCityPicker] = useState<boolean>(false);
   const [citySearch, setCitySearch] = useState<string>('');
   const [saving, setSaving] = useState<boolean>(false);
+  const [avatarBusy, setAvatarBusy] = useState<boolean>(false);
 
   const handleLogin = useCallback(() => {
     router.push('/login');
@@ -36,6 +39,77 @@ export default function ProfileScreen() {
   const handleLogout = useCallback(async () => {
     await logout();
   }, [logout]);
+
+  const handleUploadAvatar = useCallback(async () => {
+    if (!user) return;
+    if (avatarBusy) return;
+    setAvatarBusy(true);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.85,
+      });
+
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+      const localUri = result.assets[0].uri;
+
+      const previousPublicId = user.avatarPublicId || '';
+
+      const uploaded = await uploadImageToCloudinary(localUri);
+      await updateProfile({
+        avatar: uploaded.url,
+        avatarPublicId: uploaded.publicId,
+      });
+
+      if (previousPublicId && previousPublicId !== uploaded.publicId) {
+        try {
+          await deleteCloudinaryImage(previousPublicId);
+        } catch {}
+      }
+
+      showDialog(t('success'), t('avatar_updated'), [{ text: t('ok'), style: 'default' }]);
+    } catch (e) {
+      console.log('[Profile] Avatar upload error:', e);
+      showDialog(t('error_title'), t('avatar_update_failed'), [{ text: t('ok'), style: 'default' }]);
+    } finally {
+      setAvatarBusy(false);
+    }
+  }, [avatarBusy, showDialog, t, updateProfile, user]);
+
+  const handleRemoveAvatar = useCallback(async () => {
+    if (!user) return;
+    if (avatarBusy) return;
+    const previousPublicId = user.avatarPublicId || '';
+    if (!previousPublicId && !user.avatar) return;
+    setAvatarBusy(true);
+    try {
+      await updateProfile({ avatar: '', avatarPublicId: '' });
+      if (previousPublicId) {
+        try {
+          await deleteCloudinaryImage(previousPublicId);
+        } catch {}
+      }
+      showDialog(t('success'), t('avatar_removed'), [{ text: t('ok'), style: 'default' }]);
+    } catch (e) {
+      console.log('[Profile] Avatar remove error:', e);
+      showDialog(t('error_title'), t('avatar_remove_failed'), [{ text: t('ok'), style: 'default' }]);
+    } finally {
+      setAvatarBusy(false);
+    }
+  }, [avatarBusy, showDialog, t, updateProfile, user]);
+
+  const handleAvatarMenu = useCallback(() => {
+    if (!user) return;
+    showDialog(
+      t('change_avatar'),
+      t('avatar_actions_prompt'),
+      [
+        { text: t('upload_avatar'), style: 'default', onPress: () => void handleUploadAvatar() },
+        ...(user.avatar ? [{ text: t('remove_avatar'), style: 'danger' as const, onPress: () => void handleRemoveAvatar() }] : []),
+        { text: t('cancel'), style: 'cancel' },
+      ]
+    );
+  }, [handleRemoveAvatar, handleUploadAvatar, showDialog, t, user]);
 
   const editRegionObj = React.useMemo(() => findRegionById(editRegion), [editRegion]);
   const editRegionCities = React.useMemo(() => getCitiesByRegion(editRegion), [editRegion]);
@@ -147,7 +221,18 @@ export default function ProfileScreen() {
 
           <View style={styles.profileCard}>
             <View style={[styles.profileHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Image source={{ uri: user.avatar }} style={styles.avatar} contentFit="cover" />
+              <Pressable style={styles.avatarWrap} onPress={handleAvatarMenu} disabled={avatarBusy}>
+                <Image source={user.avatar ? { uri: user.avatar } : require('@/assets/images/logo.png')} style={styles.avatar} contentFit="cover" />
+                <View style={styles.avatarAction}>
+                  {avatarBusy ? (
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                  ) : user.avatar ? (
+                    <Trash2 size={16} color={Colors.primary} />
+                  ) : (
+                    <Camera size={16} color={Colors.primary} />
+                  )}
+                </View>
+              </Pressable>
               <View style={[styles.profileInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
                 <View style={[styles.nameRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                   <Text style={styles.name}>{userName}</Text>
@@ -473,6 +558,22 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 2,
     borderColor: Colors.gold,
+  },
+  avatarWrap: {
+    position: 'relative',
+  },
+  avatarAction: {
+    position: 'absolute',
+    bottom: -6,
+    right: -6,
+    width: 28,
+    height: 28,
+    borderRadius: 10,
+    backgroundColor: Colors.gold,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   profileInfo: {
     flex: 1,

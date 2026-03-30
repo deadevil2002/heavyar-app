@@ -208,9 +208,37 @@ async function handleCloudinaryDelete(request: Request, env: Env): Promise<Respo
       return jsonResponse({ success: false, error: 'publicId is required' }, 400);
     }
 
+    const cloudName =
+      env.CLOUDINARY_CLOUD_NAME ||
+      (env as unknown as { CLOUDINARY_NAME?: string }).CLOUDINARY_NAME ||
+      '';
+    const apiKey =
+      env.CLOUDINARY_API_KEY ||
+      (env as unknown as { CLOUDINARY_KEY?: string }).CLOUDINARY_KEY ||
+      '';
+    const apiSecret =
+      env.CLOUDINARY_API_SECRET ||
+      (env as unknown as { CLOUDINARY_SECRET?: string }).CLOUDINARY_SECRET ||
+      '';
+
+    if (!cloudName || !apiKey || !apiSecret) {
+      return jsonResponse(
+        {
+          success: false,
+          error: 'Cloudinary credentials not configured',
+          missing: {
+            cloudName: !cloudName,
+            apiKey: !apiKey,
+            apiSecret: !apiSecret,
+          },
+        },
+        500
+      );
+    }
+
     const timestamp = Math.floor(Date.now() / 1000).toString();
 
-    const signaturePayload = `public_id=${body.publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`;
+    const signaturePayload = `public_id=${body.publicId}&timestamp=${timestamp}${apiSecret}`;
     const encoder = new TextEncoder();
     const data = encoder.encode(signaturePayload);
     const hashBuffer = await crypto.subtle.digest('SHA-1', data);
@@ -220,10 +248,10 @@ async function handleCloudinaryDelete(request: Request, env: Env): Promise<Respo
     const formData = new FormData();
     formData.append('public_id', body.publicId);
     formData.append('timestamp', timestamp);
-    formData.append('api_key', env.CLOUDINARY_API_KEY);
+    formData.append('api_key', apiKey);
     formData.append('signature', signature);
 
-    const cloudinaryUrl = `https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`;
+    const cloudinaryUrl = `https://api.cloudinary.com/v1_1/${cloudName}/image/destroy`;
 
     const cloudinaryResponse = await fetch(cloudinaryUrl, {
       method: 'POST',
@@ -232,7 +260,18 @@ async function handleCloudinaryDelete(request: Request, env: Env): Promise<Respo
 
     const result = await cloudinaryResponse.json();
 
-    return jsonResponse({ success: true, result });
+    const deletionOk =
+      cloudinaryResponse.ok &&
+      (result?.result === 'ok' || result?.result === 'not found');
+
+    return jsonResponse(
+      {
+        success: deletionOk,
+        result,
+        status: cloudinaryResponse.status,
+      },
+      deletionOk ? 200 : 502
+    );
   } catch (error) {
     console.error('Cloudinary delete error:', error);
     return jsonResponse({ success: false, error: 'Failed to delete asset' }, 500);
@@ -241,6 +280,7 @@ async function handleCloudinaryDelete(request: Request, env: Env): Promise<Respo
 
 interface SendOtpBody {
   email: string;
+  language?: 'ar' | 'en';
 }
 
 interface VerifyOtpBody {
@@ -265,8 +305,41 @@ async function handleSendEmailOtp(request: Request, env: Env): Promise<Response>
     const email = body.email.toLowerCase().trim();
     const otp = generateOtp();
     const expiresAt = Date.now() + 10 * 60 * 1000;
+    const language = body.language === 'en' ? 'en' : 'ar';
 
     otpStore.set(email, { code: otp, expiresAt });
+
+    const subject =
+      language === 'en'
+        ? 'Heavyar - Verification Code'
+        : 'هيفيار - رمز التحقق';
+
+    const html =
+      language === 'en'
+        ? `<div dir="ltr" style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0B1A2F; color: #fff; border-radius: 16px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="color: #D4A843; margin: 0;">Heavyar</h1>
+            <p style="color: #8BA3C7; margin: 8px 0 0;">Heavy Equipment Rental Marketplace</p>
+          </div>
+          <div style="background: #132744; border-radius: 12px; padding: 24px; text-align: center;">
+            <p style="color: #8BA3C7; margin: 0 0 12px;">Your verification code</p>
+            <div style="font-size: 36px; font-weight: bold; color: #D4A843; letter-spacing: 8px; padding: 16px;">${otp}</div>
+            <p style="color: #5A7A9F; margin: 12px 0 0; font-size: 13px;">Valid for 10 minutes</p>
+          </div>
+          <p style="color: #5A7A9F; text-align: center; margin: 16px 0 0; font-size: 12px;">If you didn't request this code, ignore this email</p>
+        </div>`
+        : `<div dir="rtl" style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0B1A2F; color: #fff; border-radius: 16px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="color: #D4A843; margin: 0;">هيفيار</h1>
+            <p style="color: #8BA3C7; margin: 8px 0 0;">منصة تأجير المعدات الثقيلة</p>
+          </div>
+          <div style="background: #132744; border-radius: 12px; padding: 24px; text-align: center;">
+            <p style="color: #8BA3C7; margin: 0 0 12px;">رمز التحقق الخاص بك</p>
+            <div style="font-size: 36px; font-weight: bold; color: #D4A843; letter-spacing: 8px; padding: 16px;">${otp}</div>
+            <p style="color: #5A7A9F; margin: 12px 0 0; font-size: 13px;">صالح لمدة 10 دقائق</p>
+          </div>
+          <p style="color: #5A7A9F; text-align: center; margin: 16px 0 0; font-size: 12px;">إذا لم تطلب هذا الرمز، تجاهل هذا البريد</p>
+        </div>`;
 
     const resendResponse = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -277,19 +350,8 @@ async function handleSendEmailOtp(request: Request, env: Env): Promise<Response>
       body: JSON.stringify({
         from: 'Heavyar <noreply@heavyar.app>',
         to: [email],
-        subject: 'Heavyar - رمز التحقق / Verification Code',
-        html: `<div dir="rtl" style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0B1A2F; color: #fff; border-radius: 16px;">
-          <div style="text-align: center; margin-bottom: 24px;">
-            <h1 style="color: #D4A843; margin: 0;">هيفيار - Heavyar</h1>
-            <p style="color: #8BA3C7; margin: 8px 0 0;">منصة تأجير المعدات الثقيلة</p>
-          </div>
-          <div style="background: #132744; border-radius: 12px; padding: 24px; text-align: center;">
-            <p style="color: #8BA3C7; margin: 0 0 12px;">رمز التحقق الخاص بك / Your verification code</p>
-            <div style="font-size: 36px; font-weight: bold; color: #D4A843; letter-spacing: 8px; padding: 16px;">${otp}</div>
-            <p style="color: #5A7A9F; margin: 12px 0 0; font-size: 13px;">صالح لمدة 10 دقائق / Valid for 10 minutes</p>
-          </div>
-          <p style="color: #5A7A9F; text-align: center; margin: 16px 0 0; font-size: 12px;">إذا لم تطلب هذا الرمز، تجاهل هذا البريد<br/>If you didn't request this code, ignore this email</p>
-        </div>`,
+        subject,
+        html,
       }),
     });
 

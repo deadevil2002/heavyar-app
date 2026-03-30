@@ -21,6 +21,7 @@ interface AppDialogProps {
 export default React.memo(function AppDialog({ visible, title, message, buttons, onClose }: AppDialogProps) {
   const scaleAnim = useRef(new Animated.Value(0.85)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
+  const stackedButtons = buttons.length > 2;
 
   useEffect(() => {
     if (visible) {
@@ -95,19 +96,26 @@ export default React.memo(function AppDialog({ visible, title, message, buttons,
             <Text style={styles.message}>{message}</Text>
           </View>
           <View style={styles.divider} />
-          <View style={[styles.buttonsRow, buttons.length === 1 && styles.singleButton]}>
+          <View style={[styles.buttonsRow, buttons.length === 1 && styles.singleButton, stackedButtons && styles.stackedButtonsRow]}>
             {buttons.map((btn, i) => (
               <Pressable
                 key={i}
                 style={({ pressed }) => [
                   styles.button,
                   getButtonStyle(btn.style),
-                  buttons.length > 1 && styles.flexButton,
+                  !stackedButtons && buttons.length > 1 && styles.flexButton,
+                  stackedButtons && styles.fullWidthButton,
                   pressed && styles.buttonPressed,
                 ]}
                 onPress={() => handleButtonPress(btn)}
               >
-                <Text style={[styles.buttonText, getButtonTextStyle(btn.style)]}>{btn.text}</Text>
+                <Text
+                  style={[styles.buttonText, getButtonTextStyle(btn.style)]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {btn.text}
+                </Text>
               </Pressable>
             ))}
           </View>
@@ -173,6 +181,9 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 10,
   },
+  stackedButtonsRow: {
+    flexDirection: 'column',
+  },
   singleButton: {
     justifyContent: 'center',
   },
@@ -186,6 +197,10 @@ const styles = StyleSheet.create({
   },
   flexButton: {
     flex: 1,
+  },
+  fullWidthButton: {
+    width: '100%',
+    minWidth: undefined,
   },
   buttonPressed: {
     opacity: 0.8,

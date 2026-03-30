@@ -110,7 +110,7 @@ export default function EquipmentDetailScreen() {
       let platformFee = 0;
       let providerAmount = 0;
 
-      if (draft.requestMode === 'fixed_duration') {
+      if (draft.requestMode === 'fixed_days') {
         const days = draft.numberOfDays || 0;
         endDate = new Date(Date.now() + days * 86400000).toISOString();
         amount = equipment.pricePerDay * days;
@@ -118,25 +118,27 @@ export default function EquipmentDetailScreen() {
         providerAmount = amount - platformFee;
       }
 
-      await createRequest({
+      const requestPayload = {
         equipmentId: equipment.id,
         customerUid: currentUser.uid,
         providerUid: equipment.ownerUid,
-        status: 'pending',
+        status: 'pending' as const,
         requestMode: draft.requestMode,
-        numberOfDays: draft.requestMode === 'fixed_duration' ? draft.numberOfDays : undefined,
         startDate,
         endDate,
         notes: draft.notes || '',
         amount,
         platformFee,
         providerAmount,
-        paymentStatus: 'unpaid',
+        paymentStatus: 'unpaid' as const,
         paymentId: '',
         paidAt: null,
         currency: 'SAR',
         allowChat: false,
-      });
+        ...(draft.requestMode === 'fixed_days' ? { numberOfDays: draft.numberOfDays } : {}),
+      };
+
+      await createRequest(requestPayload);
 
       showDialog(
         t('success'),

@@ -5,7 +5,7 @@ import {
   onAuthStateChanged,
   User as FirebaseUser,
 } from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, serverTimestamp, deleteField } from 'firebase/firestore';
 import { getFirebaseAuth, getFirebaseDb } from './firebaseConfig';
 import { User } from '@/types';
 
@@ -50,6 +50,7 @@ export async function registerWithEmail(
     email,
     phone: profileData.phone,
     avatar: '',
+    avatarPublicId: '',
     region: profileData.region,
     city: profileData.city,
     customCity: profileData.customCity,
@@ -90,6 +91,7 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
       email: data.email || '',
       phone: data.phone || '',
       avatar: data.avatar || '',
+      avatarPublicId: data.avatarPublicId || '',
       region: data.region || '',
       city: data.city || '',
       customCity: data.customCity || '',
@@ -110,6 +112,76 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
 export async function updateUserProfile(uid: string, updates: Partial<User>): Promise<void> {
   const db = getFirebaseDb();
   console.log('[Auth] Updating user profile for uid:', uid);
-  await setDoc(doc(db, 'users', uid), updates, { merge: true });
+  const preparedUpdates: Record<string, unknown> = { ...updates };
+  delete preparedUpdates.role;
+  delete preparedUpdates.createdAt;
+  delete preparedUpdates.crVerified;
+
+  const userRef = doc(db, 'users', uid);
+  let existingData: Record<string, unknown> = {};
+  let readSucceeded = false;
+  let docExists = false;
+  try {
+    const snap = await getDoc(userRef);
+    readSucceeded = true;
+    docExists = snap.exists();
+    existingData = docExists ? snap.data() as Record<string, unknown> : {};
+  } catch (e) {
+    console.log('[ProfileWrite] getDoc blocked', { code: (e as { code?: unknown } | undefined)?.code });
+  }
+
+  const normalizeCrNumber = (value: unknown): string | null | undefined => {
+    if (value === null) return null;
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    return /^\d{10}$/.test(trimmed) ? trimmed : null;
+  };
+
+  if (Object.prototype.hasOwnProperty.call(preparedUpdates, 'crNumber')) {
+    const normalized = normalizeCrNumber(preparedUpdates.crNumber);
+    if (normalized !== undefined) preparedUpdates.crNumber = normalized;
+  } else {
+    if (readSucceeded && docExists) {
+      const normalizedExisting = normalizeCrNumber(existingData.crNumber);
+      if (normalizedExisting === null) preparedUpdates.crNumber = null;
+    }
+  }
+
+  for (const key of Object.keys(preparedUpdates)) {
+    if (preparedUpdates[key] === undefined) delete preparedUpdates[key];
+  }
+
+  const classifyCrNumber = (value: unknown): 'missing' | 'null' | 'empty' | 'valid' | 'invalid' => {
+    if (value === undefined) return 'missing';
+    if (value === null) return 'null';
+    if (typeof value !== 'string') return 'invalid';
+    const trimmed = value.trim();
+    if (!trimmed) return 'empty';
+    return /^\d{10}$/.test(trimmed) ? 'valid' : 'invalid';
+  };
+
+  console.log('[ProfileWrite] updateUserProfile', {
+    write: 'setDoc(merge:true)',
+    uidPresent: Boolean(uid),
+    docReadSucceeded: readSucceeded,
+    docExists,
+    incomingKeys: Object.keys(updates),
+    outgoingKeys: Object.keys(preparedUpdates),
+    outgoingHasRole: Object.prototype.hasOwnProperty.call(preparedUpdates, 'role'),
+    outgoingHasCreatedAt: Object.prototype.hasOwnProperty.call(preparedUpdates, 'createdAt'),
+    outgoingHasCrVerified: Object.prototype.hasOwnProperty.call(preparedUpdates, 'crVerified'),
+    outgoingCrNumber: classifyCrNumber(preparedUpdates.crNumber),
+    outgoingHasAvatar: Object.prototype.hasOwnProperty.call(preparedUpdates, 'avatar'),
+    outgoingHasAvatarPublicId: Object.prototype.hasOwnProperty.call(preparedUpdates, 'avatarPublicId'),
+    existingRoleType: readSucceeded ? typeof existingData.role : 'unknown',
+    existingCreatedAtType: readSucceeded ? (existingData.createdAt && typeof existingData.createdAt === 'object' ? (existingData.createdAt as { constructor?: { name?: string } })?.constructor?.name : typeof existingData.createdAt) : 'unknown',
+    existingCrVerifiedType: readSucceeded ? typeof existingData.crVerified : 'unknown',
+    existingCrNumber: readSucceeded ? classifyCrNumber(existingData.crNumber) : 'missing',
+  });
+
+  if (preparedUpdates.avatar === '') preparedUpdates.avatar = deleteField();
+  if (preparedUpdates.avatarPublicId === '') preparedUpdates.avatarPublicId = deleteField();
+  await setDoc(userRef, preparedUpdates, { merge: true });
   console.log('[Auth] User profile updated');
 }

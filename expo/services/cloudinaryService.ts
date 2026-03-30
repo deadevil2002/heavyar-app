@@ -1,7 +1,8 @@
 import { Platform } from 'react-native';
+import { WORKER_BASE_URL } from '@/constants/worker';
 
 const CLOUD_NAME = process.env.EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME || '';
-const UPLOAD_PRESET = 'heavyar_unsigned';
+const UPLOAD_PRESET = process.env.EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET || '';
 const UPLOAD_FOLDER = 'heavyar';
 const UPLOAD_URL = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`;
 
@@ -22,6 +23,10 @@ export async function uploadImageToCloudinary(
 
   if (!CLOUD_NAME) {
     throw new Error('Cloudinary cloud name is not configured');
+  }
+
+  if (!UPLOAD_PRESET) {
+    throw new Error('Cloudinary upload preset is not configured');
   }
 
   const formData = new FormData();
@@ -88,8 +93,6 @@ export function getImageUrl(image: string | CloudinaryImage): string {
   return image.url;
 }
 
-const WORKER_BASE_URL = 'https://heavyar-api.heavyar-official.workers.dev';
-
 export async function deleteCloudinaryImage(publicId: string): Promise<boolean> {
   if (!publicId) {
     console.log('[Cloudinary] Skipping deletion: no publicId');
@@ -112,7 +115,7 @@ export async function deleteCloudinaryImage(publicId: string): Promise<boolean> 
 
     const result = await response.json();
     console.log('[Cloudinary] Delete result:', result);
-    return true;
+    return Boolean(result?.success);
   } catch (error) {
     console.log('[Cloudinary] Delete error:', error);
     return false;

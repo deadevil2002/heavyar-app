@@ -20,6 +20,21 @@ import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User,
 import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
 
+const loggedIndexFallbacks = new Set<string>();
+
+function isMissingIndexError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  if (code === 'failed-precondition') return true;
+  const message = (error as { message?: unknown } | undefined)?.message;
+  return typeof message === 'string' && message.toLowerCase().includes('requires an index');
+}
+
+function warnIndexFallbackOnce(key: string, error: unknown): void {
+  if (loggedIndexFallbacks.has(key)) return;
+  loggedIndexFallbacks.add(key);
+  console.warn(`[Firestore] Missing composite index (${key}); using fallback query`, error);
+}
+
 function toISOString(val: unknown): string {
   if (!val) return '';
   if (val instanceof Timestamp) return val.toDate().toISOString();
@@ -63,7 +78,8 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
 }
 
 function parseRequestMode(raw: unknown): EquipmentRequest['requestMode'] {
-  if (raw === 'fixed_duration' || raw === 'open_ended') return raw;
+  if (raw === 'fixed_days' || raw === 'open_ended') return raw;
+  if (raw === 'fixed_duration') return 'fixed_days';
   return undefined;
 }
 
@@ -80,10 +96,10 @@ function calculateNumberOfDays(startDate: string, endDate: string): number | und
 function parseRequest(id: string, data: Record<string, unknown>): EquipmentRequest {
   const startDate = toISOString(data.startDate) || (data.startDate as string) || '';
   const endDate = toISOString(data.endDate) || (data.endDate as string) || '';
-  const requestMode = parseRequestMode(data.requestMode) || 'fixed_duration';
+  const requestMode = parseRequestMode(data.requestMode) || 'fixed_days';
   const rawDays = typeof data.numberOfDays === 'number' ? data.numberOfDays : undefined;
   const inferredDays = calculateNumberOfDays(startDate, endDate);
-  const numberOfDays = requestMode === 'fixed_duration' ? (rawDays || inferredDays) : undefined;
+  const numberOfDays = requestMode === 'fixed_days' ? (rawDays || inferredDays) : undefined;
 
   return {
     id,
@@ -147,7 +163,11 @@ export async function fetchEquipmentList(): Promise<Equipment[]> {
     console.log('[Firestore] Fetched', items.length, 'equipment items (indexed)');
     return items;
   } catch (indexError: unknown) {
-    console.warn('[Firestore] Indexed query failed, falling back to simple query:', indexError);
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce('equipment:isActive+createdAt', indexError);
+    } else {
+      console.warn('[Firestore] Indexed query failed, falling back to simple query:', indexError);
+    }
     try {
       const fallbackQ = query(
         collection(db, 'equipment'),
@@ -193,7 +213,11 @@ export async function fetchEquipmentByOwner(ownerUid: string): Promise<Equipment
     console.log('[Firestore] fetchEquipmentByOwner (indexed) returned', snap.docs.length, 'docs');
     return snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
   } catch (indexError: unknown) {
-    console.warn('[Firestore] Indexed query failed (likely missing composite index), falling back to simple query:', indexError);
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce('equipment:ownerUid+createdAt', indexError);
+    } else {
+      console.warn('[Firestore] Indexed query failed (likely missing composite index), falling back to simple query:', indexError);
+    }
     try {
       const fallbackQ = query(
         collection(db, 'equipment'),
@@ -292,15 +316,31 @@ export async function fetchUserRequests(uid: string, role: 'customer' | 'provide
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerUid' : 'providerUid';
   console.log('[Firestore] Fetching requests for', role, uid);
-  const q = query(
-    collection(db, 'equipmentRequests'),
-    where(field, '==', uid),
-    orderBy('createdAt', 'desc')
-  );
-  const snap = await getDocs(q);
-  const items = snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
-  console.log('[Firestore] Fetched', items.length, 'requests');
-  return items;
+  try {
+    const q = query(
+      collection(db, 'equipmentRequests'),
+      where(field, '==', uid),
+      orderBy('createdAt', 'desc')
+    );
+    const snap = await getDocs(q);
+    const items = snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
+    console.log('[Firestore] Fetched', items.length, 'requests');
+    return items;
+  } catch (indexError) {
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce(`equipmentRequests:${field}+createdAt`, indexError);
+    } else {
+      console.warn('[Firestore] Requests indexed query failed, fallback:', indexError);
+    }
+    const fallbackQ = query(
+      collection(db, 'equipmentRequests'),
+      where(field, '==', uid)
+    );
+    const fallbackSnap = await getDocs(fallbackQ);
+    const items = fallbackSnap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
+    items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return items;
+  }
 }
 
 export async function fetchRequestById(id: string): Promise<EquipmentRequest | null> {
@@ -325,14 +365,46 @@ export async function createRequest(data: Omit<EquipmentRequest, 'id' | 'created
     throw new Error('Cannot request your own equipment');
   }
 
-  const docRef = await addDoc(collection(db, 'equipmentRequests'), {
-    ...data,
+  const requestMode: EquipmentRequest['requestMode'] = data.requestMode || 'fixed_days';
+  const payload: Record<string, unknown> = {
+    equipmentId: data.equipmentId,
+    customerUid: data.customerUid,
+    providerUid: data.providerUid,
     status: 'pending',
+    requestMode,
+    startDate: data.startDate,
+    endDate: data.endDate,
+    notes: data.notes,
+    amount: data.amount,
+    platformFee: data.platformFee,
+    providerAmount: data.providerAmount,
     paymentStatus: 'unpaid',
+    paymentId: data.paymentId,
+    paidAt: data.paidAt,
+    currency: data.currency,
     allowChat: false,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
+  };
+
+  if (requestMode === 'fixed_days') {
+    if (typeof data.numberOfDays !== 'number' || !Number.isFinite(data.numberOfDays) || data.numberOfDays < 1) {
+      throw new Error('Invalid numberOfDays for fixed_days request');
+    }
+    payload.numberOfDays = Math.trunc(data.numberOfDays);
+  }
+
+  for (const key of Object.keys(payload)) {
+    if (payload[key] === undefined) delete payload[key];
+  }
+
+  console.log('[RequestWrite] createRequest payload', {
+    keys: Object.keys(payload),
+    requestMode,
+    hasNumberOfDays: Object.prototype.hasOwnProperty.call(payload, 'numberOfDays'),
   });
+
+  const docRef = await addDoc(collection(db, 'equipmentRequests'), payload);
   console.log('[Firestore] Request created:', docRef.id);
   return docRef.id;
 }
@@ -429,15 +501,44 @@ export function subscribeToUserRequests(
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerUid' : 'providerUid';
   console.log('[Firestore] Subscribing to', role, 'requests for:', uid);
-  const q = query(
+  const indexedQ = query(
     collection(db, 'equipmentRequests'),
     where(field, '==', uid),
     orderBy('createdAt', 'desc')
   );
-  return onSnapshot(q, (snap) => {
-    const items = snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
-    callback(items);
-  });
+  const fallbackQ = query(
+    collection(db, 'equipmentRequests'),
+    where(field, '==', uid)
+  );
+
+  let usingFallback = false;
+  let unsub: Unsubscribe = () => {};
+
+  const subscribe = (q: unknown, isFallback: boolean) => {
+    usingFallback = isFallback;
+    unsub = onSnapshot(
+      q as never,
+      (snap: unknown) => {
+        const qs = snap as { docs: { id: string; data: () => unknown }[] };
+        const items: EquipmentRequest[] = qs.docs.map((d) => parseRequest(d.id, d.data() as Record<string, unknown>));
+        if (usingFallback) items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        callback(items);
+      },
+      (error) => {
+        const code = (error as { code?: string } | undefined)?.code;
+        if (!usingFallback && code === 'failed-precondition') {
+          warnIndexFallbackOnce(`equipmentRequests:${field}+createdAt(realtime)`, error);
+          try {
+            unsub();
+          } catch {}
+          subscribe(fallbackQ, true);
+        }
+      }
+    );
+  };
+
+  subscribe(indexedQ, false);
+  return () => unsub();
 }
 
 export function subscribeToMessages(
@@ -503,7 +604,24 @@ export async function submitRating(data: Omit<Rating, 'id' | 'createdAt'>): Prom
     where('fromUid', '==', data.fromUid),
     limit(1)
   );
-  const existingSnap = await getDocs(existingQ);
+  let existingSnap;
+  try {
+    existingSnap = await getDocs(existingQ);
+  } catch (indexError) {
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce('ratings:requestId+fromUid', indexError);
+      const fallbackQ = query(
+        collection(db, 'ratings'),
+        where('requestId', '==', data.requestId)
+      );
+      const fallbackSnap = await getDocs(fallbackQ);
+      const alreadyRated = fallbackSnap.docs.some(d => (d.data() as Record<string, unknown>).fromUid === data.fromUid);
+      if (alreadyRated) throw new Error('You have already rated this request');
+      existingSnap = { empty: true };
+    } else {
+      throw indexError;
+    }
+  }
   if (!existingSnap.empty) throw new Error('You have already rated this request');
 
   const docRef = await addDoc(collection(db, 'ratings'), {
@@ -516,13 +634,28 @@ export async function submitRating(data: Omit<Rating, 'id' | 'createdAt'>): Prom
 
 export async function fetchRatingsForUser(toUid: string): Promise<Rating[]> {
   const db = getFirebaseDb();
-  const q = query(
-    collection(db, 'ratings'),
-    where('toUid', '==', toUid),
-    orderBy('createdAt', 'desc')
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map(d => parseRating(d.id, d.data() as Record<string, unknown>));
+  try {
+    const q = query(
+      collection(db, 'ratings'),
+      where('toUid', '==', toUid),
+      orderBy('createdAt', 'desc')
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map(d => parseRating(d.id, d.data() as Record<string, unknown>));
+  } catch (indexError) {
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce('ratings:toUid+createdAt', indexError);
+      const fallbackQ = query(
+        collection(db, 'ratings'),
+        where('toUid', '==', toUid)
+      );
+      const snap = await getDocs(fallbackQ);
+      const items = snap.docs.map(d => parseRating(d.id, d.data() as Record<string, unknown>));
+      items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return items;
+    }
+    throw indexError;
+  }
 }
 
 function parseInvoice(id: string, data: Record<string, unknown>): Invoice {
@@ -599,7 +732,11 @@ export async function fetchUserInvoices(uid: string, role: 'customer' | 'provide
     console.log('[Firestore] Fetched', items.length, 'invoices');
     return items;
   } catch (indexError) {
-    console.warn('[Firestore] Invoice indexed query failed, fallback:', indexError);
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce(`invoices:${field}+createdAt`, indexError);
+    } else {
+      console.warn('[Firestore] Invoice indexed query failed, fallback:', indexError);
+    }
     try {
       const fallbackQ = query(
         collection(db, 'invoices'),
@@ -641,7 +778,14 @@ export async function updateRequestInvoiceId(requestId: string, invoiceId: strin
 
 export async function fetchUserById(uid: string): Promise<User | null> {
   const db = getFirebaseDb();
-  const snap = await getDoc(doc(db, 'users', uid));
+  let snap;
+  try {
+    snap = await getDoc(doc(db, 'users', uid));
+  } catch (e) {
+    const code = (e as { code?: string } | undefined)?.code;
+    if (code === 'permission-denied') return null;
+    throw e;
+  }
   if (snap.exists()) {
     const data = snap.data();
     return {
@@ -651,6 +795,7 @@ export async function fetchUserById(uid: string): Promise<User | null> {
       email: data.email || '',
       phone: data.phone || '',
       avatar: data.avatar || '',
+      avatarPublicId: data.avatarPublicId || '',
       region: data.region || '',
       city: data.city || '',
       customCity: data.customCity || '',

@@ -42,7 +42,7 @@ export default React.memo(function RequestCard({ request }: RequestCardProps) {
   const title = equipment ? localizedText(equipment.titleAr, equipment.titleEn) : '...';
   const imageUrl = equipment ? getFirstImageUrl(equipment.images) : '';
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
-  const requestMode = request.requestMode || 'fixed_duration';
+  const requestMode = request.requestMode || 'fixed_days';
   const isOpenEnded = requestMode === 'open_ended';
 
   const formatDate = (dateStr: string) => {

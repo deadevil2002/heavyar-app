@@ -33,12 +33,12 @@ export default function RentalRequestModal({ visible, onClose, onSubmit }: Props
   const { isRTL, t } = useLanguage();
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
-  const [requestMode, setRequestMode] = useState<RequestMode>('fixed_duration');
+  const [requestMode, setRequestMode] = useState<RequestMode>('fixed_days');
   const [daysText, setDaysText] = useState<string>('1');
   const [notes, setNotes] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
 
-  const isFixed = requestMode === 'fixed_duration';
+  const isFixed = requestMode === 'fixed_days';
 
   const parsedDays = useMemo(() => {
     const n = parseInt(daysText.trim(), 10);
@@ -102,13 +102,13 @@ export default function RentalRequestModal({ visible, onClose, onSubmit }: Props
               <Text style={[styles.sectionLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('request_mode')}</Text>
 
               <Pressable
-                style={[styles.optionCard, requestMode === 'fixed_duration' && styles.optionCardActive]}
-                onPress={() => setRequestMode('fixed_duration')}
+                style={[styles.optionCard, requestMode === 'fixed_days' && styles.optionCardActive]}
+                onPress={() => setRequestMode('fixed_days')}
                 disabled={submitting}
               >
                 <View style={[styles.optionRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                   <View style={styles.radio}>
-                    {requestMode === 'fixed_duration' ? (
+                    {requestMode === 'fixed_days' ? (
                       <RadioIcon size={18} color={Colors.gold} />
                     ) : (
                       <Circle size={18} color={Colors.textMuted} />
