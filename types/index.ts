@@ -1,12 +1,21 @@
 export type Language = 'ar' | 'en';
 
-export type RequestStatus = 'pending' | 'accepted' | 'in_progress' | 'completed' | 'rejected' | 'cancelled';
+export type RequestStatus = 'pending' | 'accepted' | 'in_progress' | 'completion_requested' | 'completed' | 'rejected' | 'cancelled';
 
 export type PaymentStatus = 'unpaid' | 'pending_payment' | 'paid' | 'failed' | 'refunded';
 
 export type InvoiceStatus = 'paid' | 'pending' | 'refunded';
 
 export type UserRole = 'customer' | 'provider';
+
+export type RequestMode = 'fixed_days' | 'open_ended';
+
+export interface PublicUserSnapshot {
+  uid: string;
+  nameAr: string;
+  nameEn: string;
+  avatar: string;
+}
 
 export interface User {
   uid: string;
@@ -15,6 +24,7 @@ export interface User {
   email: string;
   phone: string;
   avatar: string;
+  avatarPublicId?: string;
   region: string;
   city: string;
   customCity: string;
@@ -38,11 +48,13 @@ export type EquipmentImage = string | CloudinaryImage;
 export interface Equipment {
   id: string;
   ownerUid: string;
+  ownerPublic?: PublicUserSnapshot;
   titleAr: string;
   titleEn: string;
   descriptionAr: string;
   descriptionEn: string;
   category: string;
+  customCategory?: string;
   region: string;
   city: string;
   customCity: string;
@@ -63,8 +75,12 @@ export interface EquipmentRequest {
   id: string;
   equipmentId: string;
   customerUid: string;
+  customerPublic?: PublicUserSnapshot;
   providerUid: string;
+  providerPublic?: PublicUserSnapshot;
   status: RequestStatus;
+  requestMode?: RequestMode;
+  numberOfDays?: number;
   startDate: string;
   endDate: string;
   notes: string;
@@ -76,6 +92,13 @@ export interface EquipmentRequest {
   paidAt: string | null;
   currency: string;
   allowChat: boolean;
+  pricePerDay?: number;
+  startedAt?: string;
+  endedAt?: string;
+  finalAmount?: number;
+  finalPlatformFee?: number;
+  finalProviderAmount?: number;
+  closedBy?: 'provider' | 'customer';
   createdAt: string;
   updatedAt: string;
 }

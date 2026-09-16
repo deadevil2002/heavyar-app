@@ -1,8 +1,9 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown } from 'lucide-react-native';
+import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera, Trash2 } from 'lucide-react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -10,6 +11,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionById, findRegionByCityId } from '@/mocks/saudiRegions';
+import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloudinaryService';
+import { fetchEquipmentByOwner, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
 
 export default function ProfileScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -28,6 +31,33 @@ export default function ProfileScreen() {
   const [showCityPicker, setShowCityPicker] = useState<boolean>(false);
   const [citySearch, setCitySearch] = useState<string>('');
   const [saving, setSaving] = useState<boolean>(false);
+  const [avatarBusy, setAvatarBusy] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!user) return;
+    if (user.role !== 'provider') return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await fetchEquipmentByOwner(user.uid);
+        if (cancelled) return;
+        const snapshot = {
+          uid: user.uid,
+          nameAr: user.nameAr,
+          nameEn: user.nameEn,
+          avatar: user.avatar,
+        };
+        await Promise.all(
+          list
+            .filter((eq) => !eq.ownerPublic)
+            .map((eq) => tryBackfillEquipmentOwnerPublic(eq.id, snapshot))
+        );
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   const handleLogin = useCallback(() => {
     router.push('/login');
@@ -36,6 +66,82 @@ export default function ProfileScreen() {
   const handleLogout = useCallback(async () => {
     await logout();
   }, [logout]);
+
+  const handleUploadAvatar = useCallback(async () => {
+    if (!user) return;
+    if (avatarBusy) return;
+    setAvatarBusy(true);
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        showDialog('إذن مرفوض', 'يرجى السماح بالوصول للصور لتحديث الصورة الشخصية', [{ text: 'حسناً', style: 'default' }]);
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.85,
+      });
+
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+      const localUri = result.assets[0].uri;
+
+      const previousPublicId = user.avatarPublicId || '';
+
+      const uploaded = await uploadImageToCloudinary(localUri);
+      await updateProfile({
+        avatar: uploaded.url,
+        avatarPublicId: uploaded.publicId,
+      });
+
+      if (previousPublicId && previousPublicId !== uploaded.publicId) {
+        try {
+          await deleteCloudinaryImage(previousPublicId);
+        } catch {}
+      }
+
+      showDialog(t('success'), t('avatar_updated'), [{ text: t('ok'), style: 'default' }]);
+    } catch (e) {
+      console.log('[Profile] Avatar upload error:', e);
+      showDialog(t('error_title'), t('avatar_update_failed'), [{ text: t('ok'), style: 'default' }]);
+    } finally {
+      setAvatarBusy(false);
+    }
+  }, [avatarBusy, showDialog, t, updateProfile, user]);
+
+  const handleRemoveAvatar = useCallback(async () => {
+    if (!user) return;
+    if (avatarBusy) return;
+    const previousPublicId = user.avatarPublicId || '';
+    if (!previousPublicId && !user.avatar) return;
+    setAvatarBusy(true);
+    try {
+      await updateProfile({ avatar: '', avatarPublicId: '' });
+      if (previousPublicId) {
+        try {
+          await deleteCloudinaryImage(previousPublicId);
+        } catch {}
+      }
+      showDialog(t('success'), t('avatar_removed'), [{ text: t('ok'), style: 'default' }]);
+    } catch (e) {
+      console.log('[Profile] Avatar remove error:', e);
+      showDialog(t('error_title'), t('avatar_remove_failed'), [{ text: t('ok'), style: 'default' }]);
+    } finally {
+      setAvatarBusy(false);
+    }
+  }, [avatarBusy, showDialog, t, updateProfile, user]);
+
+  const handleAvatarMenu = useCallback(() => {
+    if (!user) return;
+    showDialog(
+      t('change_avatar'),
+      t('avatar_actions_prompt'),
+      [
+        { text: t('upload_avatar'), style: 'default', onPress: () => void handleUploadAvatar() },
+        ...(user.avatar ? [{ text: t('remove_avatar'), style: 'danger' as const, onPress: () => void handleRemoveAvatar() }] : []),
+        { text: t('cancel'), style: 'cancel' },
+      ]
+    );
+  }, [handleRemoveAvatar, handleUploadAvatar, showDialog, t, user]);
 
   const editRegionObj = React.useMemo(() => findRegionById(editRegion), [editRegion]);
   const editRegionCities = React.useMemo(() => getCitiesByRegion(editRegion), [editRegion]);
@@ -136,6 +242,9 @@ export default function ProfileScreen() {
   }
 
   const userName = localizedText(user.nameAr, user.nameEn);
+  const providerVerificationStatus = user.role === 'provider'
+    ? (user.crVerified ? 'verified' : (user.crNumber ? 'pending' : 'incomplete'))
+    : null;
 
   return (
     <View style={styles.container}>
@@ -147,7 +256,18 @@ export default function ProfileScreen() {
 
           <View style={styles.profileCard}>
             <View style={[styles.profileHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Image source={{ uri: user.avatar }} style={styles.avatar} contentFit="cover" />
+              <Pressable style={styles.avatarWrap} onPress={handleAvatarMenu} disabled={avatarBusy}>
+                <Image source={user.avatar ? { uri: user.avatar } : require('@/assets/images/logo.png')} style={styles.avatar} contentFit="cover" />
+                <View style={styles.avatarAction}>
+                  {avatarBusy ? (
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                  ) : user.avatar ? (
+                    <Trash2 size={16} color={Colors.primary} />
+                  ) : (
+                    <Camera size={16} color={Colors.primary} />
+                  )}
+                </View>
+              </Pressable>
               <View style={[styles.profileInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
                 <View style={[styles.nameRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                   <Text style={styles.name}>{userName}</Text>
@@ -191,17 +311,21 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          {user.role === 'provider' && user.crNumber ? (
+          {user.role === 'provider' ? (
             <View style={styles.crCard}>
               <View style={[styles.crRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <FileText size={18} color={Colors.gold} />
                 <View style={{ flex: 1, alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
-                  <Text style={styles.crLabel}>{t('cr_number')}</Text>
-                  <Text style={styles.crValue}>{user.crNumber}</Text>
+                  <Text style={styles.crLabel}>{t('provider_verification_status')}</Text>
+                  <Text style={styles.crValue}>{user.crNumber ? `${t('cr_number')}: ${user.crNumber}` : t('cr_required')}</Text>
                 </View>
-                <View style={[styles.crStatusBadge, { backgroundColor: user.crVerified ? 'rgba(46, 204, 113, 0.15)' : 'rgba(243, 156, 18, 0.15)' }]}>
-                  <Text style={[styles.crStatusText, { color: user.crVerified ? Colors.success : Colors.warning }]}>
-                    {user.crVerified ? t('cr_verified') : t('cr_not_verified')}
+                <View style={[styles.crStatusBadge, { backgroundColor: providerVerificationStatus === 'verified' ? 'rgba(46, 204, 113, 0.15)' : 'rgba(243, 156, 18, 0.15)' }]}>
+                  <Text style={[styles.crStatusText, { color: providerVerificationStatus === 'verified' ? Colors.success : Colors.warning }]}>
+                    {providerVerificationStatus === 'verified'
+                      ? t('provider_verified')
+                      : providerVerificationStatus === 'pending'
+                        ? t('provider_pending_review')
+                        : t('provider_incomplete')}
                   </Text>
                 </View>
               </View>
@@ -473,6 +597,22 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 2,
     borderColor: Colors.gold,
+  },
+  avatarWrap: {
+    position: 'relative',
+  },
+  avatarAction: {
+    position: 'absolute',
+    bottom: -6,
+    right: -6,
+    width: 28,
+    height: 28,
+    borderRadius: 10,
+    backgroundColor: Colors.gold,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   profileInfo: {
     flex: 1,

@@ -9,6 +9,7 @@ export const mockCategories: Category[] = [
   { id: 'generators', nameAr: 'مولدات', nameEn: 'Generators', icon: 'Zap', count: 22 },
   { id: 'compressors', nameAr: 'ضواغط', nameEn: 'Compressors', icon: 'Wind', count: 9 },
   { id: 'concrete', nameAr: 'معدات خرسانة', nameEn: 'Concrete', icon: 'Building2', count: 14 },
+  { id: 'other', nameAr: 'أخرى', nameEn: 'Other', icon: 'Shovel', count: 0 },
 ];
 
 export const mockCities = [

@@ -7,12 +7,14 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { subscribeToRequest, fetchEquipmentById, fetchUserById, updateRequestStatus } from '@/services/firestoreService';
-import { Equipment, User, EquipmentRequest } from '@/types';
+import { subscribeToRequest, fetchEquipmentById, updateRequestStatus, tryBackfillRequestPublicSnapshots } from '@/services/firestoreService';
+import { Equipment, EquipmentRequest, PublicUserSnapshot } from '@/types';
 import StatusBadge from '@/components/StatusBadge';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
+import { getFirebaseAuth } from '@/services/firebaseConfig';
+import { WORKER_BASE_URL } from '@/constants/worker';
 
 export default function RequestDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -22,7 +24,7 @@ export default function RequestDetailScreen() {
 
   const [request, setRequest] = useState<EquipmentRequest | null>(null);
   const [equipment, setEquipment] = useState<Equipment | null>(null);
-  const [otherUserData, setOtherUserData] = useState<User | null>(null);
+  const [otherUserPublic, setOtherUserPublic] = useState<PublicUserSnapshot | null>(null);
   const [_loading, setLoading] = useState<boolean>(true);
   const currentUid = user?.uid || '';
   const { dialog, showDialog, hideDialog } = useAppDialog();
@@ -37,9 +39,37 @@ export default function RequestDetailScreen() {
         try {
           const eq = await fetchEquipmentById(req.equipmentId);
           setEquipment(eq);
-          const otherUid = req.providerUid === currentUid ? req.customerUid : req.providerUid;
-          const otherU = await fetchUserById(otherUid);
-          setOtherUserData(otherU);
+          const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
+
+          if (user && currentUid === req.customerUid && !req.customerPublic) {
+            updates.customerPublic = {
+              uid: user.uid,
+              nameAr: user.nameAr,
+              nameEn: user.nameEn,
+              avatar: user.avatar,
+            };
+          }
+
+          if (user && currentUid === req.providerUid && !req.providerPublic) {
+            updates.providerPublic = {
+              uid: user.uid,
+              nameAr: user.nameAr,
+              nameEn: user.nameEn,
+              avatar: user.avatar,
+            };
+          }
+
+          if (!req.providerPublic && eq?.ownerPublic && eq.ownerUid === req.providerUid) {
+            updates.providerPublic = eq.ownerPublic;
+          }
+
+          if ((updates.customerPublic || updates.providerPublic) && req.id) {
+            void tryBackfillRequestPublicSnapshots(req.id, updates);
+          }
+          const effectiveCustomer = req.customerPublic || updates.customerPublic || null;
+          const effectiveProvider = req.providerPublic || updates.providerPublic || null;
+          const other = req.providerUid === currentUid ? effectiveCustomer : effectiveProvider;
+          setOtherUserPublic(other);
         } catch (e) {
           console.log('[RequestDetail] Error loading related data:', e);
         }
@@ -47,7 +77,7 @@ export default function RequestDetailScreen() {
       setLoading(false);
     });
     return () => unsub();
-  }, [id, currentUid]);
+  }, [id, currentUid, user]);
 
   if (_loading || !request || !equipment) {
     return (
@@ -61,14 +91,19 @@ export default function RequestDetailScreen() {
 
   const isProvider = request.providerUid === currentUid;
   const title = localizedText(equipment.titleAr, equipment.titleEn);
-  const otherUser = otherUserData;
+  const otherUser = otherUserPublic;
   const otherUserName = otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
+  const requestMode = request.requestMode || 'fixed_days';
+  const isOpenEnded = requestMode === 'open_ended';
 
   const canChat = request.allowChat && ['accepted', 'in_progress'].includes(request.status);
-  const canPay = !isProvider && request.status === 'accepted' && request.paymentStatus === 'unpaid';
+  const canPay = !isProvider && request.status === 'completed' && request.paymentStatus === 'unpaid';
   const canRate = !isProvider && request.status === 'completed';
   const canAccept = isProvider && request.status === 'pending';
-  const canComplete = isProvider && request.status === 'in_progress';
+  const canStart = isProvider && request.status === 'accepted';
+  const canCancelCustomer = !isProvider && (request.status === 'pending' || (request.status === 'accepted' && !request.startedAt));
+  const canRequestCompletion = isProvider && request.status === 'in_progress';
+  const canConfirmCompletion = !isProvider && request.status === 'completion_requested';
   const showInvoice = request.paymentStatus === 'paid';
 
   const handleAction = (action: string) => {
@@ -82,9 +117,19 @@ export default function RequestDetailScreen() {
             let newStatus: EquipmentRequest['status'] = 'pending';
             if (action === 'accept') newStatus = 'accepted';
             else if (action === 'reject') newStatus = 'rejected';
-            else if (action === 'complete') newStatus = 'completed';
+            else if (action === 'start') newStatus = 'in_progress';
+            else if (action === 'request_completion') newStatus = 'completion_requested';
+            else if (action === 'confirm_completion') newStatus = 'completed';
             else if (action === 'cancel') newStatus = 'cancelled';
-            await updateRequestStatus(request.id, newStatus, currentUid);
+            if (action === 'start' || action === 'confirm_completion') {
+              const token = await getFirebaseAuth().currentUser?.getIdToken();
+              if (!token) throw new Error('Authentication required');
+              const endpoint = action === 'start' ? 'start-request' : 'confirm-completion';
+              const response = await fetch(`${WORKER_BASE_URL}/api/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ requestId: request.id }) });
+              if (!response.ok) throw new Error('Unable to update request');
+            } else {
+              await updateRequestStatus(request.id, newStatus, currentUid);
+            }
             console.log('[RequestDetail] Status updated to:', newStatus);
           } catch (e) {
             console.error('[RequestDetail] Action error:', e);
@@ -95,9 +140,16 @@ export default function RequestDetailScreen() {
     ]);
   };
 
-  const startDate = new Date(request.startDate);
-  const endDate = new Date(request.endDate);
-  const days = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+  const computedDays = (() => {
+    if (!request.startDate || !request.endDate) return undefined;
+    const startDate = new Date(request.startDate);
+    const endDate = new Date(request.endDate);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return undefined;
+    const diff = endDate.getTime() - startDate.getTime();
+    if (diff <= 0) return undefined;
+    return Math.max(1, Math.ceil(diff / 86400000));
+  })();
+  const days = request.numberOfDays || computedDays;
 
   return (
     <View style={styles.container}>
@@ -132,11 +184,13 @@ export default function RequestDetailScreen() {
                 <Calendar size={16} color={Colors.gold} />
                 <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
                   <Text style={styles.infoLabel}>{t('end_date')}</Text>
-                  <Text style={styles.infoValue}>{request.endDate}</Text>
+                  <Text style={styles.infoValue}>{isOpenEnded ? t('until_work_completion') : request.endDate}</Text>
                 </View>
               </View>
             </View>
-            <Text style={[styles.daysText, { textAlign: isRTL ? 'right' : 'left' }]}>{days} {t('days')}</Text>
+            <Text style={[styles.daysText, { textAlign: isRTL ? 'right' : 'left' }]}>
+              {isOpenEnded ? t('until_work_completion') : `${days || 0} ${t('days')}`}
+            </Text>
           </View>
 
           <View style={styles.card}>
@@ -163,13 +217,9 @@ export default function RequestDetailScreen() {
             <View style={styles.card}>
               <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isProvider ? t('as_customer') : t('owner')}</Text>
               <View style={[styles.userRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                <Image source={{ uri: otherUser.avatar }} style={styles.userAvatar} contentFit="cover" />
+                <Image source={otherUser.avatar ? { uri: otherUser.avatar } : require('@/assets/images/logo.png')} style={styles.userAvatar} contentFit="cover" />
                 <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start', flex: 1 }}>
                   <Text style={styles.userName}>{otherUserName}</Text>
-                  <View style={[styles.ratingRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                    <Star size={14} color={Colors.gold} fill={Colors.gold} />
-                    <Text style={styles.ratingText}>{otherUser.rating}</Text>
-                  </View>
                 </View>
               </View>
             </View>
@@ -211,9 +261,24 @@ export default function RequestDetailScreen() {
                 </Pressable>
               </View>
             )}
-            {canComplete && (
-              <Pressable style={styles.completeButton} onPress={() => handleAction('complete')}>
-                <Text style={styles.completeText}>{t('complete')}</Text>
+            {canCancelCustomer && (
+              <Pressable style={styles.rejectButton} onPress={() => handleAction('cancel')}>
+                <Text style={styles.rejectText}>{t('cancel')}</Text>
+              </Pressable>
+            )}
+            {canStart && (
+              <Pressable style={styles.acceptButton} onPress={() => handleAction('start')}>
+                <Text style={styles.acceptText}>{t('start_work')}</Text>
+              </Pressable>
+            )}
+            {canRequestCompletion && (
+              <Pressable style={styles.completeButton} onPress={() => handleAction('request_completion')}>
+                <Text style={styles.completeText}>{t('end_work')}</Text>
+              </Pressable>
+            )}
+            {canConfirmCompletion && (
+              <Pressable style={styles.completeButton} onPress={() => handleAction('confirm_completion')}>
+                <Text style={styles.completeText}>{t('confirm')}</Text>
               </Pressable>
             )}
             {showInvoice && (

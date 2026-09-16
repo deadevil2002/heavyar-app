@@ -8,15 +8,11 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   fetchRequestById,
-  updatePaymentStatus,
-  createInvoice,
-  generateInvoiceNumber,
   fetchEquipmentById,
-  fetchUserById,
-  updateRequestInvoiceId,
+  tryBackfillRequestPublicSnapshots,
 } from '@/services/firestoreService';
 import { createPayment, verifyPayment } from '@/services/paymentService';
-import { EquipmentRequest } from '@/types';
+import { EquipmentRequest, PublicUserSnapshot } from '@/types';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 
@@ -43,6 +39,36 @@ export default function PaymentScreen() {
       if (!requestId) return;
       try {
         const req = await fetchRequestById(requestId);
+        if (req && user) {
+          const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
+          if (user.uid === req.customerUid && !req.customerPublic) {
+            updates.customerPublic = {
+              uid: user.uid,
+              nameAr: user.nameAr,
+              nameEn: user.nameEn,
+              avatar: user.avatar,
+            };
+          }
+          if (user.uid === req.providerUid && !req.providerPublic) {
+            updates.providerPublic = {
+              uid: user.uid,
+              nameAr: user.nameAr,
+              nameEn: user.nameEn,
+              avatar: user.avatar,
+            };
+          }
+          if (!req.providerPublic) {
+            try {
+              const eq = await fetchEquipmentById(req.equipmentId);
+              if (eq?.ownerPublic && eq.ownerUid === req.providerUid) {
+                updates.providerPublic = eq.ownerPublic;
+              }
+            } catch {}
+          }
+          if ((updates.customerPublic || updates.providerPublic) && req.id) {
+            void tryBackfillRequestPublicSnapshots(req.id, updates);
+          }
+        }
         if (mounted) {
           setRequest(req);
           setLoading(false);
@@ -54,7 +80,7 @@ export default function PaymentScreen() {
     };
     void load();
     return () => { mounted = false; };
-  }, [requestId]);
+  }, [requestId, user]);
 
   const handleVerifyRef = React.useRef<(cId?: string) => Promise<void>>(() => Promise.resolve());
 
@@ -63,10 +89,9 @@ export default function PaymentScreen() {
 
     setStep('processing');
     try {
-      await updatePaymentStatus(requestId, 'pending_payment');
 
       const result = await createPayment({
-        amount: request.amount,
+        amount: request.finalAmount ?? request.amount,
         currency: request.currency || 'SAR',
         requestId,
         customerName: user.nameEn || user.nameAr,
@@ -77,7 +102,6 @@ export default function PaymentScreen() {
       if (!result.success || !result.chargeId) {
         console.log('[Payment] Create payment failed:', result.error);
         setStep('failed');
-        await updatePaymentStatus(requestId, 'failed');
         return;
       }
 
@@ -107,7 +131,6 @@ export default function PaymentScreen() {
       console.error('[Payment] Error:', e);
       setStep('failed');
       try {
-        await updatePaymentStatus(requestId, 'failed');
       } catch {}
     }
   }, [request, requestId, user]);
@@ -121,45 +144,6 @@ export default function PaymentScreen() {
       const result = await verifyPayment(id);
 
       if (result.success && result.isPaid) {
-        await updatePaymentStatus(requestId, 'paid', id);
-
-        try {
-          const req = await fetchRequestById(requestId);
-          if (req) {
-            const _equipment = await fetchEquipmentById(req.equipmentId);
-            const provider = await fetchUserById(req.providerUid);
-            const customer = await fetchUserById(req.customerUid);
-
-            const invoiceNumber = await generateInvoiceNumber();
-            const subtotal = req.amount;
-            const vatRate = 0.15;
-            const vatAmount = Math.round(subtotal * vatRate * 100) / 100;
-            const totalAmount = Math.round((subtotal + vatAmount) * 100) / 100;
-
-            const invoiceId = await createInvoice({
-              invoiceNumber,
-              requestId,
-              equipmentId: req.equipmentId,
-              providerId: req.providerUid,
-              customerId: req.customerUid,
-              sellerName: provider ? (provider.nameAr || provider.nameEn) : '',
-              buyerName: customer ? (customer.nameAr || customer.nameEn) : '',
-              subtotal,
-              vatRate,
-              vatAmount,
-              totalAmount,
-              currency: req.currency || 'SAR',
-              status: 'paid',
-              paidAt: new Date().toISOString(),
-              paymentReference: id,
-            });
-
-            await updateRequestInvoiceId(requestId, invoiceId);
-            console.log('[Payment] Invoice created:', invoiceId, invoiceNumber);
-          }
-        } catch (invoiceErr) {
-          console.error('[Payment] Invoice creation error (payment still succeeded):', invoiceErr);
-        }
 
         setStep('success');
       } else {
@@ -175,7 +159,6 @@ export default function PaymentScreen() {
           );
           setStep('redirecting');
         } else {
-          await updatePaymentStatus(requestId, 'failed');
           setStep('failed');
         }
       }
@@ -220,8 +203,10 @@ export default function PaymentScreen() {
     );
   }
 
-  const vatAmount = Math.round(request.amount * 0.15 * 100) / 100;
-  const totalWithVat = Math.round((request.amount + vatAmount) * 100) / 100;
+  const subtotal = request.finalAmount ?? request.amount;
+  const platformFee = request.finalPlatformFee ?? request.platformFee;
+  const vatAmount = Math.round(subtotal * 0.15 * 100) / 100;
+  const totalWithVat = Math.round((subtotal + vatAmount) * 100) / 100;
 
   return (
     <View style={styles.container}>
@@ -241,7 +226,7 @@ export default function PaymentScreen() {
             <View style={styles.feeBreakdown}>
               <View style={[styles.feeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Text style={styles.feeText}>{t('subtotal')}</Text>
-                <Text style={styles.feeAmount}>{request.amount.toLocaleString()} {t('sar')}</Text>
+                <Text style={styles.feeAmount}>{subtotal.toLocaleString()} {t('sar')}</Text>
               </View>
               <View style={[styles.feeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Text style={styles.feeText}>{t('vat')} (15%)</Text>
@@ -249,7 +234,7 @@ export default function PaymentScreen() {
               </View>
               <View style={[styles.feeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Text style={styles.feeText}>{t('platform_fee')}</Text>
-                <Text style={styles.feeAmount}>{request.platformFee.toLocaleString()} {t('sar')}</Text>
+                <Text style={styles.feeAmount}>{platformFee.toLocaleString()} {t('sar')}</Text>
               </View>
             </View>
           </View>

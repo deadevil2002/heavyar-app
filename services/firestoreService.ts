@@ -16,9 +16,25 @@ import {
   limit,
 } from 'firebase/firestore';
 import { getFirebaseDb } from './firebaseConfig';
-import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice } from '@/types';
+import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice, PublicUserSnapshot } from '@/types';
 import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
+import { canTransition } from './requestTransitions';
+
+const loggedIndexFallbacks = new Set<string>();
+
+function isMissingIndexError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  if (code === 'failed-precondition') return true;
+  const message = (error as { message?: unknown } | undefined)?.message;
+  return typeof message === 'string' && message.toLowerCase().includes('requires an index');
+}
+
+function warnIndexFallbackOnce(key: string, error: unknown): void {
+  if (loggedIndexFallbacks.has(key)) return;
+  loggedIndexFallbacks.add(key);
+  console.warn(`[Firestore] Missing composite index (${key}); using fallback query`, error);
+}
 
 function toISOString(val: unknown): string {
   if (!val) return '';
@@ -39,15 +55,51 @@ function parseImages(raw: unknown): EquipmentImage[] {
   }).filter((img): img is EquipmentImage => img !== '');
 }
 
+function parsePublicUserSnapshot(raw: unknown, fallbackUid?: string): PublicUserSnapshot | undefined {
+  if (!raw || typeof raw !== 'object') {
+    if (fallbackUid) {
+      return {
+        uid: fallbackUid,
+        nameAr: '',
+        nameEn: '',
+        avatar: '',
+      };
+    }
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const uid = (obj.uid as string) || fallbackUid || '';
+  if (!uid) return undefined;
+  return {
+    uid,
+    nameAr: (obj.nameAr as string) || '',
+    nameEn: (obj.nameEn as string) || '',
+    avatar: (obj.avatar as string) || '',
+  };
+}
+
+function sanitizePublicUserSnapshot(snapshot: PublicUserSnapshot): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    uid: snapshot.uid,
+    nameAr: snapshot.nameAr,
+    nameEn: snapshot.nameEn,
+    avatar: snapshot.avatar,
+  };
+  return out;
+}
+
 function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
+  const ownerUid = (data.ownerUid as string) || '';
   return {
     id,
-    ownerUid: (data.ownerUid as string) || '',
+    ownerUid,
+    ownerPublic: parsePublicUserSnapshot(data.ownerPublic, ownerUid),
     titleAr: (data.titleAr as string) || '',
     titleEn: (data.titleEn as string) || '',
     descriptionAr: (data.descriptionAr as string) || '',
     descriptionEn: (data.descriptionEn as string) || '',
     category: (data.category as string) || '',
+    customCategory: (data.customCategory as string) || '',
     region: (data.region as string) || '',
     city: (data.city as string) || '',
     customCity: (data.customCity as string) || '',
@@ -62,15 +114,42 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
   };
 }
 
+function parseRequestMode(raw: unknown): EquipmentRequest['requestMode'] {
+  if (raw === 'fixed_days' || raw === 'open_ended') return raw;
+  if (raw === 'fixed_duration') return 'fixed_days';
+  return undefined;
+}
+
+function calculateNumberOfDays(startDate: string, endDate: string): number | undefined {
+  if (!startDate || !endDate) return undefined;
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return undefined;
+  const ms = end.getTime() - start.getTime();
+  if (ms <= 0) return undefined;
+  return Math.max(1, Math.ceil(ms / 86400000));
+}
+
 function parseRequest(id: string, data: Record<string, unknown>): EquipmentRequest {
+  const startDate = toISOString(data.startDate) || (data.startDate as string) || '';
+  const endDate = toISOString(data.endDate) || (data.endDate as string) || '';
+  const requestMode = parseRequestMode(data.requestMode) || 'fixed_days';
+  const rawDays = typeof data.numberOfDays === 'number' ? data.numberOfDays : undefined;
+  const inferredDays = calculateNumberOfDays(startDate, endDate);
+  const numberOfDays = requestMode === 'fixed_days' ? (rawDays || inferredDays) : undefined;
+
   return {
     id,
     equipmentId: (data.equipmentId as string) || '',
     customerUid: (data.customerUid as string) || '',
+    customerPublic: parsePublicUserSnapshot(data.customerPublic, (data.customerUid as string) || ''),
     providerUid: (data.providerUid as string) || '',
+    providerPublic: parsePublicUserSnapshot(data.providerPublic, (data.providerUid as string) || ''),
     status: (data.status as EquipmentRequest['status']) || 'pending',
-    startDate: toISOString(data.startDate) || (data.startDate as string) || '',
-    endDate: toISOString(data.endDate) || (data.endDate as string) || '',
+    requestMode,
+    numberOfDays,
+    startDate,
+    endDate,
     notes: (data.notes as string) || '',
     amount: (data.amount as number) || 0,
     platformFee: (data.platformFee as number) || 0,
@@ -80,6 +159,12 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     paidAt: data.paidAt ? toISOString(data.paidAt) : null,
     currency: (data.currency as string) || 'SAR',
     allowChat: (data.allowChat as boolean) ?? false,
+    pricePerDay: typeof data.pricePerDay === 'number' ? data.pricePerDay : undefined,
+    startedAt: data.startedAt ? toISOString(data.startedAt) : undefined,
+    endedAt: data.endedAt ? toISOString(data.endedAt) : undefined,
+    finalAmount: typeof data.finalAmount === 'number' ? data.finalAmount : undefined,
+    finalPlatformFee: typeof data.finalPlatformFee === 'number' ? data.finalPlatformFee : undefined,
+    finalProviderAmount: typeof data.finalProviderAmount === 'number' ? data.finalProviderAmount : undefined,
     createdAt: toISOString(data.createdAt),
     updatedAt: toISOString(data.updatedAt),
   };
@@ -123,7 +208,11 @@ export async function fetchEquipmentList(): Promise<Equipment[]> {
     console.log('[Firestore] Fetched', items.length, 'equipment items (indexed)');
     return items;
   } catch (indexError: unknown) {
-    console.warn('[Firestore] Indexed query failed, falling back to simple query:', indexError);
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce('equipment:isActive+createdAt', indexError);
+    } else {
+      console.warn('[Firestore] Indexed query failed, falling back to simple query:', indexError);
+    }
     try {
       const fallbackQ = query(
         collection(db, 'equipment'),
@@ -169,7 +258,11 @@ export async function fetchEquipmentByOwner(ownerUid: string): Promise<Equipment
     console.log('[Firestore] fetchEquipmentByOwner (indexed) returned', snap.docs.length, 'docs');
     return snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
   } catch (indexError: unknown) {
-    console.warn('[Firestore] Indexed query failed (likely missing composite index), falling back to simple query:', indexError);
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce('equipment:ownerUid+createdAt', indexError);
+    } else {
+      console.warn('[Firestore] Indexed query failed (likely missing composite index), falling back to simple query:', indexError);
+    }
     try {
       const fallbackQ = query(
         collection(db, 'equipment'),
@@ -211,6 +304,30 @@ export async function updateEquipment(id: string, updates: Partial<Equipment>): 
     ...updates,
     updatedAt: serverTimestamp(),
   });
+}
+
+export async function tryBackfillEquipmentOwnerPublic(equipmentId: string, ownerPublic: PublicUserSnapshot): Promise<void> {
+  const db = getFirebaseDb();
+  try {
+    await updateDoc(doc(db, 'equipment', equipmentId), {
+      ownerPublic: sanitizePublicUserSnapshot(ownerPublic),
+      updatedAt: serverTimestamp(),
+    });
+  } catch {}
+}
+
+export async function tryBackfillRequestPublicSnapshots(
+  requestId: string,
+  updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot }
+): Promise<void> {
+  const db = getFirebaseDb();
+  try {
+    await updateDoc(doc(db, 'equipmentRequests', requestId), {
+      ...(updates.customerPublic ? { customerPublic: sanitizePublicUserSnapshot(updates.customerPublic) } : {}),
+      ...(updates.providerPublic ? { providerPublic: sanitizePublicUserSnapshot(updates.providerPublic) } : {}),
+      updatedAt: serverTimestamp(),
+    });
+  } catch {}
 }
 
 export async function updateEquipmentWithImageCleanup(
@@ -268,15 +385,31 @@ export async function fetchUserRequests(uid: string, role: 'customer' | 'provide
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerUid' : 'providerUid';
   console.log('[Firestore] Fetching requests for', role, uid);
-  const q = query(
-    collection(db, 'equipmentRequests'),
-    where(field, '==', uid),
-    orderBy('createdAt', 'desc')
-  );
-  const snap = await getDocs(q);
-  const items = snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
-  console.log('[Firestore] Fetched', items.length, 'requests');
-  return items;
+  try {
+    const q = query(
+      collection(db, 'equipmentRequests'),
+      where(field, '==', uid),
+      orderBy('createdAt', 'desc')
+    );
+    const snap = await getDocs(q);
+    const items = snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
+    console.log('[Firestore] Fetched', items.length, 'requests');
+    return items;
+  } catch (indexError) {
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce(`equipmentRequests:${field}+createdAt`, indexError);
+    } else {
+      console.warn('[Firestore] Requests indexed query failed, fallback:', indexError);
+    }
+    const fallbackQ = query(
+      collection(db, 'equipmentRequests'),
+      where(field, '==', uid)
+    );
+    const fallbackSnap = await getDocs(fallbackQ);
+    const items = fallbackSnap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
+    items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return items;
+  }
 }
 
 export async function fetchRequestById(id: string): Promise<EquipmentRequest | null> {
@@ -301,14 +434,49 @@ export async function createRequest(data: Omit<EquipmentRequest, 'id' | 'created
     throw new Error('Cannot request your own equipment');
   }
 
-  const docRef = await addDoc(collection(db, 'equipmentRequests'), {
-    ...data,
+  const requestMode: EquipmentRequest['requestMode'] = data.requestMode || 'fixed_days';
+  const openEndedPrice = Number((data as EquipmentRequest & { pricePerDay?: number }).pricePerDay);
+  const payload: Record<string, unknown> = {
+    equipmentId: data.equipmentId,
+    customerUid: data.customerUid,
+    providerUid: data.providerUid,
+    customerPublic: data.customerPublic ? sanitizePublicUserSnapshot(data.customerPublic) : undefined,
+    providerPublic: data.providerPublic ? sanitizePublicUserSnapshot(data.providerPublic) : undefined,
     status: 'pending',
+    requestMode,
+    startDate: data.startDate,
+    endDate: data.endDate,
+    notes: data.notes,
+    amount: requestMode === 'open_ended' ? openEndedPrice : data.amount,
+    platformFee: requestMode === 'open_ended' ? 0 : data.platformFee,
+    providerAmount: requestMode === 'open_ended' ? 0 : data.providerAmount,
     paymentStatus: 'unpaid',
+    paymentId: data.paymentId,
+    paidAt: data.paidAt,
+    currency: data.currency,
     allowChat: false,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
+  };
+
+  if (requestMode === 'fixed_days') {
+    if (typeof data.numberOfDays !== 'number' || !Number.isFinite(data.numberOfDays) || data.numberOfDays < 1) {
+      throw new Error('Invalid numberOfDays for fixed_days request');
+    }
+    payload.numberOfDays = Math.trunc(data.numberOfDays);
+  }
+
+  for (const key of Object.keys(payload)) {
+    if (payload[key] === undefined) delete payload[key];
+  }
+
+  console.log('[RequestWrite] createRequest payload', {
+    keys: Object.keys(payload),
+    requestMode,
+    hasNumberOfDays: Object.prototype.hasOwnProperty.call(payload, 'numberOfDays'),
   });
+
+  const docRef = await addDoc(collection(db, 'equipmentRequests'), payload);
   console.log('[Firestore] Request created:', docRef.id);
   return docRef.id;
 }
@@ -325,28 +493,11 @@ export async function updateRequestStatus(
   if (!snap.exists()) throw new Error('Request not found');
 
   const request = snap.data();
-  const isProvider = request.providerUid === currentUid;
-  const isCustomer = request.customerUid === currentUid;
-
-  const validTransitions: Record<string, { allowed: string[]; who: 'provider' | 'customer' | 'both' }> = {
-    pending: { allowed: ['accepted', 'rejected', 'cancelled'], who: 'both' },
-    accepted: { allowed: ['in_progress', 'cancelled'], who: 'both' },
-    in_progress: { allowed: ['completed'], who: 'provider' },
-  };
-
   const current = request.status as string;
-  const rule = validTransitions[current];
-
-  if (!rule || !rule.allowed.includes(status)) {
+  const actor = request.providerUid === currentUid ? 'provider' :
+    request.customerUid === currentUid ? 'customer' : null;
+  if (!actor || !canTransition(current as EquipmentRequest['status'], status, actor)) {
     throw new Error(`Invalid status transition: ${current} -> ${status}`);
-  }
-
-  if (rule.who === 'provider' && !isProvider) {
-    throw new Error('Only the provider can perform this action');
-  }
-
-  if (status === 'cancelled' && !isCustomer && !isProvider) {
-    throw new Error('Only participants can cancel');
   }
 
   const updates: Record<string, unknown> = {
@@ -371,18 +522,8 @@ export async function updatePaymentStatus(
   paymentStatus: EquipmentRequest['paymentStatus'],
   paymentId?: string
 ): Promise<void> {
-  const db = getFirebaseDb();
-  console.log('[Firestore] Updating payment status:', requestId, '->', paymentStatus);
-
-  const updates: Record<string, unknown> = {
-    paymentStatus,
-    updatedAt: serverTimestamp(),
-  };
-
-  if (paymentId) updates.paymentId = paymentId;
-  if (paymentStatus === 'paid') updates.paidAt = serverTimestamp();
-
-  await updateDoc(doc(db, 'equipmentRequests', requestId), updates);
+  void requestId; void paymentStatus; void paymentId;
+  throw new Error('Payment status is server-managed and cannot be written by the client');
 }
 
 export function subscribeToRequest(requestId: string, callback: (req: EquipmentRequest | null) => void): Unsubscribe {
@@ -405,15 +546,44 @@ export function subscribeToUserRequests(
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerUid' : 'providerUid';
   console.log('[Firestore] Subscribing to', role, 'requests for:', uid);
-  const q = query(
+  const indexedQ = query(
     collection(db, 'equipmentRequests'),
     where(field, '==', uid),
     orderBy('createdAt', 'desc')
   );
-  return onSnapshot(q, (snap) => {
-    const items = snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
-    callback(items);
-  });
+  const fallbackQ = query(
+    collection(db, 'equipmentRequests'),
+    where(field, '==', uid)
+  );
+
+  let usingFallback = false;
+  let unsub: Unsubscribe = () => {};
+
+  const subscribe = (q: unknown, isFallback: boolean) => {
+    usingFallback = isFallback;
+    unsub = onSnapshot(
+      q as never,
+      (snap: unknown) => {
+        const qs = snap as { docs: { id: string; data: () => unknown }[] };
+        const items: EquipmentRequest[] = qs.docs.map((d) => parseRequest(d.id, d.data() as Record<string, unknown>));
+        if (usingFallback) items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        callback(items);
+      },
+      (error) => {
+        const code = (error as { code?: string } | undefined)?.code;
+        if (!usingFallback && code === 'failed-precondition') {
+          warnIndexFallbackOnce(`equipmentRequests:${field}+createdAt(realtime)`, error);
+          try {
+            unsub();
+          } catch {}
+          subscribe(fallbackQ, true);
+        }
+      }
+    );
+  };
+
+  subscribe(indexedQ, false);
+  return () => unsub();
 }
 
 export function subscribeToMessages(
@@ -479,7 +649,24 @@ export async function submitRating(data: Omit<Rating, 'id' | 'createdAt'>): Prom
     where('fromUid', '==', data.fromUid),
     limit(1)
   );
-  const existingSnap = await getDocs(existingQ);
+  let existingSnap;
+  try {
+    existingSnap = await getDocs(existingQ);
+  } catch (indexError) {
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce('ratings:requestId+fromUid', indexError);
+      const fallbackQ = query(
+        collection(db, 'ratings'),
+        where('requestId', '==', data.requestId)
+      );
+      const fallbackSnap = await getDocs(fallbackQ);
+      const alreadyRated = fallbackSnap.docs.some(d => (d.data() as Record<string, unknown>).fromUid === data.fromUid);
+      if (alreadyRated) throw new Error('You have already rated this request');
+      existingSnap = { empty: true };
+    } else {
+      throw indexError;
+    }
+  }
   if (!existingSnap.empty) throw new Error('You have already rated this request');
 
   const docRef = await addDoc(collection(db, 'ratings'), {
@@ -492,13 +679,28 @@ export async function submitRating(data: Omit<Rating, 'id' | 'createdAt'>): Prom
 
 export async function fetchRatingsForUser(toUid: string): Promise<Rating[]> {
   const db = getFirebaseDb();
-  const q = query(
-    collection(db, 'ratings'),
-    where('toUid', '==', toUid),
-    orderBy('createdAt', 'desc')
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map(d => parseRating(d.id, d.data() as Record<string, unknown>));
+  try {
+    const q = query(
+      collection(db, 'ratings'),
+      where('toUid', '==', toUid),
+      orderBy('createdAt', 'desc')
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map(d => parseRating(d.id, d.data() as Record<string, unknown>));
+  } catch (indexError) {
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce('ratings:toUid+createdAt', indexError);
+      const fallbackQ = query(
+        collection(db, 'ratings'),
+        where('toUid', '==', toUid)
+      );
+      const snap = await getDocs(fallbackQ);
+      const items = snap.docs.map(d => parseRating(d.id, d.data() as Record<string, unknown>));
+      items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return items;
+    }
+    throw indexError;
+  }
 }
 
 function parseInvoice(id: string, data: Record<string, unknown>): Invoice {
@@ -524,14 +726,8 @@ function parseInvoice(id: string, data: Record<string, unknown>): Invoice {
 }
 
 export async function createInvoice(data: Omit<Invoice, 'id' | 'createdAt'>): Promise<string> {
-  const db = getFirebaseDb();
-  console.log('[Firestore] Creating invoice for request:', data.requestId);
-  const docRef = await addDoc(collection(db, 'invoices'), {
-    ...data,
-    createdAt: serverTimestamp(),
-  });
-  console.log('[Firestore] Invoice created:', docRef.id);
-  return docRef.id;
+  void data;
+  throw new Error('Invoices are server-managed and cannot be created by the client');
 }
 
 export async function generateInvoiceNumber(): Promise<string> {
@@ -575,7 +771,11 @@ export async function fetchUserInvoices(uid: string, role: 'customer' | 'provide
     console.log('[Firestore] Fetched', items.length, 'invoices');
     return items;
   } catch (indexError) {
-    console.warn('[Firestore] Invoice indexed query failed, fallback:', indexError);
+    if (isMissingIndexError(indexError)) {
+      warnIndexFallbackOnce(`invoices:${field}+createdAt`, indexError);
+    } else {
+      console.warn('[Firestore] Invoice indexed query failed, fallback:', indexError);
+    }
     try {
       const fallbackQ = query(
         collection(db, 'invoices'),
@@ -608,16 +808,20 @@ export async function fetchInvoiceByRequestId(requestId: string): Promise<Invoic
 }
 
 export async function updateRequestInvoiceId(requestId: string, invoiceId: string): Promise<void> {
-  const db = getFirebaseDb();
-  await updateDoc(doc(db, 'equipmentRequests', requestId), {
-    invoiceId,
-    updatedAt: serverTimestamp(),
-  });
+  void requestId; void invoiceId;
+  throw new Error('Invoice references are server-managed and cannot be written by the client');
 }
 
 export async function fetchUserById(uid: string): Promise<User | null> {
   const db = getFirebaseDb();
-  const snap = await getDoc(doc(db, 'users', uid));
+  let snap;
+  try {
+    snap = await getDoc(doc(db, 'users', uid));
+  } catch (e) {
+    const code = (e as { code?: string } | undefined)?.code;
+    if (code === 'permission-denied') return null;
+    throw e;
+  }
   if (snap.exists()) {
     const data = snap.data();
     return {
@@ -627,6 +831,7 @@ export async function fetchUserById(uid: string): Promise<User | null> {
       email: data.email || '',
       phone: data.phone || '',
       avatar: data.avatar || '',
+      avatarPublicId: data.avatarPublicId || '',
       region: data.region || '',
       city: data.city || '',
       customCity: data.customCity || '',

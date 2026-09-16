@@ -8,11 +8,12 @@ import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
-import { fetchEquipmentById, fetchUserById, createRequest } from '@/services/firestoreService';
-import { Equipment, User } from '@/types';
+import { fetchEquipmentById, createRequest, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
+import { Equipment } from '@/types';
 import { getImageUrl } from '@/utils/imageHelpers';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import RentalRequestModal, { RentalRequestDraft } from '@/components/RentalRequestModal';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -24,8 +25,8 @@ export default function EquipmentDetailScreen() {
   const [currentImage, setCurrentImage] = useState<number>(0);
   const [liked, setLiked] = useState<boolean>(false);
   const [equipment, setEquipment] = useState<Equipment | null>(null);
-  const [owner, setOwner] = useState<User | null>(null);
   const [_loading, setLoading] = useState<boolean>(true);
+  const [requestModalVisible, setRequestModalVisible] = useState<boolean>(false);
   const scrollRef = useRef<ScrollView>(null);
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
@@ -37,8 +38,6 @@ export default function EquipmentDetailScreen() {
         const eq = await fetchEquipmentById(id);
         if (mounted && eq) {
           setEquipment(eq);
-          const ownerUser = await fetchUserById(eq.ownerUid);
-          if (mounted) setOwner(ownerUser);
         }
       } catch (e) {
         console.log('[EquipmentDetail] Error:', e);
@@ -49,6 +48,18 @@ export default function EquipmentDetailScreen() {
     void load();
     return () => { mounted = false; };
   }, [id]);
+
+  useEffect(() => {
+    if (!equipment || !currentUser) return;
+    if (equipment.ownerPublic) return;
+    if (currentUser.uid !== equipment.ownerUid) return;
+    void tryBackfillEquipmentOwnerPublic(equipment.id, {
+      uid: currentUser.uid,
+      nameAr: currentUser.nameAr,
+      nameEn: currentUser.nameEn,
+      avatar: currentUser.avatar,
+    });
+  }, [currentUser, equipment]);
 
   const categoryObj = equipment ? mockCategories.find(c => c.id === equipment.category) : null;
   const cityObj = equipment ? mockCities.find(c => c.id === equipment.city) : null;
@@ -68,8 +79,24 @@ export default function EquipmentDetailScreen() {
   const title = localizedText(equipment.titleAr, equipment.titleEn);
   const description = localizedText(equipment.descriptionAr, equipment.descriptionEn);
   const cityName = cityObj ? localizedText(cityObj.nameAr, cityObj.nameEn) : equipment.city;
-  const categoryName = categoryObj ? localizedText(categoryObj.nameAr, categoryObj.nameEn) : equipment.category;
-  const ownerName = owner ? localizedText(owner.nameAr, owner.nameEn) : '';
+  const categoryName = equipment.category === 'other' && equipment.customCategory
+    ? equipment.customCategory
+    : (categoryObj ? localizedText(categoryObj.nameAr, categoryObj.nameEn) : equipment.category);
+  const ownerPublic = equipment.ownerPublic || (currentUser && currentUser.uid === equipment.ownerUid ? {
+    uid: currentUser.uid,
+    nameAr: currentUser.nameAr,
+    nameEn: currentUser.nameEn,
+    avatar: currentUser.avatar,
+  } : undefined);
+  const ownerLive = currentUser?.uid === equipment.ownerUid ? currentUser : null;
+  const ownerName = ownerPublic ? localizedText(ownerPublic.nameAr, ownerPublic.nameEn) : '';
+  const canShowOwner = Boolean(ownerPublic && (ownerPublic.nameAr || ownerPublic.nameEn || ownerPublic.avatar));
+  const isEligibleRequester = Boolean(
+    isAuthenticated &&
+      currentUser &&
+      currentUser.role === 'customer' &&
+      currentUser.uid !== equipment.ownerUid
+  );
 
   const handleRequestRental = () => {
     if (!isAuthenticated || !currentUser) {
@@ -86,6 +113,15 @@ export default function EquipmentDetailScreen() {
 
     if (!equipment) return;
 
+    if (currentUser.role !== 'customer') {
+      showDialog(
+        t('request_not_allowed'),
+        t('request_customers_only'),
+        [{ text: t('ok'), style: 'default' }]
+      );
+      return;
+    }
+
     if (currentUser.uid === equipment.ownerUid) {
       showDialog(
         t('error_title'),
@@ -95,53 +131,76 @@ export default function EquipmentDetailScreen() {
       return;
     }
 
-    showDialog(
-      t('request_rental'),
-      t('confirm'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('confirm'),
-          style: 'default',
-          onPress: async () => {
-            try {
-              const days = 5;
-              const amount = equipment.pricePerDay * days;
-              const platformFee = Math.round(amount * 0.1);
-              await createRequest({
-                equipmentId: equipment.id,
-                customerUid: currentUser.uid,
-                providerUid: equipment.ownerUid,
-                status: 'pending',
-                startDate: new Date().toISOString(),
-                endDate: new Date(Date.now() + days * 86400000).toISOString(),
-                notes: '',
-                amount,
-                platformFee,
-                providerAmount: amount - platformFee,
-                paymentStatus: 'unpaid',
-                paymentId: '',
-                paidAt: null,
-                currency: 'SAR',
-                allowChat: false,
-              });
-              showDialog(
-                t('success'),
-                t('request_sent_success'),
-                [{ text: t('ok'), style: 'default', onPress: () => router.back() }]
-              );
-            } catch (e) {
-              console.error('[EquipmentDetail] Request error:', e);
-              showDialog(
-                t('error_title'),
-                t('error_generic_message'),
-                [{ text: t('ok'), style: 'default' }]
-              );
-            }
-          },
+    setRequestModalVisible(true);
+  };
+
+  const handleSubmitRequest = async (draft: RentalRequestDraft) => {
+    if (!equipment || !currentUser) return;
+    try {
+      const startDate = new Date().toISOString();
+
+      let endDate = '';
+      let amount = 0;
+      let platformFee = 0;
+      let providerAmount = 0;
+
+      if (draft.requestMode === 'fixed_days') {
+        const days = draft.numberOfDays || 0;
+        endDate = new Date(Date.now() + days * 86400000).toISOString();
+        amount = equipment.pricePerDay * days;
+        platformFee = Math.round(amount * 0.1);
+        providerAmount = amount - platformFee;
+      }
+
+      const requestPayload = {
+        equipmentId: equipment.id,
+        customerUid: currentUser.uid,
+        providerUid: equipment.ownerUid,
+        pricePerDay: equipment.pricePerDay,
+        customerPublic: {
+          uid: currentUser.uid,
+          nameAr: currentUser.nameAr,
+          nameEn: currentUser.nameEn,
+          avatar: currentUser.avatar,
         },
-      ]
-    );
+        providerPublic: {
+          uid: equipment.ownerUid,
+          nameAr: ownerPublic?.nameAr || '',
+          nameEn: ownerPublic?.nameEn || '',
+          avatar: ownerPublic?.avatar || '',
+        },
+        status: 'pending' as const,
+        requestMode: draft.requestMode,
+        startDate,
+        endDate,
+        notes: draft.notes || '',
+        amount,
+        platformFee,
+        providerAmount,
+        paymentStatus: 'unpaid' as const,
+        paymentId: '',
+        paidAt: null,
+        currency: 'SAR',
+        allowChat: false,
+        ...(draft.requestMode === 'fixed_days' ? { numberOfDays: draft.numberOfDays } : {}),
+      };
+
+      await createRequest(requestPayload);
+
+      showDialog(
+        t('success'),
+        t('request_sent_success'),
+        [{ text: t('ok'), style: 'default', onPress: () => router.back() }]
+      );
+    } catch (e) {
+      console.error('[EquipmentDetail] Request error:', e);
+      showDialog(
+        t('error_title'),
+        t('error_generic_message'),
+        [{ text: t('ok'), style: 'default' }]
+      );
+      throw e;
+    }
   };
 
   const handleContactProvider = () => {
@@ -234,21 +293,20 @@ export default function EquipmentDetailScreen() {
 
           <View style={styles.divider} />
 
-          {owner && (
+          {canShowOwner && (
             <>
               <Text style={[styles.sectionTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('owner')}</Text>
               <Pressable style={[styles.ownerCard, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={handleContactProvider}>
-                <Image source={{ uri: owner.avatar }} style={styles.ownerAvatar} contentFit="cover" />
+                <Image source={ownerPublic?.avatar ? { uri: ownerPublic.avatar } : require('@/assets/images/logo.png')} style={styles.ownerAvatar} contentFit="cover" />
                 <View style={[styles.ownerInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
                   <View style={[styles.ownerNameRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                     <Text style={styles.ownerName}>{ownerName}</Text>
-                    {owner.isVerified && <Shield size={14} color={Colors.success} />}
+                    {ownerLive?.isVerified && <Shield size={14} color={Colors.success} />}
                   </View>
-                  <View style={[styles.ownerRating, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  {ownerLive && <View style={[styles.ownerRating, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                     <Star size={14} color={Colors.gold} fill={Colors.gold} />
-                    <Text style={styles.ownerRatingText}>{owner.rating} ({owner.totalRatings} {t('rating_count')})</Text>
-                  </View>
-                  <Text style={styles.ownerEquipment}>{owner.equipmentCount} {t('equipment_count')}</Text>
+                    <Text style={styles.ownerRatingText}>{ownerLive.rating} ({ownerLive.totalRatings} {t('rating_count')})</Text>
+                  </View>}
                 </View>
               </Pressable>
             </>
@@ -276,7 +334,7 @@ export default function EquipmentDetailScreen() {
                 <Text style={styles.bottomPrice}>{equipment.pricePerDay.toLocaleString()} {t('sar')}</Text>
                 <Text style={styles.bottomPerDay}>{t('per_day')}</Text>
               </View>
-              <Pressable style={styles.requestButton} onPress={handleRequestRental}>
+              <Pressable style={[styles.requestButton, !isEligibleRequester && styles.requestButtonDisabled]} onPress={handleRequestRental}>
                 <Calendar size={18} color={Colors.primary} />
                 <Text style={styles.requestButtonText}>{t('request_rental')}</Text>
               </Pressable>
@@ -291,6 +349,12 @@ export default function EquipmentDetailScreen() {
         message={dialog.message}
         buttons={dialog.buttons}
         onClose={hideDialog}
+      />
+
+      <RentalRequestModal
+        visible={requestModalVisible}
+        onClose={() => setRequestModalVisible(false)}
+        onSubmit={handleSubmitRequest}
       />
     </View>
   );
@@ -563,6 +627,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: 'center',
     gap: 8,
+  },
+  requestButtonDisabled: {
+    opacity: 0.7,
   },
   requestButtonText: {
     color: Colors.primary,

@@ -1,0 +1,214 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function self(uid) { return signedIn() && request.auth.uid == uid; }
+    function participant(data) {
+      return signedIn() &&
+        (data.customerUid == request.auth.uid || data.providerUid == request.auth.uid);
+    }
+    function serverTime() {
+      return request.resource.data.updatedAt == request.time;
+    }
+    function publicSnapshot(snapshot, uid) {
+      return snapshot is map
+        && snapshot.keys().hasOnly(['uid', 'nameAr', 'nameEn', 'avatar'])
+        && snapshot.uid == uid
+        && snapshot.nameAr is string
+        && snapshot.nameEn is string
+        && snapshot.avatar is string;
+    }
+    function trustedProvider(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid))
+        && get(/databases/$(database)/documents/users/$(uid)).data.role == 'provider'
+        && (get(/databases/$(database)/documents/users/$(uid)).data.isVerified == true
+          || get(/databases/$(database)/documents/users/$(uid)).data.crVerified == true);
+    }
+    function trustedSnapshot(snapshot, uid) {
+      return publicSnapshot(snapshot, uid)
+        && snapshot.nameAr == get(/databases/$(database)/documents/users/$(uid)).data.nameAr
+        && snapshot.nameEn == get(/databases/$(database)/documents/users/$(uid)).data.nameEn
+        && snapshot.avatar == get(/databases/$(database)/documents/users/$(uid)).data.avatar;
+    }
+    // Amounts are non-negative SAR values. int() truncates toward zero, so
+    // this is the same half-up rounding used by the mobile UI's
+    // Math.round(amount * 0.1).
+    function platformFeeFor(amount) {
+      return int(amount * 0.1 + 0.5);
+    }
+
+    // Client accounts may create only an ordinary, unprivileged profile.
+    match /users/{uid} {
+      allow read: if self(uid);
+      // User provisioning (including roles and verification) is backend-only.
+      allow create: if false;
+      allow update: if self(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'nameAr', 'nameEn', 'phone', 'avatar', 'avatarPublicId',
+          'region', 'city', 'customCity', 'crNumber'
+        ]);
+      allow delete: if false;
+    }
+
+    // Only intentionally public, active listings are readable. Owners may
+    // edit listing content, but never transfer ownership or alter timestamps.
+    match /equipment/{equipmentId} {
+      allow read: if resource.data.isActive == true ||
+        (signedIn() && resource.data.ownerUid == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && trustedProvider(request.auth.uid)
+        && request.resource.data.isActive == true
+        && request.resource.data.keys().hasOnly([
+          'ownerUid', 'titleAr', 'titleEn', 'descriptionAr', 'descriptionEn',
+          'category', 'region', 'city', 'customCity', 'district', 'location',
+          'customCategory', 'pricePerDay', 'images', 'availability', 'isActive',
+          'ownerPublic',
+          'createdAt', 'updatedAt'
+        ])
+        && (!request.resource.data.keys().hasAny(['ownerPublic']) ||
+          trustedSnapshot(request.resource.data.ownerPublic, request.auth.uid));
+      allow update: if signedIn() && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'titleAr', 'titleEn', 'descriptionAr', 'descriptionEn', 'category',
+          'region', 'city', 'customCity', 'district', 'location', 'customCategory',
+          'pricePerDay', 'images', 'availability', 'isActive', 'ownerPublic', 'updatedAt'
+        ])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerPublic']) ||
+          trustedSnapshot(request.resource.data.ownerPublic, request.auth.uid));
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    match /equipmentRequests/{requestId} {
+      allow read: if participant(resource.data);
+      allow create: if signedIn()
+        && request.resource.data.customerUid == request.auth.uid
+        && request.resource.data.customerUid != request.resource.data.providerUid
+        && trustedProvider(request.resource.data.providerUid)
+        && get(/databases/$(database)/documents/equipment/$(request.resource.data.equipmentId)).data.ownerUid
+          == request.resource.data.providerUid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.paymentStatus == 'unpaid'
+        && request.resource.data.allowChat == false
+        && request.resource.data.currency == 'SAR'
+        && request.resource.data.paymentId == ''
+        && request.resource.data.paidAt == null
+        && (
+          (request.resource.data.requestMode == 'fixed_days'
+            && request.resource.data.numberOfDays is int
+            && request.resource.data.numberOfDays >= 1
+            && request.resource.data.amount ==
+              get(/databases/$(database)/documents/equipment/$(request.resource.data.equipmentId)).data.pricePerDay
+              * request.resource.data.numberOfDays
+            && request.resource.data.platformFee ==
+              platformFeeFor(request.resource.data.amount)
+            && request.resource.data.providerAmount ==
+              request.resource.data.amount - request.resource.data.platformFee)
+          || (request.resource.data.requestMode == 'open_ended'
+            && !request.resource.data.keys().hasAny(['numberOfDays'])
+            && request.resource.data.amount ==
+              get(/databases/$(database)/documents/equipment/$(request.resource.data.equipmentId)).data.pricePerDay
+            && request.resource.data.platformFee == 0
+            && request.resource.data.providerAmount == 0)
+        )
+        && request.resource.data.keys().hasOnly([
+          'equipmentId', 'customerUid', 'providerUid', 'status', 'requestMode',
+          'numberOfDays', 'startDate',
+          'endDate', 'notes', 'amount', 'platformFee', 'providerAmount',
+          'paymentStatus', 'paymentId', 'paidAt', 'currency', 'allowChat',
+          'customerPublic', 'providerPublic', 'createdAt', 'updatedAt'
+        ])
+        // Public snapshots contain no privileged account fields and cannot
+        // impersonate either request participant.
+        && (!request.resource.data.keys().hasAny(['customerPublic']) ||
+          trustedSnapshot(request.resource.data.customerPublic, request.resource.data.customerUid))
+        && (!request.resource.data.keys().hasAny(['providerPublic']) ||
+          trustedSnapshot(request.resource.data.providerPublic, request.resource.data.providerUid));
+      // Payment state, prices, fees, identity, and invoice references are
+      // server-owned. The client can perform only the lifecycle transition.
+      allow update: if participant(resource.data)
+        && request.resource.data.customerUid == resource.data.customerUid
+        && request.resource.data.providerUid == resource.data.providerUid
+        && request.resource.data.equipmentId == resource.data.equipmentId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'allowChat', 'updatedAt'
+        ]) && serverTime()
+        && (
+          (resource.data.status == 'pending' &&
+            ((request.resource.data.status == 'accepted' &&
+              request.resource.data.allowChat == true &&
+              request.auth.uid == resource.data.providerUid) ||
+             (request.resource.data.status == 'rejected' &&
+              request.resource.data.allowChat == false &&
+              request.auth.uid == resource.data.providerUid) ||
+             (request.resource.data.status == 'cancelled' &&
+              request.resource.data.allowChat == false))) ||
+           (resource.data.status == 'accepted' &&
+             ((request.resource.data.status == 'cancelled' &&
+              request.resource.data.allowChat == false))) ||
+          (resource.data.status == 'in_progress' &&
+            request.resource.data.status == 'completion_requested' &&
+            request.resource.data.allowChat == true &&
+            request.auth.uid == resource.data.providerUid)
+        )
+        || (participant(resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'customerPublic', 'providerPublic', 'updatedAt'
+          ])
+          && serverTime()
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['customerPublic']) ||
+            (request.auth.uid == resource.data.customerUid &&
+              trustedSnapshot(request.resource.data.customerPublic, resource.data.customerUid)))
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['providerPublic']) ||
+            trustedSnapshot(request.resource.data.providerPublic, resource.data.providerUid)));
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data)
+          && get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.allowChat == true;
+        allow create: if signedIn()
+          && request.resource.data.requestId == requestId
+          && request.resource.data.senderUid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['requestId', 'senderUid', 'text', 'createdAt', 'read'])
+          && get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.allowChat == true
+          && participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data);
+        allow update, delete: if false;
+      }
+    }
+
+    match /ratings/{ratingId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.stars is int
+        && request.resource.data.stars >= 1 && request.resource.data.stars <= 5
+        && request.resource.data.comment is string
+        && request.resource.data.keys().hasOnly([
+          'requestId', 'fromUid', 'toUid', 'equipmentId', 'stars', 'comment', 'createdAt'
+        ])
+        && get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.status == 'completed'
+        && (get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.customerUid == request.auth.uid
+          || get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.providerUid == request.auth.uid)
+        && request.resource.data.toUid != request.auth.uid
+        && (request.resource.data.toUid ==
+          get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.customerUid
+          || request.resource.data.toUid ==
+          get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.providerUid)
+        && request.resource.data.equipmentId ==
+          get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.equipmentId;
+      allow update, delete: if false;
+    }
+
+    // Payments, invoices, aggregates, and moderation fields are backend-only.
+    match /invoices/{invoiceId} {
+      allow read: if signedIn()
+        && exists(/databases/$(database)/documents/equipmentRequests/$(resource.data.requestId))
+        && participant(get(/databases/$(database)/documents/equipmentRequests/$(resource.data.requestId)).data);
+      allow write: if false;
+    }
+    match /payments/{paymentId} { allow read, write: if false; }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

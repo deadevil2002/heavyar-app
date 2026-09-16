@@ -6,7 +6,10 @@
     "start": "bunx rork start -p 8mcv0eg4e2l3to7ex9wvv --tunnel",
     "start-web": "bunx rork start -p 8mcv0eg4e2l3to7ex9wvv --web --tunnel",
     "start-web-dev": "DEBUG=expo* bunx rork start -p 8mcv0eg4e2l3to7ex9wvv --web --tunnel",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "test:transitions": "vitest run tests/requestTransitions.test.ts",
+    "test:rules": "firebase emulators:exec --only firestore \"vitest run tests/firestore.rules.test.ts\"",
+    "test": "bun run test:transitions && bun run test:rules"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
@@ -52,7 +55,22 @@
     "@types/react": "~19.1.10",
     "eslint": "^9.31.0",
     "eslint-config-expo": "~10.0.0",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "@firebase/rules-unit-testing": "^3.0.4",
+    "firebase-tools": "^14.24.1",
+    "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "1.9.16",
+    "@xmldom/xmldom": "0.8.13",
+    "browserslist": "4.28.7",
+    "flatted": "3.4.2",
+    "node-forge": "1.4.0",
+    "postcss": "8.5.18",
+    "protobufjs": "7.6.1",
+    "shell-quote": "1.8.4",
+    "tar": "7.5.2",
+    "websocket-driver": "0.7.5"
   },
   "private": true
 }

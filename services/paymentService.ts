@@ -1,4 +1,5 @@
-const WORKER_BASE_URL = 'https://heavyar-api.heavyar-official.workers.dev';
+import { getFirebaseAuth } from './firebaseConfig';
+import { WORKER_BASE_URL } from '@/constants/worker';
 
 export interface CreatePaymentParams {
   amount: number;
@@ -36,12 +37,12 @@ export interface VerifyPaymentResponse {
 export async function createPayment(params: CreatePaymentParams): Promise<CreatePaymentResponse> {
   console.log('[PaymentService] Creating payment for request:', params.requestId, 'amount:', params.amount);
   try {
+    const token = await getFirebaseAuth().currentUser?.getIdToken();
+    if (!token) return { success: false, error: 'Please sign in before paying' };
     const response = await fetch(`${WORKER_BASE_URL}/api/create-payment`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
-        amount: params.amount,
-        currency: params.currency || 'SAR',
         requestId: params.requestId,
         customerName: params.customerName,
         customerEmail: params.customerEmail,
@@ -62,9 +63,11 @@ export async function createPayment(params: CreatePaymentParams): Promise<Create
 export async function verifyPayment(chargeId: string): Promise<VerifyPaymentResponse> {
   console.log('[PaymentService] Verifying payment:', chargeId);
   try {
+    const token = await getFirebaseAuth().currentUser?.getIdToken();
+    if (!token) return { success: false, error: 'Please sign in before verifying payment' };
     const response = await fetch(`${WORKER_BASE_URL}/api/verify-payment`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ chargeId }),
     });
 
