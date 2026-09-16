@@ -4,7 +4,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, setDoc, updateDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 
@@ -58,6 +58,10 @@ async function seed() {
     });
     await setDoc(doc(db, 'equipment/equipment-2'), {
       ownerUid: 'provider-2', pricePerDay: 100, isActive: true, createdAt: new Date(), updatedAt: new Date(),
+    });
+    await setDoc(doc(db, 'equipment/hidden-listing'), {
+      ownerUid: 'provider-1', pricePerDay: 100, isActive: false, moderationStatus: 'hidden',
+      createdAt: new Date(), updatedAt: new Date(),
     });
     await setDoc(doc(db, 'equipmentRequests/request-1'), request);
     await setDoc(doc(db, 'equipmentRequests/closed'), { ...request, status: 'completed' });
@@ -135,6 +139,54 @@ describe('Firestore authorization baseline', () => {
     }));
   });
 
+  it('blocks suspended accounts and moderated listings on direct client paths', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'users/provider-1'), { suspensionStatus: 'temporarily_suspended' });
+    });
+    const provider = authed('provider-1');
+    await assertFails(setDoc(doc(provider, 'equipment/suspended-owner-listing'), {
+      ownerUid: 'provider-1', pricePerDay: 100, isActive: true, createdAt: new Date(), updatedAt: new Date(),
+    }));
+    await assertFails(updateDoc(doc(provider, 'equipment/equipment-1'), { titleEn: 'blocked', updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(doc(provider, 'equipment/hidden-listing'), { isActive: true, updatedAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(authed('customer-1'), 'equipmentRequests/hidden-request'), {
+      ...request, equipmentId: 'hidden-listing',
+    }));
+    await env.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), 'users/provider-1'), { suspensionStatus: null });
+      await updateDoc(doc(context.firestore(), 'equipment/equipment-1'), { moderationStatus: 'suspended', isActive: false });
+    });
+    await assertFails(setDoc(doc(authed('customer-1'), 'equipmentRequests/suspended-request'), {
+      ...request, equipmentId: 'equipment-1',
+    }));
+  });
+
+  it('blocks suspended deletes and chat/rating writes for suspended participants or moderated listings', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await updateDoc(doc(db, 'equipmentRequests/request-1'), { allowChat: true });
+      await updateDoc(doc(db, 'users/customer-1'), { suspensionStatus: 'temporarily_suspended' });
+      await updateDoc(doc(db, 'users/provider-1'), { suspensionStatus: 'temporarily_suspended' });
+    });
+    await assertFails(deleteDoc(doc(authed('provider-1'), 'equipment/equipment-1')));
+    await assertFails(setDoc(doc(authed('customer-1'), 'equipmentRequests/request-1/messages/suspended'), {
+      requestId: 'request-1', senderUid: 'customer-1', text: 'blocked', createdAt: new Date(), read: false,
+    }));
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await updateDoc(doc(db, 'users/customer-1'), { suspensionStatus: null });
+      await updateDoc(doc(db, 'users/provider-1'), { suspensionStatus: null });
+      await updateDoc(doc(db, 'equipment/equipment-1'), { moderationStatus: 'hidden', isActive: false });
+    });
+    await assertFails(setDoc(doc(authed('provider-1'), 'equipmentRequests/request-1/messages/moderated'), {
+      requestId: 'request-1', senderUid: 'provider-1', text: 'blocked', createdAt: new Date(), read: false,
+    }));
+    await assertFails(setDoc(doc(authed('customer-1'), 'ratings/rating-moderated'), {
+      requestId: 'closed', fromUid: 'customer-1', toUid: 'provider-1', equipmentId: 'equipment-1',
+      stars: 5, comment: 'blocked', createdAt: new Date(),
+    }));
+  });
+
   it('denies arbitrary payment, invoice, and final amount writes', async () => {
     const db = authed('provider-1');
     await assertFails(updateDoc(doc(db, 'equipmentRequests/request-1'), { paymentStatus: 'paid' }));
@@ -145,6 +197,12 @@ describe('Firestore authorization baseline', () => {
     await assertFails(setDoc(doc(db, 'providerConfigs/tap'), { publishableKey: 'not-a-secret' }));
     await assertFails(setDoc(doc(db, 'paymentIdempotency/key'), { requestId: 'request-1' }));
     await assertFails(setDoc(doc(db, 'invoiceCounters/2026'), { next: 1 }));
+    await assertFails(setDoc(doc(db, 'adminAudit/audit-1'), { action: 'user_suspended' }));
+    await assertFails(setDoc(doc(db, 'refunds/refund-1'), { requestId: 'request-1', state: 'refund_requested' }));
+    await assertFails(setDoc(doc(db, 'refundReservations/request-1'), { refundId: 'refund:request-1' }));
+    await assertFails(setDoc(doc(db, 'complaints/complaint-1'), { requestId: 'request-1', status: 'open' }));
+    await assertFails(setDoc(doc(db, 'verificationCases/case-1'), { uid: 'provider-1', status: 'approved' }));
+    await assertFails(setDoc(doc(db, 'heavyarConfig/pricing'), { platformFeeRate: 0.1 }));
   });
 
   it('restricts request, chat, and invoice reads to authorized participants', async () => {

@@ -30,6 +30,16 @@ service cloud.firestore {
         && snapshot.nameEn == get(/databases/$(database)/documents/users/$(uid)).data.nameEn
         && snapshot.avatar == get(/databases/$(database)/documents/users/$(uid)).data.avatar;
     }
+    function notSuspended(uid) {
+      return !exists(/databases/$(database)/documents/users/$(uid))
+        || (!get(/databases/$(database)/documents/users/$(uid)).data.keys().hasAny(['suspensionStatus'])
+          || (get(/databases/$(database)/documents/users/$(uid)).data.suspensionStatus != 'temporarily_suspended'
+            && get(/databases/$(database)/documents/users/$(uid)).data.suspensionStatus != 'permanently_suspended'));
+    }
+    function publicListing(data) {
+      return data.isActive == true
+        && (!data.keys().hasAny(['moderationStatus']) || data.moderationStatus == 'active');
+    }
     // Amounts are non-negative SAR values. int() truncates toward zero, so
     // this is the same half-up rounding used by the mobile UI's
     // Math.round(amount * 0.1).
@@ -53,10 +63,11 @@ service cloud.firestore {
     // Only intentionally public, active listings are readable. Owners may
     // edit listing content, but never transfer ownership or alter timestamps.
     match /equipment/{equipmentId} {
-      allow read: if resource.data.isActive == true ||
+      allow read: if publicListing(resource.data) ||
         (signedIn() && resource.data.ownerUid == request.auth.uid);
       allow create: if signedIn()
         && request.resource.data.ownerUid == request.auth.uid
+        && notSuspended(request.auth.uid)
         && trustedProvider(request.auth.uid)
         && request.resource.data.isActive == true
         && request.resource.data.keys().hasOnly([
@@ -69,6 +80,7 @@ service cloud.firestore {
         && (!request.resource.data.keys().hasAny(['ownerPublic']) ||
           trustedSnapshot(request.resource.data.ownerPublic, request.auth.uid));
       allow update: if signedIn() && resource.data.ownerUid == request.auth.uid
+        && notSuspended(request.auth.uid)
         && request.resource.data.ownerUid == resource.data.ownerUid
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -76,19 +88,27 @@ service cloud.firestore {
           'region', 'city', 'customCity', 'district', 'location', 'customCategory',
           'pricePerDay', 'images', 'availability', 'isActive', 'ownerPublic', 'updatedAt'
         ])
-        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerPublic']) ||
+         && (!resource.data.keys().hasAny(['moderationStatus']) ||
+           (resource.data.moderationStatus != 'suspended' && resource.data.moderationStatus != 'hidden'
+             && request.resource.data.isActive == true) ||
+           request.resource.data.isActive == false)
+         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerPublic']) ||
           trustedSnapshot(request.resource.data.ownerPublic, request.auth.uid));
-      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid
+        && notSuspended(request.auth.uid);
     }
 
     match /equipmentRequests/{requestId} {
       allow read: if participant(resource.data);
       allow create: if signedIn()
         && request.resource.data.customerUid == request.auth.uid
+        && notSuspended(request.auth.uid)
+        && notSuspended(request.resource.data.providerUid)
         && request.resource.data.customerUid != request.resource.data.providerUid
         && trustedProvider(request.resource.data.providerUid)
         && get(/databases/$(database)/documents/equipment/$(request.resource.data.equipmentId)).data.ownerUid
           == request.resource.data.providerUid
+        && publicListing(get(/databases/$(database)/documents/equipment/$(request.resource.data.equipmentId)).data)
         && request.resource.data.status == 'pending'
         && request.resource.data.paymentStatus == 'unpaid'
         && request.resource.data.allowChat == false
@@ -128,7 +148,11 @@ service cloud.firestore {
           trustedSnapshot(request.resource.data.providerPublic, request.resource.data.providerUid));
       // Payment state, prices, fees, identity, and invoice references are
       // server-owned. The client can perform only the lifecycle transition.
-      allow update: if participant(resource.data)
+       allow update: if participant(resource.data)
+         && notSuspended(request.auth.uid)
+         && notSuspended(resource.data.customerUid)
+         && notSuspended(resource.data.providerUid)
+         && publicListing(get(/databases/$(database)/documents/equipment/$(resource.data.equipmentId)).data)
         && request.resource.data.customerUid == resource.data.customerUid
         && request.resource.data.providerUid == resource.data.providerUid
         && request.resource.data.equipmentId == resource.data.equipmentId
@@ -154,6 +178,10 @@ service cloud.firestore {
             request.auth.uid == resource.data.providerUid)
         )
         || (participant(resource.data)
+           && notSuspended(request.auth.uid)
+           && notSuspended(resource.data.customerUid)
+           && notSuspended(resource.data.providerUid)
+           && publicListing(get(/databases/$(database)/documents/equipment/$(resource.data.equipmentId)).data)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'customerPublic', 'providerPublic', 'updatedAt'
           ])
@@ -171,9 +199,13 @@ service cloud.firestore {
         allow create: if signedIn()
           && request.resource.data.requestId == requestId
           && request.resource.data.senderUid == request.auth.uid
+          && notSuspended(request.auth.uid)
           && request.resource.data.keys().hasOnly(['requestId', 'senderUid', 'text', 'createdAt', 'read'])
           && get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.allowChat == true
-          && participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data);
+          && participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data)
+          && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.customerUid)
+          && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.providerUid)
+          && publicListing(get(/databases/$(database)/documents/equipment/$(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.equipmentId)).data);
         allow update, delete: if false;
       }
     }
@@ -182,6 +214,7 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if signedIn()
         && request.resource.data.fromUid == request.auth.uid
+        && notSuspended(request.auth.uid)
         && request.resource.data.stars is int
         && request.resource.data.stars >= 1 && request.resource.data.stars <= 5
         && request.resource.data.comment is string
@@ -197,7 +230,10 @@ service cloud.firestore {
           || request.resource.data.toUid ==
           get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.providerUid)
         && request.resource.data.equipmentId ==
-          get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.equipmentId;
+          get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.equipmentId
+        && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.customerUid)
+        && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.providerUid)
+        && publicListing(get(/databases/$(database)/documents/equipment/$(get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.equipmentId)).data);
       allow update, delete: if false;
     }
 
@@ -230,6 +266,26 @@ service cloud.firestore {
       allow read, write: if false;
     }
     match /invoiceCounters/{counterId} {
+      allow read, write: if false;
+    }
+    // Operational records are API-only. The admin browser uses authenticated
+    // Worker endpoints and never receives direct Firestore write authority.
+    match /adminAudit/{auditId} {
+      allow read, write: if false;
+    }
+    match /refunds/{refundId} {
+      allow read, write: if false;
+    }
+    match /refundReservations/{requestId} {
+      allow read, write: if false;
+    }
+    match /complaints/{complaintId} {
+      allow read, write: if false;
+    }
+    match /verificationCases/{caseId} {
+      allow read, write: if false;
+    }
+    match /heavyarConfig/{configId} {
       allow read, write: if false;
     }
     match /invoices/{invoiceId} {

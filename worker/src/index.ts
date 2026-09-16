@@ -1,4 +1,5 @@
 import { quoteForRequest, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
+import { handleAdmin, type AdminRole } from './admin';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -7,27 +8,34 @@ export interface Env {
   FIREBASE_PROJECT_ID?: string; FIREBASE_CLIENT_EMAIL?: string; FIREBASE_PRIVATE_KEY?: string;
   CORS_ORIGINS?: string; PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string; OTP_KV?: KVNamespace;
 }
-type User = { uid: string; admin: boolean; email?: string };
+type User = { uid: string; admin: boolean; role?: AdminRole; email?: string };
 let authOverride: User | undefined;
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let assetOwnedOverride: boolean | undefined;
 let firestoreWrites: Array<{ path: string; fields: Record<string, unknown> }> | undefined;
 let reservationConflict = false;
 let capturedCommits: unknown[] | undefined;
-export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES };
+export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 const b64u = (v: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(v))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const cors = (env: Env, origin: string | null) => {
-  const allow = (env.CORS_ORIGINS || 'https://heavyar.app,https://www.heavyar.app').split(',').map(x => x.trim());
+  const allow = (env.CORS_ORIGINS || 'https://heavyar.app,https://www.heavyar.app,https://heavyar-app.web.app,https://heavyar-app.firebaseapp.com').split(',').map(x => x.trim());
   return { 'Access-Control-Allow-Origin': allow.includes(origin || '') ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', Vary: 'Origin' };
 };
 const out = (env: Env, req: Request, value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', ...cors(env, req.headers.get('Origin')) } });
 const err = (message: string): never => { throw new Error(message); };
 const authErr = (): never => { throw new Error('AUTH_REQUIRED'); };
 
-let certs: Record<string, string> = {};
+type FirebaseJwk = JsonWebKey & { kid?: string };
+let firebaseKeys: Record<string, FirebaseJwk> = {};
+async function refreshFirebaseKeys() {
+  const response = await fetch('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com');
+  if (!response.ok) err('Authentication unavailable');
+  const { keys = [] } = await response.json() as { keys?: FirebaseJwk[] };
+  firebaseKeys = Object.fromEntries(keys.filter(key => key.kid).map(key => [key.kid!, key]));
+}
 async function auth(req: Request, env: Env): Promise<User> {
   if (authOverride && req.headers.has('Authorization')) return authOverride;
   const token = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, '');
@@ -35,12 +43,27 @@ async function auth(req: Request, env: Env): Promise<User> {
   const [h, p, s] = token.split('.'); if (!h || !p || !s) authErr();
   let header: any, payload: any;
   try { header = JSON.parse(new TextDecoder().decode(b64(h))); payload = JSON.parse(new TextDecoder().decode(b64(p))); } catch { authErr(); }
-  if (header.alg !== 'RS256' || payload.aud !== env.FIREBASE_PROJECT_ID || payload.iss !== `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}` || !payload.sub || payload.exp * 1000 <= Date.now()) authErr();
-  if (!certs[header.kid]) { const r = await fetch('https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'); if (!r.ok) err('Authentication unavailable'); certs = await r.json(); }
-  const pem = certs[header.kid]; if (!pem) authErr();
-  const key = await crypto.subtle.importKey('spki', b64(pem.replace(/-----[^-]+-----/g, '').replace(/\s/g, '')), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
-  if (!await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, b64(s), enc.encode(`${h}.${p}`))) authErr();
-  return { uid: payload.sub, admin: payload.admin === true || payload.role === 'admin', email: payload.email };
+  const now = Date.now(), skew = 60_000;
+  if (header.alg !== 'RS256' || typeof header.kid !== 'string' || !header.kid ||
+      payload.aud !== env.FIREBASE_PROJECT_ID || payload.iss !== `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}` ||
+      typeof payload.sub !== 'string' || payload.sub.length === 0 || payload.sub.length > 128 ||
+      typeof payload.exp !== 'number' || !Number.isFinite(payload.exp) || typeof payload.iat !== 'number' || !Number.isFinite(payload.iat) ||
+      typeof payload.auth_time !== 'number' || !Number.isFinite(payload.auth_time) ||
+      payload.exp * 1000 <= now || payload.iat * 1000 > now + skew || payload.auth_time * 1000 > now + skew ||
+      payload.auth_time > payload.iat || payload.iat >= payload.exp) authErr();
+  if (!firebaseKeys[header.kid]) await refreshFirebaseKeys();
+  let firebaseKey = firebaseKeys[header.kid];
+  if (!firebaseKey) { await refreshFirebaseKeys(); firebaseKey = firebaseKeys[header.kid]; }
+  if (!firebaseKey) authErr();
+  let key: CryptoKey;
+  try { key = await crypto.subtle.importKey('jwk', firebaseKey, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']); } catch { authErr(); }
+  if (!await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key!, b64(s), enc.encode(`${h}.${p}`))) authErr();
+  const role = payload.heavyarRole === 'super_admin' || payload.role === 'super_admin'
+    ? 'super_admin'
+    : payload.heavyarRole === 'admin' || payload.role === 'admin' || payload.admin === true
+      ? 'admin'
+      : undefined;
+  return { uid: payload.sub, admin: role === 'admin' || role === 'super_admin', role, email: payload.email };
 }
 async function googleToken(env: Env): Promise<string> {
   if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) err('Firestore unavailable');
@@ -101,12 +124,21 @@ function paymentQuote(env: Env, r: any, e: any, requestId: string) {
   return quoteForRequest(r, e, requestId, Date.now(), paymentPricing(env));
 }
 function owned(u: User, r: any) { return !!r && (u.admin || r.customerUid === u.uid || r.renterUid === u.uid); }
+async function enforceOperationalAccess(env: Env, u: User, equipment?: any) {
+  if (!u.admin) {
+    const profile = await getDoc(env, 'users', u.uid);
+    if (profile?.suspensionStatus === 'temporarily_suspended' || profile?.suspensionStatus === 'permanently_suspended') err('ACCOUNT_SUSPENDED');
+  }
+  if (equipment?.isActive === false || equipment?.moderationStatus === 'suspended' || equipment?.moderationStatus === 'hidden' || equipment?.adminHidden === true) err('LISTING_UNAVAILABLE');
+}
 async function startRequest(req: Request, env: Env, u: User) {
+  await enforceOperationalAccess(env, u);
   const { requestId } = await req.json() as { requestId?: string }; const raw = requestId ? await getRawDoc(env, 'equipmentRequests', requestId) : null;
   if (!raw?.data || (raw.data.providerUid !== u.uid && !u.admin) || raw.data.status !== 'accepted' || !raw.updateTime) return out(env, req, { success: false, error: 'Invalid request state' }, 409);
   try { await compareAndSwap(env, `equipmentRequests/${encodeURIComponent(requestId!)}`, raw.updateTime, { status: { stringValue: 'in_progress' }, startedAt: { timestampValue: new Date().toISOString() } }); return out(env, req, { success: true, status: 'in_progress' }); } catch { return out(env, req, { success: false, error: 'Request changed' }, 409); }
 }
 async function confirmCompletion(req: Request, env: Env, u: User) {
+  await enforceOperationalAccess(env, u);
   const { requestId } = await req.json() as { requestId?: string }; const raw = requestId ? await getRawDoc(env, 'equipmentRequests', requestId) : null, r = raw?.data;
   if (!r || r.customerUid !== u.uid || r.status !== 'completion_requested' || !raw?.updateTime) return out(env, req, { success: false, error: 'Invalid request state' }, 409);
   const now = Date.now(), started = Date.parse(r.startedAt || ''), lockedRate = Number(r.amount);
@@ -243,6 +275,10 @@ async function create(req: Request, env: Env, u: User) {
   const body = await req.json() as { requestId?: string; amount?: number; purpose?: string };
   if (!body.requestId || body.amount !== undefined || (body.purpose && body.purpose !== 'equipment_request')) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', body.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
+  try { await enforceOperationalAccess(env, u, e); } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    return out(env, req, { success: false, error: message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : 'Listing unavailable' }, 403);
+  }
   if (!owned(u, r) || !r?.customerUid || r.customerUid !== u.uid) return out(env, req, { success: false, error: 'Forbidden' }, 403);
   if (String(r.requestMode || '').toLowerCase() === 'open_ended' && !(Number.isFinite(Number(r.finalAmount)) && Number(r.finalAmount) > 0)) return out(env, req, { success: false, error: 'Final amount required' }, 409);
   let quote: PaymentQuote;
@@ -471,18 +507,25 @@ export default { async fetch(req: Request, env: Env): Promise<Response> {
   const path = new URL(req.url).pathname;
   try {
     if (path === '/health') return out(env, req, { success: true, service: 'heavyar-api' });
-    if (path === '/api/send-email-otp' && req.method === 'POST') return otpSend(req, env);
-    if (path === '/api/verify-email-otp' && req.method === 'POST') return otpVerify(req, env);
-    if (path === '/api/register-profile' && req.method === 'POST') return registerProfile(req, env, await auth(req, env));
-    if (path === '/api/start-request' && req.method === 'POST') return startRequest(req, env, await auth(req, env));
-    if (path === '/api/confirm-completion' && req.method === 'POST') return confirmCompletion(req, env, await auth(req, env));
-    if (path === '/api/create-payment' && req.method === 'POST') return create(req, env, await auth(req, env));
-    if (path === '/api/verify-payment' && req.method === 'POST') return verify(req, env, await auth(req, env));
-     if (path === '/api/webhooks/tap' && req.method === 'POST') return tapWebhook(req, env);
-    if (path === '/cloudinary/delete' && req.method === 'POST') return removeAsset(req, env, await auth(req, env));
+    if (path === '/api/send-email-otp' && req.method === 'POST') return await otpSend(req, env);
+    if (path === '/api/verify-email-otp' && req.method === 'POST') return await otpVerify(req, env);
+    if (path === '/api/register-profile' && req.method === 'POST') return await registerProfile(req, env, await auth(req, env));
+    if (path === '/api/start-request' && req.method === 'POST') return await startRequest(req, env, await auth(req, env));
+    if (path === '/api/confirm-completion' && req.method === 'POST') return await confirmCompletion(req, env, await auth(req, env));
+    if (path === '/api/create-payment' && req.method === 'POST') return await create(req, env, await auth(req, env));
+    if (path === '/api/verify-payment' && req.method === 'POST') return await verify(req, env, await auth(req, env));
+    if (path.startsWith('/api/admin/')) {
+      const result = await handleAdmin(req, env, await auth(req, env));
+      const status = typeof result === 'object' && result && 'status' in result && typeof (result as any).status === 'number' ? Number((result as any).status) : 200;
+      if (status !== 200) { const { status: _status, ...body } = result as any; return out(env, req, body, status); }
+      return out(env, req, result);
+    }
+     if (path === '/api/webhooks/tap' && req.method === 'POST') return await tapWebhook(req, env);
+    if (path === '/cloudinary/delete' && req.method === 'POST') return await removeAsset(req, env, await auth(req, env));
     return out(env, req, { success: false, error: 'Not found' }, 404);
   } catch (e) {
     const message = e instanceof Error ? e.message : '';
-    return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : 'Internal service error' }, message === 'AUTH_REQUIRED' ? 401 : 500);
+    const forbidden = message === 'ADMIN_REQUIRED' || message === 'ACCOUNT_SUSPENDED' || message === 'LISTING_UNAVAILABLE';
+    return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : message === 'ADMIN_REQUIRED' ? 'Admin authorization required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : message === 'LISTING_UNAVAILABLE' ? 'Listing unavailable' : 'Internal service error' }, message === 'AUTH_REQUIRED' ? 401 : forbidden ? 403 : 500);
   }
 } };
