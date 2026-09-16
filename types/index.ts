@@ -3,6 +3,7 @@ export type Language = 'ar' | 'en';
 export type RequestStatus = 'pending' | 'accepted' | 'in_progress' | 'completion_requested' | 'completed' | 'rejected' | 'cancelled';
 
 export type PaymentStatus = 'unpaid' | 'pending_payment' | 'paid' | 'failed' | 'refunded';
+export type PaymentLifecycleStatus = 'pending' | 'requires_action' | 'processing' | 'paid' | 'failed' | 'cancelled' | 'expired';
 
 export type InvoiceStatus = 'paid' | 'pending' | 'refunded';
 

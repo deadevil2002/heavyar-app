@@ -12,6 +12,7 @@ import {
   tryBackfillRequestPublicSnapshots,
 } from '@/services/firestoreService';
 import { createPayment, verifyPayment } from '@/services/paymentService';
+import type { PaymentLifecycleStatus, PaymentQuote } from '@/services/paymentService';
 import { EquipmentRequest, PublicUserSnapshot } from '@/types';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
@@ -23,12 +24,13 @@ export default function PaymentScreen() {
   const { isRTL, t } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
-  const { dialog, showDialog, hideDialog } = useAppDialog();
+  const { dialog, hideDialog } = useAppDialog();
 
   const [request, setRequest] = useState<EquipmentRequest | null>(null);
   const [step, setStep] = useState<PaymentStep>('summary');
-  const [chargeId, setChargeId] = useState<string>('');
+  const [paymentId, setPaymentId] = useState<string>('');
   const [paymentUrl, setPaymentUrl] = useState<string>('');
+  const [quote, setQuote] = useState<PaymentQuote | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
@@ -91,41 +93,27 @@ export default function PaymentScreen() {
     try {
 
       const result = await createPayment({
-        amount: request.finalAmount ?? request.amount,
-        currency: request.currency || 'SAR',
         requestId,
-        customerName: user.nameEn || user.nameAr,
-        customerEmail: user.email,
-        customerPhone: user.phone,
+        purpose: 'equipment_request',
       });
 
-      if (!result.success || !result.chargeId) {
+      if (!result.success || !result.paymentId) {
         console.log('[Payment] Create payment failed:', result.error);
         setStep('failed');
         return;
       }
 
-      setChargeId(result.chargeId);
+      // The backend quote is authoritative; do not display the request estimate
+      // once a payment has been created.
+      if (result.quote) setQuote(result.quote);
+      setPaymentId(result.paymentId);
 
-      if (result.paymentUrl) {
-        setPaymentUrl(result.paymentUrl);
+      const status = String(result.status || 'pending').toLowerCase() as PaymentLifecycleStatus;
+      if (result.checkoutUrl && (status === 'pending' || status === 'requires_action')) {
+        setPaymentUrl(result.checkoutUrl);
         setStep('redirecting');
-
-        if (Platform.OS !== 'web') {
-          try {
-            await Linking.openURL(result.paymentUrl);
-          } catch (linkErr) {
-            console.log('[Payment] Could not open URL:', linkErr);
-          }
-        } else {
-          try {
-            window.open(result.paymentUrl, '_blank');
-          } catch (webErr) {
-            console.log('[Payment] Could not open web URL:', webErr);
-          }
-        }
       } else {
-        void handleVerifyRef.current?.(result.chargeId);
+        void handleVerifyRef.current?.(result.paymentId);
       }
     } catch (e) {
       console.error('[Payment] Error:', e);
@@ -136,37 +124,34 @@ export default function PaymentScreen() {
   }, [request, requestId, user]);
 
   const handleVerifyPayment = useCallback(async (cId?: string) => {
-    const id = cId || chargeId;
+    const id = cId || paymentId;
     if (!id || !requestId) return;
 
     setStep('verifying');
     try {
       const result = await verifyPayment(id);
 
-      if (result.success && result.isPaid) {
-
+      const status = String(result.status || (result.success ? 'paid' : 'failed')).toLowerCase();
+      if (result.quote) setQuote(result.quote);
+      if (!result.success) {
+        setStep('failed');
+      } else if (status === 'paid') {
         setStep('success');
+      } else if (status === 'pending' || status === 'requires_action') {
+        setStep('redirecting');
+      } else if (status === 'processing') {
+        setStep('redirecting');
+      } else if (status === 'cancelled' || status === 'expired' || status === 'failed') {
+        setStep('failed');
       } else {
-        console.log('[Payment] Payment not captured yet, status:', result.status);
-        if (result.status === 'INITIATED' || result.status === 'IN_PROGRESS') {
-          showDialog(
-            t('payment'),
-            t('payment_pending_message'),
-            [
-              { text: t('verify_again'), style: 'default', onPress: () => handleVerifyPayment(id) },
-              { text: t('cancel'), style: 'cancel' },
-            ]
-          );
-          setStep('redirecting');
-        } else {
-          setStep('failed');
-        }
+        console.log('[Payment] Unknown payment status:', result.status);
+        setStep('failed');
       }
     } catch (e) {
       console.error('[Payment] Verify error:', e);
       setStep('failed');
     }
-  }, [chargeId, requestId, t, showDialog]);
+  }, [paymentId, requestId]);
 
   handleVerifyRef.current = handleVerifyPayment;
 
@@ -203,10 +188,12 @@ export default function PaymentScreen() {
     );
   }
 
-  const subtotal = request.finalAmount ?? request.amount;
-  const platformFee = request.finalPlatformFee ?? request.platformFee;
-  const vatAmount = Math.round(subtotal * 0.15 * 100) / 100;
-  const totalWithVat = Math.round((subtotal + vatAmount) * 100) / 100;
+  const subtotal = quote?.subtotal ?? request.finalAmount ?? request.amount;
+  const platformFee = quote?.platformFee ?? request.finalPlatformFee ?? request.platformFee;
+  const vatAmount = quote?.tax ?? Math.round(subtotal * 0.15 * 100) / 100;
+  const vatRatePercent = Math.round((quote?.vatRate ?? 0.15) * 10000) / 100;
+  const totalWithVat = quote?.total ?? quote?.amount ?? Math.round((subtotal + vatAmount) * 100) / 100;
+  const quoteCurrency = quote?.currency ?? request.currency ?? 'SAR';
 
   return (
     <View style={styles.container}>
@@ -222,19 +209,19 @@ export default function PaymentScreen() {
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <View style={styles.amountCard}>
             <Text style={styles.amountLabel}>{t('total_amount')}</Text>
-            <Text style={styles.amountValue}>{totalWithVat.toLocaleString()} {t('sar')}</Text>
+            <Text style={styles.amountValue}>{totalWithVat.toLocaleString()} {quoteCurrency}</Text>
             <View style={styles.feeBreakdown}>
               <View style={[styles.feeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Text style={styles.feeText}>{t('subtotal')}</Text>
-                <Text style={styles.feeAmount}>{subtotal.toLocaleString()} {t('sar')}</Text>
+                <Text style={styles.feeAmount}>{subtotal.toLocaleString()} {quoteCurrency}</Text>
               </View>
               <View style={[styles.feeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                <Text style={styles.feeText}>{t('vat')} (15%)</Text>
-                <Text style={styles.feeAmount}>{vatAmount.toLocaleString()} {t('sar')}</Text>
+                <Text style={styles.feeText}>{t('vat')} ({vatRatePercent}%)</Text>
+                <Text style={styles.feeAmount}>{vatAmount.toLocaleString()} {quoteCurrency}</Text>
               </View>
               <View style={[styles.feeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Text style={styles.feeText}>{t('platform_fee')}</Text>
-                <Text style={styles.feeAmount}>{platformFee.toLocaleString()} {t('sar')}</Text>
+                <Text style={styles.feeAmount}>{platformFee.toLocaleString()} {quoteCurrency}</Text>
               </View>
             </View>
           </View>
@@ -257,7 +244,7 @@ export default function PaymentScreen() {
               <Pressable style={styles.payButton} onPress={handleCreatePayment}>
                 <CreditCard size={20} color={Colors.primary} />
                 <Text style={styles.payButtonText}>
-                  {t('pay_now')} - {totalWithVat.toLocaleString()} {t('sar')}
+                  {t('pay_now')} - {totalWithVat.toLocaleString()} {quoteCurrency}
                 </Text>
               </Pressable>
             </>

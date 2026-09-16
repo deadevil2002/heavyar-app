@@ -65,6 +65,16 @@ async function seed() {
     await setDoc(doc(db, 'invoices/invoice-1'), {
       requestId: 'request-1', customerId: 'customer-1', providerId: 'provider-1',
     });
+    await setDoc(doc(db, 'payments/payment-1'), {
+      requestId: 'request-1', customerUid: 'customer-1', providerUid: 'provider-1',
+      status: 'processing', amount: 220, currency: 'SAR',
+    });
+    await setDoc(doc(db, 'paymentQuotes/quote-1'), {
+      requestId: 'request-1', amount: 220, currency: 'SAR',
+    });
+    await setDoc(doc(db, 'paymentEvents/event-1'), {
+      requestId: 'request-1', type: 'processing', createdAt: new Date(),
+    });
   });
 }
 
@@ -130,6 +140,11 @@ describe('Firestore authorization baseline', () => {
     await assertFails(updateDoc(doc(db, 'equipmentRequests/request-1'), { paymentStatus: 'paid' }));
     await assertFails(updateDoc(doc(db, 'equipmentRequests/request-1'), { finalAmount: 1 }));
     await assertFails(setDoc(doc(db, 'invoices/new'), { requestId: 'request-1' }));
+    await assertFails(setDoc(doc(db, 'payments/new'), { requestId: 'request-1', amount: 1 }));
+    await assertFails(updateDoc(doc(db, 'paymentQuotes/quote-1'), { amount: 1 }));
+    await assertFails(setDoc(doc(db, 'providerConfigs/tap'), { publishableKey: 'not-a-secret' }));
+    await assertFails(setDoc(doc(db, 'paymentIdempotency/key'), { requestId: 'request-1' }));
+    await assertFails(setDoc(doc(db, 'invoiceCounters/2026'), { next: 1 }));
   });
 
   it('restricts request, chat, and invoice reads to authorized participants', async () => {
@@ -138,6 +153,13 @@ describe('Firestore authorization baseline', () => {
     await assertFails(getDoc(doc(authed('outsider'), 'invoices/invoice-1')));
     await assertSucceeds(getDoc(doc(authed('customer-1'), 'invoices/invoice-1')));
     await assertSucceeds(getDoc(doc(authed('provider-1'), 'invoices/invoice-1')));
+    await assertSucceeds(getDoc(doc(authed('customer-1'), 'payments/payment-1')));
+    await assertSucceeds(getDoc(doc(authed('provider-1'), 'paymentQuotes/quote-1')));
+    await assertSucceeds(getDoc(doc(authed('customer-1'), 'paymentEvents/event-1')));
+    await assertFails(getDoc(doc(authed('outsider'), 'payments/payment-1')));
+    await assertFails(getDoc(doc(authed('outsider'), 'paymentQuotes/quote-1')));
+    await assertFails(getDoc(doc(authed('outsider'), 'paymentEvents/event-1')));
+    await assertFails(getDoc(doc(authed('customer-1'), 'providerConfigs/tap')));
     await assertFails(getDoc(doc(authed('outsider'), 'equipmentRequests/request-1/messages/m')));
   });
 

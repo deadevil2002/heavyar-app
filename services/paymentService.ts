@@ -2,57 +2,69 @@ import { getFirebaseAuth } from './firebaseConfig';
 import { WORKER_BASE_URL } from '@/constants/worker';
 
 export interface CreatePaymentParams {
-  amount: number;
-  currency?: string;
   requestId: string;
-  customerName?: string;
-  customerEmail?: string;
-  customerPhone?: string;
-  description?: string;
+  purpose: 'equipment_request';
+}
+
+export type PaymentLifecycleStatus =
+  | 'pending'
+  | 'requires_action'
+  | 'processing'
+  | 'paid'
+  | 'failed'
+  | 'cancelled'
+  | 'expired';
+
+export interface PaymentQuote {
+  amount: number;
+  currency: string;
+  subtotal?: number;
+  platformFee?: number;
+  platformFeeRate?: number;
+  vatRate?: number;
+  policyVersion?: string;
+  tax?: number;
+  total?: number;
+  expiresAt?: string;
 }
 
 export interface CreatePaymentResponse {
   success: boolean;
-  chargeId?: string;
-  status?: string;
-  paymentUrl?: string;
-  transactionUrl?: string;
-  amount?: number;
-  currency?: string;
+  paymentId?: string;
+  status?: PaymentLifecycleStatus | string;
+  checkoutUrl?: string;
+  quote?: PaymentQuote;
+  canonicalStatus?: PaymentLifecycleStatus | string;
+  paymentState?: PaymentLifecycleStatus | string;
   error?: string;
 }
 
 export interface VerifyPaymentResponse {
   success: boolean;
-  chargeId?: string;
-  status?: string;
-  isPaid?: boolean;
-  amount?: number;
-  currency?: string;
+  paymentId?: string;
+  status?: PaymentLifecycleStatus | string;
+  quote?: PaymentQuote;
+  canonicalStatus?: PaymentLifecycleStatus | string;
+  paymentState?: PaymentLifecycleStatus | string;
   requestId?: string;
   receiptId?: string;
   error?: string;
 }
 
 export async function createPayment(params: CreatePaymentParams): Promise<CreatePaymentResponse> {
-  console.log('[PaymentService] Creating payment for request:', params.requestId, 'amount:', params.amount);
+  console.log('[PaymentService] Creating payment for request:', params.requestId);
   try {
     const token = await getFirebaseAuth().currentUser?.getIdToken();
     if (!token) return { success: false, error: 'Please sign in before paying' };
     const response = await fetch(`${WORKER_BASE_URL}/api/create-payment`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        requestId: params.requestId,
-        customerName: params.customerName,
-        customerEmail: params.customerEmail,
-        customerPhone: params.customerPhone,
-        description: params.description,
-      }),
+      body: JSON.stringify({ requestId: params.requestId, purpose: params.purpose }),
     });
 
     const result = await response.json() as CreatePaymentResponse;
-    console.log('[PaymentService] Create payment result:', result.success, result.chargeId);
+    result.status = result.canonicalStatus ?? result.paymentState ?? result.status;
+    console.log('[PaymentService] Create payment result:', result.success, result.status);
     return result;
   } catch (error) {
     console.error('[PaymentService] Create payment error:', error);
@@ -60,19 +72,20 @@ export async function createPayment(params: CreatePaymentParams): Promise<Create
   }
 }
 
-export async function verifyPayment(chargeId: string): Promise<VerifyPaymentResponse> {
-  console.log('[PaymentService] Verifying payment:', chargeId);
+export async function verifyPayment(paymentId: string): Promise<VerifyPaymentResponse> {
+  console.log('[PaymentService] Verifying payment:', paymentId);
   try {
     const token = await getFirebaseAuth().currentUser?.getIdToken();
     if (!token) return { success: false, error: 'Please sign in before verifying payment' };
     const response = await fetch(`${WORKER_BASE_URL}/api/verify-payment`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ chargeId }),
+      body: JSON.stringify({ paymentId }),
     });
 
     const result = await response.json() as VerifyPaymentResponse;
-    console.log('[PaymentService] Verify result:', result.success, result.isPaid);
+    result.status = result.canonicalStatus ?? result.paymentState ?? result.status;
+    console.log('[PaymentService] Verify result:', result.success, result.status);
     return result;
   } catch (error) {
     console.error('[PaymentService] Verify payment error:', error);

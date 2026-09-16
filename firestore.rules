@@ -201,14 +201,43 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Payments, invoices, aggregates, and moderation fields are backend-only.
+    // Financial records are written by the backend only. Participants may read
+    // only records attached to a request they participate in.
+    function requestParticipant(requestId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/equipmentRequests/$(requestId))
+        && participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data);
+    }
+
+    match /payments/{paymentId} {
+      allow read: if requestParticipant(resource.data.requestId);
+      allow write: if false;
+    }
+    match /paymentQuotes/{quoteId} {
+      allow read: if requestParticipant(resource.data.requestId);
+      allow write: if false;
+    }
+    match /paymentEvents/{eventId} {
+      allow read: if requestParticipant(resource.data.requestId);
+      allow write: if false;
+    }
+    // Provider credentials and configuration are never client-readable. If a
+    // future public configuration is needed, expose a separate safe document.
+    match /providerConfigs/{providerConfigId} {
+      allow read, write: if false;
+    }
+    match /paymentIdempotency/{idempotencyId} {
+      allow read, write: if false;
+    }
+    match /invoiceCounters/{counterId} {
+      allow read, write: if false;
+    }
     match /invoices/{invoiceId} {
       allow read: if signedIn()
         && exists(/databases/$(database)/documents/equipmentRequests/$(resource.data.requestId))
         && participant(get(/databases/$(database)/documents/equipmentRequests/$(resource.data.requestId)).data);
       allow write: if false;
     }
-    match /payments/{paymentId} { allow read, write: if false; }
     match /{document=**} { allow read, write: if false; }
   }
 }
