@@ -1,8 +1,9 @@
 {
-  "name": "expo-app",
+  "name": "@workspace/heavyar-mobile",
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
+    "dev": "CI=1 bunx rork start -p 8mcv0eg4e2l3to7ex9wvv --tunnel --port $PORT",
     "start": "bunx rork start -p 8mcv0eg4e2l3to7ex9wvv --tunnel",
     "start-web": "bunx rork start -p 8mcv0eg4e2l3to7ex9wvv --web --tunnel",
     "start-web-dev": "DEBUG=expo* bunx rork start -p 8mcv0eg4e2l3to7ex9wvv --web --tunnel",
