@@ -187,6 +187,32 @@ describe('Firestore authorization baseline', () => {
     }));
   });
 
+  it('blocks every direct mutation for deletion-requested users while preserving self reads', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await updateDoc(doc(db, 'users/customer-1'), { accountStatus: 'deletion_requested' });
+      await updateDoc(doc(db, 'users/provider-1'), { accountStatus: 'deletion_requested' });
+      await updateDoc(doc(db, 'equipmentRequests/request-1'), { allowChat: true });
+    });
+    const customer = authed('customer-1');
+    const provider = authed('provider-1');
+    await assertSucceeds(getDoc(doc(customer, 'users/customer-1')));
+    await assertFails(updateDoc(doc(customer, 'users/customer-1'), { nameEn: 'blocked' }));
+    await assertFails(setDoc(doc(provider, 'equipment/deletion-listing'), {
+      ownerUid: 'provider-1', pricePerDay: 100, isActive: true, createdAt: new Date(), updatedAt: new Date(),
+    }));
+    await assertFails(updateDoc(doc(provider, 'equipment/equipment-1'), { titleEn: 'blocked', updatedAt: serverTimestamp() }));
+    await assertFails(deleteDoc(doc(provider, 'equipment/equipment-1')));
+    await assertFails(setDoc(doc(customer, 'equipmentRequests/direct-write'), { ...request }));
+    await assertFails(setDoc(doc(customer, 'equipmentRequests/request-1/messages/deletion'), {
+      requestId: 'request-1', senderUid: 'customer-1', text: 'blocked', createdAt: new Date(), read: false,
+    }));
+    await assertFails(setDoc(doc(customer, 'ratings/deletion-rating'), {
+      requestId: 'closed', fromUid: 'customer-1', toUid: 'provider-1', equipmentId: 'equipment-1',
+      stars: 5, comment: 'blocked', createdAt: new Date(),
+    }));
+  });
+
   it('denies arbitrary payment, invoice, and final amount writes', async () => {
     const db = authed('provider-1');
     await assertFails(updateDoc(doc(db, 'equipmentRequests/request-1'), { paymentStatus: 'paid' }));

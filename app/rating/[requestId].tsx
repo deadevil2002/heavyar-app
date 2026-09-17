@@ -37,7 +37,6 @@ export default function RatingScreen() {
           if (mounted) setProvider(prov);
         }
       } catch (e) {
-        console.log('[Rating] Error loading:', e);
       }
     };
     void load();
@@ -64,7 +63,6 @@ export default function RatingScreen() {
         { text: t('confirm'), style: 'default', onPress: () => router.back() },
       ]);
     } catch (e) {
-      console.error('[Rating] Submit error:', e);
       showDialog(t('error_title'), t('error_generic_message'), [{ text: t('ok'), style: 'default' }]);
     } finally {
       setSubmitting(false);

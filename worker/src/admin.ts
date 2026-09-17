@@ -103,6 +103,7 @@ const FILTERS: Record<string, string[]> = {
   notificationDeliveries: ['status', 'uid'],
   notifications: ['uid', 'category', 'read'],
   deviceTokens: ['uid', 'active', 'platform'],
+  deletionRequests: ['uid', 'status', 'refreshTokenRevocationStatus'],
 };
 
 async function listCollection(env: Env, collection: string, query: Record<string, string>, limit = 30, cursor: string | null = null) {
@@ -507,7 +508,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const pathMap: Record<string, string> = {
     '/api/admin/users': 'users', '/api/admin/providers': 'users', '/api/admin/equipment': 'equipment', '/api/admin/requests': 'equipmentRequests',
     '/api/admin/payments': 'payments', '/api/admin/invoices': 'invoices', '/api/admin/refunds': 'refunds', '/api/admin/complaints': 'complaints',
-    '/api/admin/verification': 'verificationCases', '/api/admin/verification-profiles': 'verificationProfiles', '/api/admin/verification-attempts': 'verificationAttempts', '/api/admin/verification-events': 'verificationEvents', '/api/admin/provider-configs': 'providerConfigs', '/api/admin/config': 'heavyarConfig', '/api/admin/audit': 'adminAudit',
+    '/api/admin/verification': 'verificationCases', '/api/admin/verification-profiles': 'verificationProfiles', '/api/admin/verification-attempts': 'verificationAttempts', '/api/admin/verification-events': 'verificationEvents', '/api/admin/provider-configs': 'providerConfigs', '/api/admin/config': 'heavyarConfig', '/api/admin/audit': 'adminAudit', '/api/admin/deletion-requests': 'deletionRequests',
   };
   if (url.pathname === '/api/admin/overview') {
     const requestStatuses = ['pending', 'requested', 'accepted', 'in_progress', 'completion_requested', 'under_investigation', 'escalated'];

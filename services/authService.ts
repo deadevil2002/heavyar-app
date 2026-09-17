@@ -18,9 +18,7 @@ export function subscribeToAuthState(callback: (user: FirebaseUser | null) => vo
 
 export async function loginWithEmail(email: string, password: string): Promise<FirebaseUser> {
   const auth = getFirebaseAuth();
-  console.log('[Auth] Attempting login for:', email);
   const credential = await signInWithEmailAndPassword(auth, email, password);
-  console.log('[Auth] Login successful for uid:', credential.user.uid);
   return credential.user;
 }
 
@@ -39,8 +37,6 @@ export async function registerWithEmail(
   }
 ): Promise<FirebaseUser> {
   const auth = getFirebaseAuth();
-  console.log('[Auth] Attempting registration for:', email, 'role:', profileData.role);
-
   const credential = await createUserWithEmailAndPassword(auth, email, password);
   const uid = credential.user.uid;
 
@@ -53,21 +49,17 @@ export async function registerWithEmail(
     body: JSON.stringify({ registrationGrant: grant, ...profileData, nameAr: profileData.nameAr, nameEn: profileData.nameEn, requestedRole: profileData.role }),
   });
   if (!response.ok) throw new Error('Unable to create profile');
-  console.log('[Auth] User document created for uid:', uid);
 
   return credential.user;
 }
 
 export async function logoutUser(): Promise<void> {
   const auth = getFirebaseAuth();
-  console.log('[Auth] Logging out');
   await signOut(auth);
-  console.log('[Auth] Logout successful');
 }
 
 export async function fetchUserProfile(uid: string): Promise<User | null> {
   const db = getFirebaseDb();
-  console.log('[Auth] Fetching user profile for uid:', uid);
   const snap = await getDoc(doc(db, 'users', uid));
   if (snap.exists()) {
     const data = snap.data();
@@ -92,13 +84,11 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
       isVerified: data.isVerified || false,
     } as User;
   }
-  console.log('[Auth] No user profile found for uid:', uid);
   return null;
 }
 
 export async function updateUserProfile(uid: string, updates: Partial<User>): Promise<void> {
   const db = getFirebaseDb();
-  console.log('[Auth] Updating user profile for uid:', uid);
   const preparedUpdates: Record<string, unknown> = { ...updates };
   delete preparedUpdates.role;
   delete preparedUpdates.createdAt;
@@ -114,7 +104,6 @@ export async function updateUserProfile(uid: string, updates: Partial<User>): Pr
     docExists = snap.exists();
     existingData = docExists ? snap.data() as Record<string, unknown> : {};
   } catch (e) {
-    console.log('[ProfileWrite] getDoc blocked', { code: (e as { code?: unknown } | undefined)?.code });
   }
 
   const normalizeCrNumber = (value: unknown): string | null | undefined => {
@@ -148,24 +137,6 @@ export async function updateUserProfile(uid: string, updates: Partial<User>): Pr
     return /^\d{10}$/.test(trimmed) ? 'valid' : 'invalid';
   };
 
-  console.log('[ProfileWrite] updateUserProfile', {
-    write: 'setDoc(merge:true)',
-    uidPresent: Boolean(uid),
-    docReadSucceeded: readSucceeded,
-    docExists,
-    incomingKeys: Object.keys(updates),
-    outgoingKeys: Object.keys(preparedUpdates),
-    outgoingHasRole: Object.prototype.hasOwnProperty.call(preparedUpdates, 'role'),
-    outgoingHasCreatedAt: Object.prototype.hasOwnProperty.call(preparedUpdates, 'createdAt'),
-    outgoingHasCrVerified: Object.prototype.hasOwnProperty.call(preparedUpdates, 'crVerified'),
-    outgoingCrNumber: classifyCrNumber(preparedUpdates.crNumber),
-    outgoingHasAvatar: Object.prototype.hasOwnProperty.call(preparedUpdates, 'avatar'),
-    outgoingHasAvatarPublicId: Object.prototype.hasOwnProperty.call(preparedUpdates, 'avatarPublicId'),
-    existingRoleType: readSucceeded ? typeof existingData.role : 'unknown',
-    existingCreatedAtType: readSucceeded ? (existingData.createdAt && typeof existingData.createdAt === 'object' ? (existingData.createdAt as { constructor?: { name?: string } })?.constructor?.name : typeof existingData.createdAt) : 'unknown',
-    existingCrVerifiedType: readSucceeded ? typeof existingData.crVerified : 'unknown',
-    existingCrNumber: readSucceeded ? classifyCrNumber(existingData.crNumber) : 'missing',
-  });
 
    if (preparedUpdates.avatar === '') preparedUpdates.avatar = deleteField();
    if (preparedUpdates.avatarPublicId === '') preparedUpdates.avatarPublicId = deleteField();
@@ -177,5 +148,4 @@ export async function updateUserProfile(uid: string, updates: Partial<User>): Pr
      if (!allowedProfileFields.has(key)) delete preparedUpdates[key];
    }
   await setDoc(userRef, preparedUpdates, { merge: true });
-  console.log('[Auth] User profile updated');
 }

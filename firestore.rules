@@ -30,12 +30,19 @@ service cloud.firestore {
         && snapshot.nameEn == get(/databases/$(database)/documents/users/$(uid)).data.nameEn
         && snapshot.avatar == get(/databases/$(database)/documents/users/$(uid)).data.avatar;
     }
-    function notSuspended(uid) {
+    // Shared mutation gate: deletion-requested accounts are inactive even
+    // when their suspension fields are clear. Reads remain governed by the
+    // individual collection rules so clients can display deletion status.
+    function activeAccount(uid) {
       return !exists(/databases/$(database)/documents/users/$(uid))
         || (!get(/databases/$(database)/documents/users/$(uid)).data.keys().hasAny(['suspensionStatus'])
           || (get(/databases/$(database)/documents/users/$(uid)).data.suspensionStatus != 'temporarily_suspended'
-            && get(/databases/$(database)/documents/users/$(uid)).data.suspensionStatus != 'permanently_suspended'));
+            && get(/databases/$(database)/documents/users/$(uid)).data.suspensionStatus != 'permanently_suspended'))
+        && (!get(/databases/$(database)/documents/users/$(uid)).data.keys().hasAny(['accountStatus'])
+          || (get(/databases/$(database)/documents/users/$(uid)).data.accountStatus != 'deletion_requested'
+            && get(/databases/$(database)/documents/users/$(uid)).data.accountStatus != 'restricted'));
     }
+    function notSuspended(uid) { return activeAccount(uid); }
     function publicListing(data) {
       return data.isActive == true
         && (!data.keys().hasAny(['moderationStatus']) || data.moderationStatus == 'active');
@@ -84,6 +91,7 @@ service cloud.firestore {
       // User provisioning (including roles and verification) is backend-only.
       allow create: if false;
       allow update: if self(uid)
+        && notSuspended(uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'nameAr', 'nameEn', 'phone', 'avatar', 'avatarPublicId',
           'region', 'city', 'customCity', 'crNumber'

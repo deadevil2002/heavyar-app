@@ -28,9 +28,7 @@ export default function InvoicesScreen() {
     try {
       const items = await fetchUserInvoices(user.uid, tab);
       setInvoices(items);
-      console.log('[Invoices] Loaded', items.length, 'invoices for', tab);
     } catch (e) {
-      console.error('[Invoices] Error loading invoices:', e);
       setInvoices([]);
     } finally {
       setLoading(false);

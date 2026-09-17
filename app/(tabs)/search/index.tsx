@@ -26,7 +26,6 @@ export default function SearchScreen() {
         const items = await fetchEquipmentList();
         if (mounted) setAllEquipment(items);
       } catch (e) {
-        console.log('[Search] Error fetching equipment:', e);
       }
     };
     void load();

@@ -142,16 +142,18 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     }
   }, []);
 
-  const logout = useCallback(async () => {
+  const logout = useCallback(async (options?: { clearLocalStorage?: boolean }) => {
     setAuthError(null);
     try {
       await revokeCurrentDevice().catch(() => undefined);
       await logoutUser();
       await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+      if (options?.clearLocalStorage) await AsyncStorage.clear();
       setUser(null);
       setIsAuthenticated(false);
     } catch {
       await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+      if (options?.clearLocalStorage) await AsyncStorage.clear();
       setUser(null);
       setIsAuthenticated(false);
     }

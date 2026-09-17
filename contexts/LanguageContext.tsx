@@ -22,7 +22,6 @@ export const [LanguageProvider, useLanguage] = createContextHook(() => {
           await AsyncStorage.setItem(LANGUAGE_KEY, 'ar');
         }
       } catch (e) {
-        console.log('Error loading language:', e);
       } finally {
         setIsReady(true);
       }
@@ -43,7 +42,6 @@ export const [LanguageProvider, useLanguage] = createContextHook(() => {
         document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
         document.documentElement.lang = language;
       } catch (e) {
-        console.log('Web RTL setup:', e);
       }
     }
   }, [language, isReady]);

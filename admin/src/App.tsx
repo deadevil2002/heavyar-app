@@ -33,9 +33,18 @@ import Configuration from '@/pages/configuration';
 import Audit from '@/pages/audit';
 import Notifications from '@/pages/notifications';
 import Login from '@/pages/login';
+import PublicPage, { type PublicPageKind } from '@/pages/public';
 
 function Router() {
+  const [location] = useLocation();
   const { user, loading, logout } = useAuth();
+  const publicPages: Record<string, PublicPageKind> = {
+    '/privacy': 'privacy',
+    '/terms': 'terms',
+    '/support': 'support',
+    '/account-deletion': 'account-deletion',
+  };
+  if (publicPages[location]) return <PublicPage kind={publicPages[location]} />;
   const { data: session, isLoading: isSessionLoading, error } = useAdminSession();
 
   if (loading || (user && isSessionLoading)) {

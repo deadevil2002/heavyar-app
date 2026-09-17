@@ -1,7 +1,8 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Linking, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
+import { PUBLIC_LINKS } from '@/constants/publicLinks';
 
 export default function PrivacyScreen() {
   return (
@@ -42,6 +43,9 @@ export default function PrivacyScreen() {
 
         <Text style={[styles.sectionTitle, styles.rtlText]}>8) التواصل</Text>
         <Text style={[styles.paragraph, styles.rtlText]}>لأي استفسار: heavyar.official@gmail.com</Text>
+        <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(PUBLIC_LINKS.privacy)}>
+          <Text style={[styles.link, styles.rtlText]}>{PUBLIC_LINKS.privacy}</Text>
+        </Pressable>
       </ScrollView>
     </View>
   );
@@ -55,4 +59,5 @@ const styles = StyleSheet.create({
   sectionTitle: { color: Colors.textPrimary, fontSize: 16, fontWeight: '700' as const, marginTop: 6 },
   paragraph: { color: Colors.textSecondary, fontSize: 14, lineHeight: 22 },
   listItem: { color: Colors.textSecondary, fontSize: 14, lineHeight: 22 },
+  link: { color: Colors.gold, fontSize: 13, lineHeight: 20, textDecorationLine: 'underline' as const },
 });

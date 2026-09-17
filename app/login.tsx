@@ -27,7 +27,6 @@ export default function LoginScreen() {
       await login(email, password);
       router.back();
     } catch (e) {
-      console.log('Login error:', e);
       const errorMsg = e instanceof Error ? e.message : t('unexpected_error');
       showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
     } finally {
@@ -36,7 +35,6 @@ export default function LoginScreen() {
   }, [email, password, login, router, t, showDialog]);
 
   const handleSocialLogin = useCallback((provider: string) => {
-    console.log('[Login] Social login tapped:', provider);
     showDialog(t('coming_soon'), t('social_login_coming_soon'), [{ text: t('ok'), style: 'default' }]);
   }, [t, showDialog]);
 

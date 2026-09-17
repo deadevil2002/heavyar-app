@@ -1,5 +1,8 @@
 import { getFirebaseAuth } from './firebaseConfig';
 import { WORKER_BASE_URL } from '@/constants/worker';
+import { createAccountDeletionRequest } from './accountDeletionContract';
+
+export { createAccountDeletionRequest } from './accountDeletionContract';
 
 export interface CreatePaymentParams {
   requestId: string;
@@ -85,4 +88,13 @@ export async function verifyPayment(paymentId: string): Promise<VerifyPaymentRes
   } catch {
     return { success: false, error: 'Network error verifying payment' };
   }
+}
+
+export async function requestAccountDeletion(): Promise<void> {
+  const token = await getFirebaseAuth().currentUser?.getIdToken();
+  if (!token) throw new Error('AUTH_REQUIRED');
+  const response = await fetch(`${WORKER_BASE_URL}/api/account/deletion-request`, {
+    ...createAccountDeletionRequest(token),
+  });
+  if (!response.ok) throw new Error('DELETION_REQUEST_FAILED');
 }

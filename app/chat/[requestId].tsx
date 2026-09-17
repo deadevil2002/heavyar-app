@@ -87,7 +87,6 @@ export default function ChatScreen() {
     try {
       await sendMessage(requestId, currentUid, text);
     } catch (e) {
-      console.log('[Chat] Send error:', e);
       setMessage(text);
     }
   }, [message, requestId, currentUid]);

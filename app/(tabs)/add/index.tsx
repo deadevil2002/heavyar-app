@@ -103,17 +103,14 @@ export default function AddEquipmentScreen() {
     setUploading(true);
     setUploadProgress(`${t('uploading_images')} 0/${images.length}`);
     try {
-      console.log('[CreateListing] Uploading', images.length, 'images to Cloudinary');
       const cloudinaryImages: CloudinaryImage[] = await uploadMultipleImages(
         images,
         (completed, total) => {
           setUploadProgress(`${t('uploading_images')} ${completed}/${total}`);
-          console.log('[CreateListing] Upload progress:', completed, '/', total);
         }
       );
       setUploading(false);
       setUploadProgress(t('saving'));
-      console.log('[CreateListing] All images uploaded, saving to Firestore');
 
       await createEquipment({
         ownerUid: user.uid,
@@ -153,7 +150,6 @@ export default function AddEquipmentScreen() {
       setPrice('');
       setImages([]);
     } catch (e) {
-      console.error('[CreateListing] Error:', e);
       const message = e instanceof Error ? e.message : t('unexpected_error');
       showDialog(t('error_title'), message, [{ text: t('ok'), style: 'default' }]);
     } finally {

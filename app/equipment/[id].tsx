@@ -40,7 +40,6 @@ export default function EquipmentDetailScreen() {
           setEquipment(eq);
         }
       } catch (e) {
-        console.log('[EquipmentDetail] Error:', e);
       } finally {
         if (mounted) setLoading(false);
       }
@@ -193,7 +192,6 @@ export default function EquipmentDetailScreen() {
         [{ text: t('ok'), style: 'default', onPress: () => router.back() }]
       );
     } catch (e) {
-      console.error('[EquipmentDetail] Request error:', e);
       showDialog(
         t('error_title'),
         t('error_generic_message'),

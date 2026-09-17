@@ -30,20 +30,16 @@ export default function MyEquipmentScreen() {
     let mounted = true;
     const load = async () => {
       if (!currentUid) {
-        console.log('[MyEquipment] No currentUid, skipping fetch');
         if (mounted) setLoading(false);
         return;
       }
-      console.log('[MyEquipment] Fetching equipment for uid:', currentUid);
       try {
         const items = await fetchEquipmentByOwner(currentUid);
-        console.log('[MyEquipment] Fetched', items.length, 'items');
         if (mounted) {
           setMyEquipment(items);
           setLoadError(null);
         }
       } catch (e) {
-        console.error('[MyEquipment] Fetch error:', e);
         if (mounted) setLoadError(String(e));
       } finally {
         if (mounted) setLoading(false);
@@ -69,7 +65,6 @@ export default function MyEquipmentScreen() {
           onPress: async () => {
             setDeletingId(item.id);
             try {
-              console.log('[MyEquipment] Deleting equipment:', item.id);
               await deleteEquipmentWithCleanup(item.id);
               setMyEquipment(prev => prev.filter(e => e.id !== item.id));
               showDialog(
@@ -78,7 +73,6 @@ export default function MyEquipmentScreen() {
                 [{ text: t('ok'), style: 'default' }]
               );
             } catch (e) {
-              console.error('[MyEquipment] Delete error:', e);
               showDialog(
                 t('error_title'),
                 t('delete_failed'),

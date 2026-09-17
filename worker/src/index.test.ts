@@ -31,8 +31,8 @@ const tapTransaction = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('worker security boundary', () => {
-  beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); });
-  afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setReservationConflict(false); });
+  beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); });
+  afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setReservationConflict(false); });
 
   test('Firestore RPC URLs use the documents colon endpoint form', () => {
     const firestoreEnv = { ...env, FIREBASE_PROJECT_ID: 'project-id' } as Env;
@@ -44,6 +44,83 @@ describe('worker security boundary', () => {
     expect((await worker.fetch(request('/api/create-payment', { requestId: 'r', amount: 1 }), env)).status).toBe(401);
     expect((await worker.fetch(request('/api/verify-payment', { chargeId: 'c' }), env)).status).toBe(401);
     expect((await worker.fetch(request('/cloudinary/delete', { publicId: 'heavyar/x/a' }), env)).status).toBe(401);
+    expect((await worker.fetch(request('/api/account/deletion-request', { confirmation: 'DELETE_MY_ACCOUNT' }), env)).status).toBe(401);
+  });
+
+  test('account deletion requires explicit confirmation and does not reveal account data', async () => {
+    __test.setAuth({ uid: 'delete-user', admin: false });
+    __test.setDeletionDevices([]);
+    __test.captureCommits([]);
+    __test.setRefreshTokenRevoke(async () => {});
+    __test.setFirestore((collection) => collection === 'users' ? { uid: 'delete-user', email: 'private@example.com', accountStatus: 'active' } : null);
+    expect((await worker.fetch(request('/api/account/deletion-request', { confirmation: 'delete' }, { Authorization: 'Bearer test' }), env)).status).toBe(400);
+    const response = await worker.fetch(request('/api/account/deletion-request', { confirmation: 'DELETE_MY_ACCOUNT' }, { Authorization: 'Bearer test' }), env);
+    expect(response.status).toBe(202);
+    expect(JSON.stringify(await response.json()).includes('private@example.com')).toBe(false);
+  });
+
+  test('account deletion is idempotent, restricts operations, revokes canonical devices, and preserves financial records', async () => {
+    __test.setAuth({ uid: 'delete-user', admin: false });
+    const token = 'ExpoPushToken[delete-device]';
+    const tokenHash = await __test.hashId(token);
+    const installationHash = await __test.hashId('delete-install');
+    __test.setFirestore((collection, id) => {
+      if (collection === 'users') return { uid: 'delete-user', accountStatus: 'active' };
+      if (collection === 'notificationTokenOwners' && id === tokenHash) return { uid: 'delete-user', active: true };
+      if (collection === 'notificationInstallations' && id === installationHash) return { uid: 'delete-user', tokenId: tokenHash, active: true };
+      if (collection === 'deletionRequests') return null;
+      return null;
+    });
+    __test.setDeletionDevices([{ document: { name: `projects/p/databases/(default)/documents/deviceTokens/${tokenHash}`, updateTime: 'device-update', fields: {
+      token: { stringValue: token }, installationId: { stringValue: 'delete-install' }, uid: { stringValue: 'delete-user' }, active: { booleanValue: true },
+    } } }]);
+    const commits: unknown[] = []; __test.captureCommits(commits); __test.setRefreshTokenRevoke(async () => {});
+    const first = await worker.fetch(request('/api/account/deletion-request', { confirmation: 'DELETE_MY_ACCOUNT' }, { Authorization: 'Bearer test' }), env);
+    expect(first.status).toBe(202);
+    const writes = JSON.stringify(commits);
+    expect(writes.includes('deletionRequests/delete-user')).toBe(true);
+    expect(writes.includes('accountStatus')).toBe(true);
+    expect(writes.includes(`deviceTokens/${tokenHash}`)).toBe(true);
+    expect(writes.includes(`notificationTokenOwners/${tokenHash}`)).toBe(true);
+    expect(writes.includes(`notificationInstallations/${installationHash}`)).toBe(true);
+    expect(writes.includes('payments/')).toBe(false);
+    expect(writes.includes('invoices/')).toBe(false);
+    __test.setFirestore((collection) => collection === 'users' ? { uid: 'delete-user', accountStatus: 'deletion_requested' } : collection === 'deletionRequests' ? { uid: 'delete-user', status: 'pending', refreshTokenRevocationStatus: 'succeeded' } : null);
+    const second = await worker.fetch(request('/api/account/deletion-request', { confirmation: 'DELETE_MY_ACCOUNT' }, { Authorization: 'Bearer test' }), env);
+    expect(second.status).toBe(200);
+    expect((await second.json()).status).toBe('pending');
+  });
+
+  test('deletion-requested accounts are blocked from new business actions', async () => {
+    __test.setAuth({ uid: 'delete-user', admin: false });
+    __test.setFirestore((collection) => collection === 'users' ? { uid: 'delete-user', accountStatus: 'deletion_requested' } : collection === 'equipment' ? { ownerUid: 'provider', isActive: true, pricePerDay: 10 } : null);
+    const response = await worker.fetch(request('/api/requests', { equipmentId: 'eq' }, { Authorization: 'Bearer test' }), env);
+    expect(response.status).toBe(403);
+    const device = await worker.fetch(request('/api/notifications/devices', { token: 'ExpoPushToken[blocked]', platform: 'android', installationId: 'blocked-install' }, { Authorization: 'Bearer test' }), env);
+    expect(device.status).toBe(403);
+    const payment = await worker.fetch(request('/api/create-payment', { requestId: 'r', amount: 1 }, { Authorization: 'Bearer test' }), env);
+    expect(payment.status).toBe(403);
+  });
+
+  test('refresh-token revocation is requested after the durable lock, and auth failure leaves lock pending', async () => {
+    __test.setAuth({ uid: 'delete-user', admin: false });
+    __test.setDeletionDevices([]);
+    const commits: unknown[] = [];
+    __test.captureCommits(commits);
+    __test.setFirestore((collection) => collection === 'users' ? { uid: 'delete-user', accountStatus: 'active' } : null);
+    let revokedUid = '';
+    __test.setRefreshTokenRevoke(async (_env, uid) => { revokedUid = uid; });
+    const success = await worker.fetch(request('/api/account/deletion-request', { confirmation: 'DELETE_MY_ACCOUNT' }, { Authorization: 'Bearer test' }), env);
+    expect(success.status).toBe(202);
+    expect(revokedUid).toBe('delete-user');
+    expect(commits.length).toBe(2);
+    __test.setFirestore((collection) => collection === 'users' ? { uid: 'delete-user', accountStatus: 'active' } : null);
+    __test.setRefreshTokenRevoke(async () => { throw new Error('identity toolkit unavailable'); });
+    const failed = await worker.fetch(request('/api/account/deletion-request', { confirmation: 'DELETE_MY_ACCOUNT' }, { Authorization: 'Bearer test' }), env);
+    expect(failed.status).toBe(503);
+    expect((await failed.json()).status).toBe('pending');
+    expect(JSON.stringify(commits).includes('accountStatus')).toBe(true);
+    expect(JSON.stringify(commits).includes('refreshTokenRevocationStatus')).toBe(true);
   });
 
   test('legacy lifecycle endpoints are unavailable after migration', async () => {

@@ -23,7 +23,9 @@ let reservationConflict = false;
 let capturedCommits: unknown[] | undefined;
 let verificationProviderOverride: IdentityVerificationProvider | undefined;
 let notificationDeliveryQueryOverride: any[] | undefined;
-export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, runRetryDelivery: retryDueNotificationDeliveries };
+let deletionDeviceQueryOverride: any[] | undefined;
+let refreshTokenRevokeOverride: ((env: Env, uid: string) => Promise<void>) | undefined;
+export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, runRetryDelivery: retryDueNotificationDeliveries };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -75,11 +77,24 @@ async function auth(req: Request, env: Env): Promise<User> {
       : undefined;
   return { uid: payload.sub, admin: role === 'admin' || role === 'super_admin', role, email: payload.email };
 }
-async function googleToken(env: Env): Promise<string> {
+async function authenticatedUser(req: Request, env: Env, allowAccountManagement = false): Promise<User> {
+  const user = await auth(req, env);
+  if (user.admin || allowAccountManagement) return user;
+  // Test authentication is intentionally injectable; preserve unit tests that
+  // exercise downstream validation without a Firestore fixture.
+  if (authOverride && !firestoreOverride) return user;
+  const profile = await getDoc(env, 'users', user.uid);
+  if (profile?.accountStatus === 'deletion_requested' || profile?.accountStatus === 'restricted' ||
+      profile?.suspensionStatus === 'temporarily_suspended' || profile?.suspensionStatus === 'permanently_suspended') {
+    err(profile.accountStatus === 'deletion_requested' ? 'ACCOUNT_DELETION_REQUESTED' : 'ACCOUNT_SUSPENDED');
+  }
+  return user;
+}
+async function googleToken(env: Env, scope = 'https://www.googleapis.com/auth/datastore'): Promise<string> {
   if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) err('Firestore unavailable');
   const privateKey = env.FIREBASE_PRIVATE_KEY as string;
   const now = Math.floor(Date.now() / 1000), h = b64u(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
-  const p = b64u(enc.encode(JSON.stringify({ iss: env.FIREBASE_CLIENT_EMAIL, scope: 'https://www.googleapis.com/auth/datastore', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })));
+  const p = b64u(enc.encode(JSON.stringify({ iss: env.FIREBASE_CLIENT_EMAIL, scope, aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })));
   const key = await crypto.subtle.importKey('pkcs8', b64(privateKey.replace(/\\n/g, '\n').replace(/-----[^-]+-----/g, '').replace(/\s/g, '')), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
   const jwt = `${h}.${p}.${b64u(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(`${h}.${p}`)))}`;
   const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}` });
@@ -160,6 +175,85 @@ async function notificationDevices(env: Env, uid: string) {
     if (owner?.uid === uid && owner?.active === true && owner?.tokenHash === tokenHash && installation?.uid === uid && installation?.tokenId === tokenHash) devices.push({ ...value, tokenHash });
   }
   return devices;
+}
+async function deletionDeviceRows(env: Env, uid: string) {
+  if (deletionDeviceQueryOverride) return deletionDeviceQueryOverride;
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'deviceTokens' }],
+    where: { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: uid } } },
+  } }) });
+  return (result || []).filter((row: any) => decode(row.document || row).active === true);
+}
+async function revokeFirebaseRefreshTokens(env: Env, uid: string) {
+  if (refreshTokenRevokeOverride) return refreshTokenRevokeOverride(env, uid);
+  const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(String(env.FIREBASE_PROJECT_ID))}/accounts:update`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ localId: uid, validSince: String(Math.floor(Date.now() / 1000)) }),
+  });
+  if (!response.ok) err('AUTH_REVOCATION_UNAVAILABLE');
+}
+async function accountDeletionStatus(req: Request, env: Env, u: User) {
+  const request = await getDoc(env, 'deletionRequests', u.uid);
+  return out(env, req, { success: true, status: String(request?.status || 'none') });
+}
+async function accountDeletionRequest(req: Request, env: Env, u: User) {
+  let body: any;
+  try { body = await req.json(); } catch { return out(env, req, { success: false, error: 'Confirmation required' }, 400); }
+  if (!body || typeof body !== 'object' || Array.isArray(body) ||
+      Object.keys(body).length !== 1 || body.confirmation !== 'DELETE_MY_ACCOUNT') {
+    return out(env, req, { success: false, error: 'Confirmation required' }, 400);
+  }
+  const user = await getRawDoc(env, 'users', u.uid);
+  if (!user?.data) return out(env, req, { success: false, error: 'Account unavailable' }, 404);
+  const existing = await getRawDoc(env, 'deletionRequests', u.uid);
+  if (existing?.data?.status === 'completed' ||
+      (existing?.data?.status === 'pending' && user.data.accountStatus === 'deletion_requested' &&
+       existing.data.refreshTokenRevocationStatus === 'succeeded')) {
+    return out(env, req, { success: true, status: String(existing.data.status) });
+  }
+  const now = new Date().toISOString(), writes: any[] = [];
+  const requestFields = {
+    uid: { stringValue: u.uid }, status: { stringValue: 'pending' },
+    refreshTokenRevocationStatus: { stringValue: 'pending' },
+    requestedAt: { timestampValue: String(existing?.data?.requestedAt || now) }, updatedAt: { timestampValue: now },
+  };
+  writes.push({ update: { name: fullName(env, `deletionRequests/${encodeURIComponent(u.uid)}`), fields: requestFields }, currentDocument: existing?.updateTime ? { updateTime: existing.updateTime } : { exists: false } });
+  writes.push({ update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields: {
+    accountStatus: { stringValue: 'deletion_requested' }, deletionRequestedAt: { timestampValue: String(user.data.deletionRequestedAt || now) }, updatedAt: { timestampValue: now },
+  } }, updateMask: { fieldPaths: ['accountStatus', 'deletionRequestedAt', 'updatedAt'] }, currentDocument: { updateTime: user.updateTime } });
+  const rows = await deletionDeviceRows(env, u.uid), seen = new Set<string>();
+  for (const row of rows) {
+    const data = decode(row.document || row), tokenHash = await hashedId(String(data.token || ''));
+    if (!data.token || seen.has(tokenHash)) continue;
+    seen.add(tokenHash);
+    const deviceName = String(row.document?.name || '').split('/documents/')[1] || `deviceTokens/${tokenHash}`;
+    writes.push({ update: { name: fullName(env, deviceName), fields: { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['active', 'revokedAt', 'updatedAt'] }, currentDocument: row.document?.updateTime ? { updateTime: row.document.updateTime } : { exists: true } });
+    const owner = await getRawDoc(env, 'notificationTokenOwners', tokenHash);
+    if (owner?.data?.uid === u.uid && owner.data.active === true && owner.updateTime) writes.push({ update: { name: fullName(env, `notificationTokenOwners/${tokenHash}`), fields: { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['active', 'revokedAt', 'updatedAt'] }, currentDocument: { updateTime: owner.updateTime } });
+    const installationId = String(data.installationId || ''), installationKey = installationId ? await hashedId(installationId) : '';
+    if (installationKey) {
+      const installation = await getRawDoc(env, 'notificationInstallations', installationKey);
+      if (installation?.data?.uid === u.uid && installation.data.tokenId === tokenHash && installation.updateTime) writes.push({ update: { name: fullName(env, `notificationInstallations/${installationKey}`), fields: { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['active', 'revokedAt', 'updatedAt'] }, currentDocument: { updateTime: installation.updateTime } });
+    }
+  }
+  try { await commitWrites(env, writes); } catch { return out(env, req, { success: false, error: 'Deletion request unavailable' }, 409); }
+  try {
+    await revokeFirebaseRefreshTokens(env, u.uid);
+    await commitWrites(env, [{ update: { name: fullName(env, `deletionRequests/${encodeURIComponent(u.uid)}`), fields: {
+      refreshTokenRevocationStatus: { stringValue: 'succeeded' }, updatedAt: { timestampValue: new Date().toISOString() },
+    } }, updateMask: { fieldPaths: ['refreshTokenRevocationStatus', 'updatedAt'] } }]);
+  } catch {
+    try {
+      await commitWrites(env, [{ update: { name: fullName(env, `deletionRequests/${encodeURIComponent(u.uid)}`), fields: {
+        refreshTokenRevocationStatus: { stringValue: 'failed' }, updatedAt: { timestampValue: new Date().toISOString() },
+      } }, updateMask: { fieldPaths: ['refreshTokenRevocationStatus', 'updatedAt'] } }]);
+    } catch { /* durable account lock remains authoritative */ }
+    // The Firestore lock is durable and deliberately remains in place if Auth
+    // revocation is temporarily unavailable. Clients receive no token detail.
+    return out(env, req, { success: false, status: 'pending', error: 'Deletion request pending' }, 503);
+  }
+  return out(env, req, { success: true, status: 'pending' }, 202);
 }
 async function notificationList(req: Request, env: Env, u: User) {
   const url = new URL(req.url), rawLimit = Number(url.searchParams.get('limit') || 20), limit = Math.min(50, Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 20));
@@ -378,6 +472,7 @@ function owned(u: User, r: any) { return !!r && (u.admin || r.customerUid === u.
 async function enforceOperationalAccess(env: Env, u: User, equipment?: any) {
   if (!u.admin) {
     const profile = await getDoc(env, 'users', u.uid);
+    if (profile?.accountStatus === 'deletion_requested') err('ACCOUNT_DELETION_REQUESTED');
     if (profile?.suspensionStatus === 'temporarily_suspended' || profile?.suspensionStatus === 'permanently_suspended') err('ACCOUNT_SUSPENDED');
   }
   if (equipment?.isActive === false || equipment?.moderationStatus === 'suspended' || equipment?.moderationStatus === 'hidden' || equipment?.adminHidden === true) err('LISTING_UNAVAILABLE');
@@ -643,7 +738,7 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
   if (!raw?.updateTime || !r) return out(env, req, { success: false, error: 'Not found' }, 404);
   await enforceOperationalAccess(env, u, await getDoc(env, 'equipment', r.equipmentId));
   const [customerAccount, providerAccount] = await Promise.all([getDoc(env, 'users', r.customerUid), getDoc(env, 'users', r.providerUid)]);
-  const blocked = (account: any) => account?.suspensionStatus === 'temporarily_suspended' || account?.suspensionStatus === 'permanently_suspended' || account?.accountStatus === 'restricted';
+  const blocked = (account: any) => account?.suspensionStatus === 'temporarily_suspended' || account?.suspensionStatus === 'permanently_suspended' || account?.accountStatus === 'restricted' || account?.accountStatus === 'deletion_requested';
   if (blocked(customerAccount) || blocked(providerAccount)) return out(env, req, { success: false, error: 'ACCOUNT_SUSPENDED' }, 403);
   const provider = r.providerUid === u.uid || u.admin, customer = r.customerUid === u.uid;
   const allowed = action === 'cancel' ? customer : action === 'accept' || action === 'reject' || action === 'start' ? provider : action === 'request_completion' ? provider : action === 'complete' ? customer : false;
@@ -1096,27 +1191,29 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     if (path === '/health') return out(env, req, { success: true, service: 'heavyar-api' });
     if (path === '/api/send-email-otp' && req.method === 'POST') return await otpSend(req, env);
     if (path === '/api/verify-email-otp' && req.method === 'POST') return await otpVerify(req, env);
-    if (path === '/api/register-profile' && req.method === 'POST') return await registerProfile(req, env, await auth(req, env));
-    if (path === '/api/verification/profile' && req.method === 'GET') return await verificationProfile(req, env, await auth(req, env));
-    if (path === '/api/verification/policy' && req.method === 'GET') return await verificationPolicy(req, env, await auth(req, env));
-    if (path === '/api/verification/attempts' && req.method === 'POST') return await startVerification(req, env, await auth(req, env));
-    if (path === '/api/requests' && req.method === 'POST') return await createRequest(req, env, await auth(req, env));
+     if (path === '/api/register-profile' && req.method === 'POST') return await registerProfile(req, env, await authenticatedUser(req, env));
+     if (path === '/api/account/deletion-request' && req.method === 'GET') return await accountDeletionStatus(req, env, await authenticatedUser(req, env, true));
+     if (path === '/api/account/deletion-request' && req.method === 'POST') return await accountDeletionRequest(req, env, await authenticatedUser(req, env, true));
+     if (path === '/api/verification/profile' && req.method === 'GET') return await verificationProfile(req, env, await authenticatedUser(req, env));
+     if (path === '/api/verification/policy' && req.method === 'GET') return await verificationPolicy(req, env, await authenticatedUser(req, env));
+     if (path === '/api/verification/attempts' && req.method === 'POST') return await startVerification(req, env, await authenticatedUser(req, env));
+     if (path === '/api/requests' && req.method === 'POST') return await createRequest(req, env, await authenticatedUser(req, env));
     const requestTransitionMatch = path.match(/^\/api\/requests\/([^/]+)\/transition$/);
-    if (requestTransitionMatch && req.method === 'POST') return await transitionRequest(req, env, await auth(req, env), requestTransitionMatch[1]);
+     if (requestTransitionMatch && req.method === 'POST') return await transitionRequest(req, env, await authenticatedUser(req, env), requestTransitionMatch[1]);
     const verificationAttemptMatch = path.match(/^\/api\/verification\/attempts\/([^/]+)$/);
-    if (verificationAttemptMatch && req.method === 'GET') return await verificationAttempt(req, env, await auth(req, env), verificationAttemptMatch[1]);
+     if (verificationAttemptMatch && req.method === 'GET') return await verificationAttempt(req, env, await authenticatedUser(req, env), verificationAttemptMatch[1]);
     const identityCallbackMatch = path.match(/^\/api\/webhooks\/identity\/([A-Za-z0-9_-]{16,128})$/);
     if (identityCallbackMatch && req.method === 'POST') return await identityCallback(req, env, identityCallbackMatch[1]);
-     if (path === '/api/notifications' && req.method === 'GET') return await notificationList(req, env, await auth(req, env));
-     if (path === '/api/notifications/read-all' && req.method === 'POST') return await notificationReadAll(req, env, await auth(req, env));
-     if (path === '/api/notifications/preferences' && (req.method === 'GET' || req.method === 'PUT')) return await notificationPreferences(req, env, await auth(req, env));
-     if (path === '/api/notifications/devices' && req.method === 'POST') return await registerDevice(req, env, await auth(req, env));
-     if (path === '/api/notifications/devices' && req.method === 'DELETE') return await registerDevice(req, env, await auth(req, env), true);
-     if (path === '/api/notifications/devices/revoke' && req.method === 'POST') return await registerDevice(req, env, await auth(req, env), true);
+      if (path === '/api/notifications' && req.method === 'GET') return await notificationList(req, env, await authenticatedUser(req, env));
+      if (path === '/api/notifications/read-all' && req.method === 'POST') return await notificationReadAll(req, env, await authenticatedUser(req, env));
+      if (path === '/api/notifications/preferences' && (req.method === 'GET' || req.method === 'PUT')) return await notificationPreferences(req, env, await authenticatedUser(req, env));
+      if (path === '/api/notifications/devices' && req.method === 'POST') return await registerDevice(req, env, await authenticatedUser(req, env));
+      if (path === '/api/notifications/devices' && req.method === 'DELETE') return await registerDevice(req, env, await authenticatedUser(req, env), true);
+      if (path === '/api/notifications/devices/revoke' && req.method === 'POST') return await registerDevice(req, env, await authenticatedUser(req, env), true);
      const notificationMatch = path.match(/^\/api\/notifications\/([^/]+)\/read$/);
-     if (notificationMatch && req.method === 'POST') return await notificationRead(req, env, await auth(req, env), decodeURIComponent(notificationMatch[1]));
-    if (path === '/api/create-payment' && req.method === 'POST') return await create(req, env, await auth(req, env));
-    if (path === '/api/verify-payment' && req.method === 'POST') return await verify(req, env, await auth(req, env));
+      if (notificationMatch && req.method === 'POST') return await notificationRead(req, env, await authenticatedUser(req, env), decodeURIComponent(notificationMatch[1]));
+     if (path === '/api/create-payment' && req.method === 'POST') return await create(req, env, await authenticatedUser(req, env));
+     if (path === '/api/verify-payment' && req.method === 'POST') return await verify(req, env, await authenticatedUser(req, env));
     if (path.startsWith('/api/admin/')) {
       const result = await handleAdmin(req, env, await auth(req, env));
       const status = typeof result === 'object' && result && 'status' in result && typeof (result as any).status === 'number' ? Number((result as any).status) : 200;
@@ -1124,13 +1221,13 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       return out(env, req, result);
     }
      if (path === '/api/webhooks/tap' && req.method === 'POST') return await tapWebhook(req, env);
-    if (path === '/cloudinary/delete' && req.method === 'POST') return await removeAsset(req, env, await auth(req, env));
-    if (path === '/cloudinary/upload' && req.method === 'POST') return await cloudinaryUpload(req, env, await auth(req, env));
+     if (path === '/cloudinary/delete' && req.method === 'POST') return await removeAsset(req, env, await authenticatedUser(req, env));
+     if (path === '/cloudinary/upload' && req.method === 'POST') return await cloudinaryUpload(req, env, await authenticatedUser(req, env));
     return out(env, req, { success: false, error: 'Not found' }, 404);
   } catch (e) {
     const message = e instanceof Error ? e.message : '';
-    const forbidden = message === 'ADMIN_REQUIRED' || message === 'ACCOUNT_SUSPENDED' || message === 'LISTING_UNAVAILABLE' || message.startsWith('TRUST_');
-    return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : message === 'ADMIN_REQUIRED' ? 'Admin authorization required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : message === 'LISTING_UNAVAILABLE' ? 'Listing unavailable' : message.startsWith('TRUST_') ? 'Identity verification required' : 'Internal service error' }, message === 'AUTH_REQUIRED' ? 401 : forbidden ? 403 : 500);
+     const forbidden = message === 'ADMIN_REQUIRED' || message === 'ACCOUNT_SUSPENDED' || message === 'ACCOUNT_DELETION_REQUESTED' || message === 'LISTING_UNAVAILABLE' || message.startsWith('TRUST_');
+     return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : message === 'ADMIN_REQUIRED' ? 'Admin authorization required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : message === 'ACCOUNT_DELETION_REQUESTED' ? 'Account deletion requested' : message === 'LISTING_UNAVAILABLE' ? 'Listing unavailable' : message.startsWith('TRUST_') ? 'Identity verification required' : 'Internal service error' }, message === 'AUTH_REQUIRED' ? 401 : forbidden ? 403 : 500);
 } }, async scheduled(_event: unknown, env: Env, executionCtx: { waitUntil(promise: Promise<unknown>): void }) {
   const requestEnv = { ...env, __executionCtx: executionCtx };
   executionCtx.waitUntil(processPendingNotificationOutbox(requestEnv));

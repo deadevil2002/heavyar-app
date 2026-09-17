@@ -105,10 +105,8 @@ export async function registerCurrentDevice(): Promise<void> {
     });
   }
   const permissions = await Notifications.getPermissionsAsync();
-  const finalStatus = permissions.status === 'granted'
-    ? permissions.status
-    : (await Notifications.requestPermissionsAsync()).status;
-  if (finalStatus !== 'granted') return;
+  const granted = permissions.granted || (await Notifications.requestPermissionsAsync()).granted;
+  if (!granted) return;
   const projectId = Constants.default.expoConfig?.extra?.eas?.projectId;
   if (!projectId) return;
   const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
@@ -141,8 +139,8 @@ export async function requestNotificationPermission(): Promise<string | null> {
   try {
     const Notifications = await import('expo-notifications');
     const current = await Notifications.getPermissionsAsync();
-    const status = current.status === 'granted' ? current.status : (await Notifications.requestPermissionsAsync()).status;
-    if (status !== 'granted') return null;
+    const granted = current.granted || (await Notifications.requestPermissionsAsync()).granted;
+    if (!granted) return null;
     const Constants = await import('expo-constants');
     const projectId = Constants.default.expoConfig?.extra?.eas?.projectId;
     if (!projectId) return null;

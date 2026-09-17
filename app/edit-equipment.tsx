@@ -73,7 +73,6 @@ export default function EditEquipmentScreen() {
     const load = async () => {
       if (!id) return;
       try {
-        console.log('[EditEquipment] Loading equipment:', id);
         const eq = await fetchEquipmentById(id);
         if (!mounted) return;
         if (!eq) {
@@ -83,7 +82,6 @@ export default function EditEquipmentScreen() {
           return;
         }
         if (user && eq.ownerUid !== user.uid) {
-          console.log('[EditEquipment] Not owner, going back');
           showDialog(t('error_title'), t('error_generic_message'), [
             { text: t('confirm'), style: 'default', onPress: () => router.back() },
           ]);
@@ -109,9 +107,7 @@ export default function EditEquipmentScreen() {
         setDistrict(eq.district);
         setPrice(eq.pricePerDay > 0 ? String(eq.pricePerDay) : '');
         setExistingImages([...eq.images]);
-        console.log('[EditEquipment] Loaded with', eq.images.length, 'existing images');
       } catch (e) {
-        console.log('[EditEquipment] Load error:', e);
         if (mounted) {
           showDialog(t('error_title'), t('load_failed'), [
             { text: t('confirm'), style: 'default', onPress: () => router.back() },
@@ -186,7 +182,6 @@ export default function EditEquipmentScreen() {
 
       if (newImageUris.length > 0) {
         setUploadProgress(`${t('uploading_images')} 0/${newImageUris.length}`);
-        console.log('[EditEquipment] Uploading', newImageUris.length, 'new images');
         const cloudinaryResults = await uploadMultipleImages(
           newImageUris,
           (completed, total) => {
@@ -194,13 +189,11 @@ export default function EditEquipmentScreen() {
           }
         );
         uploadedNewImages = cloudinaryResults;
-        console.log('[EditEquipment] New images uploaded:', cloudinaryResults.length);
       }
 
       const finalImages: EquipmentImage[] = [...existingImages, ...uploadedNewImages];
 
       setUploadProgress(t('saving_changes'));
-      console.log('[EditEquipment] Saving with', finalImages.length, 'total images');
 
       await updateEquipmentWithImageCleanup(
         id,
@@ -221,12 +214,10 @@ export default function EditEquipmentScreen() {
         oldImages
       );
 
-      console.log('[EditEquipment] Save successful');
       showDialog(t('success'), t('update_success'), [
         { text: t('confirm'), style: 'default', onPress: () => router.back() },
       ]);
     } catch (e) {
-      console.error('[EditEquipment] Save error:', e);
       const message = e instanceof Error ? e.message : t('unexpected_error');
       showDialog(t('error_title'), message, [{ text: t('ok'), style: 'default' }]);
     } finally {

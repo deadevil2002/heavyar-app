@@ -29,12 +29,9 @@ export default function HomeScreen() {
   const loadEquipment = useCallback(async () => {
     setLoading(true);
     try {
-      console.log('[Home] Fetching public equipment list...');
       const items = await fetchEquipmentList();
-      console.log('[Home] Fetched', items.length, 'active equipment items');
       setEquipmentList(items);
     } catch (e) {
-      console.error('[Home] Error fetching equipment:', e);
     } finally {
       setLoading(false);
     }
@@ -56,7 +53,6 @@ export default function HomeScreen() {
   }, [router]);
 
   const handleNotifications = useCallback(() => {
-    console.log('Notifications pressed');
   }, []);
 
   const handleGuestLanguage = useCallback(() => {

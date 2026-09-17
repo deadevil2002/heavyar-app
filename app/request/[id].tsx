@@ -69,7 +69,6 @@ export default function RequestDetailScreen() {
           const other = req.providerUid === currentUid ? effectiveCustomer : effectiveProvider;
           setOtherUserPublic(other);
         } catch (e) {
-          console.log('[RequestDetail] Error loading related data:', e);
         }
       }
       setLoading(false);

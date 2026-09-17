@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Mail, MessageCircle } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { PUBLIC_LINKS } from '@/constants/publicLinks';
 
 export default function HelpScreen() {
   const { isRTL } = useLanguage();
@@ -58,6 +59,9 @@ export default function HelpScreen() {
             <Text style={[styles.cardDesc, { textAlign: isRTL ? 'right' : 'left' }]}>966 57 075 8881</Text>
           </View>
         </Pressable>
+        <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(PUBLIC_LINKS.support)}>
+          <Text style={[styles.publicLink, { textAlign: isRTL ? 'right' : 'left' }]}>{PUBLIC_LINKS.support}</Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -87,4 +91,5 @@ const styles = StyleSheet.create({
   },
   cardTitle: { color: Colors.textPrimary, fontSize: 15, fontWeight: '700' as const },
   cardDesc: { color: Colors.textMuted, fontSize: 13 },
+  publicLink: { color: Colors.gold, fontSize: 13, textDecorationLine: 'underline' as const },
 });

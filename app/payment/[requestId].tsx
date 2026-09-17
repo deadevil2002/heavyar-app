@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Linking, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, CreditCard, Lock, Shield, ExternalLink, CheckCircle, XCircle } from 'lucide-react-native';
@@ -20,7 +20,7 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 type PaymentStep = 'summary' | 'processing' | 'redirecting' | 'verifying' | 'success' | 'failed';
 
 export default function PaymentScreen() {
-  const { requestId } = useLocalSearchParams<{ requestId: string }>();
+  const { requestId, paymentId: callbackPaymentId } = useLocalSearchParams<{ requestId: string; paymentId?: string }>();
   const { isRTL, t } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
@@ -32,6 +32,7 @@ export default function PaymentScreen() {
   const [paymentUrl, setPaymentUrl] = useState<string>('');
   const [quote, setQuote] = useState<PaymentQuote | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const handledCallbackPayment = useRef<string | null>(null);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
@@ -76,7 +77,6 @@ export default function PaymentScreen() {
           setLoading(false);
         }
       } catch (e) {
-        console.log('[Payment] Error loading request:', e);
         if (mounted) setLoading(false);
       }
     };
@@ -98,7 +98,6 @@ export default function PaymentScreen() {
       });
 
       if (!result.success || !result.paymentId) {
-        console.log('[Payment] Create payment failed:', result.error);
         setStep('failed');
         return;
       }
@@ -116,7 +115,6 @@ export default function PaymentScreen() {
         void handleVerifyRef.current?.(result.paymentId);
       }
     } catch (e) {
-      console.error('[Payment] Error:', e);
       setStep('failed');
       try {
       } catch {}
@@ -144,16 +142,23 @@ export default function PaymentScreen() {
       } else if (status === 'cancelled' || status === 'expired' || status === 'failed') {
         setStep('failed');
       } else {
-        console.log('[Payment] Unknown payment status:', result.status);
         setStep('failed');
       }
     } catch (e) {
-      console.error('[Payment] Verify error:', e);
       setStep('failed');
     }
   }, [paymentId, requestId]);
 
   handleVerifyRef.current = handleVerifyPayment;
+
+  useEffect(() => {
+    if (!request || !callbackPaymentId || !/^[A-Za-z0-9_-]{8,200}$/.test(String(callbackPaymentId))) return;
+    const callbackId = String(callbackPaymentId);
+    if (handledCallbackPayment.current === callbackId) return;
+    handledCallbackPayment.current = callbackId;
+    setPaymentId(callbackId);
+    void handleVerifyPayment(callbackId);
+  }, [request, callbackPaymentId, handleVerifyPayment]);
 
   const handleOpenPaymentUrl = useCallback(async () => {
     if (!paymentUrl) return;
@@ -164,7 +169,6 @@ export default function PaymentScreen() {
         window.open(paymentUrl, '_blank');
       }
     } catch (e) {
-      console.log('[Payment] Open URL error:', e);
     }
   }, [paymentUrl]);
 

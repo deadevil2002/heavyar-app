@@ -12,6 +12,7 @@ import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionById, findRegionByCityId } from '@/mocks/saudiRegions';
 import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloudinaryService';
+import { requestAccountDeletion } from '@/services/paymentService';
 import { fetchEquipmentByOwner, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
 import { getVerificationProfile, type VerificationProfile } from '@/services/verificationService';
 
@@ -92,6 +93,33 @@ export default function ProfileScreen() {
     await logout();
   }, [logout]);
 
+  const handleAccountDeletion = useCallback(() => {
+    showDialog(t('delete_account'), t('delete_account_warning'), [
+      { text: t('cancel'), style: 'cancel' },
+      {
+        text: t('confirm'),
+        style: 'danger',
+        onPress: () => showDialog(t('delete_account_confirm'), t('delete_account_confirm_message'), [
+          { text: t('cancel'), style: 'cancel' },
+          {
+            text: t('delete_account'),
+            style: 'danger',
+            onPress: () => {
+              void (async () => {
+                try {
+                  await requestAccountDeletion();
+                  await logout({ clearLocalStorage: true });
+                } catch {
+                  showDialog(t('error_title'), t('delete_account_failed'), [{ text: t('ok'), style: 'default' }]);
+                }
+              })();
+            },
+          },
+        ]),
+      },
+    ]);
+  }, [logout, showDialog, t]);
+
   const handleUploadAvatar = useCallback(async () => {
     if (!user) return;
     if (avatarBusy) return;
@@ -126,7 +154,6 @@ export default function ProfileScreen() {
 
       showDialog(t('success'), t('avatar_updated'), [{ text: t('ok'), style: 'default' }]);
     } catch (e) {
-      console.log('[Profile] Avatar upload error:', e);
       showDialog(t('error_title'), t('avatar_update_failed'), [{ text: t('ok'), style: 'default' }]);
     } finally {
       setAvatarBusy(false);
@@ -148,7 +175,6 @@ export default function ProfileScreen() {
       }
       showDialog(t('success'), t('avatar_removed'), [{ text: t('ok'), style: 'default' }]);
     } catch (e) {
-      console.log('[Profile] Avatar remove error:', e);
       showDialog(t('error_title'), t('avatar_remove_failed'), [{ text: t('ok'), style: 'default' }]);
     } finally {
       setAvatarBusy(false);
@@ -231,7 +257,6 @@ export default function ProfileScreen() {
       setIsEditing(false);
       showDialog(t('success'), t('profile_updated'), [{ text: t('ok'), style: 'default' }]);
     } catch (e) {
-      console.log('[Profile] Save error:', e);
       showDialog(t('error_title'), t('profile_update_failed'), [{ text: t('ok'), style: 'default' }]);
     } finally {
       setSaving(false);
@@ -528,6 +553,15 @@ export default function ProfileScreen() {
           <Pressable accessibilityRole="button" accessibilityLabel={t('logout')} style={[styles.logoutButton, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={handleLogout}>
             <LogOut size={20} color={Colors.error} />
             <Text style={styles.logoutText}>{t('logout')}</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('delete_account')}
+            accessibilityHint={t('delete_account_hint')}
+            style={styles.deleteAccountButton}
+            onPress={handleAccountDeletion}
+          >
+            <Text style={styles.deleteAccountText}>{t('delete_account')}</Text>
           </Pressable>
 
           <View style={styles.bottomPadding} />
@@ -860,6 +894,19 @@ const styles = StyleSheet.create({
     color: Colors.error,
     fontSize: 16,
     fontWeight: '600' as const,
+  },
+  deleteAccountButton: {
+    marginHorizontal: 20,
+    marginTop: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteAccountText: {
+    color: Colors.error,
+    fontSize: 14,
+    fontWeight: '600' as const,
+    textDecorationLine: 'underline',
   },
   bottomPadding: {
     height: 40,

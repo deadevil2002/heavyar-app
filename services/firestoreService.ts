@@ -33,7 +33,6 @@ function isMissingIndexError(error: unknown): boolean {
 function warnIndexFallbackOnce(key: string, error: unknown): void {
   if (loggedIndexFallbacks.has(key)) return;
   loggedIndexFallbacks.add(key);
-  console.warn(`[Firestore] Missing composite index (${key}); using fallback query`, error);
 }
 
 function toISOString(val: unknown): string {
@@ -196,7 +195,6 @@ function parseRating(id: string, data: Record<string, unknown>): Rating {
 
 export async function fetchEquipmentList(): Promise<Equipment[]> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Fetching equipment list');
   try {
     const q = query(
       collection(db, 'equipment'),
@@ -205,13 +203,11 @@ export async function fetchEquipmentList(): Promise<Equipment[]> {
     );
     const snap = await getDocs(q);
     const items = snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
-    console.log('[Firestore] Fetched', items.length, 'equipment items (indexed)');
     return items;
   } catch (indexError: unknown) {
     if (isMissingIndexError(indexError)) {
       warnIndexFallbackOnce('equipment:isActive+createdAt', indexError);
     } else {
-      console.warn('[Firestore] Indexed query failed, falling back to simple query:', indexError);
     }
     try {
       const fallbackQ = query(
@@ -219,7 +215,6 @@ export async function fetchEquipmentList(): Promise<Equipment[]> {
         where('isActive', '==', true)
       );
       const fallbackSnap = await getDocs(fallbackQ);
-      console.log('[Firestore] Fallback fetched', fallbackSnap.docs.length, 'equipment items');
       const items = fallbackSnap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
       items.sort((a, b) => {
         if (!a.createdAt && !b.createdAt) return 0;
@@ -229,7 +224,6 @@ export async function fetchEquipmentList(): Promise<Equipment[]> {
       });
       return items;
     } catch (fallbackError) {
-      console.error('[Firestore] fetchEquipmentList fallback also failed:', fallbackError);
       throw fallbackError;
     }
   }
@@ -237,7 +231,6 @@ export async function fetchEquipmentList(): Promise<Equipment[]> {
 
 export async function fetchEquipmentById(id: string): Promise<Equipment | null> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Fetching equipment:', id);
   const snap = await getDoc(doc(db, 'equipment', id));
   if (snap.exists()) {
     return parseEquipment(snap.id, snap.data() as Record<string, unknown>);
@@ -247,7 +240,6 @@ export async function fetchEquipmentById(id: string): Promise<Equipment | null> 
 
 export async function fetchEquipmentByOwner(ownerUid: string): Promise<Equipment[]> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Fetching equipment by owner:', ownerUid);
   try {
     const q = query(
       collection(db, 'equipment'),
@@ -255,13 +247,11 @@ export async function fetchEquipmentByOwner(ownerUid: string): Promise<Equipment
       orderBy('createdAt', 'desc')
     );
     const snap = await getDocs(q);
-    console.log('[Firestore] fetchEquipmentByOwner (indexed) returned', snap.docs.length, 'docs');
     return snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
   } catch (indexError: unknown) {
     if (isMissingIndexError(indexError)) {
       warnIndexFallbackOnce('equipment:ownerUid+createdAt', indexError);
     } else {
-      console.warn('[Firestore] Indexed query failed (likely missing composite index), falling back to simple query:', indexError);
     }
     try {
       const fallbackQ = query(
@@ -269,7 +259,6 @@ export async function fetchEquipmentByOwner(ownerUid: string): Promise<Equipment
         where('ownerUid', '==', ownerUid)
       );
       const fallbackSnap = await getDocs(fallbackQ);
-      console.log('[Firestore] fetchEquipmentByOwner (fallback) returned', fallbackSnap.docs.length, 'docs');
       const items = fallbackSnap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
       items.sort((a, b) => {
         if (!a.createdAt && !b.createdAt) return 0;
@@ -279,7 +268,6 @@ export async function fetchEquipmentByOwner(ownerUid: string): Promise<Equipment
       });
       return items;
     } catch (fallbackError) {
-      console.error('[Firestore] fetchEquipmentByOwner fallback also failed:', fallbackError);
       throw fallbackError;
     }
   }
@@ -287,19 +275,16 @@ export async function fetchEquipmentByOwner(ownerUid: string): Promise<Equipment
 
 export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Creating equipment listing');
   const docRef = await addDoc(collection(db, 'equipment'), {
     ...data,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
-  console.log('[Firestore] Equipment created:', docRef.id);
   return docRef.id;
 }
 
 export async function updateEquipment(id: string, updates: Partial<Equipment>): Promise<void> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Updating equipment:', id);
   await updateDoc(doc(db, 'equipment', id), {
     ...updates,
     updatedAt: serverTimestamp(),
@@ -336,14 +321,11 @@ export async function updateEquipmentWithImageCleanup(
   oldImages: EquipmentImage[]
 ): Promise<void> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Updating equipment with image cleanup:', id);
 
   if (updates.images) {
     const removedPublicIds = getRemovedImages(oldImages, updates.images);
     if (removedPublicIds.length > 0) {
-      console.log('[Firestore] Cleaning up', removedPublicIds.length, 'removed images');
       const result = await deleteMultipleCloudinaryImages(removedPublicIds);
-      console.log('[Firestore] Image cleanup result:', result);
     }
   }
 
@@ -351,12 +333,10 @@ export async function updateEquipmentWithImageCleanup(
     ...updates,
     updatedAt: serverTimestamp(),
   });
-  console.log('[Firestore] Equipment updated:', id);
 }
 
 export async function deleteEquipmentWithCleanup(id: string): Promise<void> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Deleting equipment with Cloudinary cleanup:', id);
 
   const snap = await getDoc(doc(db, 'equipment', id));
   if (snap.exists()) {
@@ -365,26 +345,21 @@ export async function deleteEquipmentWithCleanup(id: string): Promise<void> {
     const publicIds = extractPublicIds(images);
 
     if (publicIds.length > 0) {
-      console.log('[Firestore] Cleaning up', publicIds.length, 'Cloudinary images');
       const result = await deleteMultipleCloudinaryImages(publicIds);
-      console.log('[Firestore] Cloudinary cleanup result:', result);
     }
   }
 
   await deleteDoc(doc(db, 'equipment', id));
-  console.log('[Firestore] Equipment deleted:', id);
 }
 
 export async function deleteEquipment(id: string): Promise<void> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Deleting equipment:', id);
   await deleteDoc(doc(db, 'equipment', id));
 }
 
 export async function fetchUserRequests(uid: string, role: 'customer' | 'provider'): Promise<EquipmentRequest[]> {
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerUid' : 'providerUid';
-  console.log('[Firestore] Fetching requests for', role, uid);
   try {
     const q = query(
       collection(db, 'equipmentRequests'),
@@ -393,13 +368,11 @@ export async function fetchUserRequests(uid: string, role: 'customer' | 'provide
     );
     const snap = await getDocs(q);
     const items = snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
-    console.log('[Firestore] Fetched', items.length, 'requests');
     return items;
   } catch (indexError) {
     if (isMissingIndexError(indexError)) {
       warnIndexFallbackOnce(`equipmentRequests:${field}+createdAt`, indexError);
     } else {
-      console.warn('[Firestore] Requests indexed query failed, fallback:', indexError);
     }
     const fallbackQ = query(
       collection(db, 'equipmentRequests'),
@@ -414,7 +387,6 @@ export async function fetchUserRequests(uid: string, role: 'customer' | 'provide
 
 export async function fetchRequestById(id: string): Promise<EquipmentRequest | null> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Fetching request:', id);
   const snap = await getDoc(doc(db, 'equipmentRequests', id));
   if (snap.exists()) {
     return parseRequest(snap.id, snap.data() as Record<string, unknown>);
@@ -501,7 +473,6 @@ export async function updatePaymentStatus(
 
 export function subscribeToRequest(requestId: string, callback: (req: EquipmentRequest | null) => void): Unsubscribe {
   const db = getFirebaseDb();
-  console.log('[Firestore] Subscribing to request:', requestId);
   return onSnapshot(doc(db, 'equipmentRequests', requestId), (snap) => {
     if (snap.exists()) {
       callback(parseRequest(snap.id, snap.data() as Record<string, unknown>));
@@ -518,7 +489,6 @@ export function subscribeToUserRequests(
 ): Unsubscribe {
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerUid' : 'providerUid';
-  console.log('[Firestore] Subscribing to', role, 'requests for:', uid);
   const indexedQ = query(
     collection(db, 'equipmentRequests'),
     where(field, '==', uid),
@@ -564,7 +534,6 @@ export function subscribeToMessages(
   callback: (messages: ChatMessage[]) => void
 ): Unsubscribe {
   const db = getFirebaseDb();
-  console.log('[Firestore] Subscribing to messages for request:', requestId);
   const q = query(
     collection(db, 'equipmentRequests', requestId, 'messages'),
     orderBy('createdAt', 'asc')
@@ -581,7 +550,6 @@ export async function sendMessage(
   text: string
 ): Promise<string> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Sending message in request:', requestId);
 
   const reqSnap = await getDoc(doc(db, 'equipmentRequests', requestId));
   if (!reqSnap.exists()) throw new Error('Request not found');
@@ -602,13 +570,11 @@ export async function sendMessage(
       read: false,
     }
   );
-  console.log('[Firestore] Message sent:', docRef.id);
   return docRef.id;
 }
 
 export async function submitRating(data: Omit<Rating, 'id' | 'createdAt'>): Promise<string> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Submitting rating for request:', data.requestId);
 
   const reqSnap = await getDoc(doc(db, 'equipmentRequests', data.requestId));
   if (!reqSnap.exists()) throw new Error('Request not found');
@@ -646,7 +612,6 @@ export async function submitRating(data: Omit<Rating, 'id' | 'createdAt'>): Prom
     ...data,
     createdAt: serverTimestamp(),
   });
-  console.log('[Firestore] Rating submitted:', docRef.id);
   return docRef.id;
 }
 
@@ -732,7 +697,6 @@ export async function generateInvoiceNumber(): Promise<string> {
 export async function fetchUserInvoices(uid: string, role: 'customer' | 'provider'): Promise<Invoice[]> {
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerId' : 'providerId';
-  console.log('[Firestore] Fetching invoices for', role, uid);
   try {
     const q = query(
       collection(db, 'invoices'),
@@ -741,13 +705,11 @@ export async function fetchUserInvoices(uid: string, role: 'customer' | 'provide
     );
     const snap = await getDocs(q);
     const items = snap.docs.map(d => parseInvoice(d.id, d.data() as Record<string, unknown>));
-    console.log('[Firestore] Fetched', items.length, 'invoices');
     return items;
   } catch (indexError) {
     if (isMissingIndexError(indexError)) {
       warnIndexFallbackOnce(`invoices:${field}+createdAt`, indexError);
     } else {
-      console.warn('[Firestore] Invoice indexed query failed, fallback:', indexError);
     }
     try {
       const fallbackQ = query(
@@ -759,7 +721,6 @@ export async function fetchUserInvoices(uid: string, role: 'customer' | 'provide
       items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       return items;
     } catch (e2) {
-      console.error('[Firestore] fetchUserInvoices fallback failed:', e2);
       throw e2;
     }
   }
@@ -767,7 +728,6 @@ export async function fetchUserInvoices(uid: string, role: 'customer' | 'provide
 
 export async function fetchInvoiceByRequestId(requestId: string): Promise<Invoice | null> {
   const db = getFirebaseDb();
-  console.log('[Firestore] Fetching invoice for request:', requestId);
   const q = query(
     collection(db, 'invoices'),
     where('requestId', '==', requestId),

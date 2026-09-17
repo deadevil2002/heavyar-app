@@ -157,7 +157,6 @@ export default function RegisterScreen() {
       );
       router.back();
     } catch (e) {
-      console.log('Register error:', e);
       const errorMsg = e instanceof Error ? e.message : t('unexpected_error');
       showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
     } finally {

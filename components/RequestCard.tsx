@@ -26,7 +26,6 @@ export default React.memo(function RequestCard({ request }: RequestCardProps) {
         const eq = await fetchEquipmentById(request.equipmentId);
         if (mounted) setEquipment(eq);
       } catch (e) {
-        console.log('[RequestCard] Error fetching equipment:', e);
       }
     };
     if (request.equipmentId) {

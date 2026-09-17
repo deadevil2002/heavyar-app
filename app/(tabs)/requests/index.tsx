@@ -25,7 +25,6 @@ export default function RequestsScreen() {
       setRequests([]);
       return;
     }
-    console.log('[Requests] Subscribing to', tab, 'requests');
     const unsub = subscribeToUserRequests(currentUid, tab, (items) => {
       setRequests(items);
     });
