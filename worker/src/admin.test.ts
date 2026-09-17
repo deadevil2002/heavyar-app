@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import worker, { __test, type Env } from './index';
 import { __adminTest } from './admin';
+import { claimSyncWrite, processStaffClaimSync } from './admin';
 
 const env = { CORS_ORIGINS: 'http://localhost' } as Env;
 const request = (path: string, body?: unknown, headers: Record<string, string> = {}) =>
@@ -129,10 +130,62 @@ describe('admin authorization and operational boundary', () => {
     const commits: unknown[][] = [];
     __adminTest.captureCommits(commits);
     const response = await worker.fetch(request('/api/admin/roles', { uid: 'target-1', role: 'admin', operation: 'grant', reason: 'approved by governance' }, { Authorization: 'Bearer test' }), env);
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(200);
     expect(commits.length > 0).toBe(true);
     expect(String((commits[0][0] as any).update.name).includes('role-intent')).toBe(true);
     expect((commits[0][0] as any).update.fields.action.stringValue).toBe('role_change_intent');
+  });
+
+  test('staff claim sync jobs have durable bounded retry schema and complete idempotently', async () => {
+    const job: any = claimSyncWrite(env, 'staff-1', 'marketing', true, 3);
+    expect(String(job.update.name).includes('staffClaimSync')).toBe(true);
+    expect(job.update.fields.uid.stringValue).toBe('staff-1');
+    expect(job.update.fields.desiredRole.stringValue).toBe('marketing');
+    expect(job.update.fields.desiredActive.booleanValue).toBe(true);
+    expect(job.update.fields.desiredVersion.integerValue).toBe('3');
+    expect(job.update.fields.status.stringValue).toBe('pending');
+    expect(job.update.fields.attempts.integerValue).toBe('0');
+    expect(Boolean(job.update.fields.nextAttemptAt.timestampValue)).toBe(true);
+  });
+
+  test('scheduled claim sync retries a due job and marks it completed', async () => {
+    const writes: any[] = [];
+    __adminTest.captureCommits(writes);
+    __adminTest.setIdentity(async (_uid, role) => ({ role, previousRole: null }));
+    __adminTest.setFirestore(() => ({ roleVersion: 0 }));
+    __adminTest.setQuery(() => [{ name: 'staffClaimSync/staffClaimSync%3Astaff-1%3A1', updateTime: 'u1', data: {
+      uid: 'staff-1', desiredRole: 'marketing', desiredActive: true, desiredVersion: 0, status: 'pending', attempts: 0, nextAttemptAt: new Date(0).toISOString(),
+    } }]);
+    await processStaffClaimSync(env);
+    expect(writes.length > 0).toBe(true);
+    const lease = writes.flat().find((write: any) => write.update?.fields?.leaseToken);
+    expect(Boolean(lease)).toBe(true);
+    expect(String(lease.update.fields.expiresAt.timestampValue) > new Date().toISOString()).toBe(true);
+    const completed = writes.flat().find((write: any) => write.update?.fields?.status?.stringValue === 'completed');
+    expect(Boolean(completed)).toBe(true);
+  });
+
+  test('stale claim jobs are superseded and lease contention prevents identity writes', async () => {
+    let identityCalls = 0;
+    __adminTest.setIdentity(async () => { identityCalls++; return { role: 'marketing', previousRole: null }; });
+    __adminTest.setFirestore((collection) => collection === 'staffMembers' ? { roleVersion: 4 } : null);
+    __adminTest.setQuery(() => [{ name: 'staffClaimSync/stale', updateTime: 'u1', data: {
+      uid: 'staff-1', desiredRole: 'admin', desiredActive: true, desiredVersion: 3, status: 'pending', attempts: 0, nextAttemptAt: new Date(0).toISOString(),
+    } }]);
+    const writes: unknown[][] = []; __adminTest.captureCommits(writes);
+    await processStaffClaimSync(env);
+    expect(identityCalls).toBe(0);
+    __adminTest.setFirestore((collection) => collection === 'staffClaimSyncLocks' ? { expiresAt: new Date(Date.now() + 60000).toISOString() } : { roleVersion: 4 });
+    await processStaffClaimSync(env);
+    expect(identityCalls).toBe(0);
+  });
+
+  test('claim jobs preserve distinct owner-transfer versions', () => {
+    const target = claimSyncWrite(env, 'new-owner', 'owner', true, 4);
+    const former = claimSyncWrite(env, 'old-owner', 'super_admin', true, 7);
+    expect(target.update.name === former.update.name).toBe(false);
+    expect(target.update.fields.desiredVersion.integerValue).toBe('4');
+    expect(former.update.fields.desiredVersion.integerValue).toBe('7');
   });
 
   test('manual review validates transitions, emits a unique verification event, and cannot forge official identity', async () => {

@@ -3,6 +3,7 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   User as FirebaseUser,
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, serverTimestamp, deleteField } from 'firebase/firestore';
@@ -10,6 +11,7 @@ import { getFirebaseAuth, getFirebaseDb } from './firebaseConfig';
 import { User } from '@/types';
 import { WORKER_BASE_URL } from '@/constants/worker';
 import { takeRegistrationGrant } from './otpService';
+import { requestPasswordReset as requestPasswordResetResult } from './passwordReset';
 
 export function subscribeToAuthState(callback: (user: FirebaseUser | null) => void) {
   const auth = getFirebaseAuth();
@@ -56,6 +58,14 @@ export async function registerWithEmail(
 export async function logoutUser(): Promise<void> {
   const auth = getFirebaseAuth();
   await signOut(auth);
+}
+
+/**
+ * Password recovery intentionally exposes no account-existence information.
+ * Firebase remains the authority for delivery and reset-token issuance.
+ */
+export async function requestPasswordReset(email: string): Promise<'sent' | 'invalid' | 'unavailable'> {
+  return requestPasswordResetResult((normalized) => sendPasswordResetEmail(getFirebaseAuth(), normalized), email);
 }
 
 export async function fetchUserProfile(uid: string): Promise<User | null> {

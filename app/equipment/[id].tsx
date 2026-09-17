@@ -14,6 +14,7 @@ import { getImageUrl } from '@/utils/imageHelpers';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import RentalRequestModal, { RentalRequestDraft } from '@/components/RentalRequestModal';
+import { checkListingAvailability, WorkerError } from '@/services/workerClient';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -136,7 +137,8 @@ export default function EquipmentDetailScreen() {
   const handleSubmitRequest = async (draft: RentalRequestDraft) => {
     if (!equipment || !currentUser) return;
     try {
-      const startDate = new Date().toISOString();
+      const start = new Date();
+      const startDate = start.toISOString().slice(0, 10);
 
       let endDate = '';
       let amount = 0;
@@ -145,10 +147,16 @@ export default function EquipmentDetailScreen() {
 
       if (draft.requestMode === 'fixed_days') {
         const days = draft.numberOfDays || 0;
-        endDate = new Date(Date.now() + days * 86400000).toISOString();
+        endDate = new Date(start.getTime() + days * 86400000).toISOString().slice(0, 10);
         amount = equipment.pricePerDay * days;
         platformFee = Math.round(amount * 0.1);
         providerAmount = amount - platformFee;
+      }
+
+      const availability = await checkListingAvailability(equipment.id, { from: startDate, ...(endDate ? { until: endDate } : {}) });
+      if (!availability.available) {
+        showDialog(t('error_title'), availability.reason || t('listing_unavailable_dates'), [{ text: t('ok'), style: 'default' }]);
+        return;
       }
 
       const requestPayload = {
@@ -194,7 +202,7 @@ export default function EquipmentDetailScreen() {
     } catch (e) {
       showDialog(
         t('error_title'),
-        t('error_generic_message'),
+        e instanceof WorkerError && e.code === 'AVAILABILITY_CONFLICT' ? t('listing_unavailable_dates') : t('error_generic_message'),
         [{ text: t('ok'), style: 'default' }]
       );
       throw e;

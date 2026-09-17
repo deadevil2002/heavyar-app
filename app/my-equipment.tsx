@@ -2,17 +2,18 @@ import React, { useCallback, useState, useEffect } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { ArrowLeft, ArrowRight, Plus, Edit3, Trash2, Eye, EyeOff } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, Plus, Edit3, Trash2, Eye, EyeOff, Archive } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchEquipmentByOwner, deleteEquipmentWithCleanup } from '@/services/firestoreService';
+import { fetchEquipmentByOwner } from '@/services/firestoreService';
 import EmptyState from '@/components/EmptyState';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { Equipment } from '@/types';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
+import { setListingControls, archiveListing, deleteListing, WorkerError } from '@/services/workerClient';
 
 export default function MyEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -22,6 +23,7 @@ export default function MyEquipmentScreen() {
   const currentUid = user?.uid || '';
   const [myEquipment, setMyEquipment] = useState<Equipment[]>([]);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const { dialog, showDialog, hideDialog } = useAppDialog();
@@ -65,11 +67,11 @@ export default function MyEquipmentScreen() {
           onPress: async () => {
             setDeletingId(item.id);
             try {
-              await deleteEquipmentWithCleanup(item.id);
+              const outcome = await deleteListing(item.id);
               setMyEquipment(prev => prev.filter(e => e.id !== item.id));
               showDialog(
                 t('success'),
-                t('delete_success'),
+                outcome.action === 'archived' || outcome.preservedRentalHistory ? t('listing_archived_history') : t('delete_success'),
                 [{ text: t('ok'), style: 'default' }]
               );
             } catch (e) {
@@ -87,9 +89,39 @@ export default function MyEquipmentScreen() {
     );
   }, [t, localizedText, showDialog]);
 
+  const handleArchive = useCallback((item: Equipment) => {
+    showDialog(t('archive_listing'), t('archive_listing_confirm'), [
+      { text: t('cancel'), style: 'cancel' },
+      { text: t('archive_listing'), style: 'default', onPress: async () => {
+        setUpdatingId(item.id);
+        try {
+          const outcome = await archiveListing(item.id);
+          setMyEquipment(prev => prev.filter(e => e.id !== item.id));
+          showDialog(t('success'), outcome.preservedRentalHistory ? t('listing_archived_history') : t('archive_success'), [{ text: t('ok'), style: 'default' }]);
+        } catch (e) {
+          showDialog(t('error_title'), e instanceof WorkerError && e.code === 'LISTING_LIFECYCLE_LOCKED' ? t('listing_lifecycle_locked') : t('error_generic_message'), [{ text: t('ok'), style: 'default' }]);
+        } finally { setUpdatingId(null); }
+      } },
+    ]);
+  }, [showDialog, t]);
+
+  const handleVisibility = useCallback(async (item: Equipment) => {
+    setUpdatingId(item.id);
+    try {
+      await setListingControls(item.id, item.isActive ? 'hide' : 'show');
+      setMyEquipment(prev => prev.map(e => e.id === item.id ? { ...e, isActive: !item.isActive } : e));
+    } catch (e) {
+      const code = e instanceof WorkerError ? e.code : '';
+      showDialog(t('error_title'), code === 'LISTING_EDIT_LOCKED' ? t('listing_edit_locked') : t('error_generic_message'), [{ text: t('ok'), style: 'default' }]);
+    } finally {
+      setUpdatingId(null);
+    }
+  }, [showDialog, t]);
+
   const renderItem = useCallback(({ item }: { item: Equipment }) => {
     const title = localizedText(item.titleAr, item.titleEn);
     const isDeleting = deletingId === item.id;
+    const isUpdating = updatingId === item.id;
     return (
       <View style={[styles.card, isDeleting && styles.cardDeleting]}>
         <View style={[styles.cardContent, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -111,6 +143,22 @@ export default function MyEquipmentScreen() {
             <Text style={styles.editText}>{t('edit')}</Text>
           </Pressable>
           <Pressable
+            style={[styles.visibilityButton, isUpdating && styles.deleteButtonDisabled]}
+            onPress={() => void handleVisibility(item)}
+            disabled={isUpdating || isDeleting}
+          >
+            {isUpdating ? <ActivityIndicator size="small" color={Colors.gold} /> : item.isActive ? <EyeOff size={16} color={Colors.gold} /> : <Eye size={16} color={Colors.gold} />}
+            <Text style={styles.editText}>{item.isActive ? t('hide_listing') : t('show_listing')}</Text>
+          </Pressable>
+          <Pressable
+            style={styles.archiveButton}
+            onPress={() => handleArchive(item)}
+            disabled={isUpdating || isDeleting}
+          >
+            <Archive size={16} color={Colors.textSecondary} />
+            <Text style={styles.archiveText}>{t('archive_listing')}</Text>
+          </Pressable>
+          <Pressable
             style={[styles.deleteButton, isDeleting && styles.deleteButtonDisabled]}
             onPress={() => handleDelete(item)}
             disabled={isDeleting}
@@ -125,7 +173,7 @@ export default function MyEquipmentScreen() {
         </View>
       </View>
     );
-  }, [isRTL, t, localizedText, router, deletingId, handleDelete]);
+  }, [isRTL, t, localizedText, router, deletingId, updatingId, handleDelete, handleVisibility, handleArchive]);
 
   return (
     <View style={styles.container}>
@@ -193,6 +241,9 @@ const styles = StyleSheet.create({
   editButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8, borderRadius: 10, backgroundColor: 'rgba(212, 168, 67, 0.1)' },
   editText: { color: Colors.gold, fontSize: 13, fontWeight: '600' as const },
   deleteButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8, borderRadius: 10, backgroundColor: 'rgba(231, 76, 60, 0.1)' },
+  visibilityButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8, borderRadius: 10, backgroundColor: 'rgba(212, 168, 67, 0.1)' },
+  archiveButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8, borderRadius: 10, backgroundColor: Colors.surface },
+  archiveText: { color: Colors.textSecondary, fontSize: 13, fontWeight: '600' as const },
   deleteText: { color: Colors.error, fontSize: 13, fontWeight: '600' as const },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60 },
   cardDeleting: { opacity: 0.5 },

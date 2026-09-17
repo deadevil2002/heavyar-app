@@ -74,6 +74,55 @@ The current safe return architecture opens checkout, resumes through the allowli
 Notifications use Expo push tokens, a Worker-owned device/token model, Firestore-backed
 notification records, and an outbox/retry path. Real delivery remains a device-test task.
 
+## Product completion pass — 2026-09-17
+
+The completion pass is implemented in the commit containing this handoff. Resolve its
+literal SHA with `git rev-parse HEAD`; the same SHA is recorded in the final completion
+report. The separate website change remains commit
+`f6cb67e5a47d9c210f084ac3c949aabd86f8c5c9`.
+
+Completed product areas:
+
+- Responsive admin shell, tables, dialogs, dashboard, configuration, security,
+  campaigns, staff/RBAC, ownership transfer, gateways, drivers, and audit views
+- Mobile grid/list preference and Firebase password reset
+- Worker-authoritative listing create/edit/hide/show/archive/delete operations
+- Listing anti-fraud restrictions and transactional daily availability reservations
+- Versioned configuration, canonical staff authority, durable claim synchronization,
+  invitations, and owner transfer
+- Transactional notification outbox plus paginated bilingual promotional campaigns
+- Fail-closed gateway discovery/enforcement; Tap remains TEST only
+- Driver registration, search, service requests, and admin moderation
+- Bilingual authenticated account-deletion page in the separate website repository
+
+Production deployment record:
+
+- Cloudflare Worker `heavyar-api` version:
+  `0182e148-a337-45fd-a4c1-d982e967fec5`
+- Worker health: `https://heavyar-api.heavyar-official.workers.dev/health` returned 200
+- Firestore rules and declared indexes deployed to Firebase project `heavyar-app`
+- Firebase Hosting admin deployed to `https://heavyar-app.web.app`
+- Existing undeclared legacy Firestore index was preserved; deployment did not use
+  `--force`
+- The separate `heavyar-website` Pages deployment remains a manual repository-specific
+  action and was not mixed into this deployment
+
+Validation record:
+
+- Worker: 115 tests, 365 assertions, zero failures
+- Mobile contract tests: 29 tests, zero failures
+- Firestore rules: 10 tests, zero failures
+- Admin: TypeScript check and production Vite build passed
+- Expo dependency compatibility check passed
+- Final clean standalone frozen install and Expo Doctor passed 18/18
+- Final clean standalone Expo web export completed successfully
+- Monorepo Expo Doctor still reports duplicate same-version native modules from the
+  workspace installation, not the clean standalone install
+- Direct browser screenshots at 360, 390, 412, 430, 768, 1366, and 1920 pixels showed
+  no login-screen overflow or clipping. The requested authenticated Playwright pass was
+  attempted twice but Replit's testing infrastructure failed before opening a browser;
+  no real admin credentials or production writes were used.
+
 ## Environment and secret names
 
 Only names are listed below. Values must be supplied through the appropriate secret or
@@ -321,16 +370,21 @@ Do not commit Apple passwords, certificates, provisioning profiles, or private k
 
 ## Known blockers
 
-1. Android EAS builds failed twice in the dependency-install phase because Expo build
+1. Native Android/iOS binaries were intentionally not built during this pass.
+2. Android EAS builds previously failed twice in the dependency-install phase because Expo build
    workers encountered registry `ConnectionRefused`/`FailedToOpenSocket` errors.
-2. iOS internal distribution requires Apple signing credentials and device provisioning.
-3. Real-device push, deep-link, cold-start, and payment-return testing is pending.
-4. Official Nafath remains disabled pending authorized onboarding/API/certificate material.
-5. Tap Live remains disabled; only Tap TEST is configured.
-6. Android 16 KB compatibility cannot be conclusively claimed until a binary exists.
-7. Firebase Android/iOS API-key restriction status still requires authorized Google API
+3. iOS internal distribution requires Apple signing credentials and device provisioning.
+4. Real-device push, deep-link, cold-start, and payment-return testing is pending.
+5. Official Nafath remains disabled pending authorized onboarding/API/certificate material.
+6. Tap Live remains disabled; only Tap TEST is configured.
+7. Moyasar and MyFatoorah remain unavailable until real adapters and authorized
+   credentials are supplied.
+8. Android 16 KB compatibility cannot be conclusively claimed until a binary exists.
+9. Firebase Android/iOS API-key restriction status still requires authorized Google API
    Keys API access.
-8. Store screenshots, feature graphics, and final localized listing metadata remain.
+10. Store screenshots, feature graphics, and final localized listing metadata remain.
+11. Physical-device and authenticated production-admin browser QA remain human release
+    gates.
 
 ## Dependency and security notes
 

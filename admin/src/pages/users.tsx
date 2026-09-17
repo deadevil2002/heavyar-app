@@ -74,12 +74,12 @@ export default function Users() {
         </div>
         
         <form onSubmit={handleSearch} className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input 
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('البحث عن مستخدم...', 'Search users...')} 
-            className="pl-9 bg-card border-border"
+            className="ps-9 bg-card border-border"
           />
         </form>
       </div>
@@ -94,7 +94,7 @@ export default function Users() {
               <TableHead className="font-semibold text-foreground">{t('الدور', 'Role')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الحالة', 'Status')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('التحقق', 'Verification')}</TableHead>
-              <TableHead className="text-right"></TableHead>
+              <TableHead className="text-end"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -129,7 +129,7 @@ export default function Users() {
                   <TableCell>
                     <TrustIndicator value={user} language={language} />
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-end">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" className="h-8 w-8 p-0">
@@ -139,24 +139,24 @@ export default function Users() {
                       <DropdownMenuContent align="end">
                         {user.suspensionStatus !== 'active' && user.suspensionStatus ? (
                           <DropdownMenuItem onClick={() => handleAction(user, 'unsuspend_user')} className="text-emerald-500">
-                            <ShieldCheck className="mr-2 h-4 w-4" />
+                            <ShieldCheck className="me-2 h-4 w-4" />
                             {t('إلغاء الإيقاف', 'Unsuspend')}
                           </DropdownMenuItem>
                         ) : (
                           <DropdownMenuItem onClick={() => handleAction(user, 'suspend_user')} className="text-destructive">
-                            <ShieldAlert className="mr-2 h-4 w-4" />
+                            <ShieldAlert className="me-2 h-4 w-4" />
                             {t('إيقاف الحساب', 'Suspend')}
                           </DropdownMenuItem>
                         )}
                         <DropdownMenuSeparator />
                         {user.role !== 'admin' && user.role !== 'super_admin' ? (
                           <DropdownMenuItem onClick={() => handleAction(user, 'grant_role')} className="text-amber-500">
-                            <UserCheck className="mr-2 h-4 w-4" />
+                            <UserCheck className="me-2 h-4 w-4" />
                             {t('منح صلاحية مدير', 'Grant Admin')}
                           </DropdownMenuItem>
                         ) : (
                           <DropdownMenuItem onClick={() => handleAction(user, 'revoke_role')} className="text-destructive">
-                            <UserMinus className="mr-2 h-4 w-4" />
+                            <UserMinus className="me-2 h-4 w-4" />
                             {t('سحب صلاحية مدير', 'Revoke Admin')}
                           </DropdownMenuItem>
                         )}

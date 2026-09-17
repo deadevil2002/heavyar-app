@@ -30,10 +30,10 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, h
   if (!token) throw new Error('Unauthorized');
 
   const url = `${API_BASE}${endpoint}`;
-  
+
   const headers = new Headers(options.headers);
   headers.set('Authorization', `Bearer ${token}`);
-  
+
   if (!(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   } else {
@@ -41,7 +41,7 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, h
   }
 
   const response = await fetch(url, { ...options, headers });
-  
+
   if (!response.ok) {
     let message = response.statusText;
     try {
@@ -60,7 +60,7 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, h
     }
     throw new ApiError(message || 'API Error', response.status);
   }
-  
+
   const data = await response.json();
   if (data.error) {
     throw new Error(data.error);
@@ -75,7 +75,7 @@ export type PaginatedResponse<T> = {
 };
 
 // Types
-export type AdminSession = { role: 'admin' | 'super_admin' };
+export type AdminSession = { role: 'admin' | 'super_admin'; bootstrapRequired?: boolean; uid?: string; };
 export type TrustStatus = 'unverified' | 'pending' | 'verified' | 'rejected' | 'expired' | 'manual_review' | 'restricted' | 'require_verification' | 'require_manual_review' | 'restrict' | 'block';
 export type TrustFields = {
   verificationStatus?: TrustStatus;
@@ -96,9 +96,22 @@ export type Invoice = { id: string; invoiceNumber?: string; totalAmount?: number
 export type Refund = { id: string; state?: string; amount: number; requestId?: string; originalPaymentId?: string };
 export type Complaint = { id: string; status: string; description: string; customerUid: string; providerUid?: string; requestId?: string } & TrustFields;
 export type ProviderConfig = { id: string; providerId?: string; enabled?: boolean; environment?: string; settings?: Record<string, any> };
-export type VersionedConfig = { id: string; version: string; data?: any; key?: string };
+export type VersionedConfig = { id: string; version: string; data?: any; key?: string; updatedAt?: string; registrationEnabled?: boolean; maintenanceMode?: boolean; requireEmailVerification?: boolean; autoApproveProviders?: boolean; ownerUid?: string; };
 export type AuditEntry = { id: string; actorUid: string; action: string; targetType: string; targetId: string; before?: any; after?: any; reason?: string; timestamp: string };
-export type OverviewMetrics = { totalUsers: number; activeProviders: number; activeRequests: number; payments: number; equipmentListings: number; invoices: number; openComplaints: number };
+export type OverviewMetrics = {
+  totalUsers: number;
+  activeProviders: number;
+  activeRequests: number;
+  payments: number;
+  equipmentListings: number;
+  invoices: number;
+  openComplaints: number;
+  failedPayments?: number;
+  suspendedAccounts?: number[];
+  recentAuditEvents?: any[];
+  paidSarVolume?: number;
+  pendingSarVolume?: number;
+};
 export type OverviewResponse = { success: boolean; metrics: OverviewMetrics };
 export type NotificationFailure = {
   id: string;
@@ -199,14 +212,14 @@ export function useAudit(params: Record<string, any> = {}) { return useListQuery
 
 export function useActionMutation() {
   return useMutation({
-    mutationFn: (data: { action: string; targetType: string; targetId: string; reason?: string; payload?: any }) => 
+    mutationFn: (data: { action: string; targetType: string; targetId: string; reason?: string; payload?: any }) =>
       fetchApi('/action', { method: 'POST', body: JSON.stringify(data) }),
   });
 }
 
 export function useRolesMutation() {
   return useMutation({
-    mutationFn: (data: { uid: string; role: 'admin' | 'super_admin' | 'none' }) => 
+    mutationFn: (data: { uid: string; role: 'admin' | 'super_admin' | 'none' }) =>
       fetchApi('/roles', { method: 'POST', body: JSON.stringify(data) }),
   });
 }

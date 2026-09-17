@@ -10,17 +10,19 @@ import {
   useLocation,
   Router as WouterRouter,
 } from 'wouter';
-import { useAdminSession, queryClient } from '@/lib/api';
+import { useAdminSession, queryClient, fetchApi } from '@/lib/api';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { AppStateProvider } from '@/lib/app-state';
 import { Layout } from '@/components/Layout';
 import { Button } from '@/components/ui/button';
-import { LogOut, ShieldAlert } from 'lucide-react';
+import { LogOut, ShieldAlert, Loader2 } from 'lucide-react';
+import { useMutation } from '@tanstack/react-query';
 
 // Pages
 import Dashboard from '@/pages/dashboard';
 import Users from '@/pages/users';
 import Providers from '@/pages/providers';
+import Drivers from '@/pages/drivers';
 import Equipment from '@/pages/equipment';
 import Requests from '@/pages/requests';
 import Payments from '@/pages/payments';
@@ -34,6 +36,40 @@ import Audit from '@/pages/audit';
 import Notifications from '@/pages/notifications';
 import Login from '@/pages/login';
 import PublicPage, { type PublicPageKind } from '@/pages/public';
+import Security from '@/pages/security';
+import Campaigns from '@/pages/campaigns';
+import Staff from '@/pages/staff';
+import Gateways from '@/pages/gateways';
+
+function BootstrapRequired() {
+  const { logout, refreshClaims } = useAuth();
+
+  const bootstrapMutation = useMutation({
+    mutationFn: () => fetchApi('/owner-bootstrap', { method: 'POST' }),
+    onSuccess: async () => {
+      await refreshClaims();
+    },
+  });
+
+  return (
+    <div className="flex flex-col h-screen items-center justify-center bg-background text-center p-4">
+      <ShieldAlert className="w-16 h-16 text-primary mb-4" />
+      <h1 className="text-2xl font-bold mb-2">Bootstrap Required</h1>
+      <p className="text-muted-foreground mb-8 max-w-md">
+        This system has no registered owner. As a legacy super admin, you must bootstrap your account to assume ownership before accessing the system.
+      </p>
+      <div className="flex gap-4">
+        <Button onClick={() => bootstrapMutation.mutate()} disabled={bootstrapMutation.isPending}>
+          {bootstrapMutation.isPending && <Loader2 className="ms-2 h-4 w-4 animate-spin" />}
+          Bootstrap Owner Account
+        </Button>
+        <Button variant="outline" onClick={logout} disabled={bootstrapMutation.isPending}>
+          <LogOut className="w-4 h-4 me-2" /> Sign Out
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 function Router() {
   const [location] = useLocation();
@@ -68,6 +104,10 @@ function Router() {
     );
   }
 
+  if (session?.bootstrapRequired) {
+    return <BootstrapRequired />;
+  }
+
   return (
     <Layout>
       <RoutedErrorBoundary>
@@ -75,6 +115,7 @@ function Router() {
           <Route path="/" component={Dashboard} />
           <Route path="/users" component={Users} />
           <Route path="/providers" component={Providers} />
+          <Route path="/drivers" component={Drivers} />
           <Route path="/equipment" component={Equipment} />
           <Route path="/requests" component={Requests} />
           <Route path="/payments" component={Payments} />
@@ -86,6 +127,10 @@ function Router() {
           <Route path="/configuration" component={Configuration} />
           <Route path="/audit" component={Audit} />
           <Route path="/notifications" component={Notifications} />
+          <Route path="/security" component={Security} />
+          <Route path="/campaigns" component={Campaigns} />
+          <Route path="/staff" component={Staff} />
+          <Route path="/gateways" component={Gateways} />
           <Route component={NotFound} />
         </Switch>
       </RoutedErrorBoundary>

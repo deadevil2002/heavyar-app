@@ -68,12 +68,12 @@ export default function Equipment() {
         </div>
         
         <form onSubmit={handleSearch} className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input 
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('البحث عن معدة...', 'Search equipment...')} 
-            className="pl-9 bg-card border-border"
+            className="ps-9 bg-card border-border"
           />
         </form>
       </div>
@@ -88,7 +88,7 @@ export default function Equipment() {
               <TableHead className="font-semibold text-foreground">{t('السعر', 'Rate')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الحالة', 'Status')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الاعتماد', 'Moderation')}</TableHead>
-              <TableHead className="text-right"></TableHead>
+              <TableHead className="text-end"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -128,7 +128,7 @@ export default function Equipment() {
                       {item.moderationStatus || t('قيد المراجعة', 'Pending')}
                     </span>
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-end">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" className="h-8 w-8 p-0">
@@ -138,17 +138,17 @@ export default function Equipment() {
                       <DropdownMenuContent align="end">
                         {!item.isActive ? (
                           <DropdownMenuItem onClick={() => handleAction(item, 'unhide_equipment')} className="text-emerald-500">
-                            <CheckCircle className="mr-2 h-4 w-4" />
+                            <CheckCircle className="me-2 h-4 w-4" />
                             {t('إظهار', 'Unhide')}
                           </DropdownMenuItem>
                         ) : (
                           <DropdownMenuItem onClick={() => handleAction(item, 'hide_equipment')} className="text-amber-500">
-                            <XCircle className="mr-2 h-4 w-4" />
+                            <XCircle className="me-2 h-4 w-4" />
                             {t('إخفاء', 'Hide')}
                           </DropdownMenuItem>
                         )}
                         <DropdownMenuItem onClick={() => handleAction(item, 'suspend_equipment')} className="text-destructive">
-                          <XCircle className="mr-2 h-4 w-4" />
+                          <XCircle className="me-2 h-4 w-4" />
                           {t('إيقاف', 'Suspend')}
                         </DropdownMenuItem>
                       </DropdownMenuContent>

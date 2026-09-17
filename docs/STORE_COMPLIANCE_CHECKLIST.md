@@ -66,6 +66,22 @@ Do not submit until the store owner has:
 5. Reviewed the final public privacy, terms, support, and deletion content.
 6. Confirmed Tap Live and unofficial Nafath remain disabled unless separately authorized.
 
+## Product completion update — 2026-09-17
+
+- Worker-authoritative listing lifecycle, transactional availability reservations,
+  canonical staff RBAC, ownership transfer, gateway enforcement, campaigns, and driver
+  moderation are implemented.
+- Firestore rules/indexes, Worker version
+  `0182e148-a337-45fd-a4c1-d982e967fec5`, and the Firebase-hosted admin were deployed.
+- Tap remains TEST only. Moyasar and MyFatoorah remain disabled without authorized
+  adapters/credentials. Official Nafath remains disabled.
+- Mobile and public website account-deletion paths are implemented; the store owner
+  still owns fulfillment verification and the final retention disclosures.
+- Native builds, signing, physical-device QA, store declarations, reviewer access, and
+  submission remain human-owned release gates.
+- The final app SHA is the commit containing the updated handoff documents and is
+  recorded literally in the completion report.
+
 ## Final audit note
 
 The permanent Phase 5 baseline is tag `heavyar-phase5-baseline` at

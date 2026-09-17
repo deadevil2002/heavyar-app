@@ -45,6 +45,12 @@ export interface CloudinaryImage {
 }
 
 export type EquipmentImage = string | CloudinaryImage;
+export interface EquipmentAvailability {
+  from: string;
+  until?: string;
+  blocked?: { from: string; until?: string }[];
+  temporarilyUnavailable?: boolean;
+}
 
 export interface Equipment {
   id: string;
@@ -66,7 +72,7 @@ export interface Equipment {
   };
   pricePerDay: number;
   images: EquipmentImage[];
-  availability: boolean;
+  availability: boolean | EquipmentAvailability;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;

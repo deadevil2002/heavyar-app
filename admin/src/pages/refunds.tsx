@@ -68,12 +68,12 @@ export default function Refunds() {
         </div>
         
         <form onSubmit={handleSearch} className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input 
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('البحث...', 'Search...')} 
-            className="pl-9 bg-card border-border"
+            className="ps-9 bg-card border-border"
           />
         </form>
       </div>
@@ -86,7 +86,7 @@ export default function Refunds() {
               <TableHead className="font-semibold text-foreground">{t('رقم الطلب', 'Request ID')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('المبلغ', 'Amount')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الحالة', 'State')}</TableHead>
-              <TableHead className="text-right"></TableHead>
+              <TableHead className="text-end"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -117,7 +117,7 @@ export default function Refunds() {
                       {item.state}
                     </span>
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-end">
                   </TableCell>
                 </TableRow>
               ))

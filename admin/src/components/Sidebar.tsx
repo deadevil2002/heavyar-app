@@ -2,12 +2,13 @@ import { Link, useLocation } from 'wouter';
 import { 
   LayoutDashboard, Users, Truck, Wrench, FileText, 
   CreditCard, FileBox, Undo2, AlertOctagon, ShieldCheck, 
-  Settings, Database, History, Bell, LogOut, Globe, Menu, X
+  Settings, Database, History, Bell, LogOut, Globe, Menu, X,
+  Shield, Megaphone, UserCog, Wallet, Car
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { useAppState } from '@/lib/app-state';
 import { useAdminSession } from '@/lib/api';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 
 export function Sidebar() {
@@ -17,12 +18,18 @@ export function Sidebar() {
   const { data: session } = useAdminSession();
   const [isOpen, setIsOpen] = useState(false);
 
+  // Close sidebar when location changes (mobile)
+  useEffect(() => {
+    setIsOpen(false);
+  }, [location]);
+
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
 
   const links = [
     { href: '/', icon: LayoutDashboard, label: t('لوحة القيادة', 'Dashboard') },
     { href: '/users', icon: Users, label: t('المستخدمين', 'Users') },
     { href: '/providers', icon: Truck, label: t('المزودين', 'Providers') },
+    { href: '/drivers', icon: Car, label: t('السائقين', 'Drivers') },
     { href: '/equipment', icon: Wrench, label: t('المعدات', 'Equipment') },
     { href: '/requests', icon: FileText, label: t('الطلبات', 'Requests') },
     { href: '/payments', icon: CreditCard, label: t('المدفوعات', 'Payments') },
@@ -34,6 +41,9 @@ export function Sidebar() {
   ];
 
   const adminLinks = [
+    { href: '/campaigns', icon: Megaphone, label: t('الحملات الترويجية', 'Campaigns') },
+    { href: '/staff', icon: UserCog, label: t('فريق العمل', 'Staff') },
+    { href: '/gateways', icon: Wallet, label: t('بوابات الدفع', 'Payment Gateways') },
     { href: '/providers-config', icon: Settings, label: t('إعدادات المزودين', 'Provider Configs') },
     { href: '/configuration', icon: Database, label: t('تكوين النظام', 'Configuration') },
     { href: '/audit', icon: History, label: t('سجل التدقيق', 'Audit Log') },
@@ -53,25 +63,31 @@ export function Sidebar() {
 
   return (
     <>
-      <div className="md:hidden fixed top-0 left-0 right-0 h-16 bg-card border-b border-border z-50 flex items-center justify-between px-4">
+      {/* Mobile Top Header */}
+      <div className="md:hidden fixed top-0 inset-x-0 h-16 bg-background border-b border-border z-40 flex items-center justify-between px-4 transition-opacity">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => setIsOpen(!isOpen)} aria-label={t('فتح القائمة', 'Open menu')} aria-expanded={isOpen}>
-            {isOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+          <Button variant="ghost" size="icon" onClick={() => setIsOpen(true)} aria-label={t('فتح القائمة', 'Open menu')}>
+            <Menu className="w-6 h-6" />
           </Button>
-          <div className="font-bold text-xl tracking-tight text-primary">HEAVYAR</div>
+          <div className={`font-bold text-xl tracking-tight text-primary transition-opacity ${isOpen ? 'opacity-0' : 'opacity-100'}`}>HEAVYAR</div>
         </div>
          <Button variant="ghost" size="icon" onClick={toggleLanguage} title={t('تغيير اللغة', 'Toggle Language')} aria-label={t('تغيير اللغة', 'Toggle Language')}>
           <Globe className="w-5 h-5" />
         </Button>
       </div>
       
+      {/* Mobile Backdrop */}
       {isOpen && (
         <div className="md:hidden fixed inset-0 bg-background/80 backdrop-blur-sm z-40" onClick={() => setIsOpen(false)} />
       )}
       
+      {/* Sidebar Drawer */}
       <aside className={`fixed inset-y-0 start-0 z-50 w-64 bg-sidebar border-e border-sidebar-border transition-transform transform ${isOpen ? 'translate-x-0' : 'rtl:translate-x-full ltr:-translate-x-full md:translate-x-0'} flex flex-col`}>
-        <div className="h-16 flex items-center px-6 border-b border-sidebar-border/50">
+        <div className="h-16 flex items-center justify-between px-6 border-b border-sidebar-border/50 shrink-0">
           <div className="font-bold text-2xl tracking-tight text-primary">HEAVYAR<span className="text-muted-foreground text-sm ms-2 font-normal">ADMIN</span></div>
+          <Button variant="ghost" size="icon" className="md:hidden -me-2" onClick={() => setIsOpen(false)}>
+            <X className="w-5 h-5" />
+          </Button>
         </div>
         
         <div className="flex-1 overflow-y-auto py-6 px-4 space-y-1">
@@ -87,12 +103,18 @@ export function Sidebar() {
           )}
         </div>
         
-        <div className="p-4 border-t border-sidebar-border/50 space-y-2">
+        <div className="p-4 border-t border-sidebar-border/50 space-y-2 shrink-0">
+          <Link href="/security">
+            <Button variant="outline" className="w-full justify-start gap-3 bg-transparent border-white/10 hover:bg-white/5 cursor-pointer">
+              <Shield className="w-4 h-4" />
+              {t('الأمان', 'Security')}
+            </Button>
+          </Link>
           <Button variant="outline" className="w-full justify-start gap-3 bg-transparent border-white/10 hover:bg-white/5" onClick={toggleLanguage}>
             <Globe className="w-4 h-4" />
             {t('English', 'عربي')}
           </Button>
-          <Button variant="destructive" className="w-full justify-start gap-3 bg-red-500/10 text-red-500 hover:bg-red-500/20 hover:text-red-400 border-none" onClick={logout}>
+          <Button variant="destructive" className="w-full justify-start gap-3 bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive border-none" onClick={logout}>
             <LogOut className="w-4 h-4" />
             {t('تسجيل الخروج', 'Logout')}
           </Button>

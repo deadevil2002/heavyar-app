@@ -47,6 +47,16 @@ describe('worker security boundary', () => {
     expect((await worker.fetch(request('/api/account/deletion-request', { confirmation: 'DELETE_MY_ACCOUNT' }), env)).status).toBe(401);
   });
 
+  test('explicitly disabled Tap TEST gateway blocks payment creation', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    __test.setFirestore((collection) => collection === 'equipmentRequests' ? paidFixture
+      : collection === 'equipment' ? { isActive: true, ownerUid: 'provider-1', pricePerDay: 10 }
+      : collection === 'paymentGateways' ? { enabled: false }
+      : collection === 'users' ? { accountStatus: 'active' } : null);
+    const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
+    expect(response.status).toBe(503);
+  });
+
   test('account deletion requires explicit confirmation and does not reveal account data', async () => {
     __test.setAuth({ uid: 'delete-user', admin: false });
     __test.setDeletionDevices([]);
@@ -542,5 +552,35 @@ describe('worker security boundary', () => {
       expect(duplicate.status).toBe(200);
       expect(duplicateCommits.length).toBe(0);
     } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
+  });
+
+  test('driver search enforces canonical filters, date bounds, trust, and privacy', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (!String(input).includes(':runQuery')) return new Response('{}');
+      return new Response(JSON.stringify([{ document: { name: 'projects/p/databases/(default)/documents/driverProfiles/d1', fields: {
+        uid: { stringValue: 'd1' }, displayName: { stringValue: 'Driver' },
+        equipmentTypes: { arrayValue: { values: [{ stringValue: 'crane' }] } }, region: { stringValue: 'Riyadh' }, city: { stringValue: 'Riyadh' },
+        availableFrom: { stringValue: '2026-01-01' }, availableUntil: { stringValue: '2026-01-31' }, trustStatus: { stringValue: 'verified' },
+        phone: { stringValue: '+966' }, privateNotes: { stringValue: 'secret' }, active: { booleanValue: true }, moderationStatus: { stringValue: 'approved' },
+      } } }]));
+    }) as typeof fetch;
+    __test.setFirestore((collection, id) => collection === 'driverProfiles' ? {
+      uid: id, displayName: 'Driver', equipmentTypes: ['crane'], region: 'Riyadh', city: 'Riyadh',
+      availableFrom: '2026-01-01', availableUntil: '2026-01-31', trustStatus: 'verified',
+      phone: '+966500000000', email: 'private@test.invalid', privateNotes: 'secret', active: true, moderationStatus: 'approved',
+    } : null);
+    const canonical = await worker.fetch(new Request('https://worker.test/api/drivers/search?equipment=crane&availableFrom=2026-01-10&availableUntil=2026-01-20&trustStatus=verified&region=Riyadh&city=Riyadh', { headers: { Authorization: 'Bearer test' } }), env);
+    expect(canonical.status).toBe(200);
+    const body: any = await canonical.json(); expect(body.drivers.length).toBe(1);
+    expect(JSON.stringify(body).includes('privateNotes')).toBe(false);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?equipment=excavator', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(200);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableFrom=2026-02-01', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(200);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableUntil=2025-12-01', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(200);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableFrom=bad', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(400);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableFrom=2026-02-01&availableUntil=2026-01-01', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(400);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?equipmentType=crane', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(400);
+    globalThis.fetch = oldFetch;
   });
 });

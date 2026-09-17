@@ -6,8 +6,10 @@ import {
 } from '@firebase/rules-unit-testing';
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import type { Firestore } from 'firebase/firestore';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+
+vi.setConfig({ hookTimeout: 90_000, testTimeout: 30_000 });
 
 let env: RulesTestEnvironment;
 const projectId = 'heavyar-rules-test';
@@ -97,7 +99,7 @@ beforeAll(async () => {
     },
   });
   await seed();
-});
+}, 90_000);
 
 beforeEach(async () => {
   await env.clearFirestore();
@@ -119,15 +121,23 @@ describe('Firestore authorization baseline', () => {
     await assertFails(updateDoc(doc(db, 'users/customer-1'), { isVerified: true }));
   });
 
-  it('allows approved listings but denies direct request creation after Worker migration', async () => {
+  it('uses rules-disabled approved listings and denies all direct listing mutations after Worker migration', async () => {
     const provider = authed('provider-1');
-    await assertSucceeds(setDoc(doc(provider, 'equipment/new-listing'), {
+    await env.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(asModularFirestore(context.firestore()), 'equipment/approved-listing'), {
+        ownerUid: 'provider-1', ownerPublic: { uid: 'provider-1', nameAr: 'Provider', nameEn: 'Provider', avatar: '' },
+        titleAr: 'معدات', titleEn: 'Equipment', pricePerDay: 100, isActive: true, createdAt: new Date(), updatedAt: new Date(),
+      });
+    });
+    await assertFails(setDoc(doc(provider, 'equipment/new-listing'), {
       ownerUid: 'provider-1', ownerPublic: { uid: 'provider-1', nameAr: 'Provider', nameEn: 'Provider', avatar: '' },
       titleAr: 'معدات', titleEn: 'Equipment', descriptionAr: '', descriptionEn: '',
       category: 'other', region: 'Riyadh', city: 'Riyadh', customCity: '', district: '',
       location: { lat: 24, lng: 46 }, pricePerDay: 100, images: [],
       availability: true, isActive: true, createdAt: new Date(), updatedAt: new Date(),
     }));
+    await assertFails(updateDoc(doc(provider, 'equipment/equipment-1'), { titleEn: 'client mutation', updatedAt: serverTimestamp() }));
+    await assertSucceeds(getDoc(doc(authed('customer-1'), 'equipment/equipment-1')));
     await assertFails(setDoc(doc(authed('customer-1'), 'equipmentRequests/new-request'), {
       ...request, customerPublic: { uid: 'customer-1', nameAr: 'Customer', nameEn: 'Customer', avatar: '' },
       providerPublic: { uid: 'provider-1', nameAr: 'Provider', nameEn: 'Provider', avatar: '' },

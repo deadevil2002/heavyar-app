@@ -25,6 +25,28 @@ describe('trusted notification foundation', () => {
     expect((await response.json() as any).preferences.payment).toBe(true);
     expect(writes.length).toBe(1);
   });
+  test('provider listing creation derives owner and rejects privileged client fields', async () => {
+    __test.setAuth({ uid: 'provider-1', admin: false });
+    __test.setFirestore((collection) => collection === 'users' ? {
+      uid: 'provider-1', role: 'provider', isVerified: true, nameAr: 'مزود', nameEn: 'Provider', avatar: '',
+    } : null);
+    const writes: any[] = []; __test.captureCommits(writes);
+    const response = await worker.fetch(request('/api/listings', { method: 'POST', body: JSON.stringify({
+      titleEn: 'Lift', titleAr: 'رافعة', descriptionEn: 'Safe lift', descriptionAr: 'رافعة آمنة',
+      dailyPrice: 100, category: 'heavy', region: 'Riyadh', city: 'Riyadh',
+      availability: { from: '2025-01-01', until: '2025-12-31' }, ownerUid: 'attacker',
+    }) }), env);
+    expect(response.status).toBe(400);
+    expect(writes.length).toBe(0);
+    const valid = await worker.fetch(request('/api/listings', { method: 'POST', body: JSON.stringify({
+      titleEn: 'Lift', titleAr: 'رافعة', descriptionEn: 'Safe lift', descriptionAr: 'رافعة آمنة',
+      dailyPrice: 100, category: 'heavy', region: 'Riyadh', city: 'Riyadh',
+      availability: { from: '2025-01-01', until: '2025-12-31' },
+    }) }), env);
+    expect(valid.status).toBe(201);
+    expect((writes[0] as any)[0].update.fields.ownerUid.stringValue).toBe('provider-1');
+    expect((writes[0] as any)[0].update.fields.moderationStatus.stringValue).toBe('active');
+  });
   test('device registration is UID-bound and stores no client-controlled UID', async () => {
     __test.setAuth({ uid: 'u1', admin: false });
     __test.setFirestore(() => null);

@@ -70,12 +70,12 @@ export default function Payments() {
         </div>
         
         <form onSubmit={handleSearch} className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input 
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('البحث عن دفعة...', 'Search payments...')} 
-            className="pl-9 bg-card border-border"
+            className="ps-9 bg-card border-border"
           />
         </form>
       </div>
@@ -91,7 +91,7 @@ export default function Payments() {
               <TableHead className="font-semibold text-foreground">{t('المرجع', 'Reference')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الحالة', 'State')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الثقة', 'Trust')}</TableHead>
-              <TableHead className="text-right"></TableHead>
+              <TableHead className="text-end"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -125,7 +125,7 @@ export default function Payments() {
                     </span>
                   </TableCell>
                   <TableCell><TrustIndicator value={item} language={language} /></TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-end">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" className="h-8 w-8 p-0">
@@ -135,7 +135,7 @@ export default function Payments() {
                       <DropdownMenuContent align="end">
                         {item.state === 'paid' && (
                           <DropdownMenuItem onClick={() => handleAction(item, 'request_refund')} className="text-amber-500">
-                            <HandCoins className="mr-2 h-4 w-4" />
+                            <HandCoins className="me-2 h-4 w-4" />
                             {t('طلب استرداد', 'Request Refund')}
                           </DropdownMenuItem>
                         )}

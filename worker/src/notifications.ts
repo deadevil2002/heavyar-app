@@ -1,5 +1,5 @@
 export const NOTIFICATION_CATEGORIES = [
-  'rental', 'payment', 'verification', 'complaint', 'security',
+  'rental', 'payment', 'verification', 'complaint', 'security', 'marketing',
 ] as const;
 export type NotificationCategory = typeof NOTIFICATION_CATEGORIES[number];
 export type NotificationEvent =
@@ -10,13 +10,13 @@ export type NotificationEvent =
   | 'verification_pending' | 'verification_completed' | 'manual_review_required'
   | 'verification_rejected' | 'verification_expired' | 'complaint_received'
   | 'complaint_response' | 'complaint_status_changed' | 'complaint_resolved'
-  | 'account_suspended' | 'suspension_lifted' | 'account_restricted';
+  | 'account_suspended' | 'suspension_lifted' | 'account_restricted' | 'campaign_message';
 
 const categoryFor = (event: NotificationEvent): NotificationCategory =>
   event.startsWith('rental_') || event === 'completion_requested' ? 'rental'
     : event.startsWith('payment_') || event === 'refund_updated' ? 'payment'
       : event.startsWith('verification_') || event === 'manual_review_required' ? 'verification'
-        : event.startsWith('complaint_') ? 'complaint' : 'security';
+        : event.startsWith('complaint_') ? 'complaint' : event === 'campaign_message' ? 'marketing' : 'security';
 export const isCriticalCategory = (category: NotificationCategory) =>
   category === 'payment' || category === 'verification' || category === 'security';
 
@@ -45,12 +45,13 @@ const copy: Record<NotificationEvent, [string, string]> = {
   account_suspended: ['تم تعليق الحساب مؤقتاً', 'Account temporarily suspended'],
   suspension_lifted: ['تم رفع تعليق الحساب', 'Account suspension lifted'],
   account_restricted: ['تم تقييد بعض خصائص الحساب', 'Some account features are restricted'],
+  campaign_message: ['رسالة من Heavyar', 'Message from Heavyar'],
 };
 
 export const allowedNotificationEvent = (v: unknown): v is NotificationEvent =>
   typeof v === 'string' && Object.prototype.hasOwnProperty.call(copy, v);
 
-export function notificationFields(uid: string, id: string, event: NotificationEvent, now: string, subjectId?: string) {
+export function notificationFields(uid: string, id: string, event: NotificationEvent, now: string, subjectId?: string, custom?: { titleAr?: string; titleEn?: string; bodyAr?: string; bodyEn?: string; imageUrl?: string; deepLink?: string }) {
   const category = categoryFor(event);
   const [titleAr, titleEn] = copy[event];
   const actionType = subjectId && /^[A-Za-z0-9_-]{1,100}$/.test(subjectId)
@@ -60,15 +61,17 @@ export function notificationFields(uid: string, id: string, event: NotificationE
   if (subjectId) actionFields.subjectId = { stringValue: subjectId };
   return {
     uid: { stringValue: uid }, event: { stringValue: event }, category: { stringValue: category },
-    titleAr: { stringValue: titleAr }, titleEn: { stringValue: titleEn },
-    bodyAr: { stringValue: titleAr }, bodyEn: { stringValue: titleEn },
+    titleAr: { stringValue: custom?.titleAr || titleAr }, titleEn: { stringValue: custom?.titleEn || titleEn },
+    bodyAr: { stringValue: custom?.bodyAr || titleAr }, bodyEn: { stringValue: custom?.bodyEn || titleEn },
     read: { booleanValue: false }, critical: { booleanValue: isCriticalCategory(category) },
     createdAt: { timestampValue: now }, updatedAt: { timestampValue: now },
     action: { mapValue: { fields: actionFields } }, ...(subjectId ? { subjectId: { stringValue: subjectId } } : {}),
+    ...(custom?.imageUrl ? { imageUrl: { stringValue: custom.imageUrl } } : {}),
+    ...(custom?.deepLink ? { deepLink: { stringValue: custom.deepLink } } : {}),
   };
 }
 
-export async function notificationWrite(fullName: (path: string) => string, uid: string, event: NotificationEvent, now: string, subjectId?: string, occurrenceId?: string) {
+export async function notificationWrite(fullName: (path: string) => string, uid: string, event: NotificationEvent, now: string, subjectId?: string, occurrenceId?: string, custom?: { titleAr?: string; titleEn?: string; bodyAr?: string; bodyEn?: string; imageUrl?: string; deepLink?: string }) {
   const occurrenceKey = occurrenceId || `${event}:${subjectId || 'account'}`;
   // Deterministic, URL-safe, bounded identifier. The logical occurrence key
   // remains separately persisted for audit/idempotency.
@@ -76,11 +79,11 @@ export async function notificationWrite(fullName: (path: string) => string, uid:
   const digest = btoa(String.fromCharCode(...digestBytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const eventId = `n_${digest}`;
   return {
-    update: { name: fullName(`notificationOutbox/${eventId}`), fields: { notificationId: { stringValue: eventId }, occurrenceKey: { stringValue: occurrenceKey }, status: { stringValue: 'pending' }, ...notificationFields(uid, eventId, event, now, subjectId) } },
+    update: { name: fullName(`notificationOutbox/${eventId}`), fields: { notificationId: { stringValue: eventId }, occurrenceKey: { stringValue: occurrenceKey }, status: { stringValue: 'pending' }, ...notificationFields(uid, eventId, event, now, subjectId, custom) } },
     currentDocument: { exists: false },
   };
 }
 
 export const defaultNotificationPreferences = () => ({
-  rental: true, payment: true, verification: true, complaint: true, security: true,
+  rental: true, payment: true, verification: true, complaint: true, security: true, marketing: true,
 });

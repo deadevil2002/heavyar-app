@@ -69,12 +69,12 @@ export default function Requests() {
         </div>
         
         <form onSubmit={handleSearch} className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input 
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('البحث برقم الطلب...', 'Search requests...')} 
-            className="pl-9 bg-card border-border"
+            className="ps-9 bg-card border-border"
           />
         </form>
       </div>
@@ -90,7 +90,7 @@ export default function Requests() {
               <TableHead className="font-semibold text-foreground">{t('حالة الدفع', 'Payment State')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الحالة', 'Status')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الثقة', 'Trust')}</TableHead>
-              <TableHead className="text-right"></TableHead>
+              <TableHead className="text-end"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -132,7 +132,7 @@ export default function Requests() {
                     </span>
                   </TableCell>
                   <TableCell><TrustIndicator value={item} language={language} /></TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-end">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" className="h-8 w-8 p-0">
@@ -141,15 +141,15 @@ export default function Requests() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem onClick={() => handleAction(item, 'cancel_request')} className="text-destructive">
-                          <Ban className="mr-2 h-4 w-4" />
+                          <Ban className="me-2 h-4 w-4" />
                           {t('إلغاء الطلب', 'Cancel Request')}
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => handleAction(item, 'freeze_request')} className="text-blue-500">
-                          <AlertTriangle className="mr-2 h-4 w-4" />
+                          <AlertTriangle className="me-2 h-4 w-4" />
                           {t('تجميد الطلب', 'Freeze Request')}
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => handleAction(item, 'escalate_request')} className="text-amber-500">
-                          <PlayCircle className="mr-2 h-4 w-4" />
+                          <PlayCircle className="me-2 h-4 w-4" />
                           {t('تصعيد الطلب', 'Escalate Request')}
                         </DropdownMenuItem>
                       </DropdownMenuContent>

@@ -18,12 +18,13 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories } from '@/mocks/categories';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionByCityId } from '@/mocks/saudiRegions';
-import { fetchEquipmentById, updateEquipmentWithImageCleanup } from '@/services/firestoreService';
-import { uploadMultipleImages } from '@/services/cloudinaryService';
+import { fetchEquipmentById } from '@/services/firestoreService';
+import { uploadMultipleImages, deleteCloudinaryImage } from '@/services/cloudinaryService';
 import { getImageUrl } from '@/utils/imageHelpers';
 import { Equipment, EquipmentImage } from '@/types';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { updateListing, WorkerError } from '@/services/workerClient';
 
 export default function EditEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -50,6 +51,9 @@ export default function EditEquipmentScreen() {
   const [customCity, setCustomCity] = useState<string>('');
   const [district, setDistrict] = useState<string>('');
   const [price, setPrice] = useState<string>('');
+  const [availabilityFrom, setAvailabilityFrom] = useState<string>('');
+  const [availabilityUntil, setAvailabilityUntil] = useState<string>('');
+  const [temporarilyUnavailable, setTemporarilyUnavailable] = useState<boolean>(false);
 
   const [existingImages, setExistingImages] = useState<EquipmentImage[]>([]);
   const [newImageUris, setNewImageUris] = useState<string[]>([]);
@@ -106,6 +110,13 @@ export default function EditEquipmentScreen() {
         setCustomCity(eq.customCity || '');
         setDistrict(eq.district);
         setPrice(eq.pricePerDay > 0 ? String(eq.pricePerDay) : '');
+        if (typeof eq.availability === 'object' && eq.availability) {
+          setAvailabilityFrom(eq.availability.from || '');
+          setAvailabilityUntil(eq.availability.until || '');
+          setTemporarilyUnavailable(eq.availability.temporarilyUnavailable === true);
+        } else {
+          setAvailabilityFrom(new Date().toISOString().slice(0, 10));
+        }
         setExistingImages([...eq.images]);
       } catch (e) {
         if (mounted) {
@@ -175,11 +186,14 @@ export default function EditEquipmentScreen() {
       showDialog(t('validation_error'), t('validation_images_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(availabilityFrom) || (availabilityUntil && !/^\d{4}-\d{2}-\d{2}$/.test(availabilityUntil)) || (availabilityUntil && availabilityUntil < availabilityFrom)) {
+      showDialog(t('validation_error'), t('availability_invalid'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
 
     setSaving(true);
+    let uploadedNewImages: EquipmentImage[] = [];
     try {
-      let uploadedNewImages: EquipmentImage[] = [];
-
       if (newImageUris.length > 0) {
         setUploadProgress(`${t('uploading_images')} 0/${newImageUris.length}`);
         const cloudinaryResults = await uploadMultipleImages(
@@ -195,36 +209,47 @@ export default function EditEquipmentScreen() {
 
       setUploadProgress(t('saving_changes'));
 
-      await updateEquipmentWithImageCleanup(
-        id,
-        {
-          titleAr,
-          titleEn: titleEn || titleAr,
-          descriptionAr: descAr,
-          descriptionEn: descEn || descAr,
-          category,
-          customCategory: category === 'other' ? customCategory.trim() : '',
-          region,
-          city,
-          customCity,
-          district,
-          pricePerDay: parsedPrice,
-          images: finalImages,
-        },
-        oldImages
-      );
+      await updateListing(id, {
+        titleAr,
+        titleEn: titleEn || titleAr,
+        descriptionAr: descAr,
+        descriptionEn: descEn || descAr,
+        category,
+        customCategory: category === 'other' ? customCategory.trim() : '',
+        region,
+        city,
+        customCity,
+        district,
+        pricePerDay: parsedPrice,
+        images: finalImages,
+        isActive: originalEquipment.isActive,
+        availability: { from: availabilityFrom, ...(availabilityUntil ? { until: availabilityUntil } : {}), temporarilyUnavailable },
+      });
+      const finalPublicIds = new Set(finalImages.map(image => typeof image === 'string' ? '' : image.publicId));
+      await Promise.all(oldImages
+        .map(image => typeof image === 'string' ? '' : image.publicId)
+        .filter(publicId => publicId && !finalPublicIds.has(publicId))
+        .map(publicId => deleteCloudinaryImage(publicId)));
 
       showDialog(t('success'), t('update_success'), [
         { text: t('confirm'), style: 'default', onPress: () => router.back() },
       ]);
     } catch (e) {
-      const message = e instanceof Error ? e.message : t('unexpected_error');
+      await Promise.all(uploadedNewImages
+        .map(image => typeof image === 'string' ? '' : image.publicId)
+        .filter(Boolean)
+        .map(publicId => deleteCloudinaryImage(publicId)));
+      const message = e instanceof WorkerError && e.code === 'LISTING_EDIT_LOCKED'
+        ? t('listing_edit_locked')
+        : e instanceof WorkerError && e.code === 'AVAILABILITY_CONFLICT'
+          ? t('availability_conflict')
+          : t('unexpected_error');
       showDialog(t('error_title'), message, [{ text: t('ok'), style: 'default' }]);
     } finally {
       setSaving(false);
       setUploadProgress('');
     }
-  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, price, existingImages, newImageUris, oldImages, t, router, showDialog]);
+  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, price, existingImages, newImageUris, oldImages, availabilityFrom, availabilityUntil, temporarilyUnavailable, t, router, showDialog]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 
@@ -314,6 +339,15 @@ export default function EditEquipmentScreen() {
                 placeholder={t('title_ar')}
                 placeholderTextColor={Colors.textMuted}
               />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('availability_dates')}</Text>
+              <TextInput style={[styles.textInput, { textAlign: isRTL ? 'right' : 'left' }]} value={availabilityFrom} onChangeText={setAvailabilityFrom} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.textMuted} />
+              <TextInput style={[styles.textInput, { textAlign: isRTL ? 'right' : 'left' }]} value={availabilityUntil} onChangeText={setAvailabilityUntil} placeholder={t('availability_until_optional')} placeholderTextColor={Colors.textMuted} />
+              <Pressable style={[styles.picker, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => setTemporarilyUnavailable(v => !v)}>
+                <Text style={styles.pickerText}>{temporarilyUnavailable ? t('temporarily_unavailable') : t('available')}</Text>
+              </Pressable>
             </View>
 
             <View style={styles.inputGroup}>

@@ -2,19 +2,20 @@ import type { Env } from './index';
 import { canTransitionManualReview, deriveProviderTrust, isProviderComponentName, normalizeRequiredProviderComponents, providerComponentNames, providerVerificationFor, verificationStatuses } from './verification';
 import { normalizeVerificationPolicy } from './verification';
 import { notificationWrite } from './notifications';
+import { gatewayRegistry, campaignRecipients, invitationExpiry, ownerTransferAllowed, normalizeStaffRole, hasPermission, type StaffRole, type Permission } from './completion';
 
 export type AdminRole = 'super_admin' | 'admin';
-export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; email?: string };
+export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; authTime?: number; testInjected?: true };
 
 type RawDoc = { data: any; updateTime?: string; name?: string };
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let commitOverride: unknown[][] | undefined;
-let identityOverride: ((uid: string, role: AdminRole | null) => Promise<{ role: AdminRole | null; previousRole: unknown }>) | undefined;
+let identityOverride: ((uid: string, role: StaffRole | null) => Promise<{ role: StaffRole | null; previousRole: unknown }>) | undefined;
 let queryOverride: ((collection: string, before: string, limit: number) => RawDoc[]) | undefined;
 export const __adminTest = {
   setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; },
   captureCommits(target?: unknown[][]) { commitOverride = target; },
-  setIdentity(fn?: (uid: string, role: AdminRole | null) => Promise<{ role: AdminRole | null; previousRole: unknown }>) { identityOverride = fn; },
+  setIdentity(fn?: (uid: string, role: StaffRole | null) => Promise<{ role: StaffRole | null; previousRole: unknown }>) { identityOverride = fn; },
   setQuery(fn?: (collection: string, before: string, limit: number) => RawDoc[]) { queryOverride = fn; },
 };
 
@@ -104,6 +105,12 @@ const FILTERS: Record<string, string[]> = {
   notifications: ['uid', 'category', 'read'],
   deviceTokens: ['uid', 'active', 'platform'],
   deletionRequests: ['uid', 'status', 'refreshTokenRevocationStatus'],
+  driverProfiles: ['active', 'region', 'city', 'moderationStatus'],
+  driverRequests: ['driverUid', 'requesterUid', 'status'],
+  campaigns: ['status', 'createdBy'],
+  staffMembers: ['role', 'active'],
+  staffInvitations: ['status', 'email'],
+  paymentGateways: ['enabled'],
 };
 
 async function listCollection(env: Env, collection: string, query: Record<string, string>, limit = 30, cursor: string | null = null) {
@@ -204,7 +211,83 @@ async function retryNotificationDeliveries(req: Request, env: Env) {
 }
 
 function allowed(u: AdminUser, role: AdminRole) { return u.role === 'super_admin' || (role === 'admin' && u.role === 'admin'); }
+function can(u: AdminUser, permission: Permission) {
+  const role = normalizeStaffRole(u.permissionRole || u.role);
+  return hasPermission(role, permission);
+}
+async function listingRentalState(env: Env, equipmentId: string) {
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'equipmentRequests' }],
+    where: { compositeFilter: { op: 'AND', filters: [
+      { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: jsonValue(equipmentId) } },
+      { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['pending', 'accepted', 'in_progress', 'completion_requested'].map((x) => jsonValue(x)) } } } },
+    ] } }, limit: 1,
+  } }) }) as any[] || [];
+  return rows.some((row) => row.document);
+}
 function auditId(correlationId: string) { return `audit:${correlationId}`; }
+export function claimSyncWrite(env: Env, uid: string, role: StaffRole | null, active: boolean, version = 1) {
+  const id = `staffClaimSync:${uid}:${version}`;
+  return { update: { name: fullName(env, `staffClaimSync/${encodeURIComponent(id)}`), fields: {
+    uid: jsonValue(uid), desiredRole: jsonValue(role), desiredActive: { booleanValue: active }, desiredVersion: { integerValue: String(version) },
+    status: jsonValue('pending'), attempts: { integerValue: '0' }, nextAttemptAt: { timestampValue: new Date().toISOString() }, createdAt: { timestampValue: new Date().toISOString() },
+  } }, currentDocument: { exists: false } };
+}
+async function claimSyncComplete(env: Env, uid: string, version = 1) {
+  await commit(env, [{ update: { name: fullName(env, `staffClaimSync/${encodeURIComponent(`staffClaimSync:${uid}:${version}`)}`), fields: { status: jsonValue('completed'), completedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'completedAt'] } }]);
+}
+export async function processStaffClaimSync(env: Env) {
+  const rows = queryOverride ? queryOverride('staffClaimSync', '', 25).map((item) => ({ document: { name: item.name || '', updateTime: item.updateTime, fields: Object.fromEntries(Object.entries(item.data || {}).map(([key, value]) => [key, jsonValue(value)])) } })) : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'staffClaimSync' }],
+    where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: jsonValue('pending') } },
+    orderBy: [{ field: { fieldPath: 'nextAttemptAt' }, direction: 'ASCENDING' }], limit: 25,
+  } }) }) as any[] || [];
+  for (const row of rows.filter((x) => x.document)) {
+    const job = decode(row.document), uid = String(job.uid || ''), attempts = Number(job.attempts || 0);
+    if (!uid || (job.nextAttemptAt && Date.parse(String(job.nextAttemptAt)) > Date.now())) continue;
+    try {
+      const currentStaff = await rawDoc(env, 'staffMembers', uid);
+      if (Number(currentStaff?.data?.roleVersion || 0) > Number(job.desiredVersion || 0)) {
+        await commit(env, [{ update: { name: row.document.name, fields: { status: jsonValue('superseded'), supersededAt: { timestampValue: new Date().toISOString() } }, }, updateMask: { fieldPaths: ['status', 'supersededAt'] }, currentDocument: { updateTime: row.document.updateTime } }]);
+        continue;
+      }
+      const lockId = encodeURIComponent(uid), lock = await rawDoc(env, 'staffClaimSyncLocks', lockId), leaseToken = crypto.randomUUID();
+      if (lock?.data?.expiresAt && Date.parse(String(lock.data.expiresAt)) > Date.now()) continue;
+      const renewLease = async () => {
+        const current = await rawDoc(env, 'staffClaimSyncLocks', lockId);
+        if (current?.data?.leaseToken !== leaseToken && current?.data?.leaseToken !== undefined) throw new Error('LEASE_LOST');
+        const expiresAt = new Date(Date.now() + 120000).toISOString();
+        await commit(env, [{ update: { name: fullName(env, `staffClaimSyncLocks/${lockId}`), fields: { uid: jsonValue(uid), jobId: jsonValue(String(row.document.name)), leaseToken: jsonValue(leaseToken), expiresAt: { timestampValue: expiresAt } } }, currentDocument: current?.updateTime ? { updateTime: current.updateTime } : { exists: false } }]);
+        return expiresAt;
+      };
+      await renewLease();
+      let stable = false;
+      for (let attempt = 0; attempt < 3 && !stable; attempt++) {
+        const before = await rawDoc(env, 'staffMembers', uid), version = Number(before?.data?.roleVersion || 0);
+        await renewLease();
+        await setRole(env, { uid: 'system', admin: true, role: 'super_admin' }, uid, before?.data?.active === true ? normalizeStaffRole(before.data.role) : null);
+        const after = await rawDoc(env, 'staffMembers', uid);
+        if (Number(after?.data?.roleVersion || 0) === version) {
+          if (version === Number(job.desiredVersion || 0)) {
+            await commit(env, [{ update: { name: row.document.name, fields: { status: jsonValue('completed'), completedAt: { timestampValue: new Date().toISOString() }, attempts: { integerValue: String(attempts + 1) } } }, updateMask: { fieldPaths: ['status', 'completedAt', 'attempts'] }, currentDocument: { updateTime: row.document.updateTime } }]);
+          } else {
+            await claimSyncComplete(env, uid, version);
+            await commit(env, [{ update: { name: row.document.name, fields: { status: jsonValue('superseded'), supersededAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'supersededAt'] }, currentDocument: { updateTime: row.document.updateTime } }]);
+          }
+          stable = true;
+        }
+      }
+      const finalLock = await rawDoc(env, 'staffClaimSyncLocks', lockId);
+      if (stable && finalLock?.data?.leaseToken === leaseToken) await commit(env, [{ delete: fullName(env, `staffClaimSyncLocks/${lockId}`), currentDocument: { updateTime: finalLock.updateTime } }]);
+      if (!stable) throw new Error('Claim reconciliation exhausted');
+    } catch {
+      const nextAttempts = attempts + 1, delay = Math.min(3600, 30 * (2 ** Math.min(nextAttempts, 7))), next = new Date(Date.now() + delay * 1000).toISOString();
+      await commit(env, [{ update: { name: row.document.name, fields: { status: jsonValue('pending'), attempts: { integerValue: String(nextAttempts) }, nextAttemptAt: { timestampValue: next }, lastError: jsonValue('identity_sync_failed') } }, updateMask: { fieldPaths: ['status', 'attempts', 'nextAttemptAt', 'lastError'] }, currentDocument: { updateTime: row.document.updateTime } }, {
+        update: { name: fullName(env, `adminAudit/claim-sync:${encodeURIComponent(uid)}:${nextAttempts}`), fields: { actorUid: jsonValue('system'), action: jsonValue('claim_sync_pending'), targetType: jsonValue('staff'), targetId: jsonValue(uid), reason: jsonValue('Identity claim synchronization retry scheduled'), timestamp: { timestampValue: new Date().toISOString() } } }, currentDocument: { exists: false },
+      }]);
+    }
+  }
+}
 
 async function auditWrite(env: Env, u: AdminUser, action: string, targetType: string, targetId: string, correlationId: string, reason: string, before?: any, after?: any) {
   return { update: { name: fullName(env, `adminAudit/${encodeURIComponent(auditId(correlationId))}`), fields: {
@@ -226,6 +309,51 @@ function redact(value: any): any {
 
 function validCorrelationId(value: string) {
   return /^[A-Za-z0-9_-]{16,128}$/.test(value);
+}
+
+async function campaignEstimate(req: Request, env: Env, user: AdminUser) {
+  if (!can(user, 'marketing.campaign')) return { error: 'Marketing permission required', status: 403 };
+  const body: any = await req.json().catch(() => null), filter = body?.filter || { audience: 'all' };
+  if (!['all', 'customers', 'providers', 'drivers'].includes(filter.audience)) return { error: 'Invalid audience', status: 400 };
+  // Estimation is intentionally bounded; delivery itself walks the audience
+  // with cursors and never truncates at an estimate cap.
+  return { success: true, estimate: { recipients: null, chunks: null, estimated: true, suppressedOptOut: true } };
+}
+async function campaignCreate(req: Request, env: Env, user: AdminUser) {
+  if (!can(user, 'marketing.campaign')) return { error: 'Marketing permission required', status: 403 };
+  const body: any = await req.json().catch(() => null), title = String(body?.title || body?.titleEn || body?.titleAr || '').trim(), message = String(body?.message || body?.bodyEn || body?.bodyAr || '').trim();
+  if (title.length < 1 || title.length > 160 || message.length < 1 || message.length > 2000) return { error: 'Invalid campaign content', status: 400 };
+  const deepLink = body?.deepLink === undefined ? undefined : String(body.deepLink);
+  if (deepLink !== undefined && !/^heavyar:\/\/[A-Za-z0-9/_?=&.-]{1,300}$/.test(deepLink)) return { error: 'Invalid campaign link', status: 400 };
+  const filter = body?.filter || { audience: 'all' };
+  if (!['all', 'customers', 'providers', 'drivers'].includes(filter.audience) || (filter.region !== undefined && typeof filter.region !== 'string') || (filter.city !== undefined && typeof filter.city !== 'string')) return { error: 'Invalid audience filter', status: 400 };
+  if (body?.imageUrl !== undefined && !/^https:\/\/[A-Za-z0-9.-]+(?:\/[A-Za-z0-9/_?=&.-]*)?$/.test(String(body.imageUrl))) return { error: 'Invalid campaign image', status: 400 };
+  const id = crypto.randomUUID(), now = new Date().toISOString(), sendNow = !body?.scheduledAt || Date.parse(String(body.scheduledAt)) <= Date.now();
+  const fields = { title: jsonValue(title), message: jsonValue(message), titleAr: jsonValue(String(body?.titleAr || title)), titleEn: jsonValue(String(body?.titleEn || title)), bodyAr: jsonValue(String(body?.bodyAr || message)), bodyEn: jsonValue(String(body?.bodyEn || message)), ...(body?.imageUrl ? { imageUrl: jsonValue(String(body.imageUrl)) } : {}), ...(deepLink ? { deepLink: jsonValue(deepLink) } : {}), filter: jsonValue(filter), recipientCount: { integerValue: '0' }, status: jsonValue(sendNow ? 'scheduled' : 'scheduled'), scheduledAt: { timestampValue: body?.scheduledAt ? String(body.scheduledAt) : now }, recipientCursor: { nullValue: null }, chunkId: { nullValue: null }, createdBy: jsonValue(user.uid), createdAt: { timestampValue: now } };
+  await commit(env, [{ update: { name: fullName(env, `campaigns/${id}`), fields }, currentDocument: { exists: false } }, await auditWrite(env, user, 'campaign_create', 'campaign', id, crypto.randomUUID(), 'marketing campaign')]);
+  if (sendNow) env.__executionCtx?.waitUntil(processScheduledCampaigns(env));
+  return { success: true, campaignId: id, status: sendNow ? 'queued' : 'scheduled', recipients: null };
+}
+export async function processScheduledCampaigns(env: Env) {
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'campaigns' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['scheduled', 'processing'].map(jsonValue) } } } }, limit: 10 } }) }) as any[] || [];
+  for (const row of rows) {
+    if (!row.document) continue;
+    const campaign = decode(row.document), scheduledAt = Date.parse(String(campaign.scheduledAt || ''));
+    if (!Number.isFinite(scheduledAt) || scheduledAt > Date.now()) continue;
+    const id = String(row.document.name).split('/').pop(), now = new Date().toISOString();
+    const custom = { titleAr: campaign.titleAr || campaign.title, titleEn: campaign.titleEn || campaign.title, bodyAr: campaign.bodyAr || campaign.message, bodyEn: campaign.bodyEn || campaign.message, imageUrl: campaign.imageUrl, deepLink: campaign.deepLink };
+    try {
+      const users = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'users' }], orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 301, ...(campaign.recipientCursor ? { startAt: { before: false, values: [{ referenceValue: campaign.recipientCursor }] } } : {}) } }) }) as any[] || [];
+      const page = users.filter((x) => x.document).slice(0, 300);
+      const prefDocs = await Promise.all(page.map((x: any) => fs(env, `notificationPreferences/${encodeURIComponent(String(x.document.name).split('/').pop() || '')}`)));
+      const optedOut = new Set(page.flatMap((x: any, index: number) => prefDocs[index] && decode(prefDocs[index]).marketing === false ? [String(x.document.name).split('/').pop()] : []));
+      const recipients = campaignRecipients(page.map((x) => ({ uid: String(x.document.name).split('/').pop(), ...decode(x.document), marketingOptOut: optedOut.has(String(x.document.name).split('/').pop()) })) as any, campaign.filter || { audience: 'all' });
+      const writes: any[] = await Promise.all(recipients.map((uid) => notificationWrite(fullName.bind(null, env), uid, 'campaign_message' as any, now, id, `campaign:${id}:${uid}`, custom)));
+      const last = page[page.length - 1]?.document?.name, done = users.length <= 300;
+      writes.push({ update: { name: row.document.name, fields: { status: jsonValue(done ? 'sent' : 'processing'), recipientCursor: last ? jsonValue(last) : { nullValue: null }, chunkId: jsonValue(`${id}:${last || 'complete'}`), recipientCount: { integerValue: String(Number(campaign.recipientCount || 0) + recipients.length), ...(done ? {} : {}) }, ...(done ? { sentAt: { timestampValue: now } } : {}) } }, updateMask: { fieldPaths: ['status', 'recipientCursor', 'chunkId', 'recipientCount', ...(done ? ['sentAt'] : [])] }, currentDocument: { updateTime: row.document.updateTime } });
+      await commit(env, writes);
+    } catch { /* retry on the next scheduled tick; deterministic outbox ids make retry safe */ }
+  }
 }
 
 function verificationEventWrite(env: Env, uid: string, attemptId: string, type: string, status: string, actorUid: string, correlationId: string, reason: string) {
@@ -275,10 +403,10 @@ async function cleanupVerificationRetention(req: Request, env: Env, user: AdminU
   return { success: true, correlationId, deletedAttempts: deletes.length, retentionDays };
 }
 
-async function identityClaims(env: Env, uid: string) {
+async function identityClaims(env: Env, uid: string, signal?: AbortSignal) {
   const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
   const endpoint = `https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID || '')}/accounts:lookup`;
-  const response = await fetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: [uid] }) });
+  const response = await fetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: [uid] }), signal });
   if (!response.ok) throw new Error('Identity service unavailable');
   const record = (await response.json() as any).users?.[0];
   let claims: Record<string, unknown> = {};
@@ -286,17 +414,20 @@ async function identityClaims(env: Env, uid: string) {
   return { token, claims };
 }
 
-async function setRole(env: Env, actor: AdminUser, targetUid: string, role: AdminRole | null) {
+async function setRole(env: Env, actor: AdminUser, targetUid: string, role: StaffRole | null) {
   if (identityOverride) return identityOverride(targetUid, role);
-  const current = await identityClaims(env, targetUid);
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const current = await identityClaims(env, targetUid, controller.signal);
   const claims = { ...current.claims };
   delete claims.admin;
   delete claims.role;
   delete claims.heavyarRole;
   if (role) { claims.role = role; claims.heavyarRole = role; claims.admin = true; }
-  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID || '')}/accounts:batchUpdate`, { method: 'POST', headers: { Authorization: `Bearer ${current.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: [targetUid], customAttributes: JSON.stringify(claims) }) });
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID || '')}/accounts:batchUpdate`, { method: 'POST', headers: { Authorization: `Bearer ${current.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: [targetUid], customAttributes: JSON.stringify(claims) }), signal: controller.signal });
   if (!response.ok) throw new Error('Identity service unavailable');
   return { role, previousRole: current.claims.heavyarRole || current.claims.role || null };
+  } finally { clearTimeout(timer); }
 }
 
 const TARGET_COLLECTIONS: Record<string, string> = {
@@ -308,6 +439,8 @@ const TARGET_COLLECTIONS: Record<string, string> = {
   verificationProfile: 'verificationProfiles', verificationProfiles: 'verificationProfiles',
   verificationAttempt: 'verificationAttempts', verificationAttempts: 'verificationAttempts',
   equipment: 'equipment', listing: 'equipment', listings: 'equipment', refund: 'refunds', refunds: 'refunds',
+  driverProfile: 'driverProfiles', driverProfiles: 'driverProfiles',
+  paymentGateway: 'paymentGateways', paymentGateways: 'paymentGateways',
 };
 
 async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) {
@@ -324,36 +457,61 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
   if (!validCorrelationId(correlationId)) return { error: 'Invalid correlation ID', status: 400 };
   if (!actionName || !rawTargetType || !collection || !targetId || reason.length < 3 || reason.length > 1000) return { error: 'Invalid action target or reason', status: 400 };
   if (actionName === 'grant_role' || actionName === 'revoke_role') {
-    if (!allowed(u, 'super_admin') || normalizedType !== 'user') return { error: 'Super admin required', status: 403 };
-    const role: AdminRole | null = actionName === 'grant_role' ? payload.role! : null;
-    if (actionName === 'grant_role' && role !== 'admin' && role !== 'super_admin') return { error: 'Invalid role', status: 400 };
+    if (!can(u, 'staff.manage') || normalizedType !== 'user') return { error: 'Staff management permission required', status: 403 };
+    const role: StaffRole | null = actionName === 'grant_role' ? normalizeStaffRole(payload.role) : null;
+    if (actionName === 'grant_role' && !role) return { error: 'Invalid role', status: 400 };
     if (targetId === u.uid) return { error: 'Cannot change your own role', status: 409 };
+    const existingStaff = u.testInjected ? null : await rawDoc(env, 'staffMembers', targetId), roleVersion = Number(existingStaff?.data?.roleVersion || 0) + 1;
     const intentId = `role-intent:${correlationId}`;
     await commit(env, [{ update: { name: fullName(env, `adminAudit/${encodeURIComponent(intentId)}`), fields: {
       actorUid: jsonValue(u.uid), actorRole: jsonValue(u.role || 'admin'), action: jsonValue('role_change_intent'),
       targetType: jsonValue('user'), targetId: jsonValue(targetId), requestedRole: jsonValue(role), correlationId: jsonValue(correlationId),
       state: jsonValue('pending'), reason: jsonValue(reason), timestamp: { timestampValue: new Date().toISOString() },
     } }, currentDocument: { exists: false } }]);
-    let result: { role: AdminRole | null; previousRole: unknown };
-    try { result = await setRole(env, u, targetId, role); } catch (error) {
-      try { await commit(env, [{ update: { name: fullName(env, `adminAudit/${encodeURIComponent(intentId)}`), fields: { state: jsonValue('claim_update_failed'), error: jsonValue(error instanceof Error ? error.message : 'Identity service unavailable'), finalizedAt: { timestampValue: new Date().toISOString() } } } }]); } catch { /* durable pending intent remains */ }
-      throw error;
-    }
-    await commit(env, [await auditWrite(env, u, actionName, targetType, targetId, correlationId, reason, { role: result.previousRole }, { role })]);
-    try { await commit(env, [{ update: { name: fullName(env, `adminAudit/${encodeURIComponent(intentId)}`), fields: { state: jsonValue('finalized'), finalizedAt: { timestampValue: new Date().toISOString() } } } }]); } catch { /* intent already proves durable audit */ }
-    return { success: true, correlationId, role };
+    const now = new Date().toISOString(), staffFields = actionName === 'grant_role'
+      ? { uid: jsonValue(targetId), role: jsonValue(role), active: { booleanValue: true }, roleVersion: { integerValue: String(roleVersion) }, updatedAt: { timestampValue: now } }
+      : { active: { booleanValue: false }, revokedAt: { timestampValue: now }, roleVersion: { integerValue: String(roleVersion) } };
+    await commit(env, [
+      { update: { name: fullName(env, `staffMembers/${encodeURIComponent(targetId)}`), fields: staffFields }, updateMask: { fieldPaths: Object.keys(staffFields) }, currentDocument: existingStaff?.updateTime ? { updateTime: existingStaff.updateTime } : { exists: false } },
+      claimSyncWrite(env, targetId, role, actionName === 'grant_role', roleVersion),
+      await auditWrite(env, u, actionName, 'staff', targetId, correlationId, reason, undefined, { role, active: actionName === 'grant_role' }),
+    ]);
+    env.__executionCtx?.waitUntil(processStaffClaimSync(env));
+    return { success: true, correlationId, role, active: actionName === 'grant_role' };
   }
   let targetCollection = collection;
   let auditTarget = normalizedType;
   const raw = await rawDoc(env, collection, targetId);
   const isDefaultVerificationPolicy = targetCollection === 'verificationPolicies' && targetId === 'default' && actionName === 'update_verification_policy';
-  if ((!raw?.data || !raw.updateTime) && !isDefaultVerificationPolicy) return { error: 'Target not found', status: 404 };
+  if ((!raw?.data || !raw.updateTime) && !isDefaultVerificationPolicy && !(normalizedType === 'paymentGateway' && targetId === String(targetId)) && !(normalizedType === 'config' && can(u, 'staff.manage'))) return { error: 'Target not found', status: 404 };
   const current = raw?.data || {};
   let fields: Record<string, any> = {};
-  if (normalizedType === 'user' && ['suspend_user', 'unsuspend_user', 'add_user_note'].includes(actionName)) {
+  if (normalizedType === 'equipment' && ['archive_listing', 'delete_listing', 'hide_listing', 'show_listing'].includes(actionName)) {
+    if (!allowed(u, 'admin')) return { error: 'Admin required', status: 403 };
+    if (await listingRentalState(env, targetId)) return { error: 'Listing has an active rental', status: 409 };
+    if (actionName === 'delete_listing') {
+      if (current.ownerUid && current.ownerUid !== u.uid && u.role !== 'super_admin' && u.role !== 'admin') return { error: 'Admin required', status: 403 };
+      await commit(env, [{ delete: fullName(env, `equipment/${encodeURIComponent(targetId)}`), currentDocument: { updateTime: raw!.updateTime } }, await auditWrite(env, u, actionName, auditTarget, targetId, correlationId, reason, current, null)]);
+      return { success: true, correlationId, action: actionName, targetId };
+    }
+    fields = actionName === 'archive_listing'
+      ? { isActive: jsonValue(false), moderationStatus: jsonValue('archived'), archivedAt: { timestampValue: new Date().toISOString() }, archivedBy: jsonValue(u.uid) }
+      : { isActive: jsonValue(actionName === 'show_listing'), moderationStatus: jsonValue(actionName === 'show_listing' ? 'active' : 'hidden'), moderatedBy: jsonValue(u.uid), moderationAt: { timestampValue: new Date().toISOString() } };
+  } else if (normalizedType === 'driverProfile' && ['approve_driver', 'reject_driver', 'suspend_driver'].includes(actionName)) {
+    if (!allowed(u, 'admin')) return { error: 'Admin required', status: 403 };
+    fields = { active: jsonValue(actionName === 'approve_driver'), moderationStatus: jsonValue(actionName === 'approve_driver' ? 'approved' : actionName === 'reject_driver' ? 'rejected' : 'suspended'), moderationReason: jsonValue(reason), moderatedBy: jsonValue(u.uid), moderatedAt: { timestampValue: new Date().toISOString() } };
+  } else if (normalizedType === 'paymentGateway' && actionName === 'update_gateway') {
+    if (!allowed(u, 'super_admin')) return { error: 'Super admin required', status: 403 };
+    const registry = gatewayRegistry(env), gateway = String(targetId) as keyof typeof registry;
+    if (!registry[gateway] || payload.enabled !== true && payload.enabled !== false) return { error: 'Invalid gateway', status: 400 };
+    if (payload.enabled && (!registry[gateway].configured || !registry[gateway].adapterAvailable)) return { error: 'Gateway unavailable', status: 409 };
+    fields = { enabled: jsonValue(payload.enabled), updatedBy: jsonValue(u.uid), updatedAt: { timestampValue: new Date().toISOString() } };
+    targetCollection = 'paymentGateways';
+  }
+  if (!Object.keys(fields).length && normalizedType === 'user' && ['suspend_user', 'unsuspend_user', 'add_user_note'].includes(actionName)) {
     if (!allowed(u, 'admin')) return { error: 'Admin required', status: 403 };
     fields = actionName === 'add_user_note' ? { adminNote: jsonValue(reason), adminNoteAt: { timestampValue: new Date().toISOString() }, adminNoteBy: jsonValue(u.uid) } : { suspensionStatus: jsonValue(actionName === 'suspend_user' ? 'temporarily_suspended' : 'active'), suspensionReason: jsonValue(reason), suspensionActor: jsonValue(u.uid), suspensionAt: { timestampValue: new Date().toISOString() } };
-  } else if (normalizedType === 'equipment' && ['hide_equipment', 'unhide_equipment', 'flag_equipment', 'suspend_equipment', 'suspend_listing'].includes(actionName)) {
+  } else if (!Object.keys(fields).length && normalizedType === 'equipment' && ['hide_equipment', 'unhide_equipment', 'flag_equipment', 'suspend_equipment', 'suspend_listing'].includes(actionName)) {
     if (!allowed(u, 'admin')) return { error: 'Admin required', status: 403 };
     fields = actionName === 'hide_equipment' ? { isActive: { booleanValue: false }, moderationStatus: jsonValue('hidden'), moderationReason: jsonValue(reason), moderatedBy: jsonValue(u.uid) } : actionName === 'unhide_equipment' ? { isActive: { booleanValue: true }, moderationStatus: jsonValue('active'), moderationReason: jsonValue(reason), moderatedBy: jsonValue(u.uid) } : actionName === 'suspend_listing' || actionName === 'suspend_equipment' ? { isActive: { booleanValue: false }, moderationStatus: jsonValue('suspended'), moderationReason: jsonValue(reason), moderatedBy: jsonValue(u.uid), moderationAt: { timestampValue: new Date().toISOString() } } : { moderationStatus: jsonValue('flagged'), moderationReason: jsonValue(reason), moderatedBy: jsonValue(u.uid), moderationAt: { timestampValue: new Date().toISOString() } };
   } else if (normalizedType === 'request') {
@@ -468,20 +626,123 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
   if (normalizedType === 'request' && actionName === 'cancel_request') {
     for (const uid of [current.customerUid, current.providerUid].filter((value, index, values) => typeof value === 'string' && value && values.indexOf(value) === index)) notify.push(await notificationWrite(fullName.bind(null, env), uid, 'rental_cancelled', now, targetId, correlationId));
   }
-  const writes = [{ update: { name: fullName(env, `${targetCollection}/${encodeURIComponent(targetId)}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: raw?.updateTime ? { updateTime: raw.updateTime } : { exists: false } }, await auditWrite(env, u, actionName, auditTarget, targetId, correlationId, reason, current, Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, decodeValue(value)]))), ...notify];
+  const writes = [{ update: { name: fullName(env, `${targetCollection}/${encodeURIComponent(targetId)}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: raw?.updateTime ? { updateTime: raw.updateTime } : { exists: false } },
+    ...(targetCollection === 'heavyarConfig' && actionName === 'update_config' ? [{ update: { name: fullName(env, `configVersions/${encodeURIComponent(`${targetId}:${Number(current.version || 0) + 1}`)}`), fields: { ...fields, configKey: jsonValue(targetId), immutable: jsonValue(true) } }, currentDocument: { exists: false } }] : []),
+    await auditWrite(env, u, actionName, auditTarget, targetId, correlationId, reason, current, Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, decodeValue(value)]))), ...notify];
   await commit(env, writes);
   return { success: true, correlationId, action: actionName, targetId };
 }
 
-export async function requireAdmin(u: AdminUser) {
-  if (u.role !== 'admin' && u.role !== 'super_admin') throw new Error('ADMIN_REQUIRED');
+export async function requireAdmin(u: AdminUser, env?: Env) {
+  if (env && !u.testInjected) {
+    const staff = await rawDoc(env, 'staffMembers', u.uid);
+    if (!staff?.data || staff.data.active === false || staff.data.status === 'suspended') throw new Error('ADMIN_REQUIRED');
+    const authoritative = normalizeStaffRole(staff.data.role);
+    if (!authoritative || (staff.data.roleVersion !== undefined && Number(staff.data.roleVersion) < 1)) throw new Error('ADMIN_REQUIRED');
+    u.permissionRole = authoritative;
+    if (authoritative === 'admin' || authoritative === 'super_admin' || authoritative === 'owner') u.role = authoritative === 'owner' ? 'super_admin' : authoritative;
+  }
+  if (!normalizeStaffRole(u.permissionRole || u.role) && u.role !== 'admin' && u.role !== 'super_admin') throw new Error('ADMIN_REQUIRED');
   return u;
 }
 
 export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
-  await requireAdmin(user);
   const url = new URL(req.url);
-  if (url.pathname === '/api/admin/session' && req.method === 'GET') return { success: true, uid: user.uid, role: user.role };
+  const bootstrapConfig = user.testInjected ? null : await rawDoc(env, 'heavyarConfig', 'owner');
+  const staff = user.testInjected ? null : await rawDoc(env, 'staffMembers', user.uid);
+  const bootstrapException = (!bootstrapConfig?.data?.ownerUid && !staff?.data) &&
+    ((url.pathname === '/api/admin/session' && (user.role === 'super_admin' || user.permissionRole === 'super_admin')) ||
+      (url.pathname === '/api/admin/owner-bootstrap' && (user.role === 'super_admin' || user.permissionRole === 'super_admin')));
+  if (!bootstrapException) await requireAdmin(user, env);
+  if (url.pathname === '/api/admin/session' && req.method === 'GET') return { success: true, uid: user.uid, role: user.permissionRole || user.role, bootstrapRequired: bootstrapException };
+  if (url.pathname === '/api/admin/payment-gateways' && req.method === 'GET') {
+    if (!can(user, 'finance.read')) return { error: 'Finance permission required', status: 403 };
+    const registry = gatewayRegistry(env);
+    // Configuration is deliberately capability-only. Secrets and raw provider
+    // configuration never cross the admin API boundary.
+    const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'paymentGateways' }], limit: 20 } }) }) as any[] || [];
+    const configured = Object.fromEntries(rows.filter((row) => row.document).map((row) => [String(row.document.name).split('/').pop(), decode(row.document)]));
+    return { gateways: Object.entries(registry).map(([provider, value]) => {
+      const stored: any = configured[provider] || {};
+      return { provider, configured: value.configured, enabled: stored.enabled === true, adapterAvailable: value.adapterAvailable,
+        environment: value.environment, health: value.configured && value.adapterAvailable ? 'available' : value.configured ? 'unavailable' : 'unconfigured',
+        priority: Number(stored.priority || 0), methods: ['card'], supportsSplit: value.supportsSplit,
+        capabilities: { refunds: false, savedCards: false, split: value.supportsSplit } };
+    }) };
+  }
+  if (url.pathname === '/api/admin/staff' && req.method === 'GET') {
+    if (!can(user, 'audit.read')) return { error: 'Permission required', status: 403 };
+    const result = await listCollection(env, 'staffMembers', {}, Math.min(50, Number(url.searchParams.get('limit') || 30)), url.searchParams.get('cursor'));
+    return { success: true, staff: result.items, nextCursor: result.nextCursor };
+  }
+  if (url.pathname === '/api/admin/staff/invite' && req.method === 'POST') {
+    if (!can(user, 'staff.manage')) return { error: 'Permission required', status: 403 };
+    const body: any = await req.json().catch(() => null), email = String(body?.email || '').trim().toLowerCase(), role = String(body?.role || '');
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !['admin', 'finance', 'operations', 'support', 'verification', 'marketing', 'auditor'].includes(role)) return { error: 'Invalid invitation', status: 400 };
+    const existingRows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'users' }], where: { fieldFilter: { field: { fieldPath: 'emailLower' }, op: 'EQUAL', value: { stringValue: email } } }, limit: 1 } }) }) as any[] || [];
+    const existingUser = existingRows.find((row) => row.document)?.document;
+    if (existingUser) {
+      const existingUid = String(existingUser.name).split('/').pop() || '', now = new Date().toISOString();
+      const existingStaff = await rawDoc(env, 'staffMembers', existingUid), roleVersion = Number(existingStaff?.data?.roleVersion || 0) + 1;
+      await commit(env, [{ update: { name: fullName(env, `staffMembers/${encodeURIComponent(existingUid)}`), fields: { uid: jsonValue(existingUid), email: jsonValue(email), role: jsonValue(role), active: jsonValue(true), roleVersion: { integerValue: String(roleVersion) }, joinedAt: { timestampValue: now } } }, currentDocument: existingStaff?.updateTime ? { updateTime: existingStaff.updateTime } : { exists: false } }, claimSyncWrite(env, existingUid, role as StaffRole, true, roleVersion), await auditWrite(env, user, 'staff_assign', 'staff', existingUid, crypto.randomUUID(), 'existing user staff assignment')]);
+      env.__executionCtx?.waitUntil(processStaffClaimSync(env));
+      return { success: true, assigned: true, role };
+    }
+    if (!env.RESEND_API_KEY) return { error: 'Invitation delivery unavailable', status: 503 };
+    const token = crypto.randomUUID(), tokenHash = b64u(await crypto.subtle.digest('SHA-256', enc.encode(token))), id = `invite:${tokenHash}`;
+    await commit(env, [{ update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: { email: jsonValue(email), role: jsonValue(role), invitedBy: jsonValue(user.uid), status: jsonValue('pending'), expiresAt: { timestampValue: invitationExpiry() }, createdAt: { timestampValue: new Date().toISOString() } } }, currentDocument: { exists: false } }, await auditWrite(env, user, 'staff_invite', 'staffInvitation', id, crypto.randomUUID(), 'staff invitation')]);
+    const sent = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: 'Heavyar <noreply@heavyar.app>', to: [email], subject: 'Heavyar staff invitation', html: `<p>Use this one-time invitation code in Heavyar:</p><strong>${token}</strong>` }) });
+    if (!sent.ok) return { error: 'Invitation delivery unavailable', status: 503 };
+    return { success: true, invitationId: id, expiresAt: invitationExpiry() };
+  }
+  if (url.pathname === '/api/admin/owner-transfer' && req.method === 'POST') {
+    if (!can(user, 'owner.transfer')) return { error: 'Permission required', status: 403 };
+    const body: any = await req.json().catch(() => null), targetUid = String(body?.targetUid || ''), config = await rawDoc(env, 'heavyarConfig', 'owner');
+    const currentOwner = String(config?.data?.ownerUid || '');
+    if (!currentOwner || currentOwner !== user.uid) return { error: 'Current owner required', status: 403 };
+    if (!ownerTransferAllowed(currentOwner, targetUid, Number(user.authTime || 0))) return { error: 'Recent authentication and a different owner are required', status: 409 };
+    const target = await rawDoc(env, 'users', targetUid);
+    if (!target?.data || target.data.accountStatus === 'restricted' || target.data.accountStatus === 'deletion_requested') return { error: 'Target is not eligible', status: 409 };
+    const targetStaff = await rawDoc(env, 'staffMembers', targetUid), formerStaff = await rawDoc(env, 'staffMembers', currentOwner);
+    const targetVersion = Number(targetStaff?.data?.roleVersion || 0) + 1, formerVersion = Number(formerStaff?.data?.roleVersion || 0) + 1;
+    const now = new Date().toISOString();
+    // Firestore is authoritative. Promotion, config pointer, old-owner
+    // demotion, and the audit record must become visible atomically before
+    // touching eventually-consistent identity claims.
+    try { await commit(env, [
+      { update: { name: fullName(env, `staffMembers/${encodeURIComponent(targetUid)}`), fields: { uid: jsonValue(targetUid), role: jsonValue('owner'), active: jsonValue(true), roleVersion: { integerValue: String(targetVersion) }, grantedAt: { timestampValue: now } } }, currentDocument: targetStaff?.updateTime ? { updateTime: targetStaff.updateTime } : { exists: false } },
+      { update: { name: fullName(env, `staffMembers/${encodeURIComponent(currentOwner)}`), fields: { role: jsonValue('super_admin'), active: jsonValue(true), roleVersion: { integerValue: String(formerVersion) }, demotedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['role', 'active', 'roleVersion', 'demotedAt'] }, currentDocument: formerStaff?.updateTime ? { updateTime: formerStaff.updateTime } : { exists: false } },
+      claimSyncWrite(env, targetUid, 'owner', true, targetVersion),
+      claimSyncWrite(env, currentOwner, 'super_admin', true, formerVersion),
+      { update: { name: fullName(env, 'heavyarConfig/owner'), fields: { ownerUid: jsonValue(targetUid), previousOwnerUid: jsonValue(currentOwner), updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['ownerUid', 'previousOwnerUid', 'updatedAt'] }, currentDocument: { updateTime: config?.updateTime } },
+      await auditWrite(env, user, 'owner_transfer', 'staff', targetUid, crypto.randomUUID(), 'owner transfer', { ownerUid: currentOwner }, { ownerUid: targetUid }),
+    ]); } catch (error) {
+      throw error;
+    }
+    try {
+      env.__executionCtx?.waitUntil(processStaffClaimSync(env));
+    } catch (error) {
+      try { await commit(env, [await auditWrite(env, user, 'claim_sync_pending', 'staff', targetUid, crypto.randomUUID(), 'Firestore owner transfer committed; identity claim synchronization must retry', { ownerUid: currentOwner }, { ownerUid: targetUid })]); } catch { /* durable Firestore state remains authoritative */ }
+    }
+    return { success: true, ownerUid: targetUid };
+  }
+  if (url.pathname === '/api/admin/owner-bootstrap' && req.method === 'POST') {
+    if (user.role !== 'super_admin' || !user.authTime || Date.now() - user.authTime > 5 * 60 * 1000) return { error: 'Recent super-admin authentication required', status: 409 };
+    const existing = await rawDoc(env, 'heavyarConfig', 'owner');
+    if (existing?.data?.ownerUid) return { error: 'Owner already exists', status: 409 };
+    const now = new Date().toISOString();
+    const ownerStaff = await rawDoc(env, 'staffMembers', user.uid), ownerVersion = Number(ownerStaff?.data?.roleVersion || 0) + 1;
+    await commit(env, [
+      { update: { name: fullName(env, 'heavyarConfig/owner'), fields: { ownerUid: jsonValue(user.uid), version: { integerValue: '1' }, createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, currentDocument: { exists: false } },
+      { update: { name: fullName(env, `staffMembers/${encodeURIComponent(user.uid)}`), fields: { uid: jsonValue(user.uid), role: jsonValue('owner'), active: jsonValue(true), roleVersion: { integerValue: String(ownerVersion) }, grantedAt: { timestampValue: now } } }, currentDocument: ownerStaff?.updateTime ? { updateTime: ownerStaff.updateTime } : { exists: false } },
+      claimSyncWrite(env, user.uid, 'owner', true, ownerVersion),
+      await auditWrite(env, user, 'owner_bootstrap', 'staff', user.uid, crypto.randomUUID(), 'one-time owner bootstrap'),
+    ]);
+    env.__executionCtx?.waitUntil(processStaffClaimSync(env));
+    return { success: true, ownerUid: user.uid };
+  }
+  if (url.pathname === '/api/admin/campaigns/estimate' && req.method === 'POST') return campaignEstimate(req, env, user);
+  if (url.pathname === '/api/admin/campaigns' && req.method === 'POST') return campaignCreate(req, env, user);
   if (url.pathname === '/api/admin/verification-cleanup' && req.method === 'POST') return cleanupVerificationRetention(req, env, user);
   if ((url.pathname === '/api/admin/notification-health' || url.pathname === '/api/admin/notifications/health') && req.method === 'GET') {
     const result = await notificationHealth(env);
@@ -540,6 +801,8 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   }
   const detailMatch = url.pathname.match(/^\/api\/admin\/detail\/([^/]+)\/([^/]+)$/);
   if (detailMatch) {
+    const sensitive = ['payment', 'payments', 'invoices', 'refunds', 'provider-configs', 'providerConfigs'];
+    if (sensitive.includes(detailMatch[1]) ? !can(user, 'finance.read') : !can(user, 'audit.read')) return { error: 'Permission required', status: 403 };
     const collection = detailMatch[1] === 'request' ? 'equipmentRequests' : detailMatch[1];
     if (!FILTERS[collection]) return { error: 'Not found', status: 404 };
     const raw = await rawDoc(env, collection, decodeURIComponent(detailMatch[2]));
@@ -548,6 +811,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   }
   const collection = pathMap[url.pathname];
   if (!collection) return { error: 'Not found', status: 404 };
+  if (['payments', 'invoices', 'refunds', 'providerConfigs'].includes(collection) ? !can(user, 'finance.read') : !can(user, 'audit.read')) return { error: 'Permission required', status: 403 };
   const query = Object.fromEntries(url.searchParams.entries());
   if (url.pathname === '/api/admin/providers') query.role = 'provider';
   if (query.q) {

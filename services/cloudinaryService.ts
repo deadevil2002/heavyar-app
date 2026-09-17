@@ -63,12 +63,16 @@ export async function uploadMultipleImages(
 ): Promise<CloudinaryImage[]> {
   const results: CloudinaryImage[] = [];
   let completed = 0;
-
-  for (const uri of localUris) {
-    const result = await uploadImageToCloudinary(uri);
-    results.push(result);
-    completed++;
-    onProgress?.(completed, localUris.length);
+  try {
+    for (const uri of localUris) {
+      const result = await uploadImageToCloudinary(uri);
+      results.push(result);
+      completed++;
+      onProgress?.(completed, localUris.length);
+    }
+  } catch (error) {
+    await Promise.all(results.map(image => deleteCloudinaryImage(image.publicId)));
+    throw error;
   }
 
   return results;

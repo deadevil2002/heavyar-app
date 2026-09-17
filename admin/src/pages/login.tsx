@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { getFirebaseAuth } from '@/lib/firebase';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -12,6 +12,7 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
   const { toast } = useToast();
   const { language } = useAppState();
 
@@ -35,6 +36,34 @@ export default function Login() {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!email) {
+      toast({
+        title: t('البريد الإلكتروني مطلوب', 'Email required'),
+        description: t('أدخل بريدك الإلكتروني أولاً لاستعادة كلمة المرور', 'Enter your email first to reset password'),
+        variant: 'destructive',
+      });
+      return;
+    }
+    setResetLoading(true);
+    try {
+      const auth = getFirebaseAuth();
+      await sendPasswordResetEmail(auth, email);
+      toast({
+        title: t('تم إرسال رابط الاستعادة', 'Recovery link sent'),
+        description: t('إذا كان البريد الإلكتروني مسجلاً، فستتلقى رابطاً لاستعادة كلمة المرور', 'If the email is registered, you will receive a password reset link'),
+      });
+    } catch (err: any) {
+      // Generic response to avoid email enumeration
+      toast({
+        title: t('تم إرسال رابط الاستعادة', 'Recovery link sent'),
+        description: t('إذا كان البريد الإلكتروني مسجلاً، فستتلقى رابطاً لاستعادة كلمة المرور', 'If the email is registered, you will receive a password reset link'),
+      });
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -62,7 +91,12 @@ export default function Login() {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="password">{t('كلمة المرور', 'Password')}</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="password">{t('كلمة المرور', 'Password')}</Label>
+              <Button type="button" variant="link" className="px-0 h-auto font-normal text-xs text-muted-foreground hover:text-primary" onClick={handleResetPassword} disabled={resetLoading}>
+                {resetLoading ? t('جاري الإرسال...', 'Sending...') : t('نسيت كلمة المرور؟', 'Forgot password?')}
+              </Button>
+            </div>
             <Input 
               id="password" 
               type="password" 

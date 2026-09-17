@@ -10,8 +10,8 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories } from '@/mocks/categories';
 import { saudiRegions, getCitiesByRegion, findCityById } from '@/mocks/saudiRegions';
-import { createEquipment } from '@/services/firestoreService';
-import { uploadMultipleImages, CloudinaryImage } from '@/services/cloudinaryService';
+import { uploadMultipleImages, deleteCloudinaryImage, CloudinaryImage } from '@/services/cloudinaryService';
+import { createListing } from '@/services/workerClient';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 
@@ -102,8 +102,9 @@ export default function AddEquipmentScreen() {
     setPublishing(true);
     setUploading(true);
     setUploadProgress(`${t('uploading_images')} 0/${images.length}`);
+    let uploadedImages: CloudinaryImage[] = [];
     try {
-      const cloudinaryImages: CloudinaryImage[] = await uploadMultipleImages(
+      uploadedImages = await uploadMultipleImages(
         images,
         (completed, total) => {
           setUploadProgress(`${t('uploading_images')} ${completed}/${total}`);
@@ -112,14 +113,7 @@ export default function AddEquipmentScreen() {
       setUploading(false);
       setUploadProgress(t('saving'));
 
-      await createEquipment({
-        ownerUid: user.uid,
-        ownerPublic: {
-          uid: user.uid,
-          nameAr: user.nameAr,
-          nameEn: user.nameEn,
-          avatar: user.avatar,
-        },
+      await createListing({
         titleAr,
         titleEn: titleEn || titleAr,
         descriptionAr: descAr,
@@ -132,9 +126,8 @@ export default function AddEquipmentScreen() {
         district,
         location: { lat: 0, lng: 0 },
         pricePerDay: parsedPrice,
-        images: cloudinaryImages,
-        availability: true,
-        isActive: true,
+        images: uploadedImages,
+        availability: { from: new Date().toISOString().slice(0, 10), temporarilyUnavailable: false },
       });
       showDialog(t('success'), '', [{ text: t('confirm'), style: 'default' }]);
       setTitleAr('');
@@ -150,6 +143,7 @@ export default function AddEquipmentScreen() {
       setPrice('');
       setImages([]);
     } catch (e) {
+      await Promise.all(uploadedImages.map(image => deleteCloudinaryImage(image.publicId)));
       const message = e instanceof Error ? e.message : t('unexpected_error');
       showDialog(t('error_title'), message, [{ text: t('ok'), style: 'default' }]);
     } finally {

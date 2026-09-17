@@ -104,7 +104,7 @@ service cloud.firestore {
     match /equipment/{equipmentId} {
       allow read: if publicListing(resource.data) ||
         (signedIn() && resource.data.ownerUid == request.auth.uid);
-       allow create: if signedIn()
+       allow create: if false
         && request.resource.data.ownerUid == request.auth.uid
         && notSuspended(request.auth.uid)
         && trustedProvider(request.auth.uid)
@@ -118,23 +118,11 @@ service cloud.firestore {
         ])
         && (!request.resource.data.keys().hasAny(['ownerPublic']) ||
           trustedSnapshot(request.resource.data.ownerPublic, request.auth.uid));
-      allow update: if signedIn() && resource.data.ownerUid == request.auth.uid
-        && notSuspended(request.auth.uid)
-        && request.resource.data.ownerUid == resource.data.ownerUid
-        && request.resource.data.createdAt == resource.data.createdAt
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'titleAr', 'titleEn', 'descriptionAr', 'descriptionEn', 'category',
-          'region', 'city', 'customCity', 'district', 'location', 'customCategory',
-          'pricePerDay', 'images', 'availability', 'isActive', 'ownerPublic', 'updatedAt'
-        ])
-         && (!resource.data.keys().hasAny(['moderationStatus']) ||
-           (resource.data.moderationStatus != 'suspended' && resource.data.moderationStatus != 'hidden'
-             && request.resource.data.isActive == true) ||
-           request.resource.data.isActive == false)
-         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerPublic']) ||
-          trustedSnapshot(request.resource.data.ownerPublic, request.auth.uid));
-      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid
-        && notSuspended(request.auth.uid);
+      // Listing edits and deletes are Worker-authoritative. In particular,
+      // client writes cannot bypass active-rental locks, availability overlap
+      // checks, moderation state, or the audit trail.
+      allow update: if false;
+      allow delete: if false;
     }
 
     match /equipmentRequests/{requestId} {
@@ -360,6 +348,9 @@ service cloud.firestore {
     match /heavyarConfig/{configId} {
       allow read, write: if false;
     }
+    match /configVersions/{versionId} {
+      allow read, write: if false;
+    }
     match /invoices/{invoiceId} {
       allow read: if signedIn()
         && exists(/databases/$(database)/documents/equipmentRequests/$(resource.data.requestId))
@@ -380,6 +371,33 @@ service cloud.firestore {
       allow read, write: if false;
     }
     match /notificationDeliveries/{deliveryId} {
+      allow read, write: if false;
+    }
+    match /driverProfiles/{uid} {
+      allow read, write: if false;
+    }
+    match /driverRequests/{requestId} {
+      allow read, write: if false;
+    }
+    match /campaigns/{campaignId} {
+      allow read, write: if false;
+    }
+    match /campaignRecipients/{recipientId} {
+      allow read, write: if false;
+    }
+    match /staffMembers/{uid} {
+      allow read, write: if false;
+    }
+    match /staffInvitations/{invitationId} {
+      allow read, write: if false;
+    }
+    match /paymentGateways/{gatewayId} {
+      allow read, write: if false;
+    }
+    match /equipmentReservations/{reservationId} {
+      allow read, write: if false;
+    }
+    match /listingAudit/{auditId} {
       allow read, write: if false;
     }
     match /{document=**} { allow read, write: if false; }

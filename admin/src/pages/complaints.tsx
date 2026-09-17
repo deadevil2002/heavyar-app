@@ -69,12 +69,12 @@ export default function Complaints() {
         </div>
         
         <form onSubmit={handleSearch} className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input 
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('البحث...', 'Search...')} 
-            className="pl-9 bg-card border-border"
+            className="ps-9 bg-card border-border"
           />
         </form>
       </div>
@@ -90,7 +90,7 @@ export default function Complaints() {
               <TableHead className="font-semibold text-foreground w-1/3">{t('الوصف', 'Description')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الحالة', 'Status')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الثقة', 'Trust')}</TableHead>
-              <TableHead className="text-right"></TableHead>
+              <TableHead className="text-end"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -125,7 +125,7 @@ export default function Complaints() {
                     </span>
                   </TableCell>
                   <TableCell><TrustIndicator value={item} language={language} /></TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-end">
                     {item.status !== 'resolved' && item.status !== 'closed' && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -135,19 +135,19 @@ export default function Complaints() {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem onClick={() => handleAction(item, 'review_complaint')} className="text-blue-500">
-                            <Eye className="mr-2 h-4 w-4" />
+                            <Eye className="me-2 h-4 w-4" />
                             {t('قيد المراجعة', 'Review')}
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => handleAction(item, 'resolve_complaint')} className="text-emerald-500">
-                            <CheckCircle className="mr-2 h-4 w-4" />
+                            <CheckCircle className="me-2 h-4 w-4" />
                             {t('تحديد كمحلول', 'Mark Resolved')}
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => handleAction(item, 'close_complaint')} className="text-muted-foreground">
-                            <XCircle className="mr-2 h-4 w-4" />
+                            <XCircle className="me-2 h-4 w-4" />
                             {t('إغلاق', 'Close')}
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => handleAction(item, 'add_complaint_note')} className="text-amber-500">
-                            <FileText className="mr-2 h-4 w-4" />
+                            <FileText className="me-2 h-4 w-4" />
                             {t('إضافة ملاحظة', 'Add Note')}
                           </DropdownMenuItem>
                         </DropdownMenuContent>

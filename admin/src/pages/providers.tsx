@@ -69,12 +69,12 @@ export default function Providers() {
         </div>
         
         <form onSubmit={handleSearch} className="relative w-full sm:w-72">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input 
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('البحث عن مزود...', 'Search providers...')} 
-            className="pl-9 bg-card border-border"
+            className="ps-9 bg-card border-border"
           />
         </form>
       </div>
@@ -88,7 +88,7 @@ export default function Providers() {
               <TableHead className="font-semibold text-foreground">{t('الاسم', 'Name')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الحالة', 'Status')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('التحقق', 'Verification')}</TableHead>
-              <TableHead className="text-right"></TableHead>
+              <TableHead className="text-end"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -118,7 +118,7 @@ export default function Providers() {
                   <TableCell>
                     <TrustIndicator value={provider} language={language} />
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-end">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" className="h-8 w-8 p-0">
@@ -128,12 +128,12 @@ export default function Providers() {
                       <DropdownMenuContent align="end">
                         {provider.suspensionStatus !== 'active' && provider.suspensionStatus ? (
                           <DropdownMenuItem onClick={() => handleAction(provider, 'unsuspend_user')} className="text-emerald-500">
-                            <ShieldCheck className="mr-2 h-4 w-4" />
+                            <ShieldCheck className="me-2 h-4 w-4" />
                             {t('إلغاء الإيقاف', 'Unsuspend')}
                           </DropdownMenuItem>
                         ) : (
                           <DropdownMenuItem onClick={() => handleAction(provider, 'suspend_user')} className="text-destructive">
-                            <ShieldAlert className="mr-2 h-4 w-4" />
+                            <ShieldAlert className="me-2 h-4 w-4" />
                             {t('إيقاف الحساب', 'Suspend')}
                           </DropdownMenuItem>
                         )}

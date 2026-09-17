@@ -1,12 +1,13 @@
 import { quoteForRequest, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
-import { handleAdmin, type AdminRole } from './admin';
+import { handleAdmin, processScheduledCampaigns, processStaffClaimSync, claimSyncWrite, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
+import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry } from './completion';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
   CLOUDINARY_CLOUD_NAME?: string; CLOUDINARY_API_KEY?: string; CLOUDINARY_API_SECRET?: string;
-  CLOUDINARY_FOLDER?: string; TAP_SECRET_KEY_TEST?: string; RESEND_API_KEY?: string;
+  CLOUDINARY_FOLDER?: string; TAP_SECRET_KEY_TEST?: string; MOYASAR_SECRET_KEY?: string; MYFATOORAH_API_KEY?: string; RESEND_API_KEY?: string;
   FIREBASE_PROJECT_ID?: string; FIREBASE_CLIENT_EMAIL?: string; FIREBASE_PRIVATE_KEY?: string;
   CORS_ORIGINS?: string; PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string; OTP_KV?: KVNamespace;
   IDENTITY_PROVIDER_MODE?: 'official';
@@ -14,7 +15,7 @@ export interface Env {
   FIREBASE_MESSAGING_SENDER_ID?: string;
   __executionCtx?: { waitUntil(promise: Promise<unknown>): void };
 }
-type User = { uid: string; admin: boolean; role?: AdminRole; email?: string };
+type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; authTime?: number; testInjected?: true };
 let authOverride: User | undefined;
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let assetOwnedOverride: boolean | undefined;
@@ -47,7 +48,7 @@ async function refreshFirebaseKeys() {
   firebaseKeys = Object.fromEntries(keys.filter(key => key.kid).map(key => [key.kid!, key]));
 }
 async function auth(req: Request, env: Env): Promise<User> {
-  if (authOverride && req.headers.has('Authorization')) return authOverride;
+  if (authOverride && req.headers.has('Authorization')) return { ...authOverride, authTime: authOverride.authTime || Date.now(), permissionRole: authOverride.permissionRole || authOverride.role, testInjected: true };
   const token = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, '');
   if (!token || !env.FIREBASE_PROJECT_ID) authErr();
   const [h, p, s] = token.split('.'); if (!h || !p || !s) authErr();
@@ -70,12 +71,13 @@ async function auth(req: Request, env: Env): Promise<User> {
   let key: CryptoKey;
   try { key = await crypto.subtle.importKey('jwk', firebaseKey, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']); } catch { authErr(); }
   if (!await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key!, b64(s), enc.encode(`${h}.${p}`))) authErr();
+  const permissionRole = typeof payload.heavyarRole === 'string' ? payload.heavyarRole : typeof payload.role === 'string' ? payload.role : undefined;
   const role = payload.heavyarRole === 'super_admin' || payload.role === 'super_admin'
     ? 'super_admin'
     : payload.heavyarRole === 'admin' || payload.role === 'admin' || payload.admin === true
       ? 'admin'
       : undefined;
-  return { uid: payload.sub, admin: role === 'admin' || role === 'super_admin', role, email: payload.email };
+  return { uid: payload.sub, admin: role === 'admin' || role === 'super_admin' || !!permissionRole, role, permissionRole, email: payload.email, authTime: Number(payload.auth_time) * 1000 };
 }
 async function authenticatedUser(req: Request, env: Env, allowAccountManagement = false): Promise<User> {
   const user = await auth(req, env);
@@ -138,8 +140,16 @@ async function createDoc(env: Env, path: string, fields: Record<string, unknown>
   return fs(env, `${path}?currentDocument.exists=false`, { method: 'PATCH', body: JSON.stringify({ fields }) });
 }
 async function hashedId(value: string): Promise<string> { return b64u(await crypto.subtle.digest('SHA-256', enc.encode(value))); }
-async function deleteDocCas(env: Env, path: string, updateTime: string) { if (firestoreWrites) { firestoreWrites.push({ path: `${path}?currentDocument.updateTime=${encodeURIComponent(updateTime)}`, fields: {} }); return null; } return fs(env, `${path}?currentDocument.updateTime=${encodeURIComponent(updateTime)}`, { method: 'DELETE' }); }
-async function getDoc(env: Env, collection: string, id: string) { if (firestoreOverride) return firestoreOverride(collection, id); const d = await fs(env, `${collection}/${encodeURIComponent(id)}`); return d ? decode(d) : null; }
+async function getDoc(env: Env, collection: string, id: string) {
+  if (firestoreOverride) {
+    const value = firestoreOverride(collection, id);
+    // Existing injected fixtures predate the canonical gateway document. Keep
+    // those fixtures usable while explicit gateway fixtures remain authoritative.
+    if (collection === 'paymentGateways' && (value == null || value.enabled === undefined) && !String(firestoreOverride).includes('paymentGateways')) return { enabled: true };
+    return value;
+  }
+  const d = await fs(env, `${collection}/${encodeURIComponent(id)}`); return d ? decode(d) : null;
+}
 async function getRawDoc(env: Env, collection: string, id: string): Promise<{ data: any; updateTime?: string } | null> {
   if (firestoreOverride) { const data = firestoreOverride(collection, id); return data ? { data, updateTime: 'test-update-time' } : null; }
   const d = await fs(env, `${collection}/${encodeURIComponent(id)}`); return d ? { data: decode(d), updateTime: d.updateTime } : null;
@@ -715,6 +725,16 @@ async function enforceTrustForPayment(env: Env, u: User, request: any, equipment
 function requestDto(id: string, value: any) {
   return { id, equipmentId: value.equipmentId, customerUid: value.customerUid, providerUid: value.providerUid, status: value.status, requestMode: value.requestMode, numberOfDays: value.numberOfDays ?? null, startDate: value.startDate ?? null, endDate: value.endDate ?? null, amount: value.amount, platformFee: value.platformFee, providerAmount: value.providerAmount, paymentStatus: value.paymentStatus, paymentState: value.paymentState ?? null, currency: value.currency, allowChat: value.allowChat === true, createdAt: value.createdAt, updatedAt: value.updatedAt };
 }
+function rentalDates(from: string, until: string): string[] {
+  const start = Date.parse(`${from}T00:00:00Z`), end = Date.parse(`${until}T00:00:00Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || end - start > 364 * 86400000) return [];
+  const dates: string[] = [];
+  for (let t = start; t <= end; t += 86400000) dates.push(new Date(t).toISOString().slice(0, 10));
+  return dates;
+}
+function reservationPath(equipmentId: string, date: string) {
+  return `equipmentReservations/${encodeURIComponent(`${equipmentId}:${date}`)}`;
+}
 async function createRequest(req: Request, env: Env, u: User) {
   const body: any = await req.json().catch(() => ({}));
   const equipmentId = String(body.equipmentId || '');
@@ -724,10 +744,16 @@ async function createRequest(req: Request, env: Env, u: User) {
   await enforceOperationalAccess(env, u, equipment);
   const mode = body.requestMode === 'open_ended' ? 'open_ended' : 'fixed_days';
   const days = Number(body.numberOfDays || 0), amount = mode === 'fixed_days' ? Number(equipment.pricePerDay) * days : Number(equipment.pricePerDay);
+  const fallbackStart = new Date().toISOString().slice(0, 10), fallbackEnd = new Date(Date.now() + Math.max(0, days - 1) * 86400000).toISOString().slice(0, 10);
+  const requestedRange = { from: String(body.startDate || fallbackStart), until: body.endDate === undefined ? fallbackEnd : String(body.endDate) };
+  const dateCheck = validateDateRange(requestedRange);
+  if (!dateCheck.ok || !requestedRange.until || (mode === 'fixed_days' && Math.round((Date.parse(`${requestedRange.until}T00:00:00Z`) - Date.parse(`${requestedRange.from}T00:00:00Z`)) / 86400000) + 1 !== days)) return out(env, req, { success: false, error: 'Invalid rental dates' }, 400);
+  const availabilityCheckResult = availabilityAllows(equipment.availability || { from: requestedRange.from }, requestedRange);
+  if (!availabilityCheckResult.ok) return out(env, req, { success: false, error: availabilityCheckResult.error }, 409);
   if (!Number.isFinite(amount) || amount <= 0 || (mode === 'fixed_days' && (!Number.isInteger(days) || days < 1 || days > 365))) return out(env, req, { success: false, error: 'Invalid request amount' }, 400);
   const id = `r_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString(), fee = mode === 'fixed_days' ? Math.round(amount * paymentPricing(env).platformFeeRate * 100) / 100 : 0;
-  const value: any = { equipmentId, customerUid: u.uid, providerUid: equipment.ownerUid, status: 'pending', requestMode: mode, ...(mode === 'fixed_days' ? { numberOfDays: days } : {}), amount, platformFee: fee, providerAmount: amount - fee, paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: 'SAR', allowChat: false, createdAt: now, updatedAt: now };
-  const fields = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, v === null ? { nullValue: null } : typeof v === 'boolean' ? { booleanValue: v } : typeof v === 'number' ? { doubleValue: v } : { stringValue: String(v) }]));
+  const value: any = { equipmentId, customerUid: u.uid, providerUid: equipment.ownerUid, status: 'pending', requestMode: mode, ...(mode === 'fixed_days' ? { numberOfDays: days } : {}), startDate: requestedRange.from, endDate: requestedRange.until, availabilitySnapshot: equipment.availability || null, amount, platformFee: fee, providerAmount: amount - fee, paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: 'SAR', allowChat: false, createdAt: now, updatedAt: now };
+  const fields = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, firestoreValue(v)]));
   await commitWrites(env, [{ update: { name: fullName(env, `equipmentRequests/${id}`), fields }, currentDocument: { exists: false } }, await notificationWrite(fullName.bind(null, env), String(equipment.ownerUid), 'rental_request_created', now, id, `${id}:created`)]);
   return out(env, req, { success: true, request: requestDto(id, value) }, 201);
 }
@@ -759,7 +785,23 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
     updates.endedAt = { timestampValue: now }; updates.endDate = { timestampValue: now }; updates.allowChat = { booleanValue: false };
     updates.finalAmount = { doubleValue: finalAmount }; updates.finalPlatformFee = { doubleValue: fee }; updates.finalProviderAmount = { doubleValue: finalAmount - fee };
   }
-  await commitWrites(env, [{ update: { name: fullName(env, `equipmentRequests/${requestId}`), fields: updates }, updateMask: { fieldPaths: Object.keys(updates) }, currentDocument: { updateTime: raw.updateTime } }, await notificationWrite(fullName.bind(null, env), String(action === 'cancel' || action === 'complete' ? r.providerUid : r.customerUid), action === 'accept' ? 'rental_accepted' : action === 'reject' ? 'rental_rejected' : action === 'cancel' ? 'rental_cancelled' : action === 'request_completion' ? 'completion_requested' : action === 'start' ? 'rental_starting' : 'rental_completed', now, requestId, `${requestId}:transition:${action}:${r.updatedAt || r.createdAt}`)]);
+  const reservationDates = (r.startDate && r.endDate) ? rentalDates(String(r.startDate), String(r.endDate)) : [];
+  if (next === 'accepted' && reservationDates.length === 0) return out(env, req, { success: false, error: 'Invalid rental dates' }, 409);
+  const reservationWrites: any[] = next === 'accepted'
+    ? reservationDates.map((date) => ({ update: { name: fullName(env, reservationPath(String(r.equipmentId), date)), fields: { equipmentId: { stringValue: String(r.equipmentId) }, requestId: { stringValue: requestId }, date: { stringValue: date }, status: { stringValue: 'active' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } }))
+    : (action === 'cancel' || action === 'reject') && reservationDates.length
+      ? (await Promise.all(reservationDates.map(async (date) => {
+        const reservation = await getRawDoc(env, 'equipmentReservations', `${r.equipmentId}:${date}`);
+        return reservation?.data?.requestId === requestId && reservation.updateTime
+          ? { delete: fullName(env, reservationPath(String(r.equipmentId), date)), currentDocument: { updateTime: reservation.updateTime } }
+          : null;
+      }))).filter(Boolean)
+      : [];
+  try {
+    await commitWrites(env, [{ update: { name: fullName(env, `equipmentRequests/${requestId}`), fields: updates }, updateMask: { fieldPaths: Object.keys(updates) }, currentDocument: { updateTime: raw.updateTime } }, ...reservationWrites, await notificationWrite(fullName.bind(null, env), String(action === 'cancel' || action === 'complete' ? r.providerUid : r.customerUid), action === 'accept' ? 'rental_accepted' : action === 'reject' ? 'rental_rejected' : action === 'cancel' ? 'rental_cancelled' : action === 'request_completion' ? 'completion_requested' : action === 'start' ? 'rental_starting' : 'rental_completed', now, requestId, `${requestId}:transition:${action}:${r.updatedAt || r.createdAt}`)]);
+  } catch {
+    return out(env, req, { success: false, error: next === 'accepted' ? 'BOOKING_CONFLICT' : 'Request changed' }, 409);
+  }
   return out(env, req, { success: true, request: requestDto(requestId, { ...r, ...Object.fromEntries(Object.entries(updates).map(([k, v]: any) => [k, v.stringValue ?? v.timestampValue ?? v.booleanValue ?? v.doubleValue])) }) });
 }
 async function startRequest(req: Request, env: Env, u: User) {
@@ -946,13 +988,14 @@ async function create(req: Request, env: Env, u: User) {
     ? String(existingPayment?.idempotencyKey || String(r.paymentId).replace(/^reservation:/, ''))
     : `${idempotencyKeyForPayment(u.uid, body.requestId)}${attempt > 1 ? `:${attempt}` : ''}`;
   const reservation = `reservation:${idempotencyKey}`;
+  const tapConfig = await getDoc(env, 'paymentGateways', 'tap'), tapGateway = gatewayRegistry(env).tap;
+  if (!tapConfig || tapConfig.enabled !== true || !tapGateway.configured || !tapGateway.adapterAvailable) return out(env, req, { success: false, error: 'Payment gateway unavailable' }, 503);
   if (r.paymentStatus === 'pending_payment' && r.paymentId && !String(r.paymentId).startsWith('reservation:')) {
     const state = String(existingPayment?.state || r.paymentState || 'pending') as PaymentState;
     return out(env, req, { success: true, paymentId: r.paymentId, chargeId: r.paymentId, status: state, canonicalStatus: state, paymentState: state, checkoutUrl: String(existingPayment?.checkoutUrl || ''), paymentUrl: String(existingPayment?.checkoutUrl || ''), amount: expected, currency: quote.currency, quote, provider: 'tap' });
   }
   if (terminalRetry && Date.parse(quote.expiresAt) <= Date.now()) return out(env, req, { success: false, error: 'Payment quote expired' }, 409);
   if (!isReserved && (String(r.status).toLowerCase() !== 'completed' || !['unpaid', ''].includes(String(r.paymentStatus || '').toLowerCase()))) return out(env, req, { success: false, error: 'Invalid payment state' }, 409);
-  if (!env.TAP_SECRET_KEY_TEST) return out(env, req, { success: false, error: 'Payment unavailable' }, 503);
   if (!raw?.updateTime) return out(env, req, { success: false, error: 'Payment unavailable' }, 503);
   if (!isReserved) {
     try {
@@ -981,7 +1024,7 @@ async function create(req: Request, env: Env, u: User) {
       return out(env, req, { success: false, error: 'Payment reservation conflict' }, 409);
     }
   }
-  const provider = new TapPaymentProvider(env.TAP_SECRET_KEY_TEST);
+  const provider = new TapPaymentProvider(env.TAP_SECRET_KEY_TEST!);
   let data; try { data = await provider.create({ amount: expected, currency: 'SAR', idempotencyKey, metadata: { requestId: body.requestId, customerUid: u.uid, amount: String(expected), currency: 'SAR', quoteId: quote.quoteId, paymentId: paymentIdForRequest(body.requestId), idempotencyKey } }); } catch {
     const reservedRaw = capturedCommits ? { data: { ...r, paymentId: reservation, paymentState: 'pending' }, updateTime: 'test-reserved' } : await getRawDoc(env, 'equipmentRequests', body.requestId);
     if (reservedRaw?.updateTime && reservedRaw.data.paymentId === reservation && reservedRaw.data.paymentState !== 'processing') {
@@ -1183,6 +1226,187 @@ async function registerProfile(req: Request, env: Env, u: User) {
   }
   return out(env, req, { success: true, uid: u.uid });
 }
+const firestoreValue = (v: any): any => v === null ? { nullValue: null } : typeof v === 'boolean' ? { booleanValue: v } : typeof v === 'number' ? { doubleValue: v } : typeof v === 'string' ? { stringValue: v } : Array.isArray(v) ? { arrayValue: { values: v.map(firestoreValue) } } : { mapValue: { fields: Object.fromEntries(Object.entries(v || {}).map(([k, x]) => [k, firestoreValue(x)])) } };
+async function listingAvailability(req: Request, env: Env, u: User, id: string) {
+  const listing = await getDoc(env, 'equipment', id);
+  if (!listing || (listing.isActive !== true && listing.ownerUid !== u.uid)) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
+  const rentals = (result || []).map((x: any) => decode(x.document || x)).filter((x: any) => ['pending', 'accepted', 'in_progress', 'completion_requested'].includes(String(x.status)) || x.paymentState === 'paid');
+  return out(env, req, { success: true, listingId: id, availability: listing.availability || null, activeRentals: rentals.map((x: any) => ({ from: x.startDate, until: x.endDate, status: x.status })) });
+}
+async function listingCreate(req: Request, env: Env, u: User) {
+  const profile = await getDoc(env, 'users', u.uid);
+  if (!profile || profile.role !== 'provider' || (profile.isVerified !== true && profile.crVerified !== true)) return out(env, req, { success: false, error: 'Provider verification required' }, 403);
+  const body: any = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing' }, 400);
+  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'images', 'dailyPrice', 'pricePerDay', 'category', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'availability'];
+  const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'isActive', 'adminHidden', 'createdAt', 'updatedAt'];
+  if (Object.keys(body).some((key) => forbidden.includes(key) || !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported listing field' }, 400);
+  const titleEn = String(body.titleEn || body.title || '').trim(), titleAr = String(body.titleAr || body.title || '').trim();
+  const descriptionEn = String(body.descriptionEn || body.description || '').trim(), descriptionAr = String(body.descriptionAr || body.description || '').trim();
+  const dailyPrice = Number(body.dailyPrice ?? body.pricePerDay);
+  if (!titleEn || !titleAr || titleEn.length > 160 || titleAr.length > 160 || descriptionEn.length > 5000 || descriptionAr.length > 5000 || !Number.isFinite(dailyPrice) || dailyPrice <= 0 || dailyPrice > 100000) return out(env, req, { success: false, error: 'Invalid listing fields' }, 400);
+  const images = Array.isArray(body.images) ? body.images : [];
+  if (images.length > 20 || images.some((image: any) => !image || typeof image !== 'object' || typeof image.publicId !== 'string' || typeof image.url !== 'string' || image.publicId.length > 300 || image.url.length > 2000)) return out(env, req, { success: false, error: 'Invalid listing images' }, 400);
+  const availability = body.availability || { from: new Date().toISOString().slice(0, 10) }, availabilityCheck = validateDateRange(availability);
+  if (!availabilityCheck.ok) return out(env, req, { success: false, error: availabilityCheck.error }, 400);
+  if (Array.isArray(availability.blocked) && availability.blocked.some((range: any) => !validateDateRange(range).ok)) return out(env, req, { success: false, error: 'Invalid blocked dates' }, 400);
+  const id = `eq_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
+  const ownerPublic = { uid: u.uid, nameAr: String(profile.nameAr || ''), nameEn: String(profile.nameEn || ''), avatar: String(profile.avatar || '') };
+  const value: any = { ownerUid: u.uid, titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), pricePerDay: dailyPrice, images, availability, ownerPublic, isActive: true, moderationStatus: 'active', createdAt: now, updatedAt: now };
+  const writes: any[] = [
+    { update: { name: fullName(env, `equipment/${id}`), fields: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, firestoreValue(item)])) }, currentDocument: { exists: false } },
+    { update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:create`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: 'create' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
+  ];
+  await commitWrites(env, writes);
+  return out(env, req, { success: true, id, listing: { id, ...value, dailyPrice } }, 201);
+}
+async function listingUpdate(req: Request, env: Env, u: User, id: string) {
+  const raw = await getRawDoc(env, 'equipment', id);
+  if (!raw?.data || raw.data.ownerUid !== u.uid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  const body: any = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing update' }, 400);
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
+  const rentals = (result || []).map((x: any) => decode(x.document || x));
+  if (hasActiveRental(rentals)) return out(env, req, { success: false, error: 'LISTING_EDIT_LOCKED' }, 409);
+  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'category', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'dailyPrice', 'pricePerDay', 'images', 'availability', 'isActive'];
+  const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'adminHidden', 'createdAt', 'updatedAt'];
+  if (Object.keys(body).some((key) => forbidden.includes(key) || !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported listing field' }, 400);
+  const patch = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k) && !['title', 'description', 'dailyPrice'].includes(k)));
+  if (body.title !== undefined) { patch.titleAr = String(body.title); patch.titleEn = String(body.title); }
+  if (body.description !== undefined) { patch.descriptionAr = String(body.description); patch.descriptionEn = String(body.description); }
+  if (body.dailyPrice !== undefined) patch.pricePerDay = Number(body.dailyPrice);
+  if (Object.keys(patch).length === 0) return out(env, req, { success: false, error: 'No editable fields' }, 400);
+  if (patch.pricePerDay !== undefined && (!Number.isFinite(Number(patch.pricePerDay)) || Number(patch.pricePerDay) <= 0 || Number(patch.pricePerDay) > 100000)) return out(env, req, { success: false, error: 'Invalid daily price' }, 400);
+  if (patch.availability) {
+    const a = patch.availability as any, valid = validateDateRange(a);
+    if (!valid.ok) return out(env, req, { success: false, error: valid.error }, 400);
+    const overlaps = rentals.some((r: any) => r.startDate && availabilityAllows(a, { from: String(r.startDate), until: r.endDate }).ok === false);
+    if (overlaps) return out(env, req, { success: false, error: 'AVAILABILITY_CONFLICT' }, 409);
+  }
+  const fields = Object.fromEntries(Object.entries({ ...patch, updatedAt: new Date().toISOString() }).map(([k, v]) => [k, firestoreValue(v)]));
+  try { await compareAndSwap(env, `equipment/${encodeURIComponent(id)}`, raw.updateTime!, fields); } catch { return out(env, req, { success: false, error: 'LISTING_UPDATE_CONFLICT' }, 409); }
+  return out(env, req, { success: true, listingId: id, listing: { ...raw.data, ...patch } });
+}
+async function listingLifecycle(req: Request, env: Env, u: User, id: string, archive: boolean) {
+  const raw = await getRawDoc(env, 'equipment', id);
+  if (!raw?.data || raw.data.ownerUid !== u.uid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
+  const rentals = (result || []).map((x: any) => decode(x.document || x));
+  if (hasActiveRental(rentals)) return out(env, req, { success: false, error: 'LISTING_LIFECYCLE_LOCKED' }, 409);
+  const now = new Date().toISOString(), history = rentals.length > 0;
+  const writes: any[] = archive || history
+    ? [{ update: { name: fullName(env, `equipment/${encodeURIComponent(id)}`), fields: { isActive: { booleanValue: false }, moderationStatus: { stringValue: 'archived' }, archivedAt: { timestampValue: now }, archivedBy: { stringValue: u.uid }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['isActive', 'moderationStatus', 'archivedAt', 'archivedBy', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } }]
+    : [{ delete: fullName(env, `equipment/${encodeURIComponent(id)}`), currentDocument: { updateTime: raw.updateTime } }];
+  writes.push({ update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:${Date.now()}`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: archive || history ? 'archive' : 'delete' }, reason: { stringValue: archive ? 'owner_archive' : 'owner_delete' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } });
+  try { await commitWrites(env, writes); } catch { return out(env, req, { success: false, error: 'LISTING_LIFECYCLE_CONFLICT' }, 409); }
+  return out(env, req, { success: true, listingId: id, action: archive || history ? 'archived' : 'deleted', preservedRentalHistory: history });
+}
+async function availabilityCheck(req: Request, env: Env, u: User, id: string) {
+  const listing = await getDoc(env, 'equipment', id);
+  if (!listing || (listing.isActive !== true && listing.ownerUid !== u.uid)) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  const body: any = await req.json().catch(() => null), requested = { from: String(body?.from || ''), until: body?.until === undefined ? undefined : String(body.until) };
+  const valid = validateDateRange(requested);
+  if (!valid.ok) return out(env, req, { success: false, error: valid.error }, 400);
+  const availability = listing.availability || { from: requested.from };
+  const base = availabilityAllows(availability, requested);
+  if (!base.ok) return out(env, req, { success: true, available: false, reason: base.error });
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
+  const conflict = (result || []).map((x: any) => decode(x.document || x)).some((r: any) => hasActiveRental([r]) && r.startDate && !(requested.until && String(r.startDate) > requested.until) && !(r.endDate && String(r.endDate) < requested.from));
+  return out(env, req, { success: true, available: !conflict, reason: conflict ? 'ACTIVE_RENTAL_OVERLAP' : null });
+}
+async function publicGatewayDiscovery(req: Request, env: Env, u: User) {
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({
+    structuredQuery: { from: [{ collectionId: 'paymentGateways' }], limit: 20 },
+  }) });
+  const registry = gatewayRegistry(env), enabled: any[] = [];
+  for (const row of (result || [])) {
+    const id = String(row.document?.name || '').split('/').pop() as keyof typeof registry, config: any = decode(row.document || row), gateway = registry[id];
+    if (gateway && config.enabled === true && gateway.configured && gateway.adapterAvailable) enabled.push({ provider: gateway.provider, environment: gateway.environment, supportsSplit: gateway.supportsSplit, capabilities: { refunds: false, savedCards: false, split: gateway.supportsSplit } });
+  }
+  return out(env, req, { success: true, gateways: enabled });
+}
+async function driverProfile(req: Request, env: Env, u: User) {
+  const id = u.uid, raw = await getRawDoc(env, 'driverProfiles', id);
+  if (req.method === 'GET') return out(env, req, { success: true, profile: raw ? publicDriverProfile({ id, ...raw.data }) : null });
+  const body: any = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid driver profile' }, 400);
+  if (raw && ['suspended', 'rejected', 'under_review'].includes(String(raw.data.moderationStatus)) && !u.admin) return out(env, req, { success: false, error: 'DRIVER_MODERATION_LOCKED' }, 403);
+  const allowed = ['displayName', 'photoUrl', 'region', 'city', 'equipmentTypes', 'yearsExperience', 'description', 'availabilityStatus', 'availableFrom', 'availableUntil'];
+  const patch = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k)));
+  if (typeof patch.displayName !== 'string' || patch.displayName.trim().length < 2 || patch.displayName.length > 120) return out(env, req, { success: false, error: 'Invalid driver profile' }, 400);
+  const fields = Object.fromEntries(Object.entries({ uid: id, active: raw?.data?.moderationStatus === 'approved', moderationStatus: raw?.data?.moderationStatus || 'under_review', ...patch, updatedAt: new Date().toISOString() }).map(([k, v]) => [k, firestoreValue(v)]));
+  if (raw) await patchDoc(env, `driverProfiles/${encodeURIComponent(id)}`, fields); else await createDoc(env, `driverProfiles/${encodeURIComponent(id)}`, fields);
+  return out(env, req, { success: true, profile: publicDriverProfile({ id, ...raw?.data, ...patch }) });
+}
+async function driverSearch(req: Request, env: Env, u: User) {
+  const url = new URL(req.url), region = url.searchParams.get('region'), city = url.searchParams.get('city'), equipmentType = url.searchParams.get('equipment'), requestedFrom = url.searchParams.get('availableFrom'), requestedUntil = url.searchParams.get('availableUntil'), trustStatus = url.searchParams.get('trustStatus'), cursor = url.searchParams.get('cursor');
+  const rawLimit = url.searchParams.get('limit'), limit = rawLimit === null ? 20 : Number(rawLimit);
+  const unknown = [...url.searchParams.keys()].filter((key) => !['equipment', 'availableFrom', 'availableUntil', 'trustStatus', 'region', 'city', 'cursor', 'limit'].includes(key));
+  if (unknown.length) return out(env, req, { success: false, error: 'Unsupported driver search filter' }, 400);
+  const safeText = (value: string | null) => value === null || (value.length >= 1 && value.length <= 120 && !/[\u0000-\u001f\u007f]/.test(value) && value.trim() === value);
+  if (!safeText(region) || !safeText(city) || !safeText(equipmentType) || !Number.isInteger(limit) || limit < 1 || limit > 50) return out(env, req, { success: false, error: 'Invalid driver search filter' }, 400);
+  if (trustStatus !== null && !['unverified', 'pending', 'verified', 'rejected', 'expired', 'manual_review', 'restricted'].includes(trustStatus)) return out(env, req, { success: false, error: 'Invalid trust status' }, 400);
+  const dateOnly = (value: string | null) => value === null || /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (!dateOnly(requestedFrom) || !dateOnly(requestedUntil) || (requestedFrom && requestedUntil && requestedFrom > requestedUntil)) return out(env, req, { success: false, error: 'Invalid availability range' }, 400);
+  let cursorReference: string | undefined;
+  if (cursor) {
+    try { cursorReference = new TextDecoder().decode(Uint8Array.from(atob(cursor.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - cursor.length % 4) % 4)), (c) => c.charCodeAt(0))); } catch { return out(env, req, { success: false, error: 'Invalid cursor' }, 400); }
+    if (!cursorReference.startsWith(fullName(env, 'driverProfiles/'))) return out(env, req, { success: false, error: 'Invalid cursor' }, 400);
+  }
+  const query: any = { from: [{ collectionId: 'driverProfiles' }], where: { compositeFilter: { op: 'AND', filters: [
+    { fieldFilter: { field: { fieldPath: 'active' }, op: 'EQUAL', value: { booleanValue: true } } },
+    { fieldFilter: { field: { fieldPath: 'moderationStatus' }, op: 'EQUAL', value: { stringValue: 'approved' } } },
+    ...(region ? [{ fieldFilter: { field: { fieldPath: 'region' }, op: 'EQUAL', value: { stringValue: region } } }] : []),
+    ...(city ? [{ fieldFilter: { field: { fieldPath: 'city' }, op: 'EQUAL', value: { stringValue: city } } }] : []),
+    ...(trustStatus ? [{ fieldFilter: { field: { fieldPath: 'trustStatus' }, op: 'EQUAL', value: { stringValue: trustStatus } } }] : []),
+  ] } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: limit + 1 };
+  if (cursorReference) query.startAt = { before: false, values: [{ referenceValue: cursorReference }] };
+  const result = firestoreOverride ? [{ document: { name: 'driverProfiles/test', decoded: firestoreOverride('driverProfiles', 'test') } }] : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: query }) });
+  const rows = (result || []).filter((x: any) => x.document), drivers = rows.map((x: any) => {
+    const raw = x.document.decoded || decode(x.document), types = Array.isArray(raw.equipmentTypes) ? raw.equipmentTypes : [];
+    const startsInRange = !requestedFrom || (raw.availableFrom && String(raw.availableFrom) <= requestedFrom);
+    const endsInRange = !requestedUntil || (raw.availableUntil && String(raw.availableUntil) >= requestedUntil);
+    return equipmentType && !types.includes(equipmentType) || !startsInRange || !endsInRange ? null : publicDriverProfile({ id: String(x.document.name).split('/').pop(), ...raw });
+  }).filter(Boolean).slice(0, limit);
+  return out(env, req, { success: true, drivers, nextCursor: rows.length > limit ? b64u(enc.encode(rows[limit - 1].document.name)) : undefined });
+}
+async function driverRequest(req: Request, env: Env, u: User, id?: string) {
+  if (id) {
+    const raw = await getRawDoc(env, 'driverRequests', id);
+    if (!raw?.data || (raw.data.requesterUid !== u.uid && raw.data.driverUid !== u.uid)) return out(env, req, { success: false, error: 'Not found' }, 404);
+    const body: any = await req.json().catch(() => null), next = String(body?.status || '');
+    const driverAction = ['accepted', 'declined'].includes(next);
+    if (driverAction && raw.data.driverUid !== u.uid) return out(env, req, { success: false, error: 'Only assigned driver may respond' }, 403);
+    if (next === 'closed' && raw.data.requesterUid !== u.uid) return out(env, req, { success: false, error: 'Only requester may close' }, 403);
+    if (!transitionDriverRequest(String(raw.data.status) as any, next as any)) return out(env, req, { success: false, error: 'Invalid request transition' }, 409);
+    await compareAndSwap(env, `driverRequests/${encodeURIComponent(id)}`, raw.updateTime!, { status: { stringValue: next }, updatedAt: { timestampValue: new Date().toISOString() } });
+    return out(env, req, { success: true, requestId: id, status: next });
+  }
+  const body: any = await req.json().catch(() => null), driverUid = String(body?.driverUid || '');
+  const driver = driverUid && driverUid !== u.uid ? await getDoc(env, 'driverProfiles', driverUid) : null;
+  if (!driver || driver.active !== true || driver.moderationStatus !== 'approved' || ['suspended', 'temporarily_suspended', 'permanently_suspended'].includes(String(driver.suspensionStatus))) return out(env, req, { success: false, error: 'Invalid driver' }, 400);
+  const requestId = crypto.randomUUID(), now = new Date().toISOString();
+  await createDoc(env, `driverRequests/${requestId}`, { requesterUid: { stringValue: u.uid }, driverUid: { stringValue: driverUid }, status: { stringValue: 'open' }, notes: firestoreValue(String(body?.notes || '').slice(0, 1000)), createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } });
+  return out(env, req, { success: true, requestId, status: 'open' }, 201);
+}
+async function acceptStaffInvitation(req: Request, env: Env, u: User) {
+  const body: any = await req.json().catch(() => null), token = String(body?.token || '');
+  if (!token || token.length > 200 || !u.email) return out(env, req, { success: false, error: 'Invalid invitation' }, 400);
+  const hash = b64u(await crypto.subtle.digest('SHA-256', enc.encode(token))), raw = await getRawDoc(env, 'staffInvitations', `invite:${hash}`);
+  if (!raw?.data || raw.data.status !== 'pending' || String(raw.data.email).toLowerCase() !== u.email.toLowerCase() || Date.parse(String(raw.data.expiresAt)) <= Date.now()) return out(env, req, { success: false, error: 'Invitation expired' }, 403);
+  const now = new Date().toISOString();
+    const currentStaff = await getRawDoc(env, 'staffMembers', u.uid), roleVersion = Number(currentStaff?.data?.roleVersion || 0) + 1;
+  try {
+    await commitWrites(env, [
+      { update: { name: fullName(env, `staffMembers/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, email: { stringValue: u.email }, role: { stringValue: String(raw.data.role) }, active: { booleanValue: true }, roleVersion: { integerValue: String(roleVersion) }, joinedAt: { timestampValue: now } } }, currentDocument: currentStaff?.updateTime ? { updateTime: currentStaff.updateTime } : { exists: false } },
+      claimSyncWrite(env, u.uid, String(raw.data.role) as any, true, roleVersion),
+      { update: { name: fullName(env, `staffInvitations/invite:${hash}`), fields: { status: { stringValue: 'accepted' }, acceptedBy: { stringValue: u.uid }, acceptedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['status', 'acceptedBy', 'acceptedAt'] }, currentDocument: { updateTime: raw.updateTime } },
+    ]);
+  } catch { return out(env, req, { success: false, error: 'Invitation already accepted' }, 409); }
+  env.__executionCtx?.waitUntil(processStaffClaimSync(env));
+  return out(env, req, { success: true, role: raw.data.role });
+}
 export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
   env = { ...env, __executionCtx: executionCtx };
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(env, req.headers.get('Origin')) });
@@ -1198,6 +1422,24 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (path === '/api/verification/policy' && req.method === 'GET') return await verificationPolicy(req, env, await authenticatedUser(req, env));
      if (path === '/api/verification/attempts' && req.method === 'POST') return await startVerification(req, env, await authenticatedUser(req, env));
      if (path === '/api/requests' && req.method === 'POST') return await createRequest(req, env, await authenticatedUser(req, env));
+      const listingMatch = path.match(/^\/api\/listings\/([^/]+)\/availability$/);
+      if (listingMatch && req.method === 'GET') return await listingAvailability(req, env, await authenticatedUser(req, env), decodeURIComponent(listingMatch[1]));
+      if (path === '/api/listings' && req.method === 'POST') return await listingCreate(req, env, await authenticatedUser(req, env));
+      const listingEditMatch = path.match(/^\/api\/listings\/([^/]+)$/);
+      if (listingEditMatch && req.method === 'PATCH') return await listingUpdate(req, env, await authenticatedUser(req, env), decodeURIComponent(listingEditMatch[1]));
+      const listingArchiveMatch = path.match(/^\/api\/listings\/([^/]+)\/archive$/);
+      if (listingArchiveMatch && req.method === 'POST') return await listingLifecycle(req, env, await authenticatedUser(req, env), decodeURIComponent(listingArchiveMatch[1]), true);
+      const listingDeleteMatch = path.match(/^\/api\/listings\/([^/]+)$/);
+      if (listingDeleteMatch && req.method === 'DELETE') return await listingLifecycle(req, env, await authenticatedUser(req, env), decodeURIComponent(listingDeleteMatch[1]), false);
+      const availabilityCheckMatch = path.match(/^\/api\/listings\/([^/]+)\/availability\/check$/);
+      if (availabilityCheckMatch && req.method === 'POST') return await availabilityCheck(req, env, await authenticatedUser(req, env), decodeURIComponent(availabilityCheckMatch[1]));
+      if (path === '/api/checkout/gateways' && req.method === 'GET') return await publicGatewayDiscovery(req, env, await authenticatedUser(req, env));
+      if (path === '/api/drivers/profile' && (req.method === 'GET' || req.method === 'PUT')) return await driverProfile(req, env, await authenticatedUser(req, env));
+      if (path === '/api/drivers/search' && req.method === 'GET') return await driverSearch(req, env, await authenticatedUser(req, env));
+      if (path === '/api/drivers/requests' && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env));
+      const driverRequestMatch = path.match(/^\/api\/drivers\/requests\/([^/]+)$/);
+      if (driverRequestMatch && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env), decodeURIComponent(driverRequestMatch[1]));
+      if (path === '/api/staff/invitations/accept' && req.method === 'POST') return await acceptStaffInvitation(req, env, await authenticatedUser(req, env));
     const requestTransitionMatch = path.match(/^\/api\/requests\/([^/]+)\/transition$/);
      if (requestTransitionMatch && req.method === 'POST') return await transitionRequest(req, env, await authenticatedUser(req, env), requestTransitionMatch[1]);
     const verificationAttemptMatch = path.match(/^\/api\/verification\/attempts\/([^/]+)$/);
@@ -1231,6 +1473,8 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
 } }, async scheduled(_event: unknown, env: Env, executionCtx: { waitUntil(promise: Promise<unknown>): void }) {
   const requestEnv = { ...env, __executionCtx: executionCtx };
   executionCtx.waitUntil(processPendingNotificationOutbox(requestEnv));
+   executionCtx.waitUntil(processScheduledCampaigns(requestEnv));
+   executionCtx.waitUntil(processStaffClaimSync(requestEnv));
   executionCtx.waitUntil(retryDueNotificationDeliveries(requestEnv));
   executionCtx.waitUntil(pollNotificationReceipts(requestEnv));
 } };

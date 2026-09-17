@@ -3,12 +3,14 @@ import { View, Text, StyleSheet, TextInput, Pressable, KeyboardAvoidingView, Pla
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Mail, Lock, Eye, EyeOff, Chrome, Smartphone } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { requestPasswordReset } from '@/services/authService';
 
 export default function LoginScreen() {
   const { isRTL, t } = useLanguage();
@@ -33,6 +35,22 @@ export default function LoginScreen() {
       setLoading(false);
     }
   }, [email, password, login, router, t, showDialog]);
+
+  const handleForgotPassword = useCallback(async () => {
+    const normalized = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+      showDialog(t('error_title'), t('invalid_email'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+    const last = Number(await AsyncStorage.getItem('heavyar_password_reset_at') || 0);
+    if (Date.now() - last < 60_000) {
+      showDialog(t('error_title'), t('password_reset_rate_limited'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
+    await AsyncStorage.setItem('heavyar_password_reset_at', String(Date.now()));
+    const result = await requestPasswordReset(normalized);
+    showDialog(t('success'), result === 'sent' ? t('password_reset_sent') : t('password_reset_unavailable'), [{ text: t('ok'), style: 'default' }]);
+  }, [email, showDialog, t]);
 
   const handleSocialLogin = useCallback((provider: string) => {
     showDialog(t('coming_soon'), t('social_login_coming_soon'), [{ text: t('ok'), style: 'default' }]);
@@ -84,7 +102,7 @@ export default function LoginScreen() {
                 </View>
               </View>
 
-              <Pressable style={[styles.forgotRow, { alignItems: isRTL ? 'flex-start' : 'flex-end' }]}>
+              <Pressable onPress={() => void handleForgotPassword()} style={[styles.forgotRow, { alignItems: isRTL ? 'flex-start' : 'flex-end' }]}>
                 <Text style={styles.forgotText}>{t('forgot_password')}</Text>
               </Pressable>
 

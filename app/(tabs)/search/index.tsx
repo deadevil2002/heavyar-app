@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, FlatList, Pressable, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Search as SearchIcon, SlidersHorizontal, X } from 'lucide-react-native';
+import { Search as SearchIcon, SlidersHorizontal, X, Grid2X2, List } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { mockCategories } from '@/mocks/categories';
@@ -10,6 +10,7 @@ import { fetchEquipmentList } from '@/services/firestoreService';
 import EquipmentCard from '@/components/EquipmentCard';
 import EmptyState from '@/components/EmptyState';
 import { Equipment } from '@/types';
+import { loadEquipmentView, saveEquipmentView, type EquipmentView } from '@/services/equipmentViewPreference';
 
 export default function SearchScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -18,6 +19,7 @@ export default function SearchScreen() {
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState<boolean>(false);
   const [allEquipment, setAllEquipment] = useState<Equipment[]>([]);
+  const [view, setView] = useState<EquipmentView>('list');
 
   useEffect(() => {
     let mounted = true;
@@ -30,6 +32,10 @@ export default function SearchScreen() {
     };
     void load();
     return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    void loadEquipmentView().then(setView);
   }, []);
 
   const filteredEquipment = useMemo(() => {
@@ -56,8 +62,10 @@ export default function SearchScreen() {
   }, []);
 
   const renderItem = useCallback(({ item }: { item: Equipment }) => (
-    <EquipmentCard equipment={item} />
-  ), []);
+    <View style={view === 'grid' ? styles.gridItem : undefined}>
+      <EquipmentCard equipment={item} compact={view === 'grid'} />
+    </View>
+  ), [view]);
 
   return (
     <View style={styles.container}>
@@ -136,12 +144,22 @@ export default function SearchScreen() {
 
         <View style={[styles.resultsHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
           <Text style={styles.resultsText}>{filteredEquipment.length} {t('results')}</Text>
+          <View style={[styles.viewToggle, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <Pressable accessibilityRole="button" accessibilityLabel={t('list_view')} onPress={() => { setView('list'); void saveEquipmentView('list'); }} style={[styles.viewButton, view === 'list' && styles.viewButtonSelected]}>
+              <List size={18} color={view === 'list' ? Colors.primary : Colors.gold} />
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={t('grid_view')} onPress={() => { setView('grid'); void saveEquipmentView('grid'); }} style={[styles.viewButton, view === 'grid' && styles.viewButtonSelected]}>
+              <Grid2X2 size={18} color={view === 'grid' ? Colors.primary : Colors.gold} />
+            </Pressable>
+          </View>
         </View>
 
         <FlatList
           data={filteredEquipment}
           renderItem={renderItem}
           keyExtractor={item => item.id}
+          key={view}
+          numColumns={view === 'grid' ? 2 : 1}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={<EmptyState title={t('no_results')} />}
@@ -254,6 +272,8 @@ const styles = StyleSheet.create({
   resultsHeader: {
     paddingHorizontal: 20,
     marginBottom: 8,
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   resultsText: {
     color: Colors.textMuted,
@@ -262,5 +282,27 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 20,
+  },
+  viewToggle: {
+    gap: 6,
+  },
+  viewButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewButtonSelected: {
+    backgroundColor: Colors.gold,
+    borderColor: Colors.gold,
+  },
+  gridItem: {
+    flex: 1,
+    maxWidth: '50%',
+    paddingHorizontal: 4,
   },
 });

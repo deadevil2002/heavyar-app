@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera, Trash2, Bell } from 'lucide-react-native';
+import { Settings, Package, Star, Search, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera, Trash2, Bell } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
@@ -266,6 +266,8 @@ export default function ProfileScreen() {
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
 
   const menuItems = [
+    { icon: Briefcase, label: t('driver_profile'), route: '/driver-profile' as const },
+    { icon: Search, label: t('find_driver'), route: '/drivers' as const },
     ...(user?.role === 'provider' ? [{ icon: Package, label: t('my_equipment'), route: '/my-equipment' as const }] : []),
     { icon: Shield, label: isRTL ? 'التحقق والموثوقية' : 'Verification & trust', route: '/verification' as const },
     { icon: Bell, label: t('notifications'), route: '/notifications' as const },

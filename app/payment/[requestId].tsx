@@ -16,6 +16,7 @@ import type { PaymentLifecycleStatus, PaymentQuote } from '@/services/paymentSer
 import { EquipmentRequest, PublicUserSnapshot } from '@/types';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { getCheckoutGateways, type CheckoutGateway } from '@/services/workerClient';
 
 type PaymentStep = 'summary' | 'processing' | 'redirecting' | 'verifying' | 'success' | 'failed';
 
@@ -32,6 +33,8 @@ export default function PaymentScreen() {
   const [paymentUrl, setPaymentUrl] = useState<string>('');
   const [quote, setQuote] = useState<PaymentQuote | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [gateways, setGateways] = useState<CheckoutGateway[]>([]);
+  const [gatewayLoading, setGatewayLoading] = useState<boolean>(true);
   const handledCallbackPayment = useRef<string | null>(null);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
@@ -83,6 +86,16 @@ export default function PaymentScreen() {
     void load();
     return () => { mounted = false; };
   }, [requestId, user]);
+
+  useEffect(() => {
+    let mounted = true;
+    void getCheckoutGateways().then(result => {
+      if (mounted) setGateways(result.gateways);
+    }).catch(() => {
+      if (mounted) setGateways([]);
+    }).finally(() => { if (mounted) setGatewayLoading(false); });
+    return () => { mounted = false; };
+  }, []);
 
   const handleVerifyRef = React.useRef<(cId?: string) => Promise<void>>(() => Promise.resolve());
 
@@ -230,9 +243,11 @@ export default function PaymentScreen() {
             </View>
           </View>
 
-          <View style={styles.secureRow}>
+      <View style={styles.secureRow}>
             <Shield size={16} color={Colors.success} />
-            <Text style={styles.secureText}>Tap Payment Gateway</Text>
+        <Text style={styles.secureText}>
+          {gateways.length ? gateways.map(gateway => `${gateway.provider === 'tap' ? 'Tap' : gateway.provider} (${gateway.environment})`).join(', ') : t('payment_gateway_unavailable')}
+        </Text>
             <Lock size={14} color={Colors.success} />
           </View>
 
@@ -245,7 +260,7 @@ export default function PaymentScreen() {
                 </Text>
               </View>
 
-              <Pressable style={styles.payButton} onPress={handleCreatePayment}>
+              <Pressable style={[styles.payButton, (gatewayLoading || gateways.length === 0) && styles.payButtonDisabled]} onPress={handleCreatePayment} disabled={gatewayLoading || gateways.length === 0}>
                 <CreditCard size={20} color={Colors.primary} />
                 <Text style={styles.payButtonText}>
                   {t('pay_now')} - {totalWithVat.toLocaleString()} {quoteCurrency}
@@ -377,6 +392,7 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 20,
   },
+  payButtonDisabled: { opacity: 0.45 },
   payButtonText: { color: Colors.primary, fontSize: 18, fontWeight: '700' as const },
   statusCard: {
     backgroundColor: Colors.card,

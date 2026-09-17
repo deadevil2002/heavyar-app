@@ -49,3 +49,16 @@ The permanent Phase 5 baseline is tag `heavyar-phase5-baseline` at
 `c7c2965b9f27533596a2d7a39cbe3651ff156395`; this is not the eventual handoff commit
 SHA. Verify the current `origin/main` and use the final SHA recorded in the handoff
 report before capturing any binary screenshots or approving assets.
+
+## Product completion update — 2026-09-17
+
+- The responsive admin and mobile product-completion features are implemented and
+  deployed where applicable.
+- The separate bilingual website account-deletion page is commit
+  `f6cb67e5a47d9c210f084ac3c949aabd86f8c5c9`; its Cloudflare Pages deployment remains
+  manual.
+- Do not use the admin responsive-check screenshots as mobile store assets.
+- Store screenshots, feature graphics, final Arabic/English listing copy, and signed
+  native binaries remain the developer/designer's responsibility.
+- Use the final `heavyar-app` SHA from the completion report before capturing release
+  assets.
