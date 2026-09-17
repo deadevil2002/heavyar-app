@@ -61,6 +61,58 @@ export function Sidebar() {
     );
   };
 
+  const sidebarContent = (mobile: boolean) => (
+    <>
+      <div className="h-16 flex items-center justify-between px-6 border-b border-sidebar-border/50 shrink-0">
+        <div className="font-bold text-2xl tracking-tight text-primary">
+          HEAVYAR
+          <span className="text-muted-foreground text-sm ms-2 font-normal">ADMIN</span>
+        </div>
+        {mobile && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="-me-2"
+            onClick={() => setIsOpen(false)}
+            aria-label={t('إغلاق القائمة', 'Close menu')}
+          >
+            <X className="w-5 h-5" />
+          </Button>
+        )}
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto py-6 px-4 space-y-1">
+        {links.map(link => <NavLink key={link.href} {...link} />)}
+
+        {(session?.role === 'super_admin' || session?.role === 'admin') && (
+          <>
+            <div className="pt-6 pb-2 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              {t('الإدارة', 'Administration')}
+            </div>
+            {adminLinks.map(link => <NavLink key={link.href} {...link} />)}
+          </>
+        )}
+      </div>
+
+      <div className="p-4 border-t border-sidebar-border/50 space-y-2 shrink-0">
+        <Link href="/security" onClick={() => setIsOpen(false)}>
+          <Button variant="outline" className="w-full justify-start gap-3 bg-transparent border-white/10 hover:bg-white/5 cursor-pointer">
+            <Shield className="w-4 h-4" />
+            {t('الأمان', 'Security')}
+          </Button>
+        </Link>
+        <Button variant="outline" className="w-full justify-start gap-3 bg-transparent border-white/10 hover:bg-white/5" onClick={toggleLanguage}>
+          <Globe className="w-4 h-4" />
+          {t('English', 'عربي')}
+        </Button>
+        <Button variant="destructive" className="w-full justify-start gap-3 bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive border-none" onClick={logout}>
+          <LogOut className="w-4 h-4" />
+          {t('تسجيل الخروج', 'Logout')}
+        </Button>
+      </div>
+    </>
+  );
+
   return (
     <>
       {/* Mobile Top Header */}
@@ -80,45 +132,20 @@ export function Sidebar() {
       {isOpen && (
         <div className="md:hidden fixed inset-0 bg-background/80 backdrop-blur-sm z-40" onClick={() => setIsOpen(false)} />
       )}
-      
-      {/* Sidebar Drawer */}
-      <aside className={`fixed inset-y-0 start-0 z-50 w-64 bg-sidebar border-e border-sidebar-border transition-transform transform ${isOpen ? 'translate-x-0' : 'rtl:translate-x-full ltr:-translate-x-full md:translate-x-0'} flex flex-col`}>
-        <div className="h-16 flex items-center justify-between px-6 border-b border-sidebar-border/50 shrink-0">
-          <div className="font-bold text-2xl tracking-tight text-primary">HEAVYAR<span className="text-muted-foreground text-sm ms-2 font-normal">ADMIN</span></div>
-          <Button variant="ghost" size="icon" className="md:hidden -me-2" onClick={() => setIsOpen(false)}>
-            <X className="w-5 h-5" />
-          </Button>
-        </div>
-        
-        <div className="flex-1 overflow-y-auto py-6 px-4 space-y-1">
-          {links.map(link => <NavLink key={link.href} {...link} />)}
-          
-          {(session?.role === 'super_admin' || session?.role === 'admin') && (
-            <>
-              <div className="pt-6 pb-2 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                {t('الإدارة', 'Administration')}
-              </div>
-              {adminLinks.map(link => <NavLink key={link.href} {...link} />)}
-            </>
-          )}
-        </div>
-        
-        <div className="p-4 border-t border-sidebar-border/50 space-y-2 shrink-0">
-          <Link href="/security">
-            <Button variant="outline" className="w-full justify-start gap-3 bg-transparent border-white/10 hover:bg-white/5 cursor-pointer">
-              <Shield className="w-4 h-4" />
-              {t('الأمان', 'Security')}
-            </Button>
-          </Link>
-          <Button variant="outline" className="w-full justify-start gap-3 bg-transparent border-white/10 hover:bg-white/5" onClick={toggleLanguage}>
-            <Globe className="w-4 h-4" />
-            {t('English', 'عربي')}
-          </Button>
-          <Button variant="destructive" className="w-full justify-start gap-3 bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive border-none" onClick={logout}>
-            <LogOut className="w-4 h-4" />
-            {t('تسجيل الخروج', 'Logout')}
-          </Button>
-        </div>
+
+      {/* Desktop sidebar: persistent and never controlled by mobile drawer state. */}
+      <aside className="hidden md:flex fixed inset-y-0 start-0 z-30 w-64 bg-sidebar border-e border-sidebar-border flex-col">
+        {sidebarContent(false)}
+      </aside>
+
+      {/* Mobile drawer: direction is explicit and cannot affect the desktop sidebar. */}
+      <aside
+        aria-hidden={!isOpen}
+        className={`md:hidden fixed inset-y-0 start-0 z-50 w-64 bg-sidebar border-e border-sidebar-border transition-transform flex flex-col ${
+          isOpen ? 'translate-x-0' : direction === 'rtl' ? 'translate-x-full' : '-translate-x-full'
+        }`}
+      >
+        {sidebarContent(true)}
       </aside>
     </>
   );
