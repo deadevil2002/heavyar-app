@@ -19,7 +19,8 @@
       "buildNumber": "1",
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
-        "NSPhotoLibraryUsageDescription": "Heavyar uses your photo library when you choose an image for equipment or your profile."
+        "NSPhotoLibraryUsageDescription": "Heavyar uses your photo library when you choose an image for equipment or your profile.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
