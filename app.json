@@ -43,6 +43,19 @@
     "web": {
       "favicon": "./assets/images/favicon.png"
     },
+    "extra": {
+      "eas": {
+        "projectId": "57eb8d63-5541-479e-b81b-89733b8068e5"
+      },
+      "firebase": {
+        "apiKey": "AIzaSyAgMZNv0rJe7ho36I0_DmjSlgNQm_HN10E",
+        "authDomain": "heavyar-app.firebaseapp.com",
+        "projectId": "heavyar-app",
+        "storageBucket": "heavyar-app.firebasestorage.app",
+        "messagingSenderId": "894313164992",
+        "appId": "1:894313164992:web:ec7ecdea9fa4630d96fd25"
+      }
+    },
     "plugins": [
       "expo-router",
       "expo-font",
