@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
+import { createVerify, generateKeyPairSync } from 'node:crypto';
 import worker, { __test, type Env } from './index';
 
 const env = { CORS_ORIGINS: 'http://localhost' } as Env;
@@ -31,13 +32,21 @@ const tapTransaction = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('worker security boundary', () => {
-  beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); });
-  afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setReservationConflict(false); });
+  beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); });
+  afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setReservationConflict(false); });
 
   test('Firestore RPC URLs use the documents colon endpoint form', () => {
     const firestoreEnv = { ...env, FIREBASE_PROJECT_ID: 'project-id' } as Env;
     expect(__test.firestoreUrl(firestoreEnv, ':commit').endsWith('/documents:commit')).toBe(true);
     expect(__test.firestoreUrl(firestoreEnv, ':runQuery').endsWith('/documents:runQuery')).toBe(true);
+  });
+
+  test('CORS permits only configured sites and scoped Expo preview origins', async () => {
+    const expoOrigin = 'https://preview-123.expo.sisko.replit.dev';
+    const allowed = await worker.fetch(new Request('https://worker.test/health', { headers: { Origin: expoOrigin } }), env);
+    const denied = await worker.fetch(new Request('https://worker.test/health', { headers: { Origin: 'https://attacker.example' } }), env);
+    expect(allowed.headers.get('Access-Control-Allow-Origin')).toBe(expoOrigin);
+    expect(denied.headers.get('Access-Control-Allow-Origin')).toBe('null');
   });
 
   test('unauthenticated payment and deletion endpoints return 401', async () => {
@@ -326,6 +335,121 @@ describe('worker security boundary', () => {
     expect(body.config.effective.allowPhoneLogin).toBe(false);
     expect(body.config.effective.requirePhoneVerification).toBe(false);
     expect(body.config.version).toBe(7);
+  });
+
+  test('phone alias verifies transient email/password and mints the same UID token', async () => {
+    const phone = '+966512345678', phoneHash = await __test.hashId(`phone:${phone}`);
+    let supplied: [string, string] | undefined;
+    __test.captureCommits([]);
+    __test.setFirestore((collection) => collection === 'heavyarConfig' ? { allowPhoneLogin: true, phoneIndexReady: true }
+      : collection === 'phoneOwners' ? { uid: 'uid-a', phoneHash }
+      : collection === 'users' ? { uid: 'uid-a', email: 'private@example.com' } : null);
+    __test.setPasswordVerifier(async (email, password) => { supplied = [email, password]; return { localId: 'uid-a' }; });
+    __test.setCustomToken(async (uid) => `token-for-${uid}`);
+    const response = await worker.fetch(request('/api/auth/alias-login', { phone: '0512345678', password: 'secret' }), { ...env, FIREBASE_PROJECT_ID: 'p', FIREBASE_WEB_API_KEY: 'k', FIREBASE_CLIENT_EMAIL: 'service@p', FIREBASE_PRIVATE_KEY: 'key' });
+    expect(response.status).toBe(200); expect(JSON.stringify(await response.json())).toBe(JSON.stringify({ customToken: 'token-for-uid-a' }));
+    expect(JSON.stringify(supplied)).toBe(JSON.stringify(['private@example.com', 'secret']));
+    expect(JSON.stringify(supplied).includes('token-for-uid-a')).toBe(false);
+  });
+
+  test('unknown, malformed, wrong, collision, UID mismatch and blocked aliases are identical generic 401s', async () => {
+    const responses: Response[] = [];
+    const loginEnv = { ...env, FIREBASE_PROJECT_ID: 'p', FIREBASE_WEB_API_KEY: 'k', FIREBASE_CLIENT_EMAIL: 'service@p', FIREBASE_PRIVATE_KEY: 'key', OTP_KV: { get: async () => null, put: async () => {}, delete: async () => {} } } as Env;
+    __test.setPasswordVerifier(async () => ({ localId: 'other' }));
+    responses.push(await worker.fetch(request('/api/auth/alias-login', { phone: 'bad', password: 'x' }), loginEnv));
+    __test.setFirestore(() => null);
+    responses.push(await worker.fetch(request('/api/auth/alias-login', { phone: '0512345678', password: 'x' }), loginEnv));
+    __test.setFirestore((collection) => collection === 'phoneOwners' ? { uid: 'uid-a', phoneHash: 'collision' } : collection === 'users' ? { uid: 'uid-a', email: 'x@example.com' } : collection === 'heavyarConfig' ? { allowPhoneLogin: true, phoneIndexReady: true } : null);
+    responses.push(await worker.fetch(request('/api/auth/alias-login', { phone: '0512345678', password: 'x' }), loginEnv));
+    expect(JSON.stringify(responses.map(x => x.status))).toBe(JSON.stringify([401, 401, 401]));
+    const bodies = await Promise.all(responses.map(x => x.clone().text()));
+    expect(bodies[1]).toBe(bodies[0]); expect(bodies[2]).toBe(bodies[0]);
+  });
+
+  test('alias login blocks suspended/deleted/disabled accounts after equivalent verification', async () => {
+    const phone = '+966512345678', phoneHash = await __test.hashId(`phone:${phone}`);
+    let calls = 0; __test.setPasswordVerifier(async () => { calls++; return { localId: 'uid-a' }; });
+    __test.setFirestore((collection) => collection === 'heavyarConfig' ? { allowPhoneLogin: true, phoneIndexReady: true } : collection === 'phoneOwners' ? { uid: 'uid-a', phoneHash } : { uid: 'uid-a', email: 'a@example.com', suspensionStatus: 'temporarily_suspended' });
+    const response = await worker.fetch(request('/api/auth/alias-login', { phone, password: 'x' }), { ...env, FIREBASE_PROJECT_ID: 'p', FIREBASE_WEB_API_KEY: 'k', FIREBASE_CLIENT_EMAIL: 's', FIREBASE_PRIVATE_KEY: 'k', OTP_KV: { get: async () => null, put: async () => {}, delete: async () => {} } } as Env);
+    expect(response.status).toBe(401); expect(calls).toBe(1);
+  });
+
+  test('alias rate limit uses only hashed IP/phone keys and outages are generic 503', async () => {
+    const keys: string[] = [];
+    const phoneHash = await __test.hashId('phone:+966512345678');
+    __test.setPhoneLoginLimiter(async (phoneHash, ipHash) => { keys.push(phoneHash, ipHash); return true; });
+    __test.setFirestore((collection) => collection === 'heavyarConfig' ? { allowPhoneLogin: true, phoneIndexReady: true } : collection === 'phoneOwners' ? { uid: 'uid-a', phoneHash } : { uid: 'uid-a', email: 'a@example.com' });
+    __test.setPasswordVerifier(async () => ({ localId: 'uid-a' })); __test.setCustomToken(async () => 'token');
+    const loginEnv = { ...env, FIREBASE_PROJECT_ID: 'p', FIREBASE_WEB_API_KEY: 'k', FIREBASE_CLIENT_EMAIL: 's', FIREBASE_PRIVATE_KEY: 'k' } as Env;
+    const response = await worker.fetch(request('/api/auth/alias-login', { phone: '0512345678', password: 'secret' }, { 'CF-Connecting-IP': '10.0.0.1' }), loginEnv);
+    expect(response.status).toBe(200); expect(keys.length).toBe(2); expect(keys.some(key => key.includes('0512345678') || key.includes('10.0.0.1') || key.includes('secret'))).toBe(false);
+    __test.setPhoneLoginLimiter(async () => false);
+    expect((await worker.fetch(request('/api/auth/alias-login', { phone: '0512345678', password: 'secret' }), loginEnv)).status).toBe(429);
+    __test.setPhoneLoginLimiter(async () => null);
+    const unavailable = await worker.fetch(request('/api/auth/alias-login', { phone: '0512345678', password: 'secret' }), { ...env, FIREBASE_PROJECT_ID: 'p', FIREBASE_WEB_API_KEY: 'k', FIREBASE_CLIENT_EMAIL: 's', FIREBASE_PRIVATE_KEY: 'k' } as Env);
+    expect(unavailable.status).toBe(503);
+  });
+
+  test('known and unknown valid aliases perform the same config-owner-user lookup sequence', async () => {
+    const phone = '+966512345678', hash = await __test.hashId(`phone:${phone}`), seen: string[] = [];
+    __test.setPhoneLoginLimiter(async () => true);
+    __test.setPasswordVerifier(async () => ({ localId: 'never-issued' }));
+    __test.setFirestore((collection, id) => {
+      seen.push(collection);
+      if (collection === 'heavyarConfig') return { allowPhoneLogin: true, phoneIndexReady: true };
+      if (collection === 'phoneOwners' && id === hash) return { uid: 'uid-a', phoneHash: hash };
+      if (collection === 'users' && id === 'uid-a') return { uid: 'uid-a', email: 'a@example.com' };
+      return null;
+    });
+    const loginEnv = { ...env, FIREBASE_PROJECT_ID: 'p', FIREBASE_WEB_API_KEY: 'k', FIREBASE_CLIENT_EMAIL: 's', FIREBASE_PRIVATE_KEY: 'k' } as Env;
+    await worker.fetch(request('/api/auth/alias-login', { phone, password: 'x' }), loginEnv);
+    const known = seen.slice(); seen.length = 0;
+    await worker.fetch(request('/api/auth/alias-login', { phone: '+966512345679', password: 'x' }), loginEnv);
+    expect(JSON.stringify(known)).toBe(JSON.stringify(['heavyarConfig', 'phoneOwners', 'users']));
+    expect(JSON.stringify(seen)).toBe(JSON.stringify(['heavyarConfig', 'phoneOwners', 'users']));
+  });
+
+  test('all account lock states block alias issuance after provider verification', async () => {
+    const states = [
+      { suspensionStatus: 'temporarily_suspended' }, { suspensionStatus: 'permanently_suspended' },
+      { suspensionStatus: 'suspended' }, { accountStatus: 'restricted' },
+      { accountStatus: 'deletion_requested' }, { status: 'deleted' }, { disabled: true },
+    ];
+    const phone = '+966512345678', hash = await __test.hashId(`phone:${phone}`);
+    for (const state of states) {
+      __test.setPhoneLoginLimiter(async () => true);
+      __test.setPasswordVerifier(async () => ({ localId: 'uid-a' }));
+      __test.setFirestore((collection) => collection === 'heavyarConfig' ? { allowPhoneLogin: true, phoneIndexReady: true } : collection === 'phoneOwners' ? { uid: 'uid-a', phoneHash: hash } : { uid: 'uid-a', email: 'a@example.com', ...state });
+      const response = await worker.fetch(request('/api/auth/alias-login', { phone, password: 'x' }), { ...env, FIREBASE_PROJECT_ID: 'p', FIREBASE_WEB_API_KEY: 'k', FIREBASE_CLIENT_EMAIL: 's', FIREBASE_PRIVATE_KEY: 'k' } as Env);
+      expect(response.status).toBe(401);
+    }
+  });
+
+  test('Firebase custom token is signed and carries only the expected same UID claims', async () => {
+    __test.setCustomToken(undefined);
+    const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    const token = await __test.mintFirebaseCustomToken({
+      ...env,
+      FIREBASE_PROJECT_ID: 'project-a',
+      FIREBASE_CLIENT_EMAIL: 'service@project-a.iam.gserviceaccount.com',
+      FIREBASE_PRIVATE_KEY: privateKey,
+    } as Env, 'uid-a');
+    const [header, payload, signature] = token.split('.');
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    expect(JSON.stringify(JSON.parse(Buffer.from(header, 'base64url').toString()))).toBe(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+    expect(claims.uid).toBe('uid-a');
+    expect(claims.iss).toBe('service@project-a.iam.gserviceaccount.com');
+    expect(claims.sub).toBe(claims.iss);
+    expect(claims.aud).toBe('https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit');
+    expect(claims.exp - claims.iat).toBe(3600);
+    const verifier = createVerify('RSA-SHA256');
+    verifier.update(`${header}.${payload}`);
+    verifier.end();
+    expect(verifier.verify(publicKey, Buffer.from(signature, 'base64url'))).toBe(true);
   });
 
   test('password reset is generic and rate-limited without leaking identifiers', async () => {

@@ -1,0 +1,533 @@
+Start a focused Heavyar Authentication, Registration & Account Recovery completion pass.
+
+Do NOT start the website/landing-page task yet.
+
+Do NOT redesign unrelated screens.
+Do NOT change payments, Nafath, Admin business flows, equipment moderation, request lifecycle, or store configuration unless directly required by authentication/onboarding.
+
+Use the existing Heavyar architecture:
+- Firebase Auth
+- Firestore
+- heavyar-api Worker
+- existing Admin configuration framework
+- existing Resend server-side integration
+
+==================================================
+1. AUDIT CURRENT AUTH FLOW FIRST
+==================================================
+
+Before modifying anything, inspect the current production implementation for:
+
+- account registration
+- email/password login
+- phone fields
+- phone uniqueness
+- phone verification
+- forgot password
+- password reset
+- roles/account types
+- current user profile schema
+- current Worker auth endpoints
+- Admin configuration system
+- Resend configuration
+- current Firebase Auth providers
+
+Do not assume that a feature is missing until you verify it.
+
+==================================================
+2. REGISTRATION ACCOUNT TYPES
+==================================================
+
+Registration must clearly ask the user what type of account they want.
+
+Use professional Arabic/English labels.
+
+Recommended user-facing Arabic labels:
+
+1. طالب معدات
+   Internal role:
+   customer
+
+2. مزود معدات / مقدم خدمة
+   Internal role:
+   provider
+
+3. سائق معدات ثقيلة
+   Internal role:
+   driver
+
+Use the wording that best matches the existing Heavyar data model.
+
+Do not expose internal role codes in the UI.
+
+Provide a short explanation under each choice.
+
+Example:
+
+طالب معدات
+"أبحث عن معدات للاستئجار"
+
+مزود معدات
+"أعرض معداتي للتأجير"
+
+سائق معدات ثقيلة
+"أقدم خدمات قيادة وتشغيل المعدات"
+
+==================================================
+3. COMMON REGISTRATION FIELDS
+==================================================
+
+Determine the minimum required fields from the existing schema.
+
+At minimum evaluate:
+
+- Arabic/full name
+- email
+- mobile number
+- password
+- password confirmation
+- region
+- city
+- terms/privacy acceptance
+
+Do not collect unnecessary sensitive information.
+
+==================================================
+4. ADMIN-CONTROLLED PHONE REQUIREMENT
+==================================================
+
+Add a structured Admin configuration option for registration:
+
+Require mobile number during signup:
+ON / OFF
+
+Also expose related safe configuration if architecturally appropriate:
+
+- Allow phone login
+- Require phone verification
+- Allow email login
+
+Do not use raw JSON as the primary UI.
+
+Use the existing versioned Heavyar configuration architecture.
+
+Default behavior must preserve existing users.
+
+Changing this setting must NOT invalidate old accounts.
+
+==================================================
+5. PHONE NORMALIZATION AND UNIQUENESS
+==================================================
+
+Phone numbers must be normalized consistently.
+
+Saudi example:
++9665XXXXXXXX
+
+Do not rely on client-side uniqueness.
+
+Enforce uniqueness server-side.
+
+Prevent two accounts from registering the same normalized phone.
+
+Do not expose other users' account information during duplicate checks.
+
+==================================================
+6. EMAIL UNIQUENESS
+==================================================
+
+Preserve Firebase Auth email uniqueness.
+
+Normalize email appropriately.
+
+Do not create duplicate Firebase identities.
+
+==================================================
+7. LOGIN UX
+==================================================
+
+Heavyar should support:
+
+EMAIL LOGIN
+and
+PHONE LOGIN
+
+However, implement phone login only through a secure Firebase-compatible architecture.
+
+Preferred behavior:
+
+Email:
+email + password
+
+Phone:
+use a secure Firebase-supported phone authentication flow if that is the safest compatible implementation.
+
+If implementing:
+phone + existing password
+
+would require exposing account email, storing passwords, weakening Firebase Auth, or implementing unsafe custom password handling:
+
+DO NOT implement it that way.
+
+Instead use:
+phone number + OTP
+
+and keep:
+email + password
+
+Both should lead to the same Firebase UID/account.
+
+Do not create duplicate user records.
+
+The login UI should make both options obvious and professional.
+
+==================================================
+8. ROLE-SPECIFIC REGISTRATION
+==================================================
+
+CUSTOMER / طالب معدات
+
+Keep onboarding minimal.
+
+Typical required information:
+- name
+- email
+- phone depending on Admin policy
+- region
+- city
+- password
+
+Do not require equipment/provider data.
+
+------------------------------
+
+PROVIDER / مزود معدات
+
+Determine from the existing Heavyar model whether the provider may be:
+
+- individual
+- establishment/company
+
+If already supported, expose this cleanly.
+
+Do not unnecessarily block registration on business verification.
+
+Provider verification/moderation may occur after account creation.
+
+Do not mark a provider as officially verified just because registration completed.
+
+------------------------------
+
+DRIVER / سائق معدات ثقيلة
+
+Create the normal Firebase account first.
+
+Then direct the user to complete the existing canonical driver profile.
+
+Review whether the current driver profile already collects:
+
+- display name
+- region
+- city
+- phone
+- equipment categories they can operate
+- experience
+- availability
+- optional profile details
+
+Reuse the existing driverProfiles architecture.
+
+Do not invent mandatory government/license fields unless already supported by the product requirements.
+
+==================================================
+9. FORGOT PASSWORD
+==================================================
+
+The user must be able to enter:
+
+- email
+OR
+- mobile number
+
+If email is entered:
+resolve the Firebase account directly.
+
+If phone is entered:
+the trusted backend may resolve the linked account internally.
+
+NEVER expose the linked email address to the requester.
+
+==================================================
+10. PASSWORD RESET DELIVERY
+==================================================
+
+Review the current Firebase password reset implementation.
+
+We want a more professional email-delivery flow.
+
+Preferred architecture:
+
+1. User requests password reset.
+2. Worker securely resolves the Firebase account.
+3. Backend generates an OFFICIAL Firebase password-reset link.
+4. Heavyar sends the reset email using the existing server-side Resend integration.
+5. User opens the official reset link.
+6. Firebase validates the action code.
+7. User chooses the new password.
+8. Password is changed through Firebase Auth.
+
+Do NOT create our own password-reset token system.
+
+Do NOT store passwords.
+
+Do NOT log passwords or reset URLs.
+
+==================================================
+11. RESEND EMAIL
+==================================================
+
+If the existing Heavyar Resend domain is verified and suitable for production:
+
+use it for password-reset email delivery.
+
+Do not expose the Resend API key to the mobile app.
+
+Server side only.
+
+Create a professional bilingual Heavyar email template.
+
+Arabic should be primary for Arabic-language users.
+
+Include:
+
+- Heavyar branding
+- user's display name when safely available
+- clear password reset button
+- expiration/security notice
+- statement that Heavyar support will never ask for their password
+- ignore-this-email message if they did not request the reset
+- official Heavyar contact/support information
+
+Do not put sensitive personal information in the email.
+
+==================================================
+12. EMAIL DELIVERABILITY
+==================================================
+
+Inspect the existing Resend domain configuration.
+
+Check only what can be verified safely:
+
+- verified sending domain
+- From address
+- SPF
+- DKIM
+- DMARC status if available
+- production From identity
+
+Do NOT change DNS automatically unless explicitly authorized.
+
+Do not promise that messages will "never go to spam."
+
+The goal is to improve legitimate deliverability.
+
+==================================================
+13. ACCOUNT ENUMERATION SECURITY
+==================================================
+
+Public password-reset and login-recovery screens must NOT disclose whether an email/phone is registered.
+
+Use a generic response such as:
+
+Arabic:
+"إذا كانت البيانات مرتبطة بحساب، سيتم إرسال تعليمات استعادة كلمة المرور."
+
+English:
+"If the information is associated with an account, password recovery instructions will be sent."
+
+Internally:
+log/audit the actual result safely.
+
+Admin/support may see account existence according to authorized permissions.
+
+Do not expose this distinction publicly.
+
+==================================================
+14. PASSWORD RESET PAGE
+==================================================
+
+Ensure the reset flow is branded and mobile-friendly.
+
+If using Firebase's hosted action page is currently sufficient:
+document it.
+
+If Heavyar already has a safe custom Firebase action-code handler:
+verify it.
+
+Do not replace a secure Firebase reset mechanism solely for visual reasons.
+
+==================================================
+15. ADMIN SETTINGS
+==================================================
+
+Add a clear Admin section under authentication/security/configuration.
+
+Show:
+
+Registration:
+- Require mobile number
+- Allow email login
+- Allow phone login
+- Require phone verification
+
+Account recovery:
+- Firebase password reset status
+- Resend delivery status
+- verified sender/domain status
+
+Do NOT display:
+- API secrets
+- Firebase private keys
+- Resend API keys
+
+==================================================
+16. EXISTING USERS
+==================================================
+
+The migration must be backward-compatible.
+
+Existing users without a phone number must continue to work even if the Admin later enables:
+
+Require phone for NEW registrations.
+
+Do not lock existing users out automatically.
+
+If phone verification becomes mandatory later, it should be handled through a controlled migration/policy rather than silently blocking accounts.
+
+==================================================
+17. FIRESTORE / WORKER AUTHORITY
+==================================================
+
+Current Firestore rules intentionally make user provisioning backend-authoritative.
+
+Preserve this architecture.
+
+Do not open direct client creation of privileged user profiles.
+
+Do not weaken role or verification protection.
+
+==================================================
+18. QA MATRIX
+==================================================
+
+Test:
+
+New customer:
+- email registration
+- phone policy ON
+- phone policy OFF
+
+New provider:
+- correct role/profile
+- no automatic official verification
+
+New driver:
+- Firebase account
+- driver profile path
+
+Login:
+- email
+- phone supported path
+- incorrect password
+- malformed email
+- malformed phone
+
+Password reset:
+- registered email
+- registered phone
+- unregistered email
+- unregistered phone
+- expired reset link
+- already-used reset link
+
+Security:
+- no account enumeration
+- no exposed linked email
+- no secrets in client
+- no reset tokens in logs
+
+Arabic/English:
+- RTL
+- LTR
+- responsive
+
+==================================================
+19. SAFE TEST DATA
+==================================================
+
+Do not create fake permanent production users.
+
+Use safe existing test identities where possible.
+
+If a temporary Auth user is strictly required:
+- clearly identify it as QA
+- delete it after testing
+- ensure no orphan Firestore profile remains
+
+==================================================
+20. DEPLOYMENT
+==================================================
+
+If changes are required:
+
+run:
+- Worker tests
+- Auth tests
+- Firestore emulator tests
+- mobile tests
+- TypeScript
+- Expo Doctor
+- Admin typecheck/build if Admin settings change
+- security/credential scan
+
+Then deploy only affected components.
+
+Preserve all existing Worker bindings/secrets.
+
+Commit normally.
+Push non-force to:
+
+deadevil2002/heavyar-app
+main
+
+==================================================
+RETURN
+==================================================
+
+Return:
+
+1. Existing signup behavior found
+2. Existing login behavior found
+3. Existing forgot-password behavior found
+4. Final customer registration fields
+5. Final provider registration fields
+6. Final driver registration fields
+7. Phone required/optional Admin control
+8. Email login result
+9. Phone login architecture/result
+10. Phone uniqueness enforcement
+11. Password reset architecture
+12. Resend integration result
+13. Email-template result
+14. Deliverability/domain status
+15. Account-enumeration protection
+16. Existing-user compatibility
+17. Auth/Admin settings added
+18. Test totals
+19. Components deployed
+20. Final Git SHA
+21. Any remaining external blocker
+
+Then STOP.
+
+Do NOT start the Heavyar website task yet.

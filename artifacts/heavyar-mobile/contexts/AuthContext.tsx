@@ -5,6 +5,9 @@ import { User } from '@/types';
 import {
   subscribeToAuthState,
   loginWithEmail,
+  loginWithPhone,
+  normalizeSaudiPhone,
+  fetchAuthPolicy,
   registerWithEmail,
   logoutUser,
   fetchUserProfile,
@@ -96,11 +99,22 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const login = useCallback(async (email: string, password: string) => {
     setAuthError(null);
     try {
-      await loginWithEmail(email, password);
+      const policy = await fetchAuthPolicy();
+      const isPhone = Boolean(normalizeSaudiPhone(email)) || /^[+\d][\d ()-]{5,}$/.test(email.trim());
+      if (isPhone) {
+        if (!policy.allowPhoneLogin) throw new Error('PHONE_LOGIN_INVALID');
+        await loginWithPhone(email, password);
+      } else {
+        if (!policy.allowEmailLogin) throw new Error('EMAIL_LOGIN_UNAVAILABLE');
+        await loginWithEmail(email, password);
+      }
     } catch (e: unknown) {
       const error = e as { code?: string; message?: string };
       let errorMsg = 'فشل تسجيل الدخول';
-      if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+      if (error.message === 'PHONE_LOGIN_INVALID' || error.message === 'PHONE_LOGIN_RATE_LIMITED' ||
+          error.message === 'PHONE_LOGIN_UNAVAILABLE' || error.message === 'EMAIL_LOGIN_UNAVAILABLE') {
+        errorMsg = error.message;
+      } else if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
         errorMsg = 'البريد الإلكتروني أو كلمة المرور غير صحيحة';
       } else if (error.code === 'auth/invalid-email') {
         errorMsg = 'البريد الإلكتروني غير صالح';

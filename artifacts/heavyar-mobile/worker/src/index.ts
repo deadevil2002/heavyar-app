@@ -14,6 +14,7 @@ export interface Env {
   FIREBASE_PROJECT_ID?: string; FIREBASE_CLIENT_EMAIL?: string; FIREBASE_PRIVATE_KEY?: string; FIREBASE_WEB_API_KEY?: string;
   CORS_ORIGINS?: string; PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string; OTP_KV?: KVNamespace;
   IDENTITY_PROVIDER_MODE?: 'official';
+  AUTH_RATE_LIMIT_KV?: KVNamespace;
   VERIFICATION_RETENTION_DAYS?: string;
   FIREBASE_MESSAGING_SENDER_ID?: string;
   __executionCtx?: { waitUntil(promise: Promise<unknown>): void };
@@ -29,14 +30,18 @@ let verificationProviderOverride: IdentityVerificationProvider | undefined;
 let notificationDeliveryQueryOverride: any[] | undefined;
 let deletionDeviceQueryOverride: any[] | undefined;
 let refreshTokenRevokeOverride: ((env: Env, uid: string) => Promise<void>) | undefined;
-  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, effectiveAuthConfig, runRetryDelivery: retryDueNotificationDeliveries };
+let passwordVerifierOverride: ((email: string, password: string) => Promise<{ localId?: string }>) | undefined;
+let customTokenOverride: ((uid: string) => Promise<string>) | undefined;
+let phoneLoginLimiterOverride: ((phoneHash: string, ipHash: string) => Promise<boolean | null>) | undefined;
+  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, effectiveAuthConfig, runRetryDelivery: retryDueNotificationDeliveries };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 const b64u = (v: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(v))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const cors = (env: Env, origin: string | null) => {
   const allow = (env.CORS_ORIGINS || 'https://heavyar.app,https://www.heavyar.app,https://heavyar-app.web.app,https://heavyar-app.firebaseapp.com').split(',').map(x => x.trim());
-  return { 'Access-Control-Allow-Origin': allow.includes(origin || '') ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Correlation-ID', Vary: 'Origin' };
+  const trustedExpoPreview = /^https:\/\/[a-z0-9-]+\.expo\.sisko\.replit\.dev$/i.test(origin || '');
+  return { 'Access-Control-Allow-Origin': allow.includes(origin || '') || trustedExpoPreview ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Correlation-ID', Vary: 'Origin' };
 };
 const out = (env: Env, req: Request, value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', ...cors(env, req.headers.get('Origin')) } });
 const err = (message: string): never => { throw new Error(message); };
@@ -1344,15 +1349,13 @@ export function heavyarPasswordResetTemplate(resetUrl: string, supportEmail = 's
   const url = escapeHtml(resetUrl), support = escapeHtml(supportEmail);
   return `<div style="font-family:Arial,sans-serif;color:#172033;max-width:560px;margin:auto"><h1 style="color:#0b6b61">Heavyar</h1><p>مرحباً،</p><p>Hello,</p><p>اضغط الزر أدناه لإعادة تعيين كلمة المرور. / Use the button below to reset your password.</p><p><a href="${url}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">إعادة تعيين كلمة المرور / Reset password</a></p><p>ينتهي الرابط خلال 60 دقيقة. / This link expires in 60 minutes.</p><p>لأمانك، لا تطلب Heavyar كلمة مرورك أبداً. / For your security, Heavyar will never ask for your password.</p><p>إذا لم تطلب ذلك، يمكنك تجاهل هذه الرسالة. / If you did not request this, you can ignore this message.</p><p>الدعم / Support: <a href="mailto:${support}">${support}</a></p></div>`;
 }
-function effectiveAuthConfig(config: any) {
+function effectiveAuthConfig(config: any, passwordEndpointReady = false) {
   const value = { ...DEFAULT_AUTH_CONFIG, ...(config || {}) };
-  // Phone login and verification cannot be enabled until the provider and
-  // index are operational. Keep this invariant server-side, not client-side.
   const phoneProviderReady = value.phoneIndexReady === true;
   return {
     requirePhoneOnSignup: phoneProviderReady && value.requirePhoneOnSignup === true,
-    allowEmailLogin: true,
-    allowPhoneLogin: false,
+    allowEmailLogin: value.allowEmailLogin !== false,
+    allowPhoneLogin: phoneProviderReady && passwordEndpointReady && value.allowPhoneLogin === true,
     requirePhoneVerification: false,
     phoneIndexReady: phoneProviderReady,
     version: Number.isFinite(Number(value.version)) ? Number(value.version) : 1,
@@ -1367,17 +1370,96 @@ export function normalizeSaudiPhone(value: unknown): string | null {
 async function authConfig(req: Request, env: Env) {
   const stored = await getDoc(env, 'heavyarConfig', 'auth');
   const requested = { ...DEFAULT_AUTH_CONFIG, ...(stored || {}) };
-  const effective = effectiveAuthConfig(stored);
+  const effective = effectiveAuthConfig(stored, !!env.FIREBASE_WEB_API_KEY && !!env.FIREBASE_PROJECT_ID && !!env.FIREBASE_CLIENT_EMAIL && !!env.FIREBASE_PRIVATE_KEY);
   const status = {
     emailReset: env.FIREBASE_WEB_API_KEY || env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY ? 'configured' : 'blocked',
     phone: 'disabled',
     phoneRecovery: effective.phoneIndexReady ? 'configured' : 'disabled',
     resend: env.RESEND_API_KEY ? 'binding_configured_sender_unverified' : 'not_configured',
     firebaseReset: env.FIREBASE_WEB_API_KEY || env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY ? 'configured' : 'blocked',
-    phoneProvider: 'disabled', senderDomainVerified: false,
+     phoneProvider: 'not_required_for_alias', phonePasswordLogin: effective.allowPhoneLogin ? 'configured' : 'blocked', senderDomainVerified: false,
   };
   const projection = { requested: { ...requested, requireMobileDuringSignup: requested.requirePhoneOnSignup }, effective: { ...effective, requireMobileDuringSignup: effective.requirePhoneOnSignup }, status, accountRecovery: { firebaseReset: status.firebaseReset, resend: { bound: !!env.RESEND_API_KEY, delivery: false, senderDomainVerified: false }, phoneRecovery: status.phoneRecovery }, mismatch: { email: requested.allowEmailLogin !== effective.allowEmailLogin, phone: requested.allowPhoneLogin !== effective.allowPhoneLogin, verification: requested.requirePhoneVerification !== effective.requirePhoneVerification, phoneRequirement: requested.requirePhoneOnSignup !== effective.requirePhoneOnSignup }, version: effective.version };
   return out(env, req, { success: true, config: projection, version: effective.version, requireMobileDuringSignup: effective.requirePhoneOnSignup });
+}
+const PHONE_LOGIN_INVALID = 'Invalid mobile number or password.';
+async function phoneLoginRateLimit(env: Env, phoneHash: string, ipHash: string): Promise<boolean | null> {
+  if (phoneLoginLimiterOverride) return phoneLoginLimiterOverride(phoneHash, ipHash);
+  const bucket = Math.floor(Date.now() / 60000), suffix = String(bucket);
+  const keys = [`ip:${ipHash}:${suffix}`, `phone:${phoneHash}:${suffix}`, `pair:${phoneHash}:${ipHash}:${suffix}`];
+  const limits = [20, 5, 5];
+  try {
+    if ((!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) && !firestoreOverride) return null;
+    if (firestoreOverride) return true;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      if (!transaction) return null;
+      const result = await fs(env, ':batchGet', { method: 'POST', body: JSON.stringify({ documents: keys.map(key => fullName(env, `phoneLoginRateLimits/${key}`)), transaction }) });
+      const docs = (result || []).map((row: any) => row.found).filter(Boolean);
+      const byName = new Map<string, any>(docs.map((doc: any) => [String(doc.name), decode(doc)]));
+      const counts = keys.map(key => Number(byName.get(fullName(env, `phoneLoginRateLimits/${key}`))?.count || 0));
+      if (counts.some((count, index) => count >= limits[index])) return false;
+      const writes = keys.map((key, index) => ({ update: { name: fullName(env, `phoneLoginRateLimits/${key}`), fields: { bucket: { integerValue: suffix }, count: { integerValue: String(counts[index] + 1) }, expiresAt: { timestampValue: new Date((bucket + 2) * 60000).toISOString() } } }, ...(byName.has(fullName(env, `phoneLoginRateLimits/${key}`)) ? { updateMask: { fieldPaths: ['bucket', 'count', 'expiresAt'] } } : {}), currentDocument: byName.has(fullName(env, `phoneLoginRateLimits/${key}`)) ? undefined : { exists: false } }));
+      try { await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes, transaction }) }); return true; }
+      catch (error) { if (attempt === 2) throw error; }
+    }
+    return null;
+  } catch { return null; }
+}
+async function mintFirebaseCustomToken(env: Env, uid: string): Promise<string> {
+  if (customTokenOverride) return customTokenOverride(uid);
+  if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) err('Authentication unavailable');
+  const privateKey = env.FIREBASE_PRIVATE_KEY!;
+  const now = Math.floor(Date.now() / 1000), header = b64u(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
+  const payload = b64u(enc.encode(JSON.stringify({
+    iss: env.FIREBASE_CLIENT_EMAIL, sub: env.FIREBASE_CLIENT_EMAIL,
+    aud: 'https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit',
+    iat: now, exp: now + 3600, uid,
+  })));
+  const key = await crypto.subtle.importKey('pkcs8', b64(privateKey.replace(/\\n/g, '\n').replace(/-----[^-]+-----/g, '').replace(/\s/g, '')), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+  return `${header}.${payload}.${b64u(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(`${header}.${payload}`)))}`;
+}
+async function phonePasswordLogin(req: Request, env: Env) {
+  let body: any;
+  try { body = await req.json(); } catch { return out(env, req, { success: false, error: PHONE_LOGIN_INVALID }, 401); }
+  const phone = normalizeSaudiPhone(body?.phone), password = body?.password;
+  if (!phone || typeof password !== 'string' || password.length === 0 || password.length > 4096) return out(env, req, { success: false, error: PHONE_LOGIN_INVALID }, 401);
+  if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_WEB_API_KEY || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) return out(env, req, { success: false, error: 'Authentication unavailable' }, 503);
+  const ip = req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For')?.split(',')[0].trim() || 'unknown';
+  const phoneHash = await hashedId(`phone:${phone}`), ipHash = await hashedId(`ip:${ip}`);
+  const rateResult = await phoneLoginRateLimit(env, phoneHash, ipHash);
+  if (rateResult === null) return out(env, req, { success: false, error: 'Authentication unavailable' }, 503);
+  if (!rateResult) return out(env, req, { success: false, error: 'Too many attempts' }, 429);
+  try {
+    const config = effectiveAuthConfig(await getDoc(env, 'heavyarConfig', 'auth'), true);
+    if (!config.allowPhoneLogin) return out(env, req, { success: false, error: PHONE_LOGIN_INVALID }, 401);
+    const owner = await getDoc(env, 'phoneOwners', phoneHash);
+    // A protected owner must be singular and canonical; legacy/conflicting
+    // shapes are deliberately indistinguishable from an unknown phone.
+    const ownerUid = owner && typeof owner.uid === 'string' && owner.uid && owner.phoneHash === phoneHash ? owner.uid : '';
+    const lookupUid = ownerUid || 'invalid-phone-alias-uid';
+    const user = await getDoc(env, 'users', lookupUid);
+    const validStatus = !!user && String(user.uid || ownerUid) === ownerUid && user.deleted !== true && user.disabled !== true &&
+        user.accountStatus !== 'deletion_requested' && user.accountStatus !== 'restricted' &&
+        !['temporarily_suspended', 'permanently_suspended', 'suspended'].includes(String(user.suspensionStatus)) &&
+        user.status !== 'disabled' && user.status !== 'deleted';
+    const expectedUid = ownerUid;
+    const email = validStatus && typeof user?.email === 'string' ? user.email : validStatus && typeof user?.emailLower === 'string' ? user.emailLower : '';
+    // Always perform equivalent provider work, using a fixed non-existent
+    // account when the alias cannot be resolved. This prevents timing leaks.
+    const verifyEmail = email || 'invalid-phone-alias@invalid.heavyar';
+    const verified: any = passwordVerifierOverride
+      ? await passwordVerifierOverride(verifyEmail, password)
+      : await (await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(env.FIREBASE_WEB_API_KEY)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: verifyEmail, password, returnSecureToken: false }),
+      })).json().catch(() => ({}));
+    if (!validStatus || !expectedUid || verified.localId !== expectedUid) return out(env, req, { success: false, error: PHONE_LOGIN_INVALID }, 401);
+    return out(env, req, { customToken: await mintFirebaseCustomToken(env, expectedUid) });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Authentication unavailable') return out(env, req, { success: false, error: 'Authentication unavailable' }, 503);
+    return out(env, req, { success: false, error: 'Authentication unavailable' }, 503);
+  }
 }
 async function recoveryResponse(req: Request, env: Env, identifier: string, type: string, outcome: string) {
   try {
@@ -1418,11 +1500,12 @@ async function passwordReset(req: Request, env: Env) {
     if (!env.FIREBASE_PROJECT_ID && !firestoreOverride) return recoveryResponse(req, env, auditId, auditType, 'phone_index_unavailable');
     const config = effectiveAuthConfig(await getDoc(env, 'heavyarConfig', 'auth'));
     if (!config.phoneIndexReady) return recoveryResponse(req, env, auditId, auditType, 'phone_index_disabled');
-    const owner = await getDoc(env, 'phoneOwners', await hashedId(`phone:${phone}`));
-    if (!owner?.uid) return recoveryResponse(req, env, auditId, auditType, 'phone_unresolved');
-    const user = await getDoc(env, 'users', String(owner.uid));
-    if (!user?.email) return recoveryResponse(req, env, auditId, auditType, 'phone_unresolved');
-    resetEmail = String(user.email).trim().toLowerCase();
+    const ownerHash = await hashedId(`phone:${phone}`), owner = await getDoc(env, 'phoneOwners', ownerHash);
+    const canonical = owner?.uid && owner.phoneHash === ownerHash ? owner : null;
+    const user = await getDoc(env, 'users', canonical ? String(canonical.uid) : 'invalid-phone-alias-uid');
+    // Keep provider work equivalent for unresolved/collision aliases, but
+    // never deliver to an address resolved from a non-canonical owner.
+    resetEmail = user?.email ? String(user.email).trim().toLowerCase() : 'invalid-phone-alias@invalid.heavyar';
   }
   // Firebase's official OOB endpoint performs the account lookup and sends
   // the provider-controlled email without returning a link to this API.
@@ -1739,6 +1822,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     if (path === '/api/send-email-otp' && req.method === 'POST') return await otpSend(req, env);
     if (path === '/api/verify-email-otp' && req.method === 'POST') return await otpVerify(req, env);
      if (path === '/api/auth/config' && req.method === 'GET') return await authConfig(req, env);
+      if ((path === '/api/auth/phone-login' || path === '/api/auth/login-phone' || path === '/api/auth/alias-login') && req.method === 'POST') return await phonePasswordLogin(req, env);
      if (path === '/api/auth/password-reset' && req.method === 'POST') return await passwordReset(req, env);
      if (path === '/api/register-profile' && req.method === 'POST') return await registerProfile(req, env, await authenticatedUser(req, env));
      if (path === '/api/account/deletion-request' && req.method === 'GET') return await accountDeletionStatus(req, env, await authenticatedUser(req, env, true));

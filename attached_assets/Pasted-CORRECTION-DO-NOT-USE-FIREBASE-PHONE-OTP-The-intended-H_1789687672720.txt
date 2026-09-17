@@ -1,0 +1,345 @@
+CORRECTION — DO NOT USE FIREBASE PHONE OTP.
+
+The intended Heavyar authentication model is:
+
+ONE Firebase account
+ONE Firebase UID
+ONE password
+
+The user's mobile number is only an ALTERNATE LOGIN IDENTIFIER linked to the same account.
+
+The user must be able to sign in with either:
+
+1. Email + existing password
+OR
+2. Mobile number + the SAME existing password
+
+There must be NO OTP login.
+
+Do NOT enable Firebase Phone Authentication.
+Do NOT use SMS OTP.
+Do NOT create a second Firebase identity for the phone number.
+Do NOT duplicate users.
+
+==================================================
+1. CANONICAL AUTH MODEL
+==================================================
+
+Firebase email/password remains the canonical authentication credential.
+
+Each user may also have:
+
+normalizedPhone = +9665XXXXXXXX
+
+linked uniquely to the same Firebase UID.
+
+The phone number is a login alias only.
+
+It is NOT:
+- a second Firebase account
+- a verified identity credential
+- an OTP authentication provider
+
+==================================================
+2. EMAIL LOGIN
+==================================================
+
+Email login remains unchanged:
+
+email
++
+password
+
+using Firebase email/password authentication.
+
+==================================================
+3. PHONE + PASSWORD LOGIN
+==================================================
+
+Implement secure phone-alias login through the Worker.
+
+Flow:
+
+1. User enters:
+   phone number
+   password
+
+2. Worker:
+   - normalizes the Saudi phone number
+   - resolves the protected phoneOwners mapping
+   - identifies the linked Firebase UID/email internally
+   - NEVER returns the linked email to the client
+
+3. Worker verifies the supplied password against Firebase's official password authentication endpoint.
+
+4. Confirm the authenticated Firebase localId/UID exactly matches the expected UID from phoneOwners.
+
+5. After successful Firebase password verification:
+   issue an authenticated Firebase session/custom-token flow for that SAME UID.
+
+6. Mobile completes Firebase sign-in for the same user.
+
+The password must be:
+- used only transiently for Firebase verification
+- never stored
+- never logged
+- never written to Firestore
+- never included in analytics/audit data
+
+No custom password database.
+
+==================================================
+4. WRONG CREDENTIALS
+==================================================
+
+For phone login, use the same public error for:
+
+- phone not registered
+- wrong password
+- malformed credentials
+- ambiguous legacy phone mapping
+
+Arabic:
+"رقم الجوال أو كلمة المرور غير صحيحة."
+
+English:
+"Invalid mobile number or password."
+
+Do not reveal whether the phone exists.
+
+==================================================
+5. REGISTRATION
+==================================================
+
+During registration collect:
+
+- account type
+- name
+- email
+- mobile number according to Admin policy
+- region
+- city
+- password
+- confirm password
+- terms acceptance
+
+Provider/driver-specific fields remain according to the existing onboarding flow.
+
+Firebase Auth account is created using:
+email + password
+
+Then backend atomically links the normalized phone to that same UID.
+
+Do not create a Firebase Phone Auth identity.
+
+==================================================
+6. PHONE UNIQUENESS
+==================================================
+
+Continue using server-owned normalized phone uniqueness.
+
+Saudi format:
++9665XXXXXXXX
+
+One normalized phone can belong to only one Heavyar UID.
+
+Keep phoneOwners protected/backend-authoritative.
+
+Existing duplicate legacy phone conflicts must fail safely until manually corrected.
+
+==================================================
+7. FORGOT PASSWORD
+==================================================
+
+Forgot Password must accept:
+
+- email
+OR
+- mobile number
+
+EMAIL INPUT:
+resolve normal Firebase account recovery.
+
+PHONE INPUT:
+Worker resolves the linked Firebase account internally.
+
+Never disclose the linked email.
+
+Then send the password-reset message to the EMAIL registered on that account.
+
+Do NOT send SMS.
+
+Do NOT use OTP.
+
+==================================================
+8. PASSWORD RESET EMAIL
+==================================================
+
+Continue using Firebase's official password reset mechanism.
+
+Preferred production flow:
+
+- Firebase generates the official reset/action link
+- Heavyar Worker sends the branded email through Resend once the verified Heavyar sender/domain is ready
+- user clicks the email
+- user sets a new Firebase password
+- both future email login AND phone login automatically use the new password
+
+Do not create a separate phone password.
+
+==================================================
+9. ADMIN SETTINGS
+==================================================
+
+Update the Admin Authentication settings to reflect the real model.
+
+Keep:
+
+- Require mobile number on signup: ON/OFF
+- Allow email login: ON/OFF
+- Allow mobile login: ON/OFF
+
+Remove or do not activate auth settings related to:
+
+- Firebase Phone OTP login
+- Require phone OTP verification
+- SMS verification
+
+If you retain a future phone-verification field internally, clearly mark it:
+NOT USED FOR LOGIN / FUTURE ONLY
+
+Do not let it affect current authentication.
+
+==================================================
+10. SECURITY
+==================================================
+
+Rate-limit the phone/password login endpoint by:
+
+- IP
+- normalized phone hash
+- IP + phone pair
+
+Do not store raw password data.
+
+Do not log request bodies.
+
+Do not expose email resolution.
+
+Do not allow phone aliases to bypass:
+- suspension
+- restriction
+- account deletion locks
+- disabled accounts
+
+==================================================
+11. SAME UID GUARANTEE
+==================================================
+
+Add tests proving:
+
+email login:
+email + password
+→ UID A
+
+phone login:
+phone linked to UID A + same password
+→ UID A
+
+After password change:
+both login methods authenticate only with the NEW password.
+
+There must never be two Firebase accounts for the same Heavyar user.
+
+==================================================
+12. RESEND
+==================================================
+
+Do not change the current Resend blocker incorrectly.
+
+Resend is ONLY for professional email delivery.
+
+It has nothing to do with mobile-number authentication.
+
+Once sender/domain verification is confirmed:
+use Resend for the branded password-reset email.
+
+Until then:
+keep the secure Firebase fallback.
+
+==================================================
+13. REMOVE WRONG OTP ASSUMPTIONS
+==================================================
+
+Review the previous implementation and remove any newly introduced assumption that phone login requires Firebase Phone Auth.
+
+Do not enable Firebase Phone Auth.
+
+The externally disabled Firebase Phone provider is NOT a blocker anymore because Heavyar does not use OTP authentication.
+
+==================================================
+14. TESTS
+==================================================
+
+Test:
+
+- registration with email + phone
+- phone optional policy
+- phone required policy
+- duplicate phone rejection
+- email + password login
+- phone + same password login
+- wrong phone
+- wrong password
+- phone enumeration protection
+- email password reset
+- phone-triggered email password reset
+- password change followed by both login methods
+- suspended user
+- deleted/locked user
+- Arabic
+- English
+
+Run all existing Worker, Firebase, mobile, Admin, and security regressions.
+
+==================================================
+15. DEPLOYMENT
+==================================================
+
+If code changes are needed:
+
+- deploy only affected Worker/Admin/mobile source components
+- preserve all Cloudflare bindings/secrets/cron
+- preserve Firebase rules unless a real rule update is required
+- do not activate Tap LIVE
+- do not activate Nafath
+- do not run EAS builds
+- do not submit to stores
+
+Commit normally and push non-force to origin/main.
+
+==================================================
+RETURN
+==================================================
+
+Return:
+
+1. OTP assumptions removed: yes/no
+2. Firebase Phone Auth required: yes/no
+3. email + password result
+4. phone + same password result
+5. same-UID verification result
+6. phone uniqueness result
+7. forgot-password by email result
+8. forgot-password by phone result
+9. reset delivery destination
+10. account-enumeration protection
+11. Admin setting changes
+12. tests
+13. deployments
+14. final Git SHA
+15. remaining real blocker
+
+Then STOP.
+
+Do NOT start the Heavyar website task yet.

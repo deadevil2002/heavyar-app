@@ -38,7 +38,13 @@ export default function LoginScreen() {
       await login(email, password);
       router.back();
     } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : t('unexpected_error');
+      const errorMsg = e instanceof Error && e.message === 'PHONE_LOGIN_INVALID'
+        ? t('invalid_mobile_password')
+        : e instanceof Error && e.message === 'PHONE_LOGIN_RATE_LIMITED'
+          ? t('phone_login_rate_limited')
+          : e instanceof Error && (e.message === 'PHONE_LOGIN_UNAVAILABLE' || e.message === 'EMAIL_LOGIN_UNAVAILABLE')
+            ? t('authentication_unavailable')
+        : e instanceof Error ? e.message : t('unexpected_error');
       showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
     } finally {
       setLoading(false);

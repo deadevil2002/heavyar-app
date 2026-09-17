@@ -8,3 +8,9 @@ Use Replit's dedicated Expo preview domain for the mobile development workflow, 
 **Why:** The configured Expo automation account cannot start ngrok: Expo CLI exits with “Cannot use ngrok with a robot user.” Replit already provides the required public connection. The dedicated Expo domain is distinct from the shared web/API domain.
 
 **How to apply:** Preserve the managed workflow's dynamic port and use its Expo domain when advertising bundle URLs. Verify both iOS and Android manifests point to the public HTTPS preview, not an internal host or bundler port. Keep this development-only; it does not require an EAS build or production deployment.
+
+In the pnpm monorepo, Metro must watch resolved package roots rather than every workspace and the whole pnpm store.
+
+**Why:** Expo's generated monorepo watch list can exceed Replit's inotify allowance, while removing external package roots entirely lets Metro start but makes bundling fail with missing SHA-1/module errors.
+
+**How to apply:** Keep sibling workspaces out of Metro's watch list when the mobile app does not import them, but retain the resolved pnpm package roots needed by the bundle. Verify both sustained workflow health and an actual bundle request.

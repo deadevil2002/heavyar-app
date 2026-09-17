@@ -63,6 +63,9 @@ export default function Configuration() {
   };
   const authBlocked = authSource.blocked || {};
   const authVersion = authSource.version ?? authData?.item?.version;
+  const aliasReadiness = authSource.status?.phoneAliasLogin
+    || authSource.phoneAliasLoginStatus
+    || (authEffective.allowPhoneLogin ? 'enabled' : 'disabled');
 
   const handleEdit = () => {
     setDraftConfig({
@@ -115,7 +118,8 @@ export default function Configuration() {
   };
 
   const handleEditAuth = () => {
-    setDraftAuth(authRequested);
+    const { requirePhoneVerification: _futureOnly, ...editable } = authRequested;
+    setDraftAuth(editable);
     setEditingAuth(true);
   };
 
@@ -127,7 +131,7 @@ export default function Configuration() {
         targetId: 'default',
         reason: 'تحديث إعدادات المصادقة والتسجيل',
         payload: {
-          config: draftAuth,
+          config: { ...draftAuth, requirePhoneVerification: false },
           // The worker uses this optimistic version to reject stale admin edits.
           expectedVersion: authVersion,
           version: authVersion,
@@ -267,7 +271,7 @@ export default function Configuration() {
               {t('المصادقة والتسجيل', 'Authentication & Registration')}
             </CardTitle>
             <CardDescription>
-              {t('سياسات تسجيل الدخول وإنشاء الحسابات. لا تعرض هذه الصفحة أي مفاتيح أو أسرار.', 'Sign-in and account registration policies. Secrets and provider keys are never displayed here.')}
+              {t('سياسة تسجيل الدخول داخل التطبيق وإنشاء الحسابات. لا تعرض هذه الصفحة أي مفاتيح أو أسرار.', 'App sign-in and account registration policy. Secrets and provider keys are never displayed here.')}
             </CardDescription>
           </div>
           {!editingAuth && isSuperAdmin && !authLoading && (
@@ -290,29 +294,54 @@ export default function Configuration() {
                 {([
                   ['requirePhoneOnSignup', t('إلزام رقم الجوال عند التسجيل', 'Require mobile during signup')],
                   ['allowEmailLogin', t('السماح بتسجيل الدخول بالبريد الإلكتروني', 'Allow email login')],
-                  ['allowPhoneLogin', t('السماح بتسجيل الدخول برقم الهاتف', 'Allow phone login')],
-                  ['requirePhoneVerification', t('إلزام التحقق من رقم الهاتف', 'Require phone verification')],
+                   ['allowPhoneLogin', t('السماح بتسجيل الدخول برقم الجوال (اسم دخول بديل مع كلمة المرور)', 'Allow mobile alias login (same password)')],
                 ] as const).map(([key, label]) => {
                   const blocked = authBlocked[key];
                   return (
                     <div key={key} className="rounded-md border border-border/50 bg-card/50 p-4">
                       <ConfigRow
                         label={label}
-                        description={blocked ? t('تم حظر هذا الطلب بواسطة سياسة فعالة.', 'This request is blocked by the effective policy.') : ''}
+                         description={blocked
+                           ? t('تم حظر هذا الطلب بواسطة السياسة الفعالة.', 'This request is blocked by the effective policy.')
+                           : key === 'allowPhoneLogin'
+                             ? t('يستخدم رقم الجوال كاسم دخول بديل داخل التطبيق لنفس الحساب وكلمة المرور؛ لا يستخدم OTP.', 'The mobile number is an in-app alias for the same account and password; no OTP is used.')
+                             : ''}
                         checked={editingAuth ? draftAuth[key] : authRequested[key]}
                         onChange={(value: boolean) => setDraftAuth({ ...draftAuth, [key]: value })}
                         disabled={!editingAuth || !isSuperAdmin}
                       />
-                      {blocked && (
-                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                          <Badge variant="outline">{t('المطلوب', 'Requested')}: {authRequested[key] ? t('مفعل', 'On') : t('معطل', 'Off')}</Badge>
-                          <Badge variant="secondary">{t('الفعال', 'Effective')}: {authEffective[key] ? t('مفعل', 'On') : t('معطل', 'Off')}</Badge>
-                          <span className="text-muted-foreground">{t('محجوب', 'Blocked')}</span>
-                        </div>
-                      )}
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant="outline">{t('المطلوب', 'Requested')}: {authRequested[key] ? t('مفعل', 'On') : t('معطل', 'Off')}</Badge>
+                        <Badge variant="secondary">{t('الفعال', 'Effective')}: {authEffective[key] ? t('مفعل', 'On') : t('معطل', 'Off')}</Badge>
+                        {blocked && <span className="text-muted-foreground">{t('محجوب', 'Blocked')}</span>}
+                      </div>
                     </div>
                   );
                 })}
+              </div>
+
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
+                <p className="font-medium">{t('التحقق من رقم الجوال', 'Mobile verification')}</p>
+                <p className="mt-1 text-muted-foreground">
+                  {t('غير مستخدم لتسجيل الدخول حالياً — مستقبلي فقط. تسجيل الدخول بالجوال يعتمد على اسم الدخول البديل وكلمة المرور.', 'Not used for login — future only. Mobile sign-in uses the alias and the account password.')}
+                </p>
+              </div>
+              <div className="rounded-md border border-border/50 p-4 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium">{t('جاهزية تسجيل الدخول باسم الجوال', 'Mobile alias login readiness')}</span>
+                  <Badge variant={authBlocked.allowPhoneLogin || !authEffective.allowPhoneLogin ? 'outline' : 'secondary'}>
+                    {authBlocked.allowPhoneLogin
+                      ? t('محجوب', 'Blocked')
+                      : aliasReadiness === 'ready' || aliasReadiness === 'enabled'
+                        ? t('جاهز', 'Ready')
+                        : t('غير مفعل', 'Not enabled')}
+                  </Badge>
+                </div>
+                <p className="mt-1 text-muted-foreground">
+                  {authBlocked.allowPhoneLogin
+                    ? t('الطلب مفعّل لكن السياسة الفعالة تمنعه.', 'Requested on, but blocked by the effective policy.')
+                    : t('يعرض هذا حالة سياسة تسجيل الدخول الفعالة داخل التطبيق؛ لا يتم إنشاء حساب ثانٍ للجوال.', 'Reflects the effective in-app sign-in policy; no second account is created for a mobile number.')}
+                </p>
               </div>
 
               <div className="border-t border-border/50 pt-5">

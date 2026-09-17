@@ -1,5 +1,6 @@
 import {
   signInWithEmailAndPassword,
+  signInWithCustomToken,
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
@@ -17,8 +18,10 @@ export interface AuthPolicy {
   phoneRequired: boolean;
   phoneRecoveryReady: boolean;
 }
+export type PhoneLoginErrorCode = 'PHONE_LOGIN_INVALID' | 'PHONE_LOGIN_RATE_LIMITED' | 'PHONE_LOGIN_UNAVAILABLE';
 
-const defaultAuthPolicy: AuthPolicy = { allowPhoneLogin: false, allowEmailLogin: true, phoneRequired: false, phoneRecoveryReady: false };
+// A failed policy read must never silently enable an authentication method.
+const defaultAuthPolicy: AuthPolicy = { allowPhoneLogin: false, allowEmailLogin: false, phoneRequired: false, phoneRecoveryReady: false };
 
 export async function fetchAuthPolicy(): Promise<AuthPolicy> {
   try {
@@ -51,6 +54,43 @@ export async function loginWithEmail(email: string, password: string): Promise<F
   const auth = getFirebaseAuth();
   const credential = await signInWithEmailAndPassword(auth, email, password);
   return credential.user;
+}
+
+/** Keep the alias in the same Firebase account: the Worker returns only a custom token. */
+export async function loginWithPhone(phone: string, password: string): Promise<FirebaseUser> {
+  const normalizedPhone = normalizeSaudiPhone(phone);
+  if (!normalizedPhone) throw new Error('PHONE_LOGIN_INVALID');
+  let response: Response;
+  try {
+    response = await fetch(`${WORKER_BASE_URL}/api/auth/alias-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: normalizedPhone, password }),
+    });
+  } catch {
+    throw new Error('PHONE_LOGIN_UNAVAILABLE');
+  }
+  if (response.status === 429) throw new Error('PHONE_LOGIN_RATE_LIMITED');
+  if (response.status === 503) throw new Error('PHONE_LOGIN_UNAVAILABLE');
+  const body = await response.json().catch(() => null) as { customToken?: unknown } | null;
+  if (!response.ok || typeof body?.customToken !== 'string' || Object.keys(body).some(key => key !== 'customToken')) {
+    throw new Error('PHONE_LOGIN_INVALID');
+  }
+  try {
+    const credential = await signInWithCustomToken(getFirebaseAuth(), body.customToken);
+    return credential.user;
+  } catch {
+    throw new Error('PHONE_LOGIN_INVALID');
+  }
+}
+
+export function normalizeSaudiPhone(value: string): string | null {
+  const compact = value.trim().replace(/[ ()-]/g, '');
+  if (/^05\d{8}$/.test(compact)) return `+966${compact.slice(1)}`;
+  if (/^5\d{8}$/.test(compact)) return `+966${compact}`;
+  if (/^009665\d{8}$/.test(compact)) return `+966${compact.slice(4)}`;
+  if (/^\+9665\d{8}$/.test(compact)) return compact;
+  return null;
 }
 
 export async function registerWithEmail(

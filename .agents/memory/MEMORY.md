@@ -8,3 +8,4 @@
 - [GitHub release transport](github-release-transport.md) — prefer the configured GitHub SDK for bulk Git objects; verify the tree and independent remote ref before reporting a push.
 - [Cloudflare Worker fingerprints](cloudflare-worker-fingerprints.md) — hash parsed module contents, not changing multipart response boundaries.
 - [Expo managed preview](expo-managed-preview.md) — automation accounts cannot use ngrok; use the dedicated Expo preview domain without changing authentication.
+- [Heavyar mobile alias authentication](heavyar-mobile-alias-auth.md) — mobile is an alternate identifier for the same Firebase email/password account; never use Firebase Phone OTP.
