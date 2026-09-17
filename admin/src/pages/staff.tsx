@@ -1,12 +1,10 @@
 import { useState } from 'react';
-import { useQueryClient, useQuery, useMutation } from '@tanstack/react-query';
-import { useActionMutation, fetchApi, useConfig } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ShieldCheck, MoreVertical, UserCog, UserMinus, Crown, Mail, Loader2 } from 'lucide-react';
+import { MoreVertical, UserCog, UserMinus, Mail, Loader2, RefreshCw, XCircle } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,295 +21,296 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { useAdminAction } from '@/hooks/use-admin-action';
 import { useToast } from '@/hooks/use-toast';
-import { getFirebaseAuth } from '@/lib/firebase';
-import { EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
-
 import { useAuth } from '@/lib/auth';
+import {
+  useStaff,
+  useStaffInvitations,
+  useInviteStaff,
+  useRevokeStaff,
+  useCancelStaffInvitation,
+  useExportUrl
+} from '@/lib/operations';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+
+const ROLES = [
+  { value: 'super_admin', label: 'Super Admin', labelAr: 'مدير عام' },
+  { value: 'admin', label: 'Admin', labelAr: 'مدير' },
+  { value: 'finance', label: 'Finance', labelAr: 'المالية' },
+  { value: 'payouts', label: 'Payouts', labelAr: 'المدفوعات' },
+  { value: 'operations', label: 'Operations', labelAr: 'العمليات' },
+  { value: 'support', label: 'Support', labelAr: 'الدعم' },
+  { value: 'verification', label: 'Verification', labelAr: 'التحقق' },
+  { value: 'marketing', label: 'Marketing', labelAr: 'التسويق' },
+  { value: 'auditor', label: 'Auditor', labelAr: 'مدقق' },
+  { value: 'moderator', label: 'Moderator', labelAr: 'مراقب' },
+];
 
 export default function Staff() {
   const { language } = useAppState();
   const { user } = useAuth();
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
-  const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['staff'],
-    queryFn: () => fetchApi<{ success: boolean; staff: any[] }>('/staff'),
-  });
+  const { data: staffData, isLoading: staffLoading } = useStaff();
+  const { data: invitesData, isLoading: invitesLoading } = useStaffInvitations();
 
-  const { data: configData, isLoading: isConfigLoading } = useConfig();
-  const ownerState = configData?.items?.find((item: any) => item.id === 'owner');
-  const hasOwner = Boolean(ownerState?.ownerUid || ownerState?.data?.ownerUid);
-
-  const { triggerAction, ActionDialog } = useAdminAction();
+  const inviteStaff = useInviteStaff();
+  const revokeStaff = useRevokeStaff();
+  const cancelInvite = useCancelStaffInvitation();
+  const exportXlsx = useExportUrl();
 
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('admin');
   const [isInviteOpen, setIsInviteOpen] = useState(false);
-  const [isTransferOpen, setIsTransferOpen] = useState(false);
-  const [transferTarget, setTransferTarget] = useState<any>(null);
-  const [transferPassword, setTransferPassword] = useState('');
+  const [inviteFilter, setInviteFilter] = useState('pending');
 
-  const inviteMutation = useMutation({
-    mutationFn: (data: { email: string; role: string }) => fetchApi<{ assigned?: boolean, delivered?: boolean, success: boolean }>('/staff/invite', { method: 'POST', body: JSON.stringify(data) }),
-    onSuccess: (res) => {
-      if (res.assigned || res.delivered) {
-        toast({ title: t('تمت العملية بنجاح', 'Success'), description: res.assigned ? t('تم تعيين الصلاحية للحساب مباشرة', 'Role assigned to account directly') : t('تم إرسال الدعوة عبر البريد', 'Invitation sent via email') });
-      } else {
-        toast({ title: t('تم تسجيل الدعوة', 'Invitation recorded') });
+  const handleInvite = () => {
+    inviteStaff.mutate({ email: inviteEmail, role: inviteRole }, {
+      onSuccess: () => {
+        toast({ title: t('تم إرسال الدعوة', 'Invitation sent') });
+        setIsInviteOpen(false);
+        setInviteEmail('');
+      },
+      onError: (err: any) => {
+        toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' });
       }
-      setIsInviteOpen(false);
-      setInviteEmail('');
-      queryClient.invalidateQueries({ queryKey: ['staff'] });
-    },
-    onError: (err: any) => {
-      toast({ title: t('فشل إرسال الدعوة', 'Failed to send invitation'), description: err.message, variant: 'destructive' });
-    }
-  });
-
-  const transferMutation = useMutation({
-    mutationFn: async (targetUid: string) => {
-      const auth = getFirebaseAuth();
-      const user = auth.currentUser;
-      if (!user || !user.email) throw new Error('Not authenticated');
-
-      const credential = EmailAuthProvider.credential(user.email, transferPassword);
-      await reauthenticateWithCredential(user, credential);
-      // Force token refresh so that auth_time is explicitly updated in the token payload
-      await user.getIdToken(true);
-
-      return fetchApi('/owner-transfer', {
-        method: 'POST',
-        body: JSON.stringify({ targetUid })
-      });
-    },
-    onSuccess: () => {
-      toast({ title: t('تم نقل الملكية بنجاح', 'Ownership transferred successfully') });
-      setIsTransferOpen(false);
-      setTransferPassword('');
-      queryClient.invalidateQueries({ queryKey: ['staff'] });
-    },
-    onError: (err: any) => {
-      toast({ title: t('فشل نقل الملكية', 'Failed to transfer ownership'), description: err.message, variant: 'destructive' });
-    }
-  });
-
-  const bootstrapMutation = useMutation({
-    mutationFn: () => fetchApi('/owner-bootstrap', { method: 'POST' }),
-    onSuccess: () => {
-      toast({ title: t('تم تفعيل المالك الأولي بنجاح', 'Initial owner bootstrapped successfully') });
-      queryClient.invalidateQueries({ queryKey: ['staff'] });
-    },
-    onError: (err: any) => {
-      toast({ title: t('فشل التفعيل', 'Bootstrap failed'), description: err.message, variant: 'destructive' });
-    }
-  });
-
-  const handleAction = (staff: any, action: string, role?: string) => {
-    if (action === 'transfer_ownership') {
-      setTransferTarget(staff);
-      setIsTransferOpen(true);
-      return;
-    }
-
-    triggerAction({
-      targetType: 'user',
-      targetId: staff.id,
-      action,
-      title: action === 'grant_role' ? t('منح صلاحية', 'Grant Role') : t('سحب صلاحية', 'Revoke Role'),
-      description: t('تأكيد تنفيذ الإجراء المطلوب؟', 'Confirm execution of this action?'),
-      payload: role ? { role } : undefined
     });
   };
 
-  const roles = [
-    { value: 'admin', label: t('مدير', 'Admin') },
-    { value: 'finance', label: t('المالية', 'Finance') },
-    { value: 'operations', label: t('العمليات', 'Operations') },
-    { value: 'support', label: t('الدعم', 'Support') },
-    { value: 'verification', label: t('التحقق', 'Verification') },
-    { value: 'marketing', label: t('التسويق', 'Marketing') },
-    { value: 'auditor', label: t('مدقق', 'Auditor') },
-  ];
-
-  const getRoleLabel = (roleValue: string) => {
-    if (roleValue === 'super_admin' || roleValue === 'owner') return t('مدير عام / مالك', 'Super Admin / Owner');
-    const role = roles.find(r => r.value === roleValue);
-    return role ? role.label : roleValue;
+  const handleRevoke = (uid: string) => {
+    if (!confirm(t('تأكيد سحب الصلاحيات؟', 'Confirm revoke?'))) return;
+    const reason = window.prompt(t('سبب سحب الصلاحيات (مطلوب)', 'Reason for revocation (required)'))?.trim();
+    if (!reason) return;
+    revokeStaff.mutate({ uid, reason }, {
+      onSuccess: () => toast({ title: t('تم السحب', 'Revoked') }),
+      onError: (err: any) => toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' })
+    });
   };
+
+  const handleCancelInvite = (id: string) => {
+    if (!confirm(t('تأكيد إلغاء الدعوة؟', 'Confirm cancel invite?'))) return;
+    const reason = window.prompt(t('سبب إلغاء الدعوة (مطلوب)', 'Reason for cancellation (required)'))?.trim();
+    if (!reason) return;
+    cancelInvite.mutate({ id, reason }, {
+      onSuccess: () => toast({ title: t('تم الإلغاء', 'Cancelled') }),
+      onError: (err: any) => toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' })
+    });
+  };
+
+  const getRoleLabel = (r: string) => {
+    if (r === 'owner') return t('المالك', 'Owner');
+    const role = ROLES.find(x => x.value === r);
+    return role ? (language === 'ar' ? role.labelAr : role.label) : r;
+  };
+
+  const activeStaff = staffData?.staff?.filter(s => s.status === 'active') || [];
+  const revokedStaff = staffData?.staff?.filter(s => s.status === 'revoked') || [];
 
   return (
     <div className="space-y-6">
-      <ActionDialog />
-
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">{t('فريق العمل', 'Staff')}</h1>
-          <p className="text-muted-foreground mt-1">{t('إدارة صلاحيات الإدارة للموظفين والدعوات', 'Manage administrative roles and invitations')}</p>
+          <h1 className="text-3xl font-bold tracking-tight">{t('فريق العمل والصلاحيات', 'Staff & Permissions')}</h1>
+          <p className="text-muted-foreground mt-1">{t('إدارة صلاحيات الوصول للنظام عبر الدعوات', 'Manage system access through invitations')}</p>
         </div>
 
-        <Dialog open={isInviteOpen} onOpenChange={setIsInviteOpen}>
-          <DialogTrigger asChild>
-            <Button className="gap-2">
-              <Mail className="w-4 h-4" />
-              {t('دعوة موظف', 'Invite Staff')}
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>{t('إرسال دعوة لموظف جديد', 'Send Staff Invitation')}</DialogTitle>
-              <DialogDescription>{t('سيتم إرسال رابط دعوة إلى البريد الإلكتروني.', 'An invitation link will be sent to the email.')}</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">{t('البريد الإلكتروني', 'Email')}</label>
-                <Input type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} dir="ltr" placeholder="staff@heavyar.com" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">{t('الصلاحية', 'Role')}</label>
-                <Select value={inviteRole} onValueChange={setInviteRole}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {roles.map(r => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setIsInviteOpen(false)}>{t('إلغاء', 'Cancel')}</Button>
-              <Button onClick={() => inviteMutation.mutate({ email: inviteEmail, role: inviteRole })} disabled={inviteMutation.isPending || !inviteEmail}>
-                {inviteMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {t('إرسال', 'Send')}
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => exportXlsx.mutate({ entity: 'staff', scope: 'all_filtered' })} disabled={exportXlsx.isPending}>
+            {exportXlsx.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {t('تصدير Excel', 'Export Excel')}
+          </Button>
+
+          <Dialog open={isInviteOpen} onOpenChange={setIsInviteOpen}>
+            <DialogTrigger asChild>
+              <Button className="gap-2">
+                <Mail className="w-4 h-4" />
+                {t('دعوة موظف', 'Invite Staff')}
               </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>{t('دعوة فريق عمل', 'Invite Staff')}</DialogTitle>
+                <DialogDescription>{t('لن يتم منح الصلاحية حتى يقبل المستخدم الدعوة.', 'Role will not be granted until the user accepts the invitation.')}</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t('البريد الإلكتروني', 'Email')}</label>
+                  <Input type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} dir="ltr" placeholder="staff@heavyar.com" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t('الصلاحية', 'Role')}</label>
+                  <Select value={inviteRole} onValueChange={setInviteRole}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ROLES.map(r => <SelectItem key={r.value} value={r.value}>{language === 'ar' ? r.labelAr : r.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setIsInviteOpen(false)}>{t('إلغاء', 'Cancel')}</Button>
+                <Button onClick={handleInvite} disabled={inviteStaff.isPending || !inviteEmail}>
+                  {inviteStaff.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {t('إرسال دعوة', 'Send Invitation')}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
-      <Dialog open={isTransferOpen} onOpenChange={setIsTransferOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="text-destructive flex items-center gap-2">
-              <Crown className="w-5 h-5" />
-              {t('تأكيد نقل الملكية', 'Confirm Ownership Transfer')}
-            </DialogTitle>
-            <DialogDescription>
-              {t(`أنت على وشك نقل ملكية النظام بالكامل إلى ${transferTarget?.email}. هذا الإجراء لا رجعة فيه ويتطلب إعادة إدخال كلمة المرور الخاصة بك للتأكيد.`, `You are about to transfer full system ownership to ${transferTarget?.email}. This is irreversible and requires you to re-enter your password to confirm.`)}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-destructive">{t('كلمة المرور الحالية', 'Current Password')}</label>
-              <Input type="password" value={transferPassword} onChange={e => setTransferPassword(e.target.value)} dir="ltr" />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsTransferOpen(false)}>{t('إلغاء', 'Cancel')}</Button>
-            <Button variant="destructive" onClick={() => transferMutation.mutate(transferTarget.id)} disabled={transferMutation.isPending || !transferPassword}>
-              {transferMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {t('تأكيد النقل', 'Confirm Transfer')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <Tabs defaultValue="active" onValueChange={value => setInviteFilter(value)} className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="active">{t('النشطين', 'Active')} ({activeStaff.length})</TabsTrigger>
+          <TabsTrigger value="pending">{t('الدعوات المعلقة', 'Pending Invitations')} ({invitesData?.invitations?.filter(i => i.status === 'pending').length || 0})</TabsTrigger>
+          <TabsTrigger value="expired">{t('الدعوات المنتهية', 'Expired Invitations')} ({invitesData?.invitations?.filter(i => i.status === 'expired').length || 0})</TabsTrigger>
+          <TabsTrigger value="revoked">{t('الموظفون المسحوبة صلاحياتهم', 'Revoked Staff')} ({revokedStaff.length})</TabsTrigger>
+        </TabsList>
 
-      <div className="rounded-md border border-border bg-card overflow-hidden">
-        <div className="overflow-auto">
-          <Table>
-            <TableHeader className="bg-muted/50">
-              <TableRow className="border-border hover:bg-transparent">
-                <TableHead className="font-semibold text-foreground">{t('المعرف', 'ID')}</TableHead>
-                <TableHead className="font-semibold text-foreground">{t('البريد الإلكتروني', 'Email')}</TableHead>
-                <TableHead className="font-semibold text-foreground">{t('الاسم', 'Name')}</TableHead>
-                <TableHead className="font-semibold text-foreground">{t('الدور والصلاحيات', 'Role & Permissions')}</TableHead>
-                <TableHead className="text-end"></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading || isConfigLoading ? (
+        <TabsContent value="active" className="m-0">
+          <div className="rounded-md border border-border bg-card overflow-hidden">
+            <Table>
+              <TableHeader className="bg-muted/50">
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                    {t('جاري التحميل...', 'Loading...')}
-                  </TableCell>
+                  <TableHead>{t('البريد الإلكتروني', 'Email')}</TableHead>
+                  <TableHead>{t('الاسم', 'Name')}</TableHead>
+                  <TableHead>{t('الدور', 'Role')}</TableHead>
+                  <TableHead className="text-end"></TableHead>
                 </TableRow>
-              ) : !hasOwner ? (
+              </TableHeader>
+              <TableBody>
+                {staffLoading ? (
+                  <TableRow><TableCell colSpan={4} className="text-center py-8"><Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" /></TableCell></TableRow>
+                ) : activeStaff.length === 0 ? (
+                  <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">{t('لا يوجد', 'None')}</TableCell></TableRow>
+                ) : (
+                  activeStaff.map(staff => {
+                    const isSelf = user?.uid === staff.id;
+                    const isOwner = staff.role === 'owner';
+                    return (
+                      <TableRow key={staff.id}>
+                        <TableCell dir="ltr" className="text-start font-medium">{staff.email}</TableCell>
+                        <TableCell>{staff.nameAr || staff.nameEn || '-'}</TableCell>
+                        <TableCell><span className="px-2 py-1 rounded-full text-xs font-medium bg-primary/20 text-primary">{getRoleLabel(staff.role)}</span></TableCell>
+                        <TableCell className="text-end">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" className="h-8 w-8 p-0" disabled={isOwner}><MoreVertical className="h-4 w-4" /></Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handleRevoke(staff.id)} className="text-destructive" disabled={isSelf}>
+                                <UserMinus className="me-2 h-4 w-4" />
+                                {t('سحب الصلاحيات', 'Revoke Roles')}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="pending" className="m-0">
+          <div className="rounded-md border border-border bg-card overflow-hidden">
+            <Table>
+              <TableHeader className="bg-muted/50">
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-12">
-                    <p className="text-muted-foreground mb-4">{t('النظام لا يملك مالكاً مسجلاً', 'System currently has no owner')}</p>
-                    <Button onClick={() => bootstrapMutation.mutate()} disabled={bootstrapMutation.isPending}>
-                      {bootstrapMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      {t('تفعيل حساب المالك كأول خطوة', 'Bootstrap initial owner')}
-                    </Button>
-                  </TableCell>
+                  <TableHead>{t('البريد الإلكتروني', 'Email')}</TableHead>
+                  <TableHead>{t('الدور', 'Role')}</TableHead>
+                  <TableHead>{t('الحالة', 'Status')}</TableHead>
+                  <TableHead>{t('التاريخ', 'Date')}</TableHead>
+                  <TableHead className="text-end"></TableHead>
                 </TableRow>
-              ) : !data?.staff || data.staff.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                    {t('لا يوجد موظفين مسجلين', 'No staff found')}
-                  </TableCell>
-                </TableRow>
-              ) : (
-                data.staff.map((staff: any) => {
-                  const role = staff.role || staff.heavyarRole;
-                  const isOwner = role === 'super_admin' || role === 'owner';
-                  const isSelf = user?.uid === staff.id;
-                  const canModify = !isSelf && (!isOwner || isSelf); // Disallow modifying other owners or self-demotion
-                  
-                  return (
-                    <TableRow key={staff.id} className="border-border border-b last:border-0 hover:bg-muted/20">
-                      <TableCell className="font-mono text-xs text-muted-foreground">{staff.id.substring(0, 8)}...</TableCell>
-                      <TableCell dir="ltr" className="text-start font-medium">{staff.email}</TableCell>
-                      <TableCell>{language === 'ar' ? staff.nameAr || staff.nameEn || '-' : staff.nameEn || staff.nameAr || '-'}</TableCell>
+              </TableHeader>
+              <TableBody>
+                {invitesLoading ? (
+                  <TableRow><TableCell colSpan={5} className="text-center py-8"><Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" /></TableCell></TableRow>
+                ) : !invitesData?.invitations?.some(invite => inviteFilter === 'revoked' ? invite.status === 'revoked' || invite.status === 'cancelled' : invite.status === inviteFilter) ? (
+                  <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">{t('لا يوجد', 'None')}</TableCell></TableRow>
+                ) : (
+                  invitesData.invitations.filter(invite => inviteFilter === 'revoked' ? invite.status === 'revoked' || invite.status === 'cancelled' : invite.status === inviteFilter).map(invite => (
+                    <TableRow key={invite.id}>
+                      <TableCell dir="ltr" className="text-start font-medium">{invite.email}</TableCell>
+                      <TableCell>{getRoleLabel(invite.role)}</TableCell>
                       <TableCell>
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${isOwner ? 'bg-primary/20 text-primary' : !staff.active ? 'bg-muted text-muted-foreground' : 'bg-blue-500/10 text-blue-500'}`}>
-                          {!staff.active ? t('غير نشط', 'Inactive') : getRoleLabel(role)}
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                          invite.status === 'pending' ? 'bg-amber-500/20 text-amber-600' :
+                          invite.status === 'expired' ? 'bg-muted text-muted-foreground' : 'bg-green-500/20 text-green-600'
+                        }`}>
+                          {invite.status}
                         </span>
                       </TableCell>
+                      <TableCell>{new Date(invite.createdAt).toLocaleDateString()}</TableCell>
                       <TableCell className="text-end">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" className="h-8 w-8 p-0">
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem className="text-xs font-semibold text-muted-foreground uppercase pointer-events-none" disabled>
-                              {t('تغيير الصلاحية', 'Change Role')}
-                            </DropdownMenuItem>
-                            {roles.map(r => (
-                              <DropdownMenuItem key={r.value} onClick={() => handleAction(staff, 'grant_role', r.value)} disabled={!canModify || role === r.value}>
-                                <UserCog className="me-2 h-4 w-4" />
-                                {r.label}
-                              </DropdownMenuItem>
-                            ))}
-
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem onClick={() => handleAction(staff, 'revoke_role')} className="text-amber-500" disabled={!canModify}>
-                              <UserMinus className="me-2 h-4 w-4" />
-                              {t('سحب كل الصلاحيات', 'Revoke All Roles')}
-                            </DropdownMenuItem>
-
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem onClick={() => handleAction(staff, 'transfer_ownership')} className="text-destructive" disabled={isSelf}>
-                              <Crown className="me-2 h-4 w-4" />
-                              {t('نقل الملكية', 'Transfer Ownership')}
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                        {invite.status === 'pending' && (
+                          <Button variant="ghost" size="sm" onClick={() => handleCancelInvite(invite.id)} className="text-destructive hover:bg-destructive/10">
+                            <XCircle className="w-4 h-4 me-2" />
+                            {t('إلغاء', 'Cancel')}
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
-                  );
-                })
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </div>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="expired" className="m-0">
+          <div className="rounded-md border border-border bg-card overflow-hidden">
+            <Table>
+              <TableHeader className="bg-muted/50"><TableRow><TableHead>{t('البريد الإلكتروني', 'Email')}</TableHead><TableHead>{t('الدور', 'Role')}</TableHead><TableHead>{t('الحالة', 'Status')}</TableHead><TableHead>{t('التاريخ', 'Date')}</TableHead></TableRow></TableHeader>
+              <TableBody>
+                {invitesLoading ? (
+                  <TableRow><TableCell colSpan={4} className="text-center py-8"><Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" /></TableCell></TableRow>
+                ) : !invitesData?.invitations?.some(invite => invite.status === 'expired') ? (
+                  <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">{t('لا يوجد', 'None')}</TableCell></TableRow>
+                ) : invitesData.invitations.filter(invite => invite.status === 'expired').map(invite => (
+                  <TableRow key={invite.id}><TableCell dir="ltr" className="text-start font-medium">{invite.email}</TableCell><TableCell>{getRoleLabel(invite.role)}</TableCell><TableCell><span className="px-2 py-1 rounded-full text-xs font-medium bg-muted text-muted-foreground">{t('منتهية', 'Expired')}</span></TableCell><TableCell>{new Date(invite.createdAt).toLocaleDateString()}</TableCell></TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="revoked" className="m-0">
+          <div className="rounded-md border border-border bg-card overflow-hidden">
+            <Table>
+              <TableHeader className="bg-muted/50">
+                <TableRow>
+                  <TableHead>{t('البريد الإلكتروني', 'Email')}</TableHead>
+                  <TableHead>{t('الاسم', 'Name')}</TableHead>
+                  <TableHead>{t('الدور السابق', 'Previous Role')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {staffLoading ? (
+                  <TableRow><TableCell colSpan={3} className="text-center py-8"><Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" /></TableCell></TableRow>
+                ) : revokedStaff.length === 0 ? (
+                  <TableRow><TableCell colSpan={3} className="text-center py-8 text-muted-foreground">{t('لا يوجد', 'None')}</TableCell></TableRow>
+                ) : (
+                  revokedStaff.map(staff => (
+                    <TableRow key={staff.id}>
+                      <TableCell dir="ltr" className="text-start font-medium text-muted-foreground">{staff.email}</TableCell>
+                      <TableCell className="text-muted-foreground">{staff.nameAr || staff.nameEn || '-'}</TableCell>
+                      <TableCell className="text-muted-foreground">{getRoleLabel(staff.role)}</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </TabsContent>
+
+      </Tabs>
     </div>
   );
 }

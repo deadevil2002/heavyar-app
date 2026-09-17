@@ -3,11 +3,13 @@ export const STAFF_ROLES = [
   'super_admin',
   'admin',
   'finance',
+  'payouts',
   'operations',
   'support',
   'verification',
   'marketing',
   'auditor',
+  'moderator',
 ] as const;
 
 export type StaffRole = (typeof STAFF_ROLES)[number];
@@ -17,22 +19,28 @@ export type Permission =
   | 'staff.manage'
   | 'finance.read'
   | 'finance.mutate'
+  | 'payouts.read'
+  | 'payouts.mutate'
   | 'operations.manage'
   | 'support.manage'
   | 'verification.manage'
+  | 'moderation.manage'
   | 'marketing.campaign'
-  | 'audit.read';
+  | 'audit.read'
+  | 'config.manage';
 
 const ROLE_PERMISSIONS: Record<StaffRole, readonly Permission[]> = {
-  owner: ['owner.transfer', 'staff.manage', 'finance.read', 'finance.mutate', 'operations.manage', 'support.manage', 'verification.manage', 'marketing.campaign', 'audit.read'],
-  super_admin: ['staff.manage', 'finance.read', 'finance.mutate', 'operations.manage', 'support.manage', 'verification.manage', 'marketing.campaign', 'audit.read'],
-  admin: ['operations.manage', 'support.manage', 'verification.manage', 'audit.read'],
+  owner: ['owner.transfer', 'staff.manage', 'finance.read', 'finance.mutate', 'payouts.read', 'payouts.mutate', 'operations.manage', 'support.manage', 'verification.manage', 'moderation.manage', 'marketing.campaign', 'audit.read', 'config.manage'],
+  super_admin: ['staff.manage', 'finance.read', 'finance.mutate', 'payouts.read', 'payouts.mutate', 'operations.manage', 'support.manage', 'verification.manage', 'moderation.manage', 'marketing.campaign', 'audit.read', 'config.manage'],
+  admin: ['finance.read', 'operations.manage', 'support.manage', 'verification.manage', 'moderation.manage', 'marketing.campaign', 'audit.read'],
   finance: ['finance.read', 'finance.mutate', 'audit.read'],
+  payouts: ['payouts.read', 'payouts.mutate', 'audit.read'],
   operations: ['operations.manage', 'audit.read'],
   support: ['support.manage', 'audit.read'],
   verification: ['verification.manage', 'audit.read'],
-  marketing: ['marketing.campaign', 'audit.read'],
+  marketing: ['marketing.campaign'],
   auditor: ['audit.read'],
+  moderator: ['moderation.manage', 'audit.read'],
 };
 
 export function normalizeStaffRole(value: unknown): StaffRole | null {
@@ -111,6 +119,44 @@ export function gatewayRegistry(env: { TAP_SECRET_KEY_TEST?: string; MOYASAR_SEC
     moyasar: { provider: 'moyasar' as const, configured: typeof env.MOYASAR_SECRET_KEY === 'string' && env.MOYASAR_SECRET_KEY.length > 0, environment: 'TEST' as const, adapterAvailable: false, enabled: false, supportsSplit: false },
     myfatoorah: { provider: 'myfatoorah' as const, configured: typeof env.MYFATOORAH_API_KEY === 'string' && env.MYFATOORAH_API_KEY.length > 0, environment: 'TEST' as const, adapterAvailable: false, enabled: false, supportsSplit: false },
   };
+}
+
+/**
+ * Capability-only identity integration description.  This intentionally never
+ * exposes values, and an environment variable alone does not make Rabet/Nafath
+ * ready: an official adapter, callback and signature validation are mandatory.
+ */
+export function identityIntegrationRegistry(env: {
+  RABET_NAFATH_CLIENT_ID?: string;
+  RABET_NAFATH_CLIENT_SECRET?: string;
+  RABET_NAFATH_BASE_URL?: string;
+  RABET_NAFATH_CALLBACK_URL?: string;
+  RABET_NAFATH_JWK_CONFIGURED?: string;
+  RABET_NAFATH_OFFICIAL_ADAPTER?: string;
+}) {
+  const configured = {
+    clientId: Boolean(env.RABET_NAFATH_CLIENT_ID),
+    clientSecret: Boolean(env.RABET_NAFATH_CLIENT_SECRET),
+    baseUrl: Boolean(env.RABET_NAFATH_BASE_URL),
+    callback: Boolean(env.RABET_NAFATH_CALLBACK_URL),
+    signatureValidation: env.RABET_NAFATH_JWK_CONFIGURED === 'true',
+    officialAdapter: env.RABET_NAFATH_OFFICIAL_ADAPTER === 'true',
+  };
+  const ready = Object.values(configured).every(Boolean);
+  return {
+    nafath_rabet: {
+      provider: 'Nafath via Rabet',
+      key: 'nafath_rabet' as const,
+      configured,
+      ready,
+      status: ready ? 'ready' : 'waiting_for_activation',
+      mode: 'sandbox',
+    },
+  };
+}
+
+export function identityIntegrationMayEnable(integration: ReturnType<typeof identityIntegrationRegistry>[keyof ReturnType<typeof identityIntegrationRegistry>]): boolean {
+  return integration.ready && integration.configured.officialAdapter && integration.configured.signatureValidation && integration.configured.callback;
 }
 
 export function enabledConfiguredGateways(

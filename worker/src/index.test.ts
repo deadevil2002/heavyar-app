@@ -583,4 +583,145 @@ describe('worker security boundary', () => {
     expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?equipmentType=crane', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(400);
     globalThis.fetch = oldFetch;
   });
+
+  test('new requests receive an immutable Worker-issued public number without changing document IDs', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    __test.setFirestore((collection) => {
+      if (collection === 'equipment') return {
+        ownerUid: 'provider-1', isActive: true, visibility: 'visible', moderationStatus: 'approved',
+        pricePerDay: 100, availability: { from: '2026-01-01' },
+      };
+      if (collection === 'users') return { accountStatus: 'active' };
+      if (collection === 'publicIdentifierCounters') return { nextSequence: 42 };
+      return null;
+    });
+    const commits: unknown[][] = [];
+    __test.captureCommits(commits);
+    const response = await worker.fetch(request('/api/requests', {
+      equipmentId: 'equipment-1', requestMode: 'fixed_days', numberOfDays: 2,
+      startDate: '2026-01-10', endDate: '2026-01-11',
+      publicRequestNumber: 'HV-REQ-999999',
+    }, { Authorization: 'Bearer test' }), env);
+    const body: any = await response.json();
+    expect(response.status).toBe(201);
+    expect(body.request.publicRequestNumber).toBe('HV-REQ-000042');
+    expect(/^r_/.test(body.request.id)).toBe(true);
+    const writes = commits[0] as any[];
+    expect(writes.some(write => String(write.update?.name).includes('/publicIdentifierCounters/requests'))).toBe(true);
+    expect(writes.find(write => String(write.update?.name).includes('/equipmentRequests/')).update.fields.publicRequestNumber.stringValue).toBe('HV-REQ-000042');
+  });
+
+  test('pending-review equipment is not rentable and new listings start pending with a public number', async () => {
+    __test.setAuth({ uid: 'provider-1', admin: false });
+    __test.setFirestore((collection) => {
+      if (collection === 'users') return {
+        role: 'provider', isVerified: true, nameAr: 'مزود', nameEn: 'Provider', avatar: '',
+      };
+      if (collection === 'publicIdentifierCounters') return { nextSequence: 7 };
+      return null;
+    });
+    const commits: unknown[][] = [];
+    __test.captureCommits(commits);
+    const created = await worker.fetch(request('/api/listings', {
+      titleAr: 'حفار', titleEn: 'Excavator', descriptionAr: 'وصف', descriptionEn: 'Description',
+      pricePerDay: 500, images: [], availability: { from: '2026-01-01' },
+    }, { Authorization: 'Bearer test' }), env);
+    const createdBody: any = await created.json();
+    expect(created.status).toBe(201);
+    expect(createdBody.listing.moderationStatus).toBe('pending_review');
+    expect(createdBody.listing.publicEquipmentNumber).toBe('HV-EQP-000007');
+    const listingWrite = (commits[0] as any[]).find(write => String(write.update?.name).includes('/equipment/'));
+    expect(listingWrite.update.fields.moderationStatus.stringValue).toBe('pending_review');
+    expect(listingWrite.update.fields.visibility.stringValue).toBe('visible');
+
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    __test.setFirestore((collection) => collection === 'equipment'
+      ? { ownerUid: 'provider-1', isActive: true, visibility: 'visible', moderationStatus: 'pending_review', pricePerDay: 500 }
+      : collection === 'users' ? { accountStatus: 'active' } : null);
+    const unavailable = await worker.fetch(request('/api/requests', { equipmentId: 'listing-1', numberOfDays: 1 }, { Authorization: 'Bearer test' }), env);
+    expect(unavailable.status).toBe(409);
+  });
+
+  test('driver registration uses the authenticated UID and begins pending review', async () => {
+    __test.setAuth({ uid: 'driver-uid', admin: false });
+    __test.setFirestore((collection) => collection === 'users'
+      ? { accountStatus: 'active', nameAr: 'سائق', nameEn: 'Driver Name', phone: '+966500000000' }
+      : null);
+    const writes: Array<{ path: string; fields: Record<string, unknown> }> = [];
+    __test.captureWrites(writes);
+    const response = await worker.fetch(new Request('https://worker.test/api/drivers/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
+      body: JSON.stringify({ displayName: 'Driver Name', region: 'Riyadh', city: 'Riyadh', equipmentTypes: ['crane'], yearsExperience: 4 }),
+    }), env);
+    expect(response.status).toBe(200);
+    const profile = writes.find(write => write.path.startsWith('driverProfiles/driver-uid'));
+    expect((profile?.fields.uid as any)?.stringValue).toBe('driver-uid');
+    expect((profile?.fields.moderationStatus as any)?.stringValue).toBe('pending_review');
+    expect((profile?.fields.active as any)?.booleanValue).toBe(false);
+  });
+
+  test('self-service invoice PDF is available only to canonical request participants', async () => {
+    let payment: Record<string, unknown> | null = {
+      requestId: 'r', customerUid: 'customer-1', amount: 115, currency: 'SAR',
+      state: 'paid', invoiceId: 'INV-r-charge-1', provider: 'tap', providerReference: 'charge-1',
+    };
+    __test.setFirestore((collection, id) => {
+      if (collection === 'users') return { accountStatus: 'active' };
+      if (collection === 'invoices' && id === 'INV-r-charge-1') return {
+        invoiceNumber: 'INV-r-charge-1', requestId: 'r', equipmentId: 'e',
+        customerId: 'customer-1', providerId: 'provider-1', buyerName: 'Customer',
+        sellerName: 'Provider', subtotal: 100, platformFee: 10, vatAmount: 15,
+        totalAmount: 115, currency: 'SAR', status: 'paid', paymentReference: 'charge-1', createdAt: '2026-01-01T00:00:00.000Z',
+      };
+      if (collection === 'equipmentRequests') return {
+        customerUid: 'customer-1', providerUid: 'provider-1', equipmentId: 'e',
+        paymentStatus: 'paid', paymentState: 'paid', invoiceId: 'INV-r-charge-1',
+        paymentId: 'charge-1', amount: 100, currency: 'SAR', publicRequestNumber: 'HV-REQ-000001',
+        startDate: '2026-01-01', endDate: '2026-01-02',
+      };
+      if (collection === 'payments') return payment;
+      if (collection === 'equipment') return { titleEn: 'Excavator' };
+      return null;
+    });
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    const participant = await worker.fetch(new Request('https://worker.test/api/invoices/INV-r-charge-1.pdf', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(participant.status).toBe(200);
+    expect(participant.headers.get('Content-Type')).toBe('application/pdf');
+    expect(new TextDecoder().decode(await participant.arrayBuffer()).includes('Invoice Number')).toBe(true);
+
+    __test.setAuth({ uid: 'outsider', admin: false });
+    const outsider = await worker.fetch(new Request('https://worker.test/api/invoices/INV-r-charge-1.pdf', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(outsider.status).toBe(404);
+
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    payment = { ...payment!, requestId: 'different-request' };
+    const swappedRequest = await worker.fetch(new Request('https://worker.test/api/invoices/INV-r-charge-1.pdf', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(swappedRequest.status).toBe(404);
+
+    payment = { ...payment!, requestId: 'r', invoiceId: 'other-invoice' };
+    const swappedInvoice = await worker.fetch(new Request('https://worker.test/api/invoices/INV-r-charge-1.pdf', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(swappedInvoice.status).toBe(404);
+
+    payment = { ...payment!, invoiceId: 'INV-r-charge-1', amount: 114 };
+    const wrongTotal = await worker.fetch(new Request('https://worker.test/api/invoices/INV-r-charge-1.pdf', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(wrongTotal.status).toBe(404);
+
+    payment = null;
+    const missingSettlement = await worker.fetch(new Request('https://worker.test/api/invoices/INV-r-charge-1.pdf', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(missingSettlement.status).toBe(404);
+  });
+
 });

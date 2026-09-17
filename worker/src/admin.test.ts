@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import worker, { __test, type Env } from './index';
-import { __adminTest } from './admin';
+import { __adminTest, handleAdmin, handleAdminDocument, AdminDocumentUnavailableError } from './admin';
 import { claimSyncWrite, processStaffClaimSync } from './admin';
 
 const env = { CORS_ORIGINS: 'http://localhost' } as Env;
@@ -19,6 +19,7 @@ describe('admin authorization and operational boundary', () => {
     __adminTest.setFirestore(undefined);
     __adminTest.captureCommits(undefined);
     __adminTest.setIdentity(undefined);
+    __adminTest.setVerifiedEmail(undefined);
     __adminTest.setQuery(undefined);
   });
   afterEach(() => {
@@ -28,6 +29,7 @@ describe('admin authorization and operational boundary', () => {
     __adminTest.setFirestore(undefined);
     __adminTest.captureCommits(undefined);
     __adminTest.setIdentity(undefined);
+    __adminTest.setVerifiedEmail(undefined);
     __adminTest.setQuery(undefined);
   });
 
@@ -86,7 +88,7 @@ describe('admin authorization and operational boundary', () => {
   });
 
   test('refund creates an independent reserved document and preserves canonical payment', async () => {
-    __test.setAuth({ uid: 'admin-1', admin: true, role: 'admin' });
+    __test.setAuth({ uid: 'finance-1', admin: true, role: 'admin', permissionRole: 'finance' });
     __adminTest.setFirestore((collection) => collection === 'payments' ? { requestId: 'request-1', paymentId: 'payment-1', state: 'paid', amount: 100 } : null);
     const commits: unknown[][] = [];
     __adminTest.captureCommits(commits);
@@ -124,16 +126,380 @@ describe('admin authorization and operational boundary', () => {
     expect(fields.moderationStatus.stringValue).toBe('suspended');
   });
 
-  test('role claim failure leaves a durable role-change intent', async () => {
+  test('generic users and role endpoints cannot grant staff authority', async () => {
     __test.setAuth({ uid: 'super-1', admin: true, role: 'super_admin' });
-    __adminTest.setIdentity(async () => { throw new Error('Identity service unavailable'); });
     const commits: unknown[][] = [];
     __adminTest.captureCommits(commits);
     const response = await worker.fetch(request('/api/admin/roles', { uid: 'target-1', role: 'admin', operation: 'grant', reason: 'approved by governance' }, { Authorization: 'Bearer test' }), env);
+    expect(response.status).toBe(403);
+    const actionResponse = await worker.fetch(request('/api/admin/action', { action: 'grant_role', targetType: 'user', targetId: 'target-1', role: 'admin', reason: 'bypass invitation' }, { Authorization: 'Bearer test' }), env);
+    expect(actionResponse.status).toBe(403);
+    expect(commits.length).toBe(0);
+  });
+
+  test('staff invitation acceptance requires the verified matching identity and is atomic', async () => {
+    const token = 'staff-invitation-accept-token';
+    const hash = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    __test.setAuth({ uid: 'existing-customer', admin: false, email: 'existing@example.test' });
+    __adminTest.setVerifiedEmail(async () => 'existing@example.test');
+    __adminTest.setFirestore((collection, id) => collection === 'staffInvitations' && id === `invite:${hash}` ? {
+      email: 'existing@example.test', role: 'payouts', status: 'pending', expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    } : null);
+    const commits: unknown[][] = []; __adminTest.captureCommits(commits);
+    const response = await worker.fetch(request('/api/admin/staff/invitations/accept', { token }, { Authorization: 'Bearer test' }), env);
     expect(response.status).toBe(200);
-    expect(commits.length > 0).toBe(true);
-    expect(String((commits[0][0] as any).update.name).includes('role-intent')).toBe(true);
-    expect((commits[0][0] as any).update.fields.action.stringValue).toBe('role_change_intent');
+    const writes = commits[0] as any[];
+    expect(writes.some(write => String(write.update?.name).includes('/staffMembers/existing-customer'))).toBe(true);
+    expect(writes.some(write => String(write.update?.name).includes('/staffClaimSync/'))).toBe(true);
+    expect(writes.some(write => write.update?.fields?.status?.stringValue === 'accepted')).toBe(true);
+  });
+
+  test('expired or mismatched staff invitation cannot grant an existing user privileges', async () => {
+    __test.setAuth({ uid: 'existing-customer', admin: false, email: 'existing@example.test' });
+    __adminTest.setVerifiedEmail(async () => 'other@example.test');
+    __adminTest.setFirestore(() => null);
+    const response = await worker.fetch(request('/api/admin/staff/invitations/accept', { token: 'expired-token' }, { Authorization: 'Bearer test' }), env);
+    expect(response.status).toBe(403);
+  });
+
+  test('revoked and unverified staff invitations are rejected without authority writes', async () => {
+    const token = 'revoked-invitation-token';
+    const hash = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    __test.setAuth({ uid: 'customer-1', admin: false, email: 'customer@example.test' });
+    __adminTest.setFirestore((collection, id) => collection === 'staffInvitations' && id === `invite:${hash}` ? {
+      email: 'customer@example.test', role: 'support', status: 'revoked', expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    } : null);
+    __adminTest.setVerifiedEmail(async () => 'customer@example.test');
+    const writes: unknown[][] = []; __adminTest.captureCommits(writes);
+    expect((await worker.fetch(request('/api/admin/staff/invitations/accept', { token }, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    __adminTest.setFirestore((collection, id) => collection === 'staffInvitations' && id === `invite:${hash}` ? {
+      email: 'customer@example.test', role: 'support', status: 'pending', expiresAt: new Date(Date.now() - 1).toISOString(),
+    } : null);
+    expect((await worker.fetch(request('/api/admin/staff/invitations/accept', { token }, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    __adminTest.setFirestore((collection, id) => collection === 'staffInvitations' && id === `invite:${hash}` ? {
+      email: 'customer@example.test', role: 'support', status: 'pending', expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    } : null);
+    __adminTest.setVerifiedEmail(async () => null);
+    expect((await worker.fetch(request('/api/admin/staff/invitations/accept', { token }, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    expect(writes.length).toBe(0);
+  });
+
+  test('least-privilege reads keep finance, staff, and identity data from marketing and auditors', async () => {
+    __test.setAuth({ uid: 'marketing-1', admin: true, role: 'admin', permissionRole: 'marketing' });
+    expect((await worker.fetch(request('/api/admin/payments', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    expect((await worker.fetch(request('/api/admin/identity-integrations', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    expect((await worker.fetch(request('/api/admin/staff', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    __test.setAuth({ uid: 'auditor-1', admin: true, role: 'admin', permissionRole: 'auditor' });
+    const overview = await worker.fetch(request('/api/admin/overview', undefined, { Authorization: 'Bearer test' }), env);
+    expect(overview.status).toBe(200);
+    expect('payments' in (await overview.json() as any).metrics).toBe(false);
+    expect((await worker.fetch(request('/api/admin/notification-retry', { limit: 1 }, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+  });
+
+  test('role-scoped reads allow only each operational surface and details keep the same gate', async () => {
+    __adminTest.setQuery(() => []);
+    __adminTest.setFirestore((collection) => collection === 'users' ? { displayName: 'Safe User' } : null);
+    __test.setAuth({ uid: 'ops-1', admin: true, role: 'admin', permissionRole: 'operations' });
+    expect((await worker.fetch(request('/api/admin/drivers', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(200);
+    expect((await worker.fetch(request('/api/admin/payments', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    __test.setAuth({ uid: 'support-1', admin: true, role: 'admin', permissionRole: 'support' });
+    expect((await worker.fetch(request('/api/admin/notification-health', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(200);
+    expect((await worker.fetch(request('/api/admin/detail/payments/payment-1', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    __test.setAuth({ uid: 'verify-1', admin: true, role: 'admin', permissionRole: 'verification' });
+    expect((await worker.fetch(request('/api/admin/identity-integrations', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(200);
+    __test.setAuth({ uid: 'auditor-1', admin: true, role: 'admin', permissionRole: 'auditor' });
+    expect((await worker.fetch(request('/api/admin/detail/users/user-1', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(200);
+    expect((await worker.fetch(request('/api/admin/detail/staffMembers/staff-1', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    __test.setAuth({ uid: 'marketing-1', admin: true, role: 'admin', permissionRole: 'marketing' });
+    expect((await worker.fetch(request('/api/admin/campaigns', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(200);
+    expect((await worker.fetch(request('/api/admin/overview', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+  });
+
+  test('payouts cannot read generic finance documents and moderators can act only on listings', async () => {
+    __adminTest.setFirestore((collection) => collection === 'payments' ? { amount: 10, state: 'paid' }
+      : collection === 'equipment' ? { moderationStatus: 'pending_review', visibility: 'visible' } : null);
+    __test.setAuth({ uid: 'payouts-1', admin: true, role: 'admin', permissionRole: 'payouts' });
+    expect((await worker.fetch(request('/api/admin/detail/payments/payment-1', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    expect((await worker.fetch(request('/api/admin/detail/equipment/equipment-1', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    __test.setAuth({ uid: 'moderator-1', admin: true, role: 'admin', permissionRole: 'moderator' });
+    const writes: unknown[][] = []; __adminTest.captureCommits(writes);
+    const moderated = await worker.fetch(request('/api/admin/action', { action: 'approve_listing', targetType: 'equipment', targetId: 'equipment-1', reason: 'policy review complete' }, { Authorization: 'Bearer test' }), env);
+    expect(moderated.status).toBe(200);
+    expect((writes[0][0] as any).update.fields.moderationStatus.stringValue).toBe('approved');
+    expect((await worker.fetch(request('/api/admin/detail/payments/payment-1', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+  });
+
+  test('explicit listing approval normalizes only missing visibility and never reopens hidden or archived listings', async () => {
+    let visibility: string | undefined;
+    __test.setAuth({ uid: 'moderator-1', admin: true, role: 'admin', permissionRole: 'moderator' });
+    __adminTest.setFirestore((collection) => collection === 'equipment' ? { moderationStatus: 'pending_review', visibility } : null);
+    const commits: unknown[][] = []; __adminTest.captureCommits(commits);
+    const approve = async () => worker.fetch(request('/api/admin/action', {
+      action: 'approve_listing', targetType: 'equipment', targetId: 'legacy-listing', reason: 'moderation approved',
+    }, { Authorization: 'Bearer test' }), env);
+    expect((await approve()).status).toBe(200);
+    expect((commits[0][0] as any).update.fields.visibility.stringValue).toBe('visible');
+    expect((commits[0][0] as any).update.fields.isActive.booleanValue).toBe(true);
+    visibility = 'hidden';
+    expect((await approve()).status).toBe(200);
+    expect((commits[1][0] as any).update.fields.visibility.stringValue).toBe('hidden');
+    expect((commits[1][0] as any).update.fields.isActive.booleanValue).toBe(false);
+    visibility = 'archived';
+    expect((await approve()).status).toBe(200);
+    expect((commits[2][0] as any).update.fields.visibility.stringValue).toBe('archived');
+    expect((commits[2][0] as any).update.fields.isActive.booleanValue).toBe(false);
+  });
+
+  test('ownership initiation stays pending and never changes the canonical owner before acceptance', async () => {
+    __test.setAuth({ uid: 'owner-1', admin: true, role: 'super_admin', permissionRole: 'owner', email: 'owner@example.test', authTime: Date.now() });
+    __adminTest.setFirestore((collection, id) => collection === 'heavyarConfig' && id === 'owner' ? { ownerUid: 'owner-1', version: 1 } : null);
+    const commits: unknown[][] = []; __adminTest.captureCommits(commits);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as typeof fetch;
+    try {
+      const response = await worker.fetch(request('/api/admin/ownership', { email: 'next-owner@example.test', reason: 'governance succession' }, { Authorization: 'Bearer test' }), { ...env, RESEND_API_KEY: 'test-only' });
+      expect(response.status).toBe(200);
+      const writes = JSON.stringify(commits[0]);
+      expect(writes.includes('ownershipTransfers/pending')).toBe(true);
+      expect(writes.includes('staffMembers/')).toBe(false);
+      expect(writes.includes('heavyarConfig/owner')).toBe(false);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  test('authority invitation email uses the fixed UI acceptance link and fails explicitly without Resend', async () => {
+    __test.setAuth({ uid: 'super-1', admin: true, role: 'super_admin', permissionRole: 'super_admin' });
+    __adminTest.captureCommits([]);
+    expect((await worker.fetch(request('/api/admin/staff/invitations', { email: 'new.staff@example.test', role: 'support' }, { Authorization: 'Bearer test' }), env)).status).toBe(503);
+    let emailPayload: any;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      emailPayload = JSON.parse(String(init?.body || '{}'));
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    try {
+      const response = await worker.fetch(request('/api/admin/staff/invitations', { email: 'new.staff@example.test', role: 'support' }, { Authorization: 'Bearer test' }), { ...env, RESEND_API_KEY: 'test-only' });
+      expect(response.status).toBe(200);
+      expect(emailPayload.html.includes('https://heavyar-app.web.app/accept-invite?type=staff&token=')).toBe(true);
+      expect(emailPayload.html.includes('worker.test')).toBe(false);
+      expect(emailPayload.html.includes('email-verified account')).toBe(true);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  test('only current owner with fresh reauthentication can initiate ownership transfer', async () => {
+    __test.setAuth({ uid: 'admin-1', admin: true, role: 'super_admin', permissionRole: 'owner', email: 'owner@example.test', authTime: Date.now() - 6 * 60_000 });
+    __adminTest.setFirestore((collection, id) => collection === 'heavyarConfig' && id === 'owner' ? { ownerUid: 'owner-1' } : null);
+    const writes: unknown[][] = []; __adminTest.captureCommits(writes);
+    const stale = await worker.fetch(request('/api/admin/ownership', { email: 'next@example.test', reason: 'succession' }, { Authorization: 'Bearer test' }), env);
+    expect(stale.status).toBe(403);
+    __test.setAuth({ uid: 'owner-1', admin: true, role: 'super_admin', permissionRole: 'owner', email: 'owner@example.test', authTime: Date.now() - 6 * 60_000 });
+    const old = await worker.fetch(request('/api/admin/ownership', { email: 'next@example.test', reason: 'succession' }, { Authorization: 'Bearer test' }), env);
+    expect(old.status).toBe(409);
+    expect(writes.length).toBe(0);
+  });
+
+  test('ownership acceptance detects a canonical-owner race before any switch', async () => {
+    const token = 'ownership-accept-token';
+    const tokenHash = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    __test.setAuth({ uid: 'recipient-1', admin: false, email: 'recipient@example.test' });
+    __adminTest.setVerifiedEmail(async () => 'recipient@example.test');
+    __adminTest.setFirestore((collection, id) => {
+      if (collection === 'ownershipTransfers' && id === 'pending') return { tokenHash, targetEmail: 'recipient@example.test', currentOwnerUid: 'old-owner', status: 'pending', expiresAt: new Date(Date.now() + 60_000).toISOString() };
+      if (collection === 'heavyarConfig' && id === 'owner') return { ownerUid: 'newer-owner', version: 2 };
+      return null;
+    });
+    const writes: unknown[][] = []; __adminTest.captureCommits(writes);
+    expect((await worker.fetch(request('/api/admin/ownership/accept', { token }, { Authorization: 'Bearer test' }), env)).status).toBe(409);
+    expect(writes.length).toBe(0);
+  });
+
+  test('document exports enforce trusted role scope and use filtered server pages', async () => {
+    __test.setAuth({ uid: 'marketing-1', admin: true, role: 'admin', permissionRole: 'marketing' });
+    let denied = false;
+    try {
+      await handleAdminDocument(new Request('https://worker.test/api/admin/exports/payments.xlsx?scope=all_filtered'), env, {
+        uid: 'marketing-1', admin: true, role: 'admin', permissionRole: 'marketing', testInjected: true,
+      });
+    } catch (error) { denied = error instanceof Error && error.message === 'ADMIN_REQUIRED'; }
+    expect(denied).toBe(true);
+
+    __adminTest.setQuery((collection) => collection === 'payments' ? [{
+      name: 'projects/p/databases/(default)/documents/payments/payment-1', data: {
+        paymentId: 'payment-1', requestId: 'HV-REQ-01', amount: 100, state: 'paid', provider: 'tap', privateToken: 'never-export',
+      },
+    }] : []);
+    __adminTest.captureCommits([]);
+    __test.setAuth({ uid: 'finance-1', admin: true, role: 'admin', permissionRole: 'finance' });
+    const document = await handleAdminDocument(new Request('https://worker.test/api/admin/exports/payments.xlsx?scope=all_filtered&state=paid'), env, {
+      uid: 'finance-1', admin: true, role: 'admin', permissionRole: 'finance', testInjected: true,
+    });
+    expect(Boolean(document?.contentType.includes('spreadsheetml'))).toBe(true);
+    expect(new TextDecoder().decode(document?.body.slice(0, 2))).toBe('PK');
+    expect(JSON.stringify(document?.body).includes('never-export')).toBe(false);
+  });
+
+  test('missing editable configuration returns safe unsaved defaults without writes', async () => {
+    __adminTest.setFirestore(() => null);
+    const commits: unknown[][] = []; __adminTest.captureCommits(commits);
+    const actor = { uid: 'owner-1', admin: true, permissionRole: 'owner', testInjected: true as const };
+    const business: any = await handleAdmin(new Request('https://worker.test/api/admin/detail/heavyarConfig/business'), env, actor);
+    expect(business.success).toBe(true);
+    expect(business.item.missing).toBe(true);
+    expect(business.item.legalBusinessNameEn).toBe('');
+    const policy: any = await handleAdmin(new Request('https://worker.test/api/admin/detail/verificationPolicies/default'), env, actor);
+    expect(policy.item.enabled).toBe(false);
+    expect(policy.item.requireCustomerIdentityVerification).toBe(false);
+    expect(commits.length).toBe(0);
+    const denied: any = await handleAdmin(new Request('https://worker.test/api/admin/detail/heavyarConfig/business'), env, { ...actor, permissionRole: 'support' });
+    expect(denied.status).toBe(403);
+  });
+
+  test('ownership read resolves only safe owner presentation fields', async () => {
+    __adminTest.setFirestore((collection) => collection === 'heavyarConfig' ? { ownerUid: 'owner-1', version: 1 }
+      : collection === 'users' ? { displayName: 'Current Owner', email: 'owner@example.test', privateToken: 'must-not-return' } : null);
+    const result: any = await handleAdmin(new Request('https://worker.test/api/admin/ownership'), env, {
+      uid: 'owner-1', admin: true, permissionRole: 'owner', testInjected: true,
+    });
+    expect(result.owner.name).toBe('Current Owner');
+    expect(result.owner.email).toBe('owner@example.test');
+    expect(JSON.stringify(result).includes('must-not-return')).toBe(false);
+  });
+
+  test('refund filters accept empty UI controls and preserve search/filter intersection', async () => {
+    __adminTest.setQuery(() => [
+      { name: 'projects/undefined/databases/(default)/documents/refunds/refund-1', data: { requestId: 'request-1', state: 'pending', amount: 10 } },
+      { name: 'projects/undefined/databases/(default)/documents/refunds/refund-2', data: { requestId: 'request-1', state: 'completed', amount: 20 } },
+    ]);
+    __adminTest.setFirestore(() => null);
+    const actor = { uid: 'finance-1', admin: true, permissionRole: 'finance', testInjected: true as const };
+    const blank: any = await handleAdmin(new Request('https://worker.test/api/admin/refunds?q=&state=pending&sort=&direction='), env, actor);
+    expect(blank.items.length).toBe(1);
+    const searched: any = await handleAdmin(new Request('https://worker.test/api/admin/refunds?q=request-1&state=pending&sort=amount&direction=desc'), env, actor);
+    expect(searched.items.length).toBe(1);
+    expect(searched.items[0].id).toBe('refund-1');
+    const malformed: any = await handleAdmin(new Request('https://worker.test/api/admin/refunds?cursor=invalid'), env, actor);
+    expect(malformed.status).toBe(400);
+  });
+
+  test('current-page user export fails explicitly if real audit storage denies the write', async () => {
+    __adminTest.setQuery(() => [{ name: 'projects/undefined/databases/(default)/documents/users/u1', data: { displayName: 'User', email: 'user@example.test' } }]);
+    __adminTest.setFirestore(() => null);
+    // Real commit path, deliberately no credentials: document production must
+    // not be reported as successful when its mandatory audit cannot persist.
+    let failure: unknown;
+    try {
+      await handleAdminDocument(new Request('https://worker.test/api/admin/exports/users.xlsx?scope=current_page&q='), env, {
+        uid: 'owner-1', admin: true, permissionRole: 'owner', testInjected: true,
+      });
+    } catch (error) { failure = error; }
+    expect(failure instanceof AdminDocumentUnavailableError).toBe(true);
+    expect((failure as AdminDocumentUnavailableError).status).toBe(503);
+    __test.setAuth({ uid: 'owner-1', admin: true, permissionRole: 'owner' });
+    const response = await worker.fetch(request('/api/admin/exports/users.xlsx?scope=current_page&q=', undefined, {
+      Authorization: 'Bearer test',
+    }), env);
+    expect(response.status).toBe(503);
+    expect(response.headers.get('Content-Type')).toBe('application/json');
+    expect(response.headers.get('Content-Disposition')).toBe(null);
+    expect(JSON.stringify(await response.json())).toBe(JSON.stringify({
+      success: false,
+      error: 'Document download unavailable: audit recording failed. Contact the administrator.',
+      code: 'ADMIN_DOCUMENT_AUDIT_UNAVAILABLE',
+    }));
+  });
+
+  test('admin invoice PDFs reject absent payments and any invoice/payment/request linkage mismatch', async () => {
+    const invoice = {
+      requestId: 'request-1', customerId: 'customer-1', providerId: 'provider-1', equipmentId: 'equipment-1',
+      invoiceNumber: 'INV-request-1-charge-1', buyerName: 'Customer', sellerName: 'Provider',
+      subtotal: 90, totalAmount: 100, currency: 'SAR', status: 'paid', paymentReference: 'charge-1', createdAt: new Date().toISOString(),
+    };
+    const rental = {
+      customerUid: 'customer-1', providerUid: 'provider-1', equipmentId: 'equipment-1', paymentStatus: 'paid',
+      paymentState: 'paid', invoiceId: 'invoice-1', publicRequestNumber: 'HV-REQ-000001',
+    };
+    const actor = { uid: 'finance-1', admin: true, role: 'admin' as const, permissionRole: 'finance', testInjected: true as const };
+    const rejected = async () => {
+      let denied = false;
+      try { await handleAdminDocument(new Request('https://worker.test/api/admin/invoices/invoice-1.pdf'), env, actor); }
+      catch (error) { denied = error instanceof Error && error.message === 'Invoice not found'; }
+      return denied;
+    };
+    __adminTest.setFirestore((collection, id) => collection === 'invoices' && id === 'invoice-1' ? invoice
+      : collection === 'equipmentRequests' && id === 'request-1' ? rental
+      : collection === 'equipment' && id === 'equipment-1' ? { title: 'Crane' } : null);
+    expect(await rejected()).toBe(true);
+    __adminTest.setFirestore((collection, id) => collection === 'invoices' && id === 'invoice-1' ? invoice
+      : collection === 'equipmentRequests' && id === 'request-1' ? rental
+      : collection === 'payments' && id === 'request-1' ? { requestId: 'different-request', invoiceId: 'invoice-1', state: 'paid', currency: 'SAR', amount: 100, providerReference: 'charge-1' }
+      : collection === 'equipment' && id === 'equipment-1' ? { title: 'Crane' } : null);
+    expect(await rejected()).toBe(true);
+  });
+
+  test('admin invoice PDFs preserve historical refunds but reject inconsistent settled totals', async () => {
+    const invoiceId = 'INV-request-1-charge-1';
+    const invoice: any = {
+      requestId: 'request-1', customerId: 'customer-1', providerId: 'provider-1', equipmentId: 'equipment-1',
+      invoiceNumber: invoiceId, buyerName: 'Customer', sellerName: 'Provider', subtotal: 90, vatAmount: 10,
+      platformFee: 9, totalAmount: 100, currency: 'SAR', status: 'refunded', paymentReference: 'charge-1', createdAt: new Date().toISOString(),
+    };
+    const rental = {
+      customerUid: 'customer-1', providerUid: 'provider-1', equipmentId: 'equipment-1', paymentStatus: 'paid', paymentState: 'paid',
+      invoiceId, paymentId: 'charge-1', publicRequestNumber: 'HV-REQ-000001', finalAmount: 90, currency: 'SAR',
+    };
+    const payment: any = {
+      requestId: 'request-1', invoiceId, state: 'partially_refunded', currency: 'SAR', customerUid: 'customer-1',
+      amount: 100, providerReference: 'charge-1', provider: 'tap',
+    };
+    __adminTest.setFirestore((collection, id) => collection === 'invoices' && id === invoiceId ? invoice
+      : collection === 'equipmentRequests' && id === 'request-1' ? rental
+      : collection === 'payments' && id === 'request-1' ? payment
+      : collection === 'equipment' && id === 'equipment-1' ? { title: 'Crane' } : null);
+    __adminTest.captureCommits([]);
+    const actor = { uid: 'finance-1', admin: true, role: 'admin' as const, permissionRole: 'finance', testInjected: true as const };
+    const printable = await handleAdminDocument(new Request(`https://worker.test/api/admin/invoices/${invoiceId}.pdf`), env, actor);
+    expect(new TextDecoder().decode(printable?.body.slice(0, 4))).toBe('%PDF');
+    invoice.totalAmount = 101; payment.amount = 101;
+    let denied = false;
+    try { await handleAdminDocument(new Request(`https://worker.test/api/admin/invoices/${invoiceId}.pdf`), env, actor); }
+    catch (error) { denied = error instanceof Error && error.message === 'Invoice not found'; }
+    expect(denied).toBe(true);
+  });
+
+  test('multi-filter sparse pages use the last delivered cursor so matching drivers are not skipped', async () => {
+    __test.setAuth({ uid: 'ops-1', admin: true, role: 'admin', permissionRole: 'operations' });
+    __adminTest.setQuery((_collection, before) => before
+      ? [{ name: 'projects/undefined/databases/(default)/documents/driverProfiles/d3', data: { city: 'Riyadh', region: 'Central', active: true } }]
+      : [
+        { name: 'projects/undefined/databases/(default)/documents/driverProfiles/d1', data: { city: 'Riyadh', region: 'Central', active: true } },
+        { name: 'projects/undefined/databases/(default)/documents/driverProfiles/d2', data: { city: 'Jeddah', region: 'Western', active: true } },
+        { name: 'projects/undefined/databases/(default)/documents/driverProfiles/d3', data: { city: 'Riyadh', region: 'Central', active: true } },
+      ]);
+    __adminTest.setFirestore(() => null);
+    const first = await worker.fetch(new Request('https://worker.test/api/admin/drivers?city=Riyadh&region=Central&limit=1', { headers: { Authorization: 'Bearer test' } }), env);
+    const firstBody: any = await first.json();
+    expect(first.status).toBe(200);
+    expect(firstBody.items[0].id).toBe('d1');
+    const second = await worker.fetch(new Request(`https://worker.test/api/admin/drivers?city=Riyadh&region=Central&limit=1&cursor=${encodeURIComponent(firstBody.nextCursor)}`, { headers: { Authorization: 'Bearer test' } }), env);
+    expect((await second.json() as any).items[0].id).toBe('d3');
+    expect((await worker.fetch(new Request('https://worker.test/api/admin/drivers?sort=ownerUid', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(400);
+  });
+
+  test('public-number backfill is explicit, idempotent by field, and list GET performs no migration write', async () => {
+    __test.setAuth({ uid: 'super-1', admin: true, role: 'super_admin' });
+    __adminTest.setQuery((collection) => collection === 'equipment' ? [{
+      name: 'projects/p/databases/(default)/documents/equipment/equipment-1', data: { title: 'Crane' },
+    }] : []);
+    __adminTest.setFirestore((collection) => collection === 'equipment' ? { title: 'Crane' }
+      : collection === 'publicIdentifierCounters' ? { nextSequence: 7 } : null);
+    const commits: unknown[][] = []; __adminTest.captureCommits(commits);
+    const list = await worker.fetch(new Request('https://worker.test/api/admin/equipment', { headers: { Authorization: 'Bearer test' } }), env);
+    expect(list.status).toBe(200);
+    expect(commits.length).toBe(0);
+    const response = await worker.fetch(request('/api/admin/public-identifiers/backfill', { entity: 'equipment', limit: 1, reason: 'legacy identifier migration' }, { Authorization: 'Bearer test' }), env);
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).identifiers[0]).toBe('HV-EQP-000007');
+    expect(JSON.stringify(commits[0]).includes('publicEquipmentNumber')).toBe(true);
+    expect(JSON.stringify(commits[0]).includes('moderationStatus')).toBe(false);
   });
 
   test('staff claim sync jobs have durable bounded retry schema and complete idempotently', async () => {
@@ -186,6 +552,18 @@ describe('admin authorization and operational boundary', () => {
     expect(target.update.name === former.update.name).toBe(false);
     expect(target.update.fields.desiredVersion.integerValue).toBe('4');
     expect(former.update.fields.desiredVersion.integerValue).toBe('7');
+  });
+
+  test('revoked staff claim jobs are fenced to null role before Firebase claim synchronization', async () => {
+    let desiredRole: unknown = 'not-called';
+    __adminTest.setIdentity(async (_uid, role) => { desiredRole = role; return { role, previousRole: 'support' }; });
+    __adminTest.setFirestore((collection) => collection === 'staffMembers' ? { role: 'support', active: false, roleVersion: 0 } : null);
+    __adminTest.setQuery(() => [{ name: 'staffClaimSync/revoked', updateTime: 'u1', data: {
+      uid: 'revoked-1', desiredRole: null, desiredActive: false, desiredVersion: 0, status: 'pending', attempts: 0, nextAttemptAt: new Date(0).toISOString(),
+    } }]);
+    __adminTest.captureCommits([]);
+    await processStaffClaimSync(env);
+    expect(desiredRole).toBe(null);
   });
 
   test('manual review validates transitions, emits a unique verification event, and cannot forge official identity', async () => {

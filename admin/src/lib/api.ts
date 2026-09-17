@@ -1,7 +1,9 @@
 import { QueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import { getFirebaseAuth } from './firebase';
+import { adminListParams } from './operations-contract';
 
-export const API_BASE = 'https://heavyar-api.heavyar-official.workers.dev/api/admin';
+const configuredApiBase = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://heavyar-api.heavyar-official.workers.dev';
+export const API_BASE = configuredApiBase.replace(/\/+$/, '').replace(/\/api\/admin$/, '') + '/api/admin';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -68,6 +70,36 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, h
   return data;
 }
 
+/** Authenticated binary requests are used for server-generated XLSX/PDF documents. */
+export async function fetchApiBinary(endpoint: string, options: RequestInit = {}, hasRetried = false): Promise<{ blob: Blob; filename?: string }> {
+  const token = await getToken(hasRetried);
+  if (!token) throw new Error('Unauthorized');
+  const headers = new Headers(options.headers);
+  headers.set('Authorization', `Bearer ${token}`);
+  const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+  if (!response.ok) {
+    let message = response.statusText;
+    try { const body = await response.json(); message = body.error || body.message || message; } catch { /* binary/error response */ }
+    if (response.status === 401 && !hasRetried) return fetchApiBinary(endpoint, options, true);
+    if (response.status === 401) { await getFirebaseAuth().signOut(); throw new ApiError('Session expired. Please sign in again.', response.status); }
+    throw new ApiError(message || 'Download failed', response.status);
+  }
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const filename = disposition.match(/filename="?([^"]+)"?/i)?.[1];
+  return { blob: await response.blob(), filename };
+}
+
+export function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 export type PaginatedResponse<T> = {
   items: T[];
   nextCursor?: string;
@@ -75,7 +107,7 @@ export type PaginatedResponse<T> = {
 };
 
 // Types
-export type AdminSession = { role: 'admin' | 'super_admin'; bootstrapRequired?: boolean; uid?: string; };
+export type AdminSession = { role: 'owner' | 'super_admin' | 'admin' | 'finance' | 'payouts' | 'operations' | 'support' | 'verification' | 'marketing' | 'auditor' | 'moderator'; permissions?: string[]; bootstrapRequired?: boolean; uid?: string; };
 export type TrustStatus = 'unverified' | 'pending' | 'verified' | 'rejected' | 'expired' | 'manual_review' | 'restricted' | 'require_verification' | 'require_manual_review' | 'restrict' | 'block';
 export type TrustFields = {
   verificationStatus?: TrustStatus;
@@ -87,14 +119,16 @@ export type TrustFields = {
   identity?: { status?: TrustStatus };
   manualReview?: { status?: TrustStatus };
 };
-export type User = { id: string; email: string; nameAr?: string; nameEn?: string; suspensionStatus?: string; createdAt?: string; role?: string } & TrustFields;
-export type Equipment = { id: string; titleAr?: string; titleEn?: string; ownerUid: string; moderationStatus?: string; isActive?: boolean; rate?: number };
-export type Provider = User;
-export type Request = { id: string; status: string; customerUid: string; providerUid: string; paymentState?: string; totalAmount?: number; events?: any[] } & TrustFields;
-export type Payment = { id: string; state: string; amount: number; vatAmount?: number; platformFee?: number; providerReference?: string; invoiceId?: string; events?: any[] } & TrustFields;
-export type Invoice = { id: string; invoiceNumber?: string; totalAmount?: number; status: string; customerId?: string; providerId?: string; url?: string };
-export type Refund = { id: string; state?: string; amount: number; requestId?: string; originalPaymentId?: string };
-export type Complaint = { id: string; status: string; description: string; customerUid: string; providerUid?: string; requestId?: string } & TrustFields;
+export type PersonSummary = { id?: string; uid?: string; name?: string; nameAr?: string; nameEn?: string; email?: string; phone?: string; city?: string; region?: string };
+export type User = { id: string; email?: string; nameAr?: string; nameEn?: string; displayName?: string; publicId?: string; publicIdentifier?: string; suspensionStatus?: string; status?: string; createdAt?: string; role?: string; verification?: string; city?: string; region?: string; provider?: PersonSummary; } & TrustFields;
+export type Equipment = { id: string; publicId?: string; equipmentNumber?: string; title?: string; titleAr?: string; titleEn?: string; ownerUid?: string; owner?: PersonSummary; moderationStatus?: string; visibility?: string; isActive?: boolean; rate?: number; dailyRate?: number; city?: string; reviewedBy?: PersonSummary; reviewedAt?: string; rejectionReason?: string };
+export type Provider = User & { providerId?: string };
+export type Driver = { id: string; uid?: string; publicId?: string; displayName?: string; name?: string; email?: string; phone?: string; city?: string; region?: string; active?: boolean; status?: string; availabilityStatus?: string; moderationStatus?: string; verificationStatus?: string; trustStatus?: string; equipmentTypes?: string[]; moderatedAt?: string; reviewedAt?: string };
+export type Request = { id: string; requestNumber?: string; publicRequestNumber?: string; status: string; customerUid?: string; providerUid?: string; customer?: PersonSummary; provider?: PersonSummary; equipment?: { id?: string; number?: string; title?: string }; rentalFrom?: string; rentalTo?: string; startDate?: string; endDate?: string; paymentState?: string; totalAmount?: number; events?: any[] } & TrustFields;
+export type Payment = { id: string; requestNumber?: string; request?: { requestNumber?: string }; customer?: PersonSummary; provider?: PersonSummary; state: string; amount: number; vatAmount?: number; platformFee?: number; providerName?: string; providerReference?: string; invoiceId?: string; events?: any[] } & TrustFields;
+export type Invoice = { id: string; invoiceNumber?: string; requestNumber?: string; request?: { requestNumber?: string }; totalAmount?: number; status: string; customerId?: string; providerId?: string; customer?: PersonSummary; provider?: PersonSummary; issuedAt?: string; url?: string };
+export type Refund = { id: string; state?: string; amount: number; requestId?: string; requestNumber?: string; originalPaymentId?: string; customer?: PersonSummary; provider?: PersonSummary };
+export type Complaint = { id: string; status: string; description?: string; customerUid?: string; providerUid?: string; customer?: PersonSummary; provider?: PersonSummary; requestId?: string; requestNumber?: string; createdAt?: string } & TrustFields;
 export type ProviderConfig = { id: string; providerId?: string; enabled?: boolean; environment?: string; settings?: Record<string, any> };
 export type VersionedConfig = { id: string; version: string; data?: any; key?: string; updatedAt?: string; registrationEnabled?: boolean; maintenanceMode?: boolean; requireEmailVerification?: boolean; autoApproveProviders?: boolean; ownerUid?: string; };
 export type AuditEntry = { id: string; actorUid: string; action: string; targetType: string; targetId: string; before?: any; after?: any; reason?: string; timestamp: string };
@@ -163,10 +197,7 @@ export function useListQuery<T>(key: string, endpoint: string, params: Record<st
   return useQuery({
     queryKey: [key, params],
     queryFn: () => {
-      const searchParams = new URLSearchParams();
-      Object.entries(params).forEach(([k, v]) => {
-        if (v !== undefined && v !== '') searchParams.set(k, String(v));
-      });
+      const searchParams = new URLSearchParams(adminListParams(params));
       const qs = searchParams.toString();
       return fetchApi<PaginatedResponse<T>>(`${endpoint}${qs ? '?' + qs : ''}`);
     },
@@ -175,6 +206,7 @@ export function useListQuery<T>(key: string, endpoint: string, params: Record<st
 
 export function useUsers(params: Record<string, any> = {}) { return useListQuery<User>('users', '/users', params); }
 export function useProviders(params: Record<string, any> = {}) { return useListQuery<Provider>('providers', '/providers', params); }
+export function useDrivers(params: Record<string, any> = {}) { return useListQuery<Driver>('drivers', '/drivers', params); }
 export function useEquipment(params: Record<string, any> = {}) { return useListQuery<Equipment>('equipment', '/equipment', params); }
 export function useRequests(params: Record<string, any> = {}) { return useListQuery<Request>('requests', '/requests', params); }
 export function usePayments(params: Record<string, any> = {}) { return useListQuery<Payment>('payments', '/payments', params); }
@@ -209,6 +241,9 @@ export function useVerificationAttemptEvents(attemptId?: string) {
 export function useProviderConfigs(params: Record<string, any> = {}) { return useListQuery<ProviderConfig>('provider-configs', '/provider-configs', params); }
 export function useConfig(params: Record<string, any> = {}) { return useListQuery<VersionedConfig>('config', '/config', params); }
 export function useAudit(params: Record<string, any> = {}) { return useListQuery<AuditEntry>('audit', '/audit', params); }
+export function useDetail<T = Record<string, unknown>>(resource: string, id?: string) {
+  return useQuery({ queryKey: ['detail', resource, id], queryFn: () => fetchApi<{ success?: boolean; item: T }>(`/detail/${resource}/${encodeURIComponent(id!)}`), enabled: Boolean(id), retry: false });
+}
 
 export function useActionMutation() {
   return useMutation({

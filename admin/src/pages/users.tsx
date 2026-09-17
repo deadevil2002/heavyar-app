@@ -1,185 +1,30 @@
 import { useState } from 'react';
-import { useUsers, useActionMutation } from '@/lib/api';
+import { useUsers, type User } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
-import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Search, MoreVertical, ShieldAlert, ShieldCheck, UserCheck, UserMinus, ChevronLeft, ChevronRight } from 'lucide-react';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
+import { OperationsTable, type OperationsColumn } from '@/components/operations-table';
+import { OperationDetails } from '@/components/operation-details';
+import { ExportControls } from '@/components/export-controls';
 import { useAdminAction } from '@/hooks/use-admin-action';
 import { TrustIndicator } from '@/components/TrustIndicator';
+import { Button } from '@/components/ui/button';
+import { ShieldAlert, ShieldCheck } from 'lucide-react';
 
 export default function Users() {
-  const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [cursor, setCursor] = useState<string | undefined>();
-  const [history, setHistory] = useState<string[]>([]);
-
-  const { language } = useAppState();
-  const t = (ar: string, en: string) => language === 'ar' ? ar : en;
-
-  const { data, isLoading } = useUsers({ email: debouncedSearch || undefined, limit: 20, ...(cursor ? { cursor } : {}) });
+  const { language } = useAppState(); const t = (ar: string, en: string) => language === 'ar' ? ar : en;
+  const [search, setSearch] = useState(''); const [status, setStatus] = useState(''); const [verification, setVerification] = useState(''); const [cursor, setCursor] = useState<string>(); const [history, setHistory] = useState<string[]>([]); const [selected, setSelected] = useState<User | null>(null);
+  const { data, isLoading } = useUsers({ q: search || undefined, accountStatus: status || undefined, verification: verification || undefined, limit: 20, cursor });
   const { triggerAction, ActionDialog } = useAdminAction();
-
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    setCursor(undefined);
-    setHistory([]);
-    setDebouncedSearch(search);
-  };
-
-  const next = () => {
-    if (data?.nextCursor) {
-      setHistory([...history, cursor || '']);
-      setCursor(data.nextCursor);
-    }
-  };
-
-  const prev = () => {
-    if (history.length > 0) {
-      const newHistory = [...history];
-      const prevCursor = newHistory.pop();
-      setHistory(newHistory);
-      setCursor(prevCursor === '' ? undefined : prevCursor);
-    }
-  };
-
-  const handleAction = (user: any, action: string) => {
-    triggerAction({
-      targetType: 'user',
-      targetId: user.id,
-      action,
-      title: action === 'suspend_user' ? t('إيقاف المستخدم', 'Suspend User') : 
-             action === 'unsuspend_user' ? t('إلغاء الإيقاف', 'Unsuspend User') :
-             action === 'grant_role' ? t('ترقية المستخدم', 'Promote User') :
-             t('سحب الصلاحية', 'Revoke Role'),
-      description: t(`تأكيد تنفيذ الإجراء المطلوب؟`, `Confirm execution of this action?`),
-      payload: action === 'grant_role' ? { role: 'admin' } : undefined
-    });
-  };
-
-  return (
-    <div className="space-y-6">
-      <ActionDialog />
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">{t('المستخدمين', 'Users')}</h1>
-          <p className="text-muted-foreground mt-1">{t('إدارة حسابات المستخدمين', 'Manage user accounts')}</p>
-        </div>
-        
-        <form onSubmit={handleSearch} className="relative w-full sm:w-72">
-          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input 
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('البحث عن مستخدم...', 'Search users...')} 
-            className="ps-9 bg-card border-border"
-          />
-        </form>
-      </div>
-
-      <div className="rounded-md border border-border bg-card overflow-hidden">
-        <Table>
-          <TableHeader className="bg-muted/50">
-            <TableRow className="border-border hover:bg-transparent">
-              <TableHead className="font-semibold text-foreground">{t('المعرف', 'ID')}</TableHead>
-              <TableHead className="font-semibold text-foreground">{t('البريد الإلكتروني', 'Email')}</TableHead>
-              <TableHead className="font-semibold text-foreground">{t('الاسم', 'Name')}</TableHead>
-              <TableHead className="font-semibold text-foreground">{t('الدور', 'Role')}</TableHead>
-              <TableHead className="font-semibold text-foreground">{t('الحالة', 'Status')}</TableHead>
-              <TableHead className="font-semibold text-foreground">{t('التحقق', 'Verification')}</TableHead>
-              <TableHead className="text-end"></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                  {t('جاري التحميل...', 'Loading...')}
-                </TableCell>
-              </TableRow>
-            ) : data?.items?.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                  {t('لم يتم العثور على نتائج', 'No results found')}
-                </TableCell>
-              </TableRow>
-            ) : (
-              data?.items?.map((user) => (
-                <TableRow key={user.id} className="border-border border-b last:border-0 hover:bg-muted/20">
-                  <TableCell className="font-mono text-xs text-muted-foreground">{user.id.substring(0, 8)}...</TableCell>
-                  <TableCell dir="ltr" className="text-left font-medium">{user.email}</TableCell>
-                  <TableCell>{language === 'ar' ? user.nameAr || user.nameEn || '-' : user.nameEn || user.nameAr || '-'}</TableCell>
-                  <TableCell>
-                    <span className="px-2 py-1 rounded-full text-xs font-medium bg-blue-500/10 text-blue-500">
-                      {user.role || 'user'}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${user.suspensionStatus === 'active' || !user.suspensionStatus ? 'bg-emerald-500/10 text-emerald-500' : 'bg-destructive/10 text-destructive'}`}>
-                      {user.suspensionStatus === 'active' || !user.suspensionStatus ? t('نشط', 'Active') : t('موقوف', 'Suspended')}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <TrustIndicator value={user} language={language} />
-                  </TableCell>
-                  <TableCell className="text-end">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" className="h-8 w-8 p-0">
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        {user.suspensionStatus !== 'active' && user.suspensionStatus ? (
-                          <DropdownMenuItem onClick={() => handleAction(user, 'unsuspend_user')} className="text-emerald-500">
-                            <ShieldCheck className="me-2 h-4 w-4" />
-                            {t('إلغاء الإيقاف', 'Unsuspend')}
-                          </DropdownMenuItem>
-                        ) : (
-                          <DropdownMenuItem onClick={() => handleAction(user, 'suspend_user')} className="text-destructive">
-                            <ShieldAlert className="me-2 h-4 w-4" />
-                            {t('إيقاف الحساب', 'Suspend')}
-                          </DropdownMenuItem>
-                        )}
-                        <DropdownMenuSeparator />
-                        {user.role !== 'admin' && user.role !== 'super_admin' ? (
-                          <DropdownMenuItem onClick={() => handleAction(user, 'grant_role')} className="text-amber-500">
-                            <UserCheck className="me-2 h-4 w-4" />
-                            {t('منح صلاحية مدير', 'Grant Admin')}
-                          </DropdownMenuItem>
-                        ) : (
-                          <DropdownMenuItem onClick={() => handleAction(user, 'revoke_role')} className="text-destructive">
-                            <UserMinus className="me-2 h-4 w-4" />
-                            {t('سحب صلاحية مدير', 'Revoke Admin')}
-                          </DropdownMenuItem>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
-
-      <div className="flex items-center justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={prev} disabled={history.length === 0} className="gap-2">
-          {language === 'ar' ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-          {t('السابق', 'Previous')}
-        </Button>
-        <Button variant="outline" size="sm" onClick={next} disabled={!data?.nextCursor} className="gap-2">
-          {t('التالي', 'Next')}
-          {language === 'ar' ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-        </Button>
-      </div>
-    </div>
-  );
+  const action = (user: User, name: string) => triggerAction({ targetType: 'user', targetId: user.id, action: name, title: t('إجراء الحساب', 'Account action'), description: t('سيتم التحقق من صلاحية الإجراء في الخادم.', 'The server validates this account action.') });
+  const columns: OperationsColumn<User>[] = [
+    { key: 'person', label: t('المستخدم', 'User'), sortable: true, render: u => <div><div className="font-medium">{u.nameAr || u.nameEn || u.displayName || '—'}</div><div dir="ltr" className="text-xs text-muted-foreground">{u.email || '—'}</div></div> },
+    { key: 'role', label: t('دور التطبيق', 'App role'), render: u => u.role || 'user' },
+    { key: 'status', label: t('الحالة', 'Status'), render: u => <span className={u.suspensionStatus && u.suspensionStatus !== 'active' ? 'text-destructive' : 'text-emerald-500'}>{u.suspensionStatus && u.suspensionStatus !== 'active' ? t('موقوف', 'Suspended') : t('نشط', 'Active')}</span> },
+    { key: 'verification', label: t('التحقق', 'Verification'), render: u => <TrustIndicator value={u} language={language} /> },
+    { key: 'id', label: t('المعرف العام', 'Public ID'), render: u => u.publicId || u.publicIdentifier || '—' },
+    { key: 'actions', label: t('إجراء الحساب', 'Account action'), render: u => u.suspensionStatus && u.suspensionStatus !== 'active' ? <Button size="sm" variant="outline" onClick={() => action(u, 'unsuspend_user')}><ShieldCheck className="me-1 h-3.5 w-3.5" />{t('إلغاء الإيقاف', 'Restore')}</Button> : <Button size="sm" variant="ghost" className="text-destructive" onClick={() => action(u, 'suspend_user')}><ShieldAlert className="me-1 h-3.5 w-3.5" />{t('إيقاف', 'Suspend')}</Button> },
+  ];
+  return <div className="space-y-6"><ActionDialog /><div><h1 className="text-3xl font-bold tracking-tight">{t('المستخدمون', 'Users')}</h1><p className="mt-1 text-muted-foreground">{t('حسابات العملاء ومقدمي الخدمة؛ إدارة الموظفين منفصلة.', 'Customer and marketplace accounts; staff permissions are managed separately.')}</p></div>
+    <OperationsTable<User> columns={columns} items={data?.items} loading={isLoading} search={search} onSearch={v => { setSearch(v); setCursor(undefined); setHistory([]); }} searchPlaceholder={t('ابحث بالاسم أو البريد...', 'Search name or email…')} onDetails={setSelected} nextCursor={data?.nextCursor} hasPrevious={history.length > 0} onNext={() => { if (data?.nextCursor) { setHistory([...history, cursor || '']); setCursor(data.nextCursor); } }} onPrevious={() => { const h = [...history]; const c = h.pop(); setHistory(h); setCursor(c || undefined); }} toolbar={<><select value={status} onChange={e => setStatus(e.target.value)} className="h-9 rounded-md border bg-background px-2 text-sm"><option value="">{t('كل الحالات', 'All statuses')}</option><option value="active">{t('نشط', 'Active')}</option><option value="suspended">{t('موقوف', 'Suspended')}</option></select><select value={verification} onChange={e => setVerification(e.target.value)} className="h-9 rounded-md border bg-background px-2 text-sm"><option value="">{t('كل حالات التحقق', 'All verification')}</option><option value="verified">{t('موثق', 'Verified')}</option><option value="pending">{t('قيد الانتظار', 'Pending')}</option></select><ExportControls resource="users" params={{ search, status, verification }} /></>} />
+    {selected && <OperationDetails item={selected as unknown as Record<string, unknown>} open={Boolean(selected)} onOpenChange={open => !open && setSelected(null)} title={selected.nameAr || selected.nameEn || selected.email || t('تفاصيل المستخدم', 'User details')} fields={[{ label: t('الاسم', 'Name'), value: selected.nameAr || selected.nameEn || selected.displayName }, { label: 'Email', value: selected.email }, { label: t('الحالة', 'Status'), value: selected.suspensionStatus }, { label: 'UID', value: selected.id, technical: true }]} />}
+  </div>;
 }

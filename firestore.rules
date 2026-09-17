@@ -45,7 +45,8 @@ service cloud.firestore {
     function notSuspended(uid) { return activeAccount(uid); }
     function publicListing(data) {
       return data.isActive == true
-        && (!data.keys().hasAny(['moderationStatus']) || data.moderationStatus == 'active');
+        && data.visibility == 'visible'
+        && data.moderationStatus == 'approved';
     }
     // This mirrors the server's conservative request gate. The policy is
     // backend-owned; absent/disabled policy intentionally preserves existing
@@ -395,6 +396,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
     match /equipmentReservations/{reservationId} {
+      allow read, write: if false;
+    }
+    // Public numbers are reserved only by trusted Worker transactions.
+    match /publicIdentifierCounters/{counterId} {
       allow read, write: if false;
     }
     match /listingAudit/{auditId} {

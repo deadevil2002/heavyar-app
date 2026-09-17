@@ -1,5 +1,5 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchApi, useActionMutation, useAdminSession } from '@/lib/api';
+import { useGateways, useUpdateGateway } from '@/lib/operations';
+import { useAdminSession } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ShieldCheck, ServerCrash, CreditCard, Loader2 } from 'lucide-react';
@@ -11,40 +11,19 @@ import { useToast } from '@/hooks/use-toast';
 export default function Gateways() {
   const { language } = useAppState();
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
-  const queryClient = useQueryClient();
   const { toast } = useToast();
   const { data: session } = useAdminSession();
-  const isSuperAdmin = session?.role === 'super_admin';
+  const isSuperAdmin = session?.role === 'super_admin' || session?.role === 'owner';
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['gateways'],
-    queryFn: () => fetchApi<{ success: boolean; gateways: any[] }>('/payment-gateways'),
-  });
+  const { data, isLoading } = useGateways();
+  const updateGateway = useUpdateGateway();
 
-  const action = useActionMutation();
-
-  const handleToggle = async (key: string, enabled: boolean) => {
+  const handleToggle = (gatewayId: string, enabled: boolean) => {
     if (!isSuperAdmin) return;
-    try {
-      await action.mutateAsync({
-        action: 'update_gateway',
-        targetType: 'paymentGateway',
-        targetId: key,
-        reason: t('تحديث حالة بوابة الدفع', 'Payment gateway status update'),
-        payload: { enabled }
-      });
-      toast({
-        title: t('تم التحديث بنجاح', 'Updated successfully'),
-        description: t(`تم ${enabled ? 'تفعيل' : 'تعطيل'} البوابة ${key}`, `Gateway ${key} has been ${enabled ? 'enabled' : 'disabled'}`),
-      });
-      queryClient.invalidateQueries({ queryKey: ['gateways'] });
-    } catch (error: any) {
-      toast({
-        title: t('فشل التحديث', 'Update failed'),
-        description: error.message,
-        variant: 'destructive',
-      });
-    }
+    updateGateway.mutate({ gatewayId, enabled }, {
+      onSuccess: () => toast({ title: t('تم التحديث بنجاح', 'Updated successfully') }),
+      onError: (err: any) => toast({ title: t('فشل التحديث', 'Update failed'), description: err.message, variant: 'destructive' })
+    });
   };
 
   return (
@@ -79,20 +58,17 @@ export default function Gateways() {
       ) : (
         <div className="grid gap-6">
           {data.gateways.map((gateway: any) => {
-            const key = gateway.provider || gateway.name || 'unknown';
             const isEnabled = gateway.enabled === true;
             const isConfigured = gateway.configured === true;
-            const isAdapterAvailable = gateway.adapterAvailable === true;
-            const canEnable = isConfigured && isAdapterAvailable;
 
             return (
-              <Card key={key} className={`border-border overflow-hidden ${isEnabled ? 'bg-card' : 'bg-card/50'}`}>
+              <Card key={gateway.id} className={`border-border overflow-hidden ${isEnabled ? 'bg-card' : 'bg-card/50'}`}>
                 <div className={`h-1 w-full ${isEnabled ? 'bg-emerald-500' : isConfigured ? 'bg-amber-500' : 'bg-muted-foreground/30'}`} />
                 <CardHeader className="flex flex-row items-start justify-between">
                   <div>
                     <CardTitle className="text-xl flex items-center gap-2">
                       <CreditCard className="h-5 w-5 text-primary" />
-                      <span className="capitalize">{key}</span>
+                      <span className="capitalize">{gateway.provider}</span>
                     </CardTitle>
                     <CardDescription className="mt-1">
                       {t('مزود خدمة الدفع', 'Payment Service Provider')}
@@ -120,14 +96,14 @@ export default function Gateways() {
                         <div className="flex items-center">
                           <Switch
                             checked={isEnabled}
-                            onCheckedChange={(v) => handleToggle(key, v)}
-                            disabled={(!isEnabled && !canEnable) || action.isPending}
+                            onCheckedChange={(v) => handleToggle(gateway.id, v)}
+                            disabled={(!isEnabled && !isConfigured) || updateGateway.isPending}
                           />
-                          {action.isPending && action.variables?.targetId === key && <Loader2 className="ms-2 h-4 w-4 animate-spin text-muted-foreground" />}
+                          {updateGateway.isPending && updateGateway.variables?.gatewayId === gateway.id && <Loader2 className="ms-2 h-4 w-4 animate-spin text-muted-foreground" />}
                         </div>
-                        {!isEnabled && !canEnable && (
+                        {!isEnabled && !isConfigured && (
                           <span className="text-[10px] text-muted-foreground max-w-[120px] text-end leading-tight">
-                            {!isConfigured ? t('يتطلب تكوين متغيرات البيئة', 'Requires ENV config') : t('المحول غير متوفر', 'Adapter unavailable')}
+                            {t('يتطلب تكوين متغيرات البيئة', 'Requires ENV config')}
                           </span>
                         )}
                       </div>
@@ -135,18 +111,14 @@ export default function Gateways() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+                  <div className="grid sm:grid-cols-2 gap-4 mb-6">
                     <div className="p-3 rounded-md border border-border/50 bg-background/50">
                       <p className="text-xs text-muted-foreground mb-1">{t('البيئة', 'Environment')}</p>
-                      <p className="font-semibold">{gateway.environment || '—'}</p>
+                      <p className="font-semibold">{gateway.environment?.toUpperCase() || '—'}</p>
                     </div>
                     <div className="p-3 rounded-md border border-border/50 bg-background/50">
-                      <p className="text-xs text-muted-foreground mb-1">{t('محول متوفر', 'Adapter Available')}</p>
-                      <p className="font-semibold">{gateway.adapterAvailable ? t('نعم', 'Yes') : t('لا', 'No')}</p>
-                    </div>
-                    <div className="p-3 rounded-md border border-border/50 bg-background/50">
-                      <p className="text-xs text-muted-foreground mb-1">{t('دفع مجزأ', 'Split Payments')}</p>
-                      <p className="font-semibold">{gateway.supportsSplit ? t('مدعوم', 'Supported') : t('غير مدعوم', 'Unsupported')}</p>
+                      <p className="text-xs text-muted-foreground mb-1">{t('طرق الدفع المدعومة', 'Supported Methods')}</p>
+                      <p className="font-semibold text-sm">{gateway.supportedMethods?.join(', ') || '—'}</p>
                     </div>
                   </div>
                 </CardContent>

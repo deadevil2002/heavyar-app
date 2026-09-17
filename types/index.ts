@@ -54,6 +54,8 @@ export interface EquipmentAvailability {
 
 export interface Equipment {
   id: string;
+  /** Immutable Worker-issued operational identifier; Firestore `id` is unchanged. */
+  publicEquipmentNumber?: string;
   ownerUid: string;
   ownerPublic?: PublicUserSnapshot;
   titleAr: string;
@@ -74,12 +76,16 @@ export interface Equipment {
   images: EquipmentImage[];
   availability: boolean | EquipmentAvailability;
   isActive: boolean;
+  visibility?: 'visible' | 'hidden' | 'archived';
+  moderationStatus?: 'pending_review' | 'approved' | 'rejected' | 'suspended';
   createdAt: string;
   updatedAt: string;
 }
 
 export interface EquipmentRequest {
   id: string;
+  /** Immutable Worker-issued operational identifier; Firestore `id` is unchanged. */
+  publicRequestNumber?: string;
   equipmentId: string;
   customerUid: string;
   customerPublic?: PublicUserSnapshot;

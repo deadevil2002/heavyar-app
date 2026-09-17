@@ -35,11 +35,13 @@ import Configuration from '@/pages/configuration';
 import Audit from '@/pages/audit';
 import Notifications from '@/pages/notifications';
 import Login from '@/pages/login';
+import AcceptInvite from '@/pages/accept-invite';
 import PublicPage, { type PublicPageKind } from '@/pages/public';
 import Security from '@/pages/security';
 import Campaigns from '@/pages/campaigns';
 import Staff from '@/pages/staff';
 import Gateways from '@/pages/gateways';
+import IdentityIntegrations from '@/pages/identity-integrations';
 
 function BootstrapRequired() {
   const { logout, refreshClaims } = useAuth();
@@ -80,7 +82,15 @@ function Router() {
     '/support': 'support',
     '/account-deletion': 'account-deletion',
   };
+
   if (publicPages[location]) return <PublicPage kind={publicPages[location]} />;
+
+  // Accept Invite route needs to be accessible before session validation
+  // so non-staff users can authenticate and then accept their invite.
+  if (location.startsWith('/accept-invite')) {
+    return <AcceptInvite />;
+  }
+
   const { data: session, isLoading: isSessionLoading, error } = useAdminSession();
 
   if (loading || (user && isSessionLoading)) {
@@ -97,9 +107,11 @@ function Router() {
         <ShieldAlert className="w-16 h-16 text-destructive mb-4" />
         <h1 className="text-2xl font-bold mb-2">Access Denied</h1>
         <p className="text-muted-foreground mb-8">You do not have permission to access the Heavyar Admin Dashboard.</p>
-        <Button variant="outline" onClick={logout} className="gap-2">
-          <LogOut className="w-4 h-4" /> Sign Out
-        </Button>
+        <div className="flex gap-4">
+          <Button variant="outline" onClick={logout} className="gap-2">
+            <LogOut className="w-4 h-4" /> Sign Out
+          </Button>
+        </div>
       </div>
     );
   }
@@ -123,6 +135,7 @@ function Router() {
           <Route path="/refunds" component={Refunds} />
           <Route path="/complaints" component={Complaints} />
           <Route path="/verification" component={Verification} />
+          <Route path="/identity-integrations" component={IdentityIntegrations} />
           <Route path="/providers-config" component={ProviderConfigs} />
           <Route path="/configuration" component={Configuration} />
           <Route path="/audit" component={Audit} />

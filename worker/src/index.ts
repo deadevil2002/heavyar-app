@@ -1,8 +1,11 @@
 import { quoteForRequest, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
-import { handleAdmin, processScheduledCampaigns, processStaffClaimSync, claimSyncWrite, type AdminRole } from './admin';
+import { acceptStaffInvitation, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, processScheduledCampaigns, processStaffClaimSync, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
 import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry } from './completion';
+import { PUBLIC_IDENTIFIER_COUNTER_IDS, PUBLIC_IDENTIFIER_FIELDS, formatPublicIdentifier, type PublicIdentifierKind } from './public-identifiers';
+import { isPublicRentableListing, listingVisibilityForOwnerActive, requiresListingRereview } from './moderation';
+import { createInvoicePdfService, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -109,13 +112,13 @@ function firestoreUrl(env: Env, path: string) {
   const suffix = path.startsWith(':') ? `documents${path}` : `documents/${path}`;
   return `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/${suffix}`;
 }
-async function commitWrites(env: Env, writes: unknown[]) {
+async function commitWrites(env: Env, writes: unknown[], transaction?: string) {
   if (capturedCommits) { capturedCommits.push(writes); return; }
   const sourceWrites = (writes as any[]).map(write => String(write?.update?.name || '').includes('/notificationOutbox/')
     ? { ...write, currentDocument: undefined } : write);
   const businessWrites = sourceWrites.filter(write => !String(write?.update?.name || '').includes('/notificationOutbox/'));
   let r: any = true;
-  try { r = sourceWrites.length ? await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes: sourceWrites }) }) : true; }
+  try { r = sourceWrites.length ? await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes: sourceWrites, ...(transaction ? { transaction } : {}) }) }) : true; }
   catch (error) { if (businessWrites.length) throw error; return; }
   if (!r) err('Firestore commit failed');
   // Outbox processing is request-scoped and never changes the source result.
@@ -131,7 +134,7 @@ async function fs(env: Env, path: string, init?: RequestInit): Promise<any> {
   if (r.status === 404) return null; if (!r.ok) err('Firestore unavailable'); return r.status === 204 ? null : r.json();
 }
 async function beginTransaction(env: Env): Promise<string | undefined> {
-  if (firestoreWrites || capturedCommits) return undefined;
+  if (firestoreWrites || capturedCommits || firestoreOverride) return undefined;
   const response = await fs(env, ':beginTransaction', { method: 'POST', body: JSON.stringify({ options: { readWrite: {} } }) });
   return response?.transaction;
 }
@@ -485,7 +488,9 @@ async function enforceOperationalAccess(env: Env, u: User, equipment?: any) {
     if (profile?.accountStatus === 'deletion_requested') err('ACCOUNT_DELETION_REQUESTED');
     if (profile?.suspensionStatus === 'temporarily_suspended' || profile?.suspensionStatus === 'permanently_suspended') err('ACCOUNT_SUSPENDED');
   }
-  if (equipment?.isActive === false || equipment?.moderationStatus === 'suspended' || equipment?.moderationStatus === 'hidden' || equipment?.adminHidden === true) err('LISTING_UNAVAILABLE');
+  // Existing rentals remain operational after a listing is hidden or sent
+  // back for review. Public-rentability is enforced at request creation.
+  void equipment;
 }
 function verificationProfileFields(uid: string, now: string) {
   const profile = defaultVerificationProfile(uid, now);
@@ -723,7 +728,7 @@ async function enforceTrustForPayment(env: Env, u: User, request: any, equipment
   return enforceTrustForCustomerAction(env, u.uid, request, equipment);
 }
 function requestDto(id: string, value: any) {
-  return { id, equipmentId: value.equipmentId, customerUid: value.customerUid, providerUid: value.providerUid, status: value.status, requestMode: value.requestMode, numberOfDays: value.numberOfDays ?? null, startDate: value.startDate ?? null, endDate: value.endDate ?? null, amount: value.amount, platformFee: value.platformFee, providerAmount: value.providerAmount, paymentStatus: value.paymentStatus, paymentState: value.paymentState ?? null, currency: value.currency, allowChat: value.allowChat === true, createdAt: value.createdAt, updatedAt: value.updatedAt };
+  return { id, publicRequestNumber: value.publicRequestNumber ?? null, equipmentId: value.equipmentId, customerUid: value.customerUid, providerUid: value.providerUid, status: value.status, requestMode: value.requestMode, numberOfDays: value.numberOfDays ?? null, startDate: value.startDate ?? null, endDate: value.endDate ?? null, amount: value.amount, platformFee: value.platformFee, providerAmount: value.providerAmount, paymentStatus: value.paymentStatus, paymentState: value.paymentState ?? null, currency: value.currency, allowChat: value.allowChat === true, createdAt: value.createdAt, updatedAt: value.updatedAt };
 }
 function rentalDates(from: string, until: string): string[] {
   const start = Date.parse(`${from}T00:00:00Z`), end = Date.parse(`${until}T00:00:00Z`);
@@ -740,7 +745,7 @@ async function createRequest(req: Request, env: Env, u: User) {
   const equipmentId = String(body.equipmentId || '');
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(equipmentId)) return out(env, req, { success: false, error: 'Invalid request' }, 400);
   const equipment = await getDoc(env, 'equipment', equipmentId);
-  if (!equipment || equipment.isActive === false || equipment.ownerUid === u.uid || equipment.moderationStatus === 'suspended') return out(env, req, { success: false, error: 'Listing unavailable' }, 409);
+  if (!equipment || equipment.ownerUid === u.uid || !isPublicRentableListing(equipment)) return out(env, req, { success: false, error: 'Listing unavailable' }, 409);
   await enforceOperationalAccess(env, u, equipment);
   const mode = body.requestMode === 'open_ended' ? 'open_ended' : 'fixed_days';
   const days = Number(body.numberOfDays || 0), amount = mode === 'fixed_days' ? Number(equipment.pricePerDay) * days : Number(equipment.pricePerDay);
@@ -753,9 +758,11 @@ async function createRequest(req: Request, env: Env, u: User) {
   if (!Number.isFinite(amount) || amount <= 0 || (mode === 'fixed_days' && (!Number.isInteger(days) || days < 1 || days > 365))) return out(env, req, { success: false, error: 'Invalid request amount' }, 400);
   const id = `r_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString(), fee = mode === 'fixed_days' ? Math.round(amount * paymentPricing(env).platformFeeRate * 100) / 100 : 0;
   const value: any = { equipmentId, customerUid: u.uid, providerUid: equipment.ownerUid, status: 'pending', requestMode: mode, ...(mode === 'fixed_days' ? { numberOfDays: days } : {}), startDate: requestedRange.from, endDate: requestedRange.until, availabilitySnapshot: equipment.availability || null, amount, platformFee: fee, providerAmount: amount - fee, paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: 'SAR', allowChat: false, createdAt: now, updatedAt: now };
-  const fields = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, firestoreValue(v)]));
-  await commitWrites(env, [{ update: { name: fullName(env, `equipmentRequests/${id}`), fields }, currentDocument: { exists: false } }, await notificationWrite(fullName.bind(null, env), String(equipment.ownerUid), 'rental_request_created', now, id, `${id}:created`)]);
-  return out(env, req, { success: true, request: requestDto(id, value) }, 201);
+  const publicRequestNumber = await createWithPublicIdentifier(
+    env, 'request', `equipmentRequests/${id}`, value,
+    [await notificationWrite(fullName.bind(null, env), String(equipment.ownerUid), 'rental_request_created', now, id, `${id}:created`)],
+  );
+  return out(env, req, { success: true, request: requestDto(id, { ...value, publicRequestNumber }) }, 201);
 }
 async function transitionRequest(req: Request, env: Env, u: User, requestId: string) {
   const body: any = await req.json().catch(() => ({})), action = body.action;
@@ -883,6 +890,117 @@ async function fullySettled(env: Env, requestId: string) {
     getDoc(env, 'payments', requestId),
   ]);
   return !!invoice && payment?.state === 'paid' && payment?.invoiceId === request.invoiceId;
+}
+
+async function trustedInvoiceSource(env: Env, invoiceId: string): Promise<TrustedInvoiceSource | null> {
+  const invoice = await getDoc(env, 'invoices', invoiceId);
+  const requestId = typeof invoice?.requestId === 'string' ? invoice.requestId : '';
+  if (!invoice || !requestId) return null;
+  const [rental, payment] = await Promise.all([
+    getDoc(env, 'equipmentRequests', requestId),
+    getDoc(env, 'payments', requestId),
+  ]);
+  const settledState = (value: unknown) => ['paid', 'refunded', 'partially_refunded'].includes(String(value));
+  const equivalentAmount = (left: number, right: number) => Math.abs(left - right) < 0.005;
+  const invoiceNumber = String(invoice.invoiceNumber || '');
+  const subtotal = Number(invoice.subtotal);
+  const vatAmount = Number(invoice.vatAmount);
+  const total = Number(invoice.totalAmount);
+  const paymentAmount = Number(payment?.amount);
+  const rentalSubtotal = Number(rental?.finalAmount ?? rental?.amount);
+  const paymentReference = typeof payment?.providerReference === 'string' ? payment.providerReference : '';
+  if (!rental || !payment ||
+      invoiceNumber !== invoiceId || !settledState(invoice.status) ||
+      rental.customerUid !== invoice.customerId || rental.providerUid !== invoice.providerId ||
+      rental.equipmentId !== invoice.equipmentId || rental.paymentStatus !== 'paid' ||
+      rental.paymentState !== 'paid' || rental.invoiceId !== invoiceId || rental.currency !== 'SAR' ||
+      payment.requestId !== requestId || !settledState(payment.state) || payment.invoiceId !== invoiceId ||
+      payment.customerUid !== rental.customerUid || payment.currency !== 'SAR' ||
+      !paymentReference || invoice.paymentReference !== paymentReference || rental.paymentId !== paymentReference ||
+      ![subtotal, vatAmount, total, paymentAmount, rentalSubtotal].every(Number.isFinite) ||
+      subtotal < 0 || vatAmount < 0 || total <= 0 ||
+      !equivalentAmount(subtotal + vatAmount, total) ||
+      !equivalentAmount(paymentAmount, total) || !equivalentAmount(rentalSubtotal, subtotal)) {
+    return null;
+  }
+  const publicRequestNumber = rental.publicRequestNumber;
+  if (typeof publicRequestNumber !== 'string' || !/^HV-REQ-[0-9]{6,12}$/.test(publicRequestNumber)) return null;
+  const equipment = await getDoc(env, 'equipment', String(rental.equipmentId));
+  const customerName = String(invoice.buyerName || '').trim();
+  const providerName = String(invoice.sellerName || '').trim();
+  if (!customerName || !providerName || invoice.currency !== 'SAR') return null;
+  return {
+    invoiceNumber,
+    requestNumber: publicRequestNumber,
+    issueDate: String(invoice.createdAt || invoice.paidAt || ''),
+    paymentStatus: String(payment.state),
+    paymentProvider: typeof payment.provider === 'string' ? payment.provider : undefined,
+    paymentReference: typeof payment.providerReference === 'string' ? payment.providerReference : undefined,
+    customer: { uid: String(rental.customerUid), name: customerName },
+    provider: { uid: String(rental.providerUid), name: providerName },
+    equipmentName: String(equipment?.titleEn || equipment?.titleAr || ''),
+    rentalStart: typeof rental.startDate === 'string' ? rental.startDate : undefined,
+    rentalEnd: typeof rental.endDate === 'string' ? rental.endDate : undefined,
+    subtotal,
+    platformFee: Number.isFinite(Number(invoice.platformFee)) ? Number(invoice.platformFee) : undefined,
+    vatAmount: Number.isFinite(Number(invoice.vatAmount)) ? Number(invoice.vatAmount) : undefined,
+    total,
+    currency: 'SAR',
+  };
+}
+
+async function selfServiceInvoicePdf(req: Request, env: Env, u: User, invoiceId: string) {
+  let authorizedParticipants: { customerUid: string; providerUid: string } | undefined;
+  const service = createInvoicePdfService({
+    authorizeInvoice: async (actor, requestedInvoiceId) => {
+      const source = await trustedInvoiceSource(env, requestedInvoiceId);
+      // This route is intentionally participant-only. Admin PDF authorization
+      // belongs to the separate finance-scoped admin route.
+      if (!source || (actor.uid !== source.customer.uid && actor.uid !== source.provider.uid)) {
+        throw new Error('Invoice not found');
+      }
+      authorizedParticipants = { customerUid: source.customer.uid, providerUid: source.provider.uid };
+    },
+    readInvoice: async invoice => {
+      const source = await trustedInvoiceSource(env, invoice);
+      // Fence the second read against a concurrent relationship mutation. The
+      // PDF service intentionally authorizes before reading the printable data.
+      if (!source || !authorizedParticipants ||
+          source.customer.uid !== authorizedParticipants.customerUid ||
+          source.provider.uid !== authorizedParticipants.providerUid) return null;
+      return source;
+    },
+    readBusinessSettings: async (): Promise<InvoiceBusinessSettings | null> => {
+      const settings = await getDoc(env, 'heavyarConfig', 'main');
+      if (!settings) return null;
+      return {
+        legalNameArabic: typeof settings.legalBusinessNameAr === 'string' ? settings.legalBusinessNameAr : undefined,
+        legalNameEnglish: typeof settings.legalBusinessNameEn === 'string' ? settings.legalBusinessNameEn : undefined,
+        commercialRegistrationNumber: typeof settings.commercialRegistrationNumber === 'string' ? settings.commercialRegistrationNumber : undefined,
+        vatRegistrationNumber: typeof settings.vatRegistrationNumber === 'string' ? settings.vatRegistrationNumber : undefined,
+        supportEmail: typeof settings.supportEmail === 'string' ? settings.supportEmail : undefined,
+        supportPhone: typeof settings.supportPhone === 'string' ? settings.supportPhone : undefined,
+        businessAddress: typeof settings.businessAddress === 'string' ? settings.businessAddress : undefined,
+      };
+    },
+  });
+  try {
+    const result = await service.downloadInvoice({ actor: { uid: u.uid }, invoiceId });
+    return new Response(result.body as unknown as BodyInit, {
+      status: result.status,
+      headers: {
+        'Content-Type': result.contentType,
+        'Content-Disposition': `attachment; filename="${result.filename}"`,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+        ...cors(env, req.headers.get('Origin')),
+      },
+    });
+  } catch {
+    // Do not let an arbitrary invoice ID disclose whether another account has
+    // an invoice or whether its linked payment records are complete.
+    return out(env, req, { success: false, error: 'Invoice not found' }, 404);
+  }
 }
 async function settlePaid(env: Env, requestId: string, raw: { data: any; updateTime?: string }, quote: PaymentQuote, d: { id: string; amount: number; currency: string }, source: 'create' | 'verify' | 'webhook', quoteExists: boolean) {
   const r = raw.data;
@@ -1227,9 +1345,70 @@ async function registerProfile(req: Request, env: Env, u: User) {
   return out(env, req, { success: true, uid: u.uid });
 }
 const firestoreValue = (v: any): any => v === null ? { nullValue: null } : typeof v === 'boolean' ? { booleanValue: v } : typeof v === 'number' ? { doubleValue: v } : typeof v === 'string' ? { stringValue: v } : Array.isArray(v) ? { arrayValue: { values: v.map(firestoreValue) } } : { mapValue: { fields: Object.fromEntries(Object.entries(v || {}).map(([k, x]) => [k, firestoreValue(x)])) } };
+
+function publicIdentifierCounterPath(kind: PublicIdentifierKind) {
+  return `publicIdentifierCounters/${PUBLIC_IDENTIFIER_COUNTER_IDS[kind]}`;
+}
+
+async function transactionDocument(env: Env, path: string, transaction: string) {
+  const raw = await fs(env, `${path}?transaction=${encodeURIComponent(transaction)}`);
+  return raw ? { data: decode(raw), updateTime: raw.updateTime as string | undefined } : null;
+}
+
+/**
+ * Allocates an immutable public number while creating the target document in
+ * the same Firestore transaction. Counter conflicts are retried, so concurrent
+ * requests can leave gaps but never reuse a public identifier.
+ */
+async function createWithPublicIdentifier(
+  env: Env,
+  kind: PublicIdentifierKind,
+  targetPath: string,
+  value: Record<string, unknown>,
+  additionalWrites: any[] = [],
+): Promise<string> {
+  const counterPath = publicIdentifierCounterPath(kind);
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    const counter = transaction
+      ? await transactionDocument(env, counterPath, transaction)
+      : await getRawDoc(env, 'publicIdentifierCounters', PUBLIC_IDENTIFIER_COUNTER_IDS[kind]);
+    const sequence = Math.max(1, Math.floor(Number(counter?.data?.nextSequence || 1)));
+    const identifier = formatPublicIdentifier(kind, sequence);
+    const withIdentifier = { ...value, [PUBLIC_IDENTIFIER_FIELDS[kind]]: identifier };
+    const writes: any[] = [
+      {
+        update: {
+          name: fullName(env, targetPath),
+          fields: Object.fromEntries(Object.entries(withIdentifier).map(([key, item]) => [key, firestoreValue(item)])),
+        },
+        currentDocument: { exists: false },
+      },
+      {
+        update: {
+          name: fullName(env, counterPath),
+          fields: {
+            nextSequence: { integerValue: String(sequence + 1) },
+            updatedAt: { timestampValue: new Date().toISOString() },
+          },
+        },
+        updateMask: { fieldPaths: ['nextSequence', 'updatedAt'] },
+        currentDocument: counter?.updateTime ? { updateTime: counter.updateTime } : { exists: false },
+      },
+      ...additionalWrites,
+    ];
+    try {
+      await commitWrites(env, writes, transaction);
+      return identifier;
+    } catch (error) {
+      if (!transaction || attempt === 7) throw error;
+    }
+  }
+  throw new Error('Public identifier allocation failed');
+}
 async function listingAvailability(req: Request, env: Env, u: User, id: string) {
   const listing = await getDoc(env, 'equipment', id);
-  if (!listing || (listing.isActive !== true && listing.ownerUid !== u.uid)) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  if (!listing || (listing.ownerUid !== u.uid && !isPublicRentableListing(listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
   const rentals = (result || []).map((x: any) => decode(x.document || x)).filter((x: any) => ['pending', 'accepted', 'in_progress', 'completion_requested'].includes(String(x.status)) || x.paymentState === 'paid');
   return out(env, req, { success: true, listingId: id, availability: listing.availability || null, activeRentals: rentals.map((x: any) => ({ from: x.startDate, until: x.endDate, status: x.status })) });
@@ -1253,17 +1432,17 @@ async function listingCreate(req: Request, env: Env, u: User) {
   if (Array.isArray(availability.blocked) && availability.blocked.some((range: any) => !validateDateRange(range).ok)) return out(env, req, { success: false, error: 'Invalid blocked dates' }, 400);
   const id = `eq_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
   const ownerPublic = { uid: u.uid, nameAr: String(profile.nameAr || ''), nameEn: String(profile.nameEn || ''), avatar: String(profile.avatar || '') };
-  const value: any = { ownerUid: u.uid, titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), pricePerDay: dailyPrice, images, availability, ownerPublic, isActive: true, moderationStatus: 'active', createdAt: now, updatedAt: now };
+  const value: any = { ownerUid: u.uid, titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), pricePerDay: dailyPrice, images, availability, ownerPublic, isActive: true, visibility: 'visible', moderationStatus: 'pending_review', createdAt: now, updatedAt: now };
   const writes: any[] = [
-    { update: { name: fullName(env, `equipment/${id}`), fields: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, firestoreValue(item)])) }, currentDocument: { exists: false } },
     { update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:create`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: 'create' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
   ];
-  await commitWrites(env, writes);
-  return out(env, req, { success: true, id, listing: { id, ...value, dailyPrice } }, 201);
+  const publicEquipmentNumber = await createWithPublicIdentifier(env, 'equipment', `equipment/${id}`, value, writes);
+  return out(env, req, { success: true, id, listing: { id, ...value, publicEquipmentNumber, dailyPrice } }, 201);
 }
 async function listingUpdate(req: Request, env: Env, u: User, id: string) {
   const raw = await getRawDoc(env, 'equipment', id);
   if (!raw?.data || raw.data.ownerUid !== u.uid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  if (raw.data.visibility === 'archived') return out(env, req, { success: false, error: 'Listing is archived' }, 409);
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing update' }, 400);
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
@@ -1284,6 +1463,13 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
     const overlaps = rentals.some((r: any) => r.startDate && availabilityAllows(a, { from: String(r.startDate), until: r.endDate }).ok === false);
     if (overlaps) return out(env, req, { success: false, error: 'AVAILABILITY_CONFLICT' }, 409);
   }
+  if (patch.isActive !== undefined) patch.visibility = listingVisibilityForOwnerActive(patch.isActive === true);
+  if (requiresListingRereview(raw.data, patch)) {
+    patch.moderationStatus = 'pending_review';
+    patch.moderationReason = '';
+    patch.reviewedBy = '';
+    patch.reviewedAt = null;
+  }
   const fields = Object.fromEntries(Object.entries({ ...patch, updatedAt: new Date().toISOString() }).map(([k, v]) => [k, firestoreValue(v)]));
   try { await compareAndSwap(env, `equipment/${encodeURIComponent(id)}`, raw.updateTime!, fields); } catch { return out(env, req, { success: false, error: 'LISTING_UPDATE_CONFLICT' }, 409); }
   return out(env, req, { success: true, listingId: id, listing: { ...raw.data, ...patch } });
@@ -1296,7 +1482,7 @@ async function listingLifecycle(req: Request, env: Env, u: User, id: string, arc
   if (hasActiveRental(rentals)) return out(env, req, { success: false, error: 'LISTING_LIFECYCLE_LOCKED' }, 409);
   const now = new Date().toISOString(), history = rentals.length > 0;
   const writes: any[] = archive || history
-    ? [{ update: { name: fullName(env, `equipment/${encodeURIComponent(id)}`), fields: { isActive: { booleanValue: false }, moderationStatus: { stringValue: 'archived' }, archivedAt: { timestampValue: now }, archivedBy: { stringValue: u.uid }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['isActive', 'moderationStatus', 'archivedAt', 'archivedBy', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } }]
+    ? [{ update: { name: fullName(env, `equipment/${encodeURIComponent(id)}`), fields: { isActive: { booleanValue: false }, visibility: { stringValue: 'archived' }, archivedAt: { timestampValue: now }, archivedBy: { stringValue: u.uid }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['isActive', 'visibility', 'archivedAt', 'archivedBy', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } }]
     : [{ delete: fullName(env, `equipment/${encodeURIComponent(id)}`), currentDocument: { updateTime: raw.updateTime } }];
   writes.push({ update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:${Date.now()}`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: archive || history ? 'archive' : 'delete' }, reason: { stringValue: archive ? 'owner_archive' : 'owner_delete' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } });
   try { await commitWrites(env, writes); } catch { return out(env, req, { success: false, error: 'LISTING_LIFECYCLE_CONFLICT' }, 409); }
@@ -1304,7 +1490,7 @@ async function listingLifecycle(req: Request, env: Env, u: User, id: string, arc
 }
 async function availabilityCheck(req: Request, env: Env, u: User, id: string) {
   const listing = await getDoc(env, 'equipment', id);
-  if (!listing || (listing.isActive !== true && listing.ownerUid !== u.uid)) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  if (!listing || (listing.ownerUid !== u.uid && !isPublicRentableListing(listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
   const body: any = await req.json().catch(() => null), requested = { from: String(body?.from || ''), until: body?.until === undefined ? undefined : String(body.until) };
   const valid = validateDateRange(requested);
   if (!valid.ok) return out(env, req, { success: false, error: valid.error }, 400);
@@ -1331,13 +1517,33 @@ async function driverProfile(req: Request, env: Env, u: User) {
   if (req.method === 'GET') return out(env, req, { success: true, profile: raw ? publicDriverProfile({ id, ...raw.data }) : null });
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid driver profile' }, 400);
-  if (raw && ['suspended', 'rejected', 'under_review'].includes(String(raw.data.moderationStatus)) && !u.admin) return out(env, req, { success: false, error: 'DRIVER_MODERATION_LOCKED' }, 403);
+  if (raw && ['suspended', 'rejected'].includes(String(raw.data.moderationStatus)) && !u.admin) return out(env, req, { success: false, error: 'DRIVER_MODERATION_LOCKED' }, 403);
   const allowed = ['displayName', 'photoUrl', 'region', 'city', 'equipmentTypes', 'yearsExperience', 'description', 'availabilityStatus', 'availableFrom', 'availableUntil'];
+  if (Object.keys(body).some((key) => !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported driver profile field' }, 400);
+  const account = await getDoc(env, 'users', id);
+  const fallbackName = String(account?.nameEn || account?.nameAr || '');
+  const displayName = String(body.displayName || raw?.data?.displayName || fallbackName).trim();
   const patch = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k)));
-  if (typeof patch.displayName !== 'string' || patch.displayName.trim().length < 2 || patch.displayName.length > 120) return out(env, req, { success: false, error: 'Invalid driver profile' }, 400);
-  const fields = Object.fromEntries(Object.entries({ uid: id, active: raw?.data?.moderationStatus === 'approved', moderationStatus: raw?.data?.moderationStatus || 'under_review', ...patch, updatedAt: new Date().toISOString() }).map(([k, v]) => [k, firestoreValue(v)]));
+  patch.displayName = displayName;
+  if (displayName.length < 2 || displayName.length > 120 ||
+      (patch.equipmentTypes !== undefined && (!Array.isArray(patch.equipmentTypes) || patch.equipmentTypes.length > 30 || patch.equipmentTypes.some((type: unknown) => typeof type !== 'string' || !type.trim() || type.length > 100))) ||
+      (patch.yearsExperience !== undefined && (!Number.isInteger(patch.yearsExperience) || Number(patch.yearsExperience) < 0 || Number(patch.yearsExperience) > 80))) {
+    return out(env, req, { success: false, error: 'Invalid driver profile' }, 400);
+  }
+  const fields = Object.fromEntries(Object.entries({
+    uid: id,
+    active: raw?.data?.moderationStatus === 'approved',
+    moderationStatus: raw?.data?.moderationStatus || 'pending_review',
+    nameAr: String(account?.nameAr || raw?.data?.nameAr || ''),
+    nameEn: String(account?.nameEn || raw?.data?.nameEn || ''),
+    email: String(account?.email || raw?.data?.email || u.email || ''),
+    phone: String(account?.phone || raw?.data?.phone || ''),
+    createdAt: raw?.data?.createdAt || new Date().toISOString(),
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  }).map(([k, v]) => [k, firestoreValue(v)]));
   if (raw) await patchDoc(env, `driverProfiles/${encodeURIComponent(id)}`, fields); else await createDoc(env, `driverProfiles/${encodeURIComponent(id)}`, fields);
-  return out(env, req, { success: true, profile: publicDriverProfile({ id, ...raw?.data, ...patch }) });
+  return out(env, req, { success: true, profile: publicDriverProfile({ id, ...raw?.data, ...patch, active: raw?.data?.moderationStatus === 'approved' }) });
 }
 async function driverSearch(req: Request, env: Env, u: User) {
   const url = new URL(req.url), region = url.searchParams.get('region'), city = url.searchParams.get('city'), equipmentType = url.searchParams.get('equipment'), requestedFrom = url.searchParams.get('availableFrom'), requestedUntil = url.searchParams.get('availableUntil'), trustStatus = url.searchParams.get('trustStatus'), cursor = url.searchParams.get('cursor');
@@ -1390,23 +1596,6 @@ async function driverRequest(req: Request, env: Env, u: User, id?: string) {
   await createDoc(env, `driverRequests/${requestId}`, { requesterUid: { stringValue: u.uid }, driverUid: { stringValue: driverUid }, status: { stringValue: 'open' }, notes: firestoreValue(String(body?.notes || '').slice(0, 1000)), createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } });
   return out(env, req, { success: true, requestId, status: 'open' }, 201);
 }
-async function acceptStaffInvitation(req: Request, env: Env, u: User) {
-  const body: any = await req.json().catch(() => null), token = String(body?.token || '');
-  if (!token || token.length > 200 || !u.email) return out(env, req, { success: false, error: 'Invalid invitation' }, 400);
-  const hash = b64u(await crypto.subtle.digest('SHA-256', enc.encode(token))), raw = await getRawDoc(env, 'staffInvitations', `invite:${hash}`);
-  if (!raw?.data || raw.data.status !== 'pending' || String(raw.data.email).toLowerCase() !== u.email.toLowerCase() || Date.parse(String(raw.data.expiresAt)) <= Date.now()) return out(env, req, { success: false, error: 'Invitation expired' }, 403);
-  const now = new Date().toISOString();
-    const currentStaff = await getRawDoc(env, 'staffMembers', u.uid), roleVersion = Number(currentStaff?.data?.roleVersion || 0) + 1;
-  try {
-    await commitWrites(env, [
-      { update: { name: fullName(env, `staffMembers/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, email: { stringValue: u.email }, role: { stringValue: String(raw.data.role) }, active: { booleanValue: true }, roleVersion: { integerValue: String(roleVersion) }, joinedAt: { timestampValue: now } } }, currentDocument: currentStaff?.updateTime ? { updateTime: currentStaff.updateTime } : { exists: false } },
-      claimSyncWrite(env, u.uid, String(raw.data.role) as any, true, roleVersion),
-      { update: { name: fullName(env, `staffInvitations/invite:${hash}`), fields: { status: { stringValue: 'accepted' }, acceptedBy: { stringValue: u.uid }, acceptedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['status', 'acceptedBy', 'acceptedAt'] }, currentDocument: { updateTime: raw.updateTime } },
-    ]);
-  } catch { return out(env, req, { success: false, error: 'Invitation already accepted' }, 409); }
-  env.__executionCtx?.waitUntil(processStaffClaimSync(env));
-  return out(env, req, { success: true, role: raw.data.role });
-}
 export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
   env = { ...env, __executionCtx: executionCtx };
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(env, req.headers.get('Origin')) });
@@ -1439,7 +1628,14 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       if (path === '/api/drivers/requests' && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env));
       const driverRequestMatch = path.match(/^\/api\/drivers\/requests\/([^/]+)$/);
       if (driverRequestMatch && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env), decodeURIComponent(driverRequestMatch[1]));
-      if (path === '/api/staff/invitations/accept' && req.method === 'POST') return await acceptStaffInvitation(req, env, await authenticatedUser(req, env));
+       if (path === '/api/staff/invitations/accept' && req.method === 'POST') {
+         const result = await acceptStaffInvitation(req, env, await authenticatedUser(req, env));
+         const status = typeof result === 'object' && result && typeof (result as any).status === 'number' ? Number((result as any).status) : 200;
+         if (status !== 200) { const { status: _status, ...body } = result as any; return out(env, req, body, status); }
+         return out(env, req, result);
+       }
+       const selfServiceInvoiceMatch = path.match(/^\/api\/invoices\/([A-Za-z0-9:_-]{3,200})\.pdf$/);
+       if (selfServiceInvoiceMatch && req.method === 'GET') return await selfServiceInvoicePdf(req, env, await authenticatedUser(req, env), selfServiceInvoiceMatch[1]);
     const requestTransitionMatch = path.match(/^\/api\/requests\/([^/]+)\/transition$/);
      if (requestTransitionMatch && req.method === 'POST') return await transitionRequest(req, env, await authenticatedUser(req, env), requestTransitionMatch[1]);
     const verificationAttemptMatch = path.match(/^\/api\/verification\/attempts\/([^/]+)$/);
@@ -1457,7 +1653,23 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (path === '/api/create-payment' && req.method === 'POST') return await create(req, env, await authenticatedUser(req, env));
      if (path === '/api/verify-payment' && req.method === 'POST') return await verify(req, env, await authenticatedUser(req, env));
     if (path.startsWith('/api/admin/')) {
-      const result = await handleAdmin(req, env, await auth(req, env));
+       const user = await auth(req, env);
+       const document = await handleAdminDocument(req, env, user);
+       if (document) {
+         const body = new Uint8Array(document.body.length);
+         body.set(document.body);
+         return new Response(body.buffer, {
+           status: document.status,
+           headers: {
+             'Content-Type': document.contentType,
+             'Content-Disposition': `attachment; filename="${document.filename}"`,
+             'Cache-Control': 'private, no-store',
+             'X-Content-Type-Options': 'nosniff',
+             ...cors(env, req.headers.get('Origin')),
+           },
+         });
+       }
+       const result = await handleAdmin(req, env, user);
       const status = typeof result === 'object' && result && 'status' in result && typeof (result as any).status === 'number' ? Number((result as any).status) : 200;
       if (status !== 200) { const { status: _status, ...body } = result as any; return out(env, req, body, status); }
       return out(env, req, result);
@@ -1467,6 +1679,9 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (path === '/cloudinary/upload' && req.method === 'POST') return await cloudinaryUpload(req, env, await authenticatedUser(req, env));
     return out(env, req, { success: false, error: 'Not found' }, 404);
   } catch (e) {
+    if (e instanceof AdminDocumentUnavailableError) {
+      return out(env, req, { success: false, error: e.message, code: e.code }, e.status);
+    }
     const message = e instanceof Error ? e.message : '';
      const forbidden = message === 'ADMIN_REQUIRED' || message === 'ACCOUNT_SUSPENDED' || message === 'ACCOUNT_DELETION_REQUESTED' || message === 'LISTING_UNAVAILABLE' || message.startsWith('TRUST_');
      return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : message === 'ADMIN_REQUIRED' ? 'Admin authorization required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : message === 'ACCOUNT_DELETION_REQUESTED' ? 'Account deletion requested' : message === 'LISTING_UNAVAILABLE' ? 'Listing unavailable' : message.startsWith('TRUST_') ? 'Identity verification required' : 'Internal service error' }, message === 'AUTH_REQUIRED' ? 401 : forbidden ? 403 : 500);

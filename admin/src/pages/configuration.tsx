@@ -1,14 +1,16 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAppState } from '@/lib/app-state';
-import { useConfig, useActionMutation, useAdminSession } from '@/lib/api';
+import { ApiError, useConfig, useActionMutation, useAdminSession } from '@/lib/api';
+import { useBusinessConfig, useUpdateBusinessConfig } from '@/lib/operations';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ShieldCheck, History, Edit, Save, Plus, X } from 'lucide-react';
+import { ShieldCheck, History, Edit, Save, Plus, X, Building2, Receipt } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/hooks/use-toast';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 
 export default function Configuration() {
   const { language } = useAppState();
@@ -22,8 +24,16 @@ export default function Configuration() {
   const [editing, setEditing] = useState(false);
   const [draftConfig, setDraftConfig] = useState<any>({});
 
+  const { data: businessData, isLoading: businessLoading, error: businessError } = useBusinessConfig();
+  const updateBusiness = useUpdateBusinessConfig();
+  const [editingBusiness, setEditingBusiness] = useState(false);
+  const [draftBusiness, setDraftBusiness] = useState<any>({});
+
   const activeConfig = data?.items?.[0] || null;
-  const isSuperAdmin = session?.role === 'super_admin';
+  const isSuperAdmin = session?.role === 'super_admin' || session?.role === 'owner';
+
+  const businessConfig = businessData?.item || {};
+  const businessConfigMissing = businessError instanceof ApiError && businessError.status === 404;
 
   const handleEdit = () => {
     setDraftConfig({
@@ -61,6 +71,32 @@ export default function Configuration() {
     }
   };
 
+  const handleEditBusiness = () => {
+    setDraftBusiness({
+      legalBusinessNameAr: businessConfig.legalBusinessNameAr || '',
+      legalBusinessNameEn: businessConfig.legalBusinessNameEn || '',
+      commercialRegistrationNumber: businessConfig.commercialRegistrationNumber || '',
+      vatRegistrationNumber: businessConfig.vatRegistrationNumber || '',
+      supportEmail: businessConfig.supportEmail || '',
+      supportPhone: businessConfig.supportPhone || '',
+      businessAddress: businessConfig.businessAddress || '',
+      invoiceLogoAssetRef: businessConfig.invoiceLogoAssetRef || '',
+    });
+    setEditingBusiness(true);
+  };
+
+  const handleSaveBusiness = () => {
+     updateBusiness.mutate(draftBusiness, {
+      onSuccess: () => {
+        toast({ title: t('تم حفظ إعدادات الأعمال', 'Business configuration saved') });
+        setEditingBusiness(false);
+      },
+      onError: (err: any) => {
+        toast({ title: t('فشل الحفظ', 'Failed to save'), description: err.message, variant: 'destructive' });
+      }
+    });
+  };
+
   const ConfigRow = ({ label, description, checked, onChange, disabled = false }: any) => (
     <div className="flex items-center justify-between p-4 rounded-md border border-border/50 bg-card/50">
       <div className="space-y-0.5">
@@ -77,23 +113,23 @@ export default function Configuration() {
   );
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
+    <div className="space-y-6 max-w-4xl mx-auto pb-12">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">{t('تكوين النظام', 'Configuration')}</h1>
-          <p className="text-muted-foreground mt-1">{t('إدارة سياسات النظام العامة', 'Manage general system policies')}</p>
+          <p className="text-muted-foreground mt-1">{t('إدارة سياسات النظام العامة ومعلومات الأعمال', 'Manage general system policies and business information')}</p>
         </div>
       </div>
 
       <Card className="border-border">
         <CardHeader className="flex flex-row items-center justify-between">
           <div>
-            <CardTitle>{t('الإعدادات النشطة', 'Active Configuration')}</CardTitle>
+            <CardTitle>{t('الإعدادات التشغيلية', 'Operational Configuration')}</CardTitle>
             <CardDescription>
               {t('الإعدادات التشغيلية الحالية للمنصة. التعديل متاح للمدير العام فقط.', 'Current operational settings for the platform. Editing is restricted to super admins.')}
             </CardDescription>
           </div>
-          {activeConfig && !editing && isSuperAdmin && (
+          {activeConfig && !editing && false && isSuperAdmin && (
             <Button variant="outline" size="sm" onClick={handleEdit}>
               <Edit className="h-4 w-4 me-2" />
               {t('تعديل', 'Edit')}
@@ -106,7 +142,6 @@ export default function Configuration() {
             <div className="space-y-4">
               <Skeleton className="h-20 w-full" />
               <Skeleton className="h-20 w-full" />
-              <Skeleton className="h-20 w-full" />
             </div>
           ) : !activeConfig && !editing ? (
             <div className="py-12 flex flex-col items-center justify-center text-center">
@@ -117,7 +152,7 @@ export default function Configuration() {
               <p className="text-sm text-muted-foreground max-w-md mx-auto mb-6">
                 {t('يمكن تهيئة النظام بالإعدادات الافتراضية الآمنة لضمان استقرار العمليات.', 'The system can be initialized with safe default settings to ensure operational stability.')}
               </p>
-              {isSuperAdmin && (
+               {false && isSuperAdmin && (
                 <Button onClick={handleEdit}>
                   <Plus className="h-4 w-4 me-2" />
                   {t('تهيئة الإعدادات الافتراضية', 'Initialize Defaults')}
@@ -147,13 +182,6 @@ export default function Configuration() {
                 onChange={(v: boolean) => setDraftConfig({ ...draftConfig, requireEmailVerification: v })}
                 disabled={!editing}
               />
-              <ConfigRow
-                label={t('الموافقة التلقائية للمزودين', 'Auto-approve Providers')}
-                description={t('قبول المزودين الجدد تلقائياً بدون مراجعة يدوية (غير منصوح به)', 'Automatically accept new providers without manual review (not recommended)')}
-                checked={editing ? draftConfig.autoApproveProviders : activeConfig?.autoApproveProviders}
-                onChange={(v: boolean) => setDraftConfig({ ...draftConfig, autoApproveProviders: v })}
-                disabled={!editing}
-              />
             </div>
           )}
         </CardContent>
@@ -171,32 +199,116 @@ export default function Configuration() {
         )}
       </Card>
 
-      {activeConfig && (
-        <Card className="border-border bg-muted/10">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <History className="h-4 w-4" />
-              {t('معلومات الإصدار', 'Version Information')}
+      <Card className="border-border">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Building2 className="h-5 w-5 text-primary" />
+              {t('بيانات الفواتير والأعمال', 'Business & Invoice Settings')}
             </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <p className="text-muted-foreground">{t('رقم الإصدار', 'Version ID')}</p>
-                <p className="font-mono mt-1">{activeConfig.id || activeConfig.version || '—'}</p>
+            <CardDescription>
+              {t('المعلومات القانونية المستخدمة في الفواتير والتواصل الرسمي. (غير سرية)', 'Legal information used in invoices and official communication. (Non-secret)')}
+            </CardDescription>
+          </div>
+          {!editingBusiness && isSuperAdmin && (
+            <Button variant="outline" size="sm" onClick={handleEditBusiness}>
+              <Edit className="h-4 w-4 me-2" />
+              {t('تعديل', 'Edit')}
+            </Button>
+          )}
+        </CardHeader>
+        <CardContent>
+          {businessLoading ? (
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ) : editingBusiness ? (
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>{t('الاسم القانوني (عربي)', 'Legal Name (Arabic)')}</Label>
+                <Input value={draftBusiness.legalBusinessNameAr} onChange={e => setDraftBusiness({...draftBusiness, legalBusinessNameAr: e.target.value})} />
               </div>
-              <div>
-                <p className="text-muted-foreground">{t('تاريخ التحديث', 'Last Updated')}</p>
-                <p className="mt-1">
-                  {activeConfig.updatedAt
-                    ? new Date(activeConfig.updatedAt).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-US')
-                    : '—'}
-                </p>
+              <div className="space-y-2">
+                <Label>{t('الاسم القانوني (إنجليزي)', 'Legal Name (English)')}</Label>
+                <Input value={draftBusiness.legalBusinessNameEn} onChange={e => setDraftBusiness({...draftBusiness, legalBusinessNameEn: e.target.value})} dir="ltr" />
+              </div>
+              <div className="space-y-2">
+                <Label>{t('رقم السجل التجاري', 'CR Number')}</Label>
+                <Input value={draftBusiness.commercialRegistrationNumber} onChange={e => setDraftBusiness({...draftBusiness, commercialRegistrationNumber: e.target.value})} dir="ltr" />
+              </div>
+              <div className="space-y-2">
+                <Label>{t('الرقم الضريبي', 'VAT Number')}</Label>
+                <Input value={draftBusiness.vatRegistrationNumber} onChange={e => setDraftBusiness({...draftBusiness, vatRegistrationNumber: e.target.value})} dir="ltr" />
+              </div>
+              <div className="space-y-2">
+                <Label>{t('البريد الإلكتروني للدعم', 'Support Email')}</Label>
+                <Input value={draftBusiness.supportEmail} onChange={e => setDraftBusiness({...draftBusiness, supportEmail: e.target.value})} dir="ltr" />
+              </div>
+              <div className="space-y-2">
+                <Label>{t('رقم الهاتف للدعم', 'Support Phone')}</Label>
+                <Input value={draftBusiness.supportPhone} onChange={e => setDraftBusiness({...draftBusiness, supportPhone: e.target.value})} dir="ltr" />
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <Label>{t('عنوان المقر', 'Business Address')}</Label>
+                <Input value={draftBusiness.businessAddress} onChange={e => setDraftBusiness({...draftBusiness, businessAddress: e.target.value})} />
               </div>
             </div>
-          </CardContent>
-        </Card>
-      )}
+          ) : (
+            <div className="space-y-5">
+              {businessConfigMissing && (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300">
+                  <p className="font-medium">{t('لم يتم تكوين بيانات الأعمال بعد', 'Business configuration is not set up yet')}</p>
+                  <p className="mt-1">{t('اختر تعديل لإدخال البيانات وحفظها لأول مرة.', 'Choose Edit to enter and save the business details for the first time.')}</p>
+                </div>
+              )}
+              {businessError && !businessConfigMissing && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+                  {t('تعذر تحميل بيانات الأعمال:', 'Could not load business configuration:')} {businessError.message}
+                </div>
+              )}
+              <div className="grid sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
+              <div>
+                <span className="text-muted-foreground">{t('الاسم القانوني', 'Legal Name')}:</span>
+                <p className="font-medium mt-1">{businessConfig.legalBusinessNameAr || businessConfig.legalBusinessNameEn || '—'}</p>
+              </div>
+              <div>
+                <span className="text-muted-foreground">{t('رقم السجل التجاري', 'CR Number')}:</span>
+                <p className="font-medium mt-1">{businessConfig.commercialRegistrationNumber || '—'}</p>
+              </div>
+              <div>
+                <span className="text-muted-foreground">{t('الرقم الضريبي', 'VAT Number')}:</span>
+                <p className="font-medium mt-1">{businessConfig.vatRegistrationNumber || '—'}</p>
+              </div>
+              <div>
+                <span className="text-muted-foreground">{t('عنوان المقر', 'Business Address')}:</span>
+                <p className="font-medium mt-1">{businessConfig.businessAddress || '—'}</p>
+              </div>
+              <div>
+                <span className="text-muted-foreground">{t('البريد الإلكتروني للدعم', 'Support Email')}:</span>
+                <p className="font-medium mt-1" dir="ltr">{businessConfig.supportEmail || '—'}</p>
+              </div>
+              <div>
+                <span className="text-muted-foreground">{t('هاتف الدعم', 'Support Phone')}:</span>
+                <p className="font-medium mt-1" dir="ltr">{businessConfig.supportPhone || '—'}</p>
+              </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+        {editingBusiness && isSuperAdmin && (
+          <CardFooter className="flex justify-end gap-2 border-t border-border/50 pt-4">
+            <Button variant="outline" onClick={() => setEditingBusiness(false)} disabled={updateBusiness.isPending}>
+              <X className="h-4 w-4 me-2" />
+              {t('إلغاء', 'Cancel')}
+            </Button>
+            <Button onClick={handleSaveBusiness} disabled={updateBusiness.isPending}>
+              <Save className="h-4 w-4 me-2" />
+              {updateBusiness.isPending ? t('جاري الحفظ...', 'Saving...') : t('حفظ الإعدادات', 'Save Business Settings')}
+            </Button>
+          </CardFooter>
+        )}
+      </Card>
     </div>
   );
 }

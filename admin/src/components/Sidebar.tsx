@@ -25,28 +25,58 @@ export function Sidebar() {
 
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
 
-  const links = [
-    { href: '/', icon: LayoutDashboard, label: t('لوحة القيادة', 'Dashboard') },
-    { href: '/users', icon: Users, label: t('المستخدمين', 'Users') },
-    { href: '/providers', icon: Truck, label: t('المزودين', 'Providers') },
-    { href: '/drivers', icon: Car, label: t('السائقين', 'Drivers') },
-    { href: '/equipment', icon: Wrench, label: t('المعدات', 'Equipment') },
-    { href: '/requests', icon: FileText, label: t('الطلبات', 'Requests') },
-    { href: '/payments', icon: CreditCard, label: t('المدفوعات', 'Payments') },
-    { href: '/invoices', icon: FileBox, label: t('الفواتير', 'Invoices') },
-    { href: '/refunds', icon: Undo2, label: t('المستردات', 'Refunds') },
-    { href: '/complaints', icon: AlertOctagon, label: t('الشكاوى', 'Complaints') },
-    { href: '/verification', icon: ShieldCheck, label: t('التحقق', 'Verification') },
-    { href: '/notifications', icon: Bell, label: t('الإشعارات', 'Notifications') },
-  ];
-
-  const adminLinks = [
-    { href: '/campaigns', icon: Megaphone, label: t('الحملات الترويجية', 'Campaigns') },
-    { href: '/staff', icon: UserCog, label: t('فريق العمل', 'Staff') },
-    { href: '/gateways', icon: Wallet, label: t('بوابات الدفع', 'Payment Gateways') },
-    { href: '/providers-config', icon: Settings, label: t('إعدادات المزودين', 'Provider Configs') },
-    { href: '/configuration', icon: Database, label: t('تكوين النظام', 'Configuration') },
-    { href: '/audit', icon: History, label: t('سجل التدقيق', 'Audit Log') },
+  const groups = [
+    {
+      title: t('الرئيسية', 'Main'),
+      links: [
+        { href: '/', icon: LayoutDashboard, label: t('لوحة القيادة', 'Dashboard') },
+      ]
+    },
+    {
+      title: t('السوق', 'Marketplace'),
+      links: [
+        { href: '/users', icon: Users, label: t('المستخدمين', 'Users') },
+        { href: '/providers', icon: Truck, label: t('المزودين', 'Providers') },
+        { href: '/drivers', icon: Car, label: t('السائقين', 'Drivers') },
+        { href: '/equipment', icon: Wrench, label: t('المعدات', 'Equipment') },
+        { href: '/requests', icon: FileText, label: t('الطلبات', 'Requests') },
+      ]
+    },
+    {
+      title: t('المالية', 'Finance'),
+      links: [
+        { href: '/payments', icon: CreditCard, label: t('المدفوعات', 'Payments') },
+        { href: '/invoices', icon: FileBox, label: t('الفواتير', 'Invoices') },
+        { href: '/refunds', icon: Undo2, label: t('المستردات', 'Refunds') },
+        { href: '/gateways', icon: Wallet, label: t('بوابات الدفع', 'Payment Gateways') },
+      ]
+    },
+    {
+      title: t('الثقة والدعم', 'Trust & Support'),
+      links: [
+        { href: '/complaints', icon: AlertOctagon, label: t('الشكاوى', 'Complaints') },
+        { href: '/verification', icon: ShieldCheck, label: t('التحقق', 'Verification') },
+        { href: '/identity-integrations', icon: Shield, label: t('تكامل الهوية', 'Identity Integrations') },
+        { href: '/notifications', icon: Bell, label: t('الإشعارات', 'Notifications') },
+      ]
+    },
+    {
+      title: t('التسويق', 'Marketing'),
+      links: [
+        { href: '/campaigns', icon: Megaphone, label: t('الحملات الترويجية', 'Marketing Campaigns') },
+      ]
+    },
+    {
+      title: t('الإدارة', 'Administration'),
+      adminOnly: true,
+      links: [
+        { href: '/staff', icon: UserCog, label: t('فريق العمل', 'Staff & Permissions') },
+        { href: '/configuration', icon: Database, label: t('تكوين النظام', 'System Configuration') },
+        { href: '/providers-config', icon: Settings, label: t('إعدادات المزودين', 'Provider Configs') },
+        { href: '/audit', icon: History, label: t('سجل التدقيق', 'Audit Log') },
+        { href: '/security', icon: Shield, label: t('الأمان', 'Security') },
+      ]
+    }
   ];
 
   const NavLink = ({ href, icon: Icon, label }: any) => {
@@ -81,26 +111,23 @@ export function Sidebar() {
         )}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto py-6 px-4 space-y-1">
-        {links.map(link => <NavLink key={link.href} {...link} />)}
-
-        {(session?.role === 'super_admin' || session?.role === 'admin') && (
-          <>
-            <div className="pt-6 pb-2 px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              {t('الإدارة', 'Administration')}
+      <div className="flex-1 min-h-0 overflow-y-auto py-4 px-4 space-y-6">
+        {groups.map((group, i) => {
+          if (group.adminOnly && !(session?.role === 'owner' || session?.role === 'super_admin' || session?.role === 'admin')) {
+            return null;
+          }
+          return (
+            <div key={i} className="space-y-1">
+              <div className="px-4 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                {group.title}
+              </div>
+              {group.links.map(link => <NavLink key={link.href} {...link} />)}
             </div>
-            {adminLinks.map(link => <NavLink key={link.href} {...link} />)}
-          </>
-        )}
+          );
+        })}
       </div>
 
       <div className="p-4 border-t border-sidebar-border/50 space-y-2 shrink-0">
-        <Link href="/security" onClick={() => setIsOpen(false)}>
-          <Button variant="outline" className="w-full justify-start gap-3 bg-transparent border-white/10 hover:bg-white/5 cursor-pointer">
-            <Shield className="w-4 h-4" />
-            {t('الأمان', 'Security')}
-          </Button>
-        </Link>
         <Button variant="outline" className="w-full justify-start gap-3 bg-transparent border-white/10 hover:bg-white/5" onClick={toggleLanguage}>
           <Globe className="w-4 h-4" />
           {t('English', 'عربي')}

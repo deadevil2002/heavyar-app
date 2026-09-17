@@ -91,6 +91,7 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
   const ownerUid = (data.ownerUid as string) || '';
   return {
     id,
+    publicEquipmentNumber: typeof data.publicEquipmentNumber === 'string' ? data.publicEquipmentNumber : undefined,
     ownerUid,
     ownerPublic: parsePublicUserSnapshot(data.ownerPublic, ownerUid),
     titleAr: (data.titleAr as string) || '',
@@ -108,6 +109,13 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
     images: parseImages(data.images),
     availability: (data.availability as boolean) ?? true,
     isActive: (data.isActive as boolean) ?? true,
+    visibility: data.visibility === 'visible' || data.visibility === 'hidden' || data.visibility === 'archived'
+      ? data.visibility
+      : undefined,
+    moderationStatus: data.moderationStatus === 'pending_review' || data.moderationStatus === 'approved'
+      || data.moderationStatus === 'rejected' || data.moderationStatus === 'suspended'
+      ? data.moderationStatus
+      : undefined,
     createdAt: toISOString(data.createdAt),
     updatedAt: toISOString(data.updatedAt),
   };
@@ -139,6 +147,7 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
 
   return {
     id,
+    publicRequestNumber: typeof data.publicRequestNumber === 'string' ? data.publicRequestNumber : undefined,
     equipmentId: (data.equipmentId as string) || '',
     customerUid: (data.customerUid as string) || '',
     customerPublic: parsePublicUserSnapshot(data.customerPublic, (data.customerUid as string) || ''),
@@ -199,6 +208,8 @@ export async function fetchEquipmentList(): Promise<Equipment[]> {
     const q = query(
       collection(db, 'equipment'),
       where('isActive', '==', true),
+      where('visibility', '==', 'visible'),
+      where('moderationStatus', '==', 'approved'),
       orderBy('createdAt', 'desc')
     );
     const snap = await getDocs(q);
@@ -212,7 +223,9 @@ export async function fetchEquipmentList(): Promise<Equipment[]> {
     try {
       const fallbackQ = query(
         collection(db, 'equipment'),
-        where('isActive', '==', true)
+        where('isActive', '==', true),
+        where('visibility', '==', 'visible'),
+        where('moderationStatus', '==', 'approved'),
       );
       const fallbackSnap = await getDocs(fallbackQ);
       const items = fallbackSnap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
@@ -274,20 +287,49 @@ export async function fetchEquipmentByOwner(ownerUid: string): Promise<Equipment
 }
 
 export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
-  const db = getFirebaseDb();
-  const docRef = await addDoc(collection(db, 'equipment'), {
-    ...data,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
+  const response = await workerRequest<{ id?: string }>('/api/listings', {
+    method: 'POST',
+    body: JSON.stringify({
+      titleAr: data.titleAr,
+      titleEn: data.titleEn,
+      descriptionAr: data.descriptionAr,
+      descriptionEn: data.descriptionEn,
+      category: data.category,
+      customCategory: data.customCategory,
+      region: data.region,
+      city: data.city,
+      customCity: data.customCity,
+      district: data.district,
+      location: data.location,
+      pricePerDay: data.pricePerDay,
+      images: data.images,
+      availability: typeof data.availability === 'object' ? data.availability : undefined,
+    }),
   });
-  return docRef.id;
+  if (!response.id) throw new Error('Invalid listing response');
+  return response.id;
 }
 
 export async function updateEquipment(id: string, updates: Partial<Equipment>): Promise<void> {
-  const db = getFirebaseDb();
-  await updateDoc(doc(db, 'equipment', id), {
-    ...updates,
-    updatedAt: serverTimestamp(),
+  await workerRequest(`/api/listings/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      ...(updates.titleAr !== undefined ? { titleAr: updates.titleAr } : {}),
+      ...(updates.titleEn !== undefined ? { titleEn: updates.titleEn } : {}),
+      ...(updates.descriptionAr !== undefined ? { descriptionAr: updates.descriptionAr } : {}),
+      ...(updates.descriptionEn !== undefined ? { descriptionEn: updates.descriptionEn } : {}),
+      ...(updates.category !== undefined ? { category: updates.category } : {}),
+      ...(updates.customCategory !== undefined ? { customCategory: updates.customCategory } : {}),
+      ...(updates.region !== undefined ? { region: updates.region } : {}),
+      ...(updates.city !== undefined ? { city: updates.city } : {}),
+      ...(updates.customCity !== undefined ? { customCity: updates.customCity } : {}),
+      ...(updates.district !== undefined ? { district: updates.district } : {}),
+      ...(updates.location !== undefined ? { location: updates.location } : {}),
+      ...(updates.pricePerDay !== undefined ? { pricePerDay: updates.pricePerDay } : {}),
+      ...(updates.images !== undefined ? { images: updates.images } : {}),
+      ...(typeof updates.availability === 'object' ? { availability: updates.availability } : {}),
+      ...(updates.isActive !== undefined ? { isActive: updates.isActive } : {}),
+    }),
   });
 }
 
@@ -320,41 +362,31 @@ export async function updateEquipmentWithImageCleanup(
   updates: Partial<Equipment>,
   oldImages: EquipmentImage[]
 ): Promise<void> {
-  const db = getFirebaseDb();
-
   if (updates.images) {
     const removedPublicIds = getRemovedImages(oldImages, updates.images);
-    if (removedPublicIds.length > 0) {
-      const result = await deleteMultipleCloudinaryImages(removedPublicIds);
-    }
+    await updateEquipment(id, updates);
+    if (removedPublicIds.length > 0) await deleteMultipleCloudinaryImages(removedPublicIds);
+    return;
   }
-
-  await updateDoc(doc(db, 'equipment', id), {
-    ...updates,
-    updatedAt: serverTimestamp(),
-  });
+  await updateEquipment(id, updates);
 }
 
 export async function deleteEquipmentWithCleanup(id: string): Promise<void> {
   const db = getFirebaseDb();
-
+  let publicIds: string[] = [];
   const snap = await getDoc(doc(db, 'equipment', id));
   if (snap.exists()) {
     const data = snap.data() as Record<string, unknown>;
     const images = parseImages(data.images);
-    const publicIds = extractPublicIds(images);
-
-    if (publicIds.length > 0) {
-      const result = await deleteMultipleCloudinaryImages(publicIds);
-    }
+    publicIds = extractPublicIds(images);
   }
 
-  await deleteDoc(doc(db, 'equipment', id));
+  await workerRequest(`/api/listings/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (publicIds.length > 0) await deleteMultipleCloudinaryImages(publicIds);
 }
 
 export async function deleteEquipment(id: string): Promise<void> {
-  const db = getFirebaseDb();
-  await deleteDoc(doc(db, 'equipment', id));
+  await workerRequest(`/api/listings/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export async function fetchUserRequests(uid: string, role: 'customer' | 'provider'): Promise<EquipmentRequest[]> {
@@ -738,6 +770,27 @@ export async function fetchInvoiceByRequestId(requestId: string): Promise<Invoic
     return parseInvoice(snap.docs[0].id, snap.docs[0].data() as Record<string, unknown>);
   }
   return null;
+}
+
+/**
+ * Retrieves an invoice only through the authenticated Worker route. Callers
+ * receive bytes rather than a bearer-bearing URL, so an invoice ID cannot be
+ * shared to grant another account access.
+ */
+export async function downloadInvoicePdf(invoiceId: string): Promise<{ data: ArrayBuffer; filename: string; contentType: string }> {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(invoiceId)) throw new Error('Invalid invoice');
+  const auth = getFirebaseAuth();
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('AUTH_REQUIRED');
+  const response = await fetch(`${WORKER_BASE_URL}/api/invoices/${encodeURIComponent(invoiceId)}.pdf`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/pdf' },
+  });
+  if (!response.ok || !response.headers.get('Content-Type')?.toLowerCase().includes('application/pdf')) {
+    throw new Error('INVOICE_DOWNLOAD_UNAVAILABLE');
+  }
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const filename = disposition.match(/filename="([^"]+)"/i)?.[1] || `heavyar-invoice-${invoiceId}.pdf`;
+  return { data: await response.arrayBuffer(), filename, contentType: 'application/pdf' };
 }
 
 export async function updateRequestInvoiceId(requestId: string, invoiceId: string): Promise<void> {

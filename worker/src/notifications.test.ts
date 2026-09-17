@@ -45,7 +45,8 @@ describe('trusted notification foundation', () => {
     }) }), env);
     expect(valid.status).toBe(201);
     expect((writes[0] as any)[0].update.fields.ownerUid.stringValue).toBe('provider-1');
-    expect((writes[0] as any)[0].update.fields.moderationStatus.stringValue).toBe('active');
+    expect((writes[0] as any)[0].update.fields.visibility.stringValue).toBe('visible');
+    expect((writes[0] as any)[0].update.fields.moderationStatus.stringValue).toBe('pending_review');
   });
   test('device registration is UID-bound and stores no client-controlled UID', async () => {
     __test.setAuth({ uid: 'u1', admin: false });
@@ -103,7 +104,9 @@ describe('trusted notification foundation', () => {
   });
   test('create request returns canonical DTO and writes an outbox', async () => {
     __test.setAuth({ uid: 'customer', admin: false });
-    __test.setFirestore((collection) => collection === 'equipment' ? { ownerUid: 'provider', isActive: true, pricePerDay: 10 } : null);
+    __test.setFirestore((collection) => collection === 'equipment'
+      ? { ownerUid: 'provider', isActive: true, visibility: 'visible', moderationStatus: 'approved', pricePerDay: 10 }
+      : null);
     const commits: unknown[] = []; __test.captureCommits(commits);
     const response = await worker.fetch(request('/api/requests', { method: 'POST', body: JSON.stringify({ equipmentId: 'eq1', requestMode: 'fixed_days', numberOfDays: 2 }) }), env);
     const body: any = await response.json();

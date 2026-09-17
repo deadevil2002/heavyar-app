@@ -2,13 +2,20 @@ import { describe, expect, test } from 'bun:test';
 import {
   availabilityAllows, campaignRecipients, chunk, enabledConfiguredGateways,
   gatewayRegistry, hasPermission,
+  identityIntegrationMayEnable, identityIntegrationRegistry, normalizeStaffRole,
   ownerTransferAllowed, publicDriverProfile, rangesOverlap, transitionDriverRequest,
 } from './completion';
+import { invitationRole, isFreshReauthentication, pendingAndUnexpired } from './authority';
 
 describe('trusted completion primitives', () => {
   test('staff roles grant only their explicit permissions', () => {
     expect(hasPermission('marketing', 'marketing.campaign')).toBe(true);
     expect(hasPermission('marketing', 'finance.mutate')).toBe(false);
+    expect(hasPermission('payouts', 'payouts.mutate')).toBe(true);
+    expect(hasPermission('payouts', 'finance.read')).toBe(false);
+    expect(hasPermission('moderator', 'moderation.manage')).toBe(true);
+    expect(normalizeStaffRole('owner')).toBe('owner');
+    expect(normalizeStaffRole('unknown')).toBe(null);
   });
 
   test('date overlap and availability checks are inclusive and bounded', () => {
@@ -47,5 +54,22 @@ describe('trusted completion primitives', () => {
     expect(ownerTransferAllowed('owner', 'target', Date.now() - 60_000)).toBe(true);
     expect(ownerTransferAllowed('owner', 'target', Date.now() - 6 * 60_000)).toBe(false);
     expect(ownerTransferAllowed('owner', 'owner', Date.now())).toBe(false);
+  });
+
+  test('owner cannot be granted through a staff invitation and authority expiry is fail-closed', () => {
+    expect(invitationRole('owner')).toBe(null);
+    expect(invitationRole('moderator')).toBe('moderator');
+    expect(pendingAndUnexpired({ status: 'pending', expiresAt: new Date(Date.now() - 1).toISOString() })).toBe(false);
+    expect(isFreshReauthentication(Date.now() - 6 * 60_000)).toBe(false);
+  });
+
+  test('Nafath readiness cannot be enabled by test configuration or a secret alone', () => {
+    const missingAdapter = identityIntegrationRegistry({
+      RABET_NAFATH_CLIENT_ID: 'configured', RABET_NAFATH_CLIENT_SECRET: 'configured',
+      RABET_NAFATH_BASE_URL: 'https://sandbox.invalid', RABET_NAFATH_CALLBACK_URL: 'https://callback.invalid',
+      RABET_NAFATH_JWK_CONFIGURED: 'true',
+    }).nafath_rabet;
+    expect(identityIntegrationMayEnable(missingAdapter)).toBe(false);
+    expect(missingAdapter.status).toBe('waiting_for_activation');
   });
 });

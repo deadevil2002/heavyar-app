@@ -61,10 +61,10 @@ async function seed() {
     await setDoc(doc(db, 'equipment/equipment-1'), {
       ownerUid: 'provider-1', ownerPublic: { uid: 'provider-1', nameAr: 'Provider', nameEn: 'Provider', avatar: '' },
       pricePerDay: 100,
-      isActive: true, createdAt: new Date(), updatedAt: new Date(),
+      isActive: true, visibility: 'visible', moderationStatus: 'approved', createdAt: new Date(), updatedAt: new Date(),
     });
     await setDoc(doc(db, 'equipment/equipment-2'), {
-      ownerUid: 'provider-2', pricePerDay: 100, isActive: true, createdAt: new Date(), updatedAt: new Date(),
+      ownerUid: 'provider-2', pricePerDay: 100, isActive: true, visibility: 'visible', moderationStatus: 'approved', createdAt: new Date(), updatedAt: new Date(),
     });
     await setDoc(doc(db, 'equipment/hidden-listing'), {
       ownerUid: 'provider-1', pricePerDay: 100, isActive: false, moderationStatus: 'hidden',
@@ -151,6 +151,24 @@ describe('Firestore authorization baseline', () => {
     const { numberOfDays: _days, ...openEndedRequest } = request;
     await assertFails(setDoc(doc(authed('customer-1'), 'equipmentRequests/open-ended'), {
       ...openEndedRequest, requestMode: 'open_ended', amount: 100, platformFee: 0, providerAmount: 0,
+    }));
+  });
+
+  it('exposes only explicitly approved visible equipment and never exposes identifier counters', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = asModularFirestore(context.firestore());
+      await setDoc(doc(db, 'equipment/pending-review'), {
+        ownerUid: 'provider-1', pricePerDay: 100, isActive: true,
+        visibility: 'visible', moderationStatus: 'pending_review', createdAt: new Date(), updatedAt: new Date(),
+      });
+      await setDoc(doc(db, 'publicIdentifierCounters/requests'), { nextSequence: 9 });
+    });
+    await assertSucceeds(getDoc(doc(authed('customer-1'), 'equipment/equipment-1')));
+    await assertFails(getDoc(doc(authed('customer-1'), 'equipment/pending-review')));
+    await assertSucceeds(getDoc(doc(authed('provider-1'), 'equipment/pending-review')));
+    await assertFails(getDoc(doc(authed('customer-1'), 'publicIdentifierCounters/requests')));
+    await assertFails(updateDoc(doc(authed('customer-1'), 'equipment/equipment-1'), {
+      publicEquipmentNumber: 'HV-EQP-000009',
     }));
   });
 

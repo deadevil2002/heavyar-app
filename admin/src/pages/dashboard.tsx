@@ -8,6 +8,16 @@ export default function Dashboard() {
   const { data, isLoading, error } = useOverview();
   const { language } = useAppState();
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
+  const humanizeAction = (action?: string) => {
+    const labels: Record<string, [string, string]> = {
+      owner_bootstrap: ['تم تفعيل المالك الأول للنظام', 'Initial system owner activated'],
+      staff_invite_created: ['تم إنشاء دعوة موظف', 'Staff invitation created'],
+      staff_invitation_accepted: ['تم قبول دعوة الموظف', 'Staff invitation accepted'],
+      staff_invitation_revoked: ['تم إلغاء دعوة الموظف', 'Staff invitation revoked'],
+      staff_revoked: ['تم سحب صلاحيات الموظف', 'Staff access revoked'],
+    };
+    return action && labels[action] ? labels[action][language === 'ar' ? 0 : 1] : action || '—';
+  };
 
   const metrics = [
     { title: t('المستخدمين النشطين', 'Total Users'), value: data?.metrics?.totalUsers, icon: Users, color: 'text-blue-500' },
@@ -83,19 +93,26 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="space-y-4">
-                {data.metrics.recentAuditEvents.slice(0, 5).map((event: any) => (
-                  <div key={event.id} className="flex flex-col sm:flex-row justify-between sm:items-center p-3 rounded-md border border-border/50 bg-muted/20">
-                    <div>
-                      <p className="font-medium text-sm">{event.action}</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {event.actorUid} &bull; {event.targetType} {event.targetId}
-                      </p>
+                {data.metrics.recentAuditEvents.slice(0, 5).map((event: any) => {
+                  const actionLabel = humanizeAction(event.action);
+
+                  // Try to resolve name from actor properties if enriched by backend
+                  const actorName = event.actorName || event.actorEmail || '—';
+
+                  return (
+                    <div key={event.id} className="flex flex-col sm:flex-row justify-between sm:items-center p-3 rounded-md border border-border/50 bg-muted/20">
+                      <div>
+                        <p className="font-medium text-sm">{actionLabel}</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {actorName} &bull; {event.targetType || '—'}
+                        </p>
+                      </div>
+                      <div className="text-xs text-muted-foreground whitespace-nowrap mt-2 sm:mt-0 text-start sm:text-end">
+                        {formatDate(event.timestamp)}
+                      </div>
                     </div>
-                    <div className="text-xs text-muted-foreground whitespace-nowrap mt-2 sm:mt-0 text-start sm:text-end">
-                      {formatDate(event.timestamp)}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>

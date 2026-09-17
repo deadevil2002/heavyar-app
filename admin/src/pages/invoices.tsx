@@ -1,131 +1,16 @@
 import { useState } from 'react';
-import { useInvoices } from '@/lib/api';
+import { FileDown } from 'lucide-react';
+import { useInvoices, fetchApiBinary, downloadBlob, type Invoice } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
-import { Input } from '@/components/ui/input';
+import { OperationsTable, type OperationsColumn } from '@/components/operations-table';
+import { OperationDetails } from '@/components/operation-details';
+import { ExportControls } from '@/components/export-controls';
 import { Button } from '@/components/ui/button';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Search, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 
 export default function Invoices() {
-  const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [cursor, setCursor] = useState<string | undefined>();
-  const [history, setHistory] = useState<string[]>([]);
-
-  const { language } = useAppState();
-  const t = (ar: string, en: string) => language === 'ar' ? ar : en;
-
-  const { data, isLoading } = useInvoices({ status: debouncedSearch || undefined, limit: 20, ...(cursor ? { cursor } : {}) });
-
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    setCursor(undefined);
-    setHistory([]);
-    setDebouncedSearch(search);
-  };
-
-  const next = () => {
-    if (data?.nextCursor) {
-      setHistory([...history, cursor || '']);
-      setCursor(data.nextCursor);
-    }
-  };
-
-  const prev = () => {
-    if (history.length > 0) {
-      const newHistory = [...history];
-      const prevCursor = newHistory.pop();
-      setHistory(newHistory);
-      setCursor(prevCursor === '' ? undefined : prevCursor);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">{t('الفواتير', 'Invoices')}</h1>
-          <p className="text-muted-foreground mt-1">{t('سجل الفواتير الضريبية', 'Tax invoice records')}</p>
-        </div>
-        
-        <form onSubmit={handleSearch} className="relative w-full sm:w-72">
-          <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input 
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('البحث برقم الفاتورة...', 'Search invoices...')} 
-            className="ps-9 bg-card border-border"
-          />
-        </form>
-      </div>
-
-      <div className="rounded-md border border-border bg-card overflow-hidden">
-        <Table>
-          <TableHeader className="bg-muted/50">
-            <TableRow className="border-border hover:bg-transparent">
-              <TableHead className="font-semibold text-foreground">{t('رقم الفاتورة', 'Invoice ID')}</TableHead>
-              <TableHead className="font-semibold text-foreground">{t('المبلغ', 'Amount')}</TableHead>
-              <TableHead className="font-semibold text-foreground">{t('الحالة', 'Status')}</TableHead>
-              <TableHead className="font-semibold text-foreground">{t('العميل', 'Customer')}</TableHead>
-              <TableHead className="font-semibold text-foreground">{t('المزود', 'Provider')}</TableHead>
-              <TableHead className="text-end"></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                  {t('جاري التحميل...', 'Loading...')}
-                </TableCell>
-              </TableRow>
-            ) : data?.items?.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                  {t('لم يتم العثور على نتائج', 'No results found')}
-                </TableCell>
-              </TableRow>
-            ) : (
-              data?.items?.map((item) => (
-                <TableRow key={item.id} className="border-border border-b last:border-0 hover:bg-muted/20">
-                  <TableCell className="font-mono text-xs text-muted-foreground">{item.invoiceNumber || item.id.substring(0, 8)}</TableCell>
-                  <TableCell className="font-medium">SAR {item.totalAmount || 0}</TableCell>
-                  <TableCell>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      item.status === 'paid' ? 'bg-emerald-500/10 text-emerald-500' : 
-                      'bg-amber-500/10 text-amber-500'
-                    }`}>
-                      {item.status}
-                    </span>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">{item.customerId?.substring(0,8) || '-'}</TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">{item.providerId?.substring(0,8) || '-'}</TableCell>
-                  <TableCell className="text-end">
-                    {item.url && (
-                      <Button variant="ghost" size="sm" className="h-8 gap-2" asChild>
-                        <a href={item.url} target="_blank" rel="noreferrer">
-                          <ExternalLink className="h-4 w-4" />
-                          {t('عرض', 'View')}
-                        </a>
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
-
-      <div className="flex items-center justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={prev} disabled={history.length === 0} className="gap-2">
-          {language === 'ar' ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-          {t('السابق', 'Previous')}
-        </Button>
-        <Button variant="outline" size="sm" onClick={next} disabled={!data?.nextCursor} className="gap-2">
-          {t('التالي', 'Next')}
-          {language === 'ar' ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-        </Button>
-      </div>
-    </div>
-  );
+  const { language } = useAppState(); const t = (ar: string, en: string) => language === 'ar' ? ar : en; const [search, setSearch] = useState(''); const [status, setStatus] = useState(''); const [cursor, setCursor] = useState<string>(); const [history, setHistory] = useState<string[]>([]); const [selected, setSelected] = useState<Invoice | null>(null); const [downloading, setDownloading] = useState<string>(); const { toast } = useToast(); const { data, isLoading } = useInvoices({ q: search || undefined, status: status || undefined, limit: 20, cursor });
+  const downloadPdf = async (item: Invoice) => { setDownloading(item.id); try { const result = await fetchApiBinary(`/invoices/${encodeURIComponent(item.id)}.pdf`); downloadBlob(result.blob, result.filename || `${item.invoiceNumber || item.id}.pdf`); } catch (error) { toast({ title: t('تعذر تنزيل الفاتورة', 'Invoice download failed'), description: error instanceof Error ? error.message : undefined, variant: 'destructive' }); } finally { setDownloading(undefined); } };
+  const columns: OperationsColumn<Invoice>[] = [{ key: 'invoice', label: t('الفاتورة', 'Invoice'), sortable: true, render: i => i.invoiceNumber || i.id }, { key: 'request', label: t('الطلب', 'Request'), render: i => i.requestNumber || i.request?.requestNumber || '—' }, { key: 'people', label: t('الأطراف', 'Parties'), render: i => <div>{i.customer?.nameAr || i.customer?.nameEn || i.customer?.name || '—'}<div className="text-xs text-muted-foreground">{i.provider?.nameAr || i.provider?.nameEn || i.provider?.name || '—'}</div></div> }, { key: 'amount', label: t('المبلغ', 'Amount'), render: i => `SAR ${i.totalAmount || 0}` }, { key: 'status', label: t('الحالة', 'Status'), render: i => i.status }, { key: 'actions', label: t('تنزيل', 'Download'), render: i => <Button size="sm" variant="outline" onClick={() => downloadPdf(i)} disabled={downloading === i.id}><FileDown className="me-2 h-4 w-4" />PDF</Button> }];
+  return <div className="space-y-6"><div><h1 className="text-3xl font-bold tracking-tight">{t('الفواتير', 'Invoices')}</h1><p className="mt-1 text-muted-foreground">{t('فواتير موثوقة من بيانات الخادم مع تنزيل PDF.', 'Trusted invoices from server data with PDF download.')}</p></div><OperationsTable<Invoice> columns={columns} items={data?.items} loading={isLoading} search={search} onSearch={v => { setSearch(v); setCursor(undefined); setHistory([]); }} searchPlaceholder={t('رقم الفاتورة أو الطلب...', 'Invoice or request number…')} onDetails={setSelected} nextCursor={data?.nextCursor} hasPrevious={history.length > 0} onNext={() => { if (data?.nextCursor) { setHistory([...history, cursor || '']); setCursor(data.nextCursor); } }} onPrevious={() => { const h = [...history]; const c = h.pop(); setHistory(h); setCursor(c || undefined); }} toolbar={<><select value={status} onChange={e => setStatus(e.target.value)} className="h-9 rounded-md border bg-background px-2 text-sm"><option value="">{t('كل الحالات', 'All statuses')}</option><option value="paid">{t('مدفوعة', 'Paid')}</option><option value="issued">{t('صادرة', 'Issued')}</option></select><ExportControls resource="invoices" params={{ q: search, status }} /></>} />{selected && <OperationDetails item={selected as unknown as Record<string, unknown>} open onOpenChange={open => !open && setSelected(null)} title={selected.invoiceNumber || t('تفاصيل الفاتورة', 'Invoice details')} fields={[{ label: t('رقم الفاتورة', 'Invoice number'), value: selected.invoiceNumber }, { label: t('الطلب', 'Request'), value: selected.requestNumber || selected.request?.requestNumber }, { label: t('المبلغ', 'Amount'), value: `SAR ${selected.totalAmount || 0}` }, { label: 'Invoice ID', value: selected.id, technical: true }]} />}</div>;
 }

@@ -62,17 +62,26 @@ export default function Audit() {
                   </TableCell>
                 </TableRow>
               ) : (
-                data?.items?.map((item) => (
-                  <TableRow key={item.id} className="border-border border-b last:border-0 hover:bg-muted/20 text-sm">
-                    <TableCell className="text-muted-foreground whitespace-nowrap">{new Date(item.timestamp).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-US')}</TableCell>
-                    <TableCell className="font-mono text-xs">{item.actorUid?.substring(0, 8)}</TableCell>
-                    <TableCell>
-                      <span className="bg-primary/10 text-primary px-2 py-0.5 rounded font-mono text-xs">{item.action}</span>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{item.targetType}:{item.targetId?.substring(0,8)}</TableCell>
-                    <TableCell className="truncate max-w-[200px]" title={item.reason}>{item.reason || '-'}</TableCell>
-                  </TableRow>
-                ))
+                data?.items?.map((item: any) => {
+                  let actionLabel = item.action;
+                  if (item.action === 'owner_bootstrap') {
+                    actionLabel = t('تم تفعيل المالك الأول للنظام', 'Initial system owner activated');
+                  }
+
+                  const actorName = item.actorName || item.actorEmail || '—';
+
+                  return (
+                    <TableRow key={item.id} className="border-border border-b last:border-0 hover:bg-muted/20 text-sm">
+                      <TableCell className="text-muted-foreground whitespace-nowrap">{new Date(item.timestamp).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-US')}</TableCell>
+                      <TableCell className="font-mono text-xs">{actorName}</TableCell>
+                      <TableCell>
+                        <span className="bg-primary/10 text-primary px-2 py-0.5 rounded font-mono text-xs">{actionLabel}</span>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{item.targetType || '—'}</TableCell>
+                      <TableCell className="truncate max-w-[200px]" title={item.reason}>{item.reason || '-'}</TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>
