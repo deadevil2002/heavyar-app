@@ -29,6 +29,7 @@ function RootLayoutNav() {
       <Stack.Screen name="rating/[requestId]" options={{ headerShown: false, presentation: "modal" }} />
       <Stack.Screen name="my-equipment" options={{ headerShown: false }} />
       <Stack.Screen name="settings" options={{ headerShown: false }} />
+      <Stack.Screen name="verification" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false, presentation: "modal" }} />
       <Stack.Screen name="register" options={{ headerShown: false, presentation: "modal" }} />
       <Stack.Screen name="onboarding" options={{ headerShown: false }} />

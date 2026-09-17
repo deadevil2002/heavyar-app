@@ -13,6 +13,7 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionById, findRegionByCityId } from '@/mocks/saudiRegions';
 import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloudinaryService';
 import { fetchEquipmentByOwner, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
+import { getVerificationProfile, type VerificationProfile } from '@/services/verificationService';
 
 export default function ProfileScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -32,6 +33,30 @@ export default function ProfileScreen() {
   const [citySearch, setCitySearch] = useState<string>('');
   const [saving, setSaving] = useState<boolean>(false);
   const [avatarBusy, setAvatarBusy] = useState<boolean>(false);
+  const [trustedVerification, setTrustedVerification] = useState<VerificationProfile | null>(null);
+  const [trustLoading, setTrustLoading] = useState<boolean>(false);
+  const userId = user?.uid;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isAuthenticated || !userId) {
+      setTrustedVerification(null);
+      setTrustLoading(false);
+      return () => { cancelled = true; };
+    }
+    setTrustLoading(true);
+    void getVerificationProfile()
+      .then((profile) => {
+        if (!cancelled) setTrustedVerification(profile);
+      })
+      .catch(() => {
+        if (!cancelled) setTrustedVerification(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTrustLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [isAuthenticated, userId]);
 
   useEffect(() => {
     if (!user) return;
@@ -217,6 +242,7 @@ export default function ProfileScreen() {
 
   const menuItems = [
     ...(user?.role === 'provider' ? [{ icon: Package, label: t('my_equipment'), route: '/my-equipment' as const }] : []),
+    { icon: Shield, label: isRTL ? 'التحقق والموثوقية' : 'Verification & trust', route: '/verification' as const },
     { icon: Receipt, label: t('invoices'), route: '/invoices' as const },
     { icon: Settings, label: t('settings'), route: '/settings' as const },
   ];
@@ -242,8 +268,9 @@ export default function ProfileScreen() {
   }
 
   const userName = localizedText(user.nameAr, user.nameEn);
+  const identityVerified = trustedVerification?.identity.status === 'verified';
   const providerVerificationStatus = user.role === 'provider'
-    ? (user.crVerified ? 'verified' : (user.crNumber ? 'pending' : 'incomplete'))
+    ? (trustedVerification?.providerComponents?.commercialRegistration ?? trustedVerification?.business.status)
     : null;
 
   return (
@@ -271,7 +298,7 @@ export default function ProfileScreen() {
               <View style={[styles.profileInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
                 <View style={[styles.nameRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                   <Text style={styles.name}>{userName}</Text>
-                  {user.isVerified && <Shield size={16} color={Colors.success} />}
+                  {identityVerified && <Shield size={16} color={Colors.success} />}
                 </View>
                 <Text style={styles.email}>{user.email}</Text>
                 <View style={[styles.roleBadge, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -321,11 +348,15 @@ export default function ProfileScreen() {
                 </View>
                 <View style={[styles.crStatusBadge, { backgroundColor: providerVerificationStatus === 'verified' ? 'rgba(46, 204, 113, 0.15)' : 'rgba(243, 156, 18, 0.15)' }]}>
                   <Text style={[styles.crStatusText, { color: providerVerificationStatus === 'verified' ? Colors.success : Colors.warning }]}>
-                    {providerVerificationStatus === 'verified'
-                      ? t('provider_verified')
-                      : providerVerificationStatus === 'pending'
-                        ? t('provider_pending_review')
-                        : t('provider_incomplete')}
+                    {trustLoading
+                      ? (isRTL ? 'جاري التحقق' : 'Checking')
+                      : providerVerificationStatus === 'verified'
+                        ? t('provider_verified')
+                        : providerVerificationStatus === 'pending' || providerVerificationStatus === 'manual_review'
+                          ? t('provider_pending_review')
+                          : providerVerificationStatus
+                            ? t('provider_incomplete')
+                            : (isRTL ? 'الحالة غير متاحة' : 'Status unavailable')}
                   </Text>
                 </View>
               </View>
@@ -478,7 +509,7 @@ export default function ProfileScreen() {
               <Pressable
                 key={index}
                 style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
-                onPress={() => router.push(item.route)}
+                onPress={() => router.push(item.route as any)}
               >
                 <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                   <View style={styles.menuIcon}>

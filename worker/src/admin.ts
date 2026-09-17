@@ -1,4 +1,6 @@
 import type { Env } from './index';
+import { canTransitionManualReview, deriveProviderTrust, isProviderComponentName, normalizeRequiredProviderComponents, providerComponentNames, providerVerificationFor, verificationStatuses } from './verification';
+import { normalizeVerificationPolicy } from './verification';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; email?: string };
@@ -7,10 +9,12 @@ type RawDoc = { data: any; updateTime?: string; name?: string };
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let commitOverride: unknown[][] | undefined;
 let identityOverride: ((uid: string, role: AdminRole | null) => Promise<{ role: AdminRole | null; previousRole: unknown }>) | undefined;
+let queryOverride: ((collection: string, before: string, limit: number) => RawDoc[]) | undefined;
 export const __adminTest = {
   setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; },
   captureCommits(target?: unknown[][]) { commitOverride = target; },
   setIdentity(fn?: (uid: string, role: AdminRole | null) => Promise<{ role: AdminRole | null; previousRole: unknown }>) { identityOverride = fn; },
+  setQuery(fn?: (collection: string, before: string, limit: number) => RawDoc[]) { queryOverride = fn; },
 };
 
 const enc = new TextEncoder();
@@ -86,6 +90,10 @@ const FILTERS: Record<string, string[]> = {
   refundReservations: ['refundId'],
   complaints: ['status', 'requestId', 'customerUid', 'providerUid'],
   verificationCases: ['status', 'type'],
+  verificationProfiles: ['uid', 'overallTrust.status', 'identity.status'],
+  verificationAttempts: ['uid', 'status', 'provider', 'verificationType'],
+  verificationEvents: ['uid', 'attemptId', 'type', 'status'],
+  verificationPolicies: ['enabled'],
   providerConfigs: ['enabled', 'environment'],
   heavyarConfig: ['key'],
   adminAudit: ['actorUid', 'action', 'targetType'],
@@ -152,8 +160,64 @@ async function auditWrite(env: Env, u: AdminUser, action: string, targetType: st
 }
 function redact(value: any): any {
   if (!value || typeof value !== 'object') return value;
-  const secretWords = /secret|private|token|password|credential|key/i;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => !secretWords.test(key)).map(([key, item]) => [key, item && typeof item === 'object' ? redact(item) : item]));
+  if (Array.isArray(value)) return value.map(redact);
+  // References, correlation values, raw provider material and identity
+  // documents are operationally unnecessary in browser responses.
+  const sensitiveWords = /secret|private|token|password|credential|key|correlation|reference|raw|payload|document|national|identitynumber|iban/i;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !sensitiveWords.test(key))
+    .map(([key, item]) => [key, item && typeof item === 'object' ? redact(item) : item]));
+}
+
+function validCorrelationId(value: string) {
+  return /^[A-Za-z0-9_-]{16,128}$/.test(value);
+}
+
+function verificationEventWrite(env: Env, uid: string, attemptId: string, type: string, status: string, actorUid: string, correlationId: string, reason: string) {
+  return {
+    update: { name: fullName(env, `verificationEvents/${encodeURIComponent(`${attemptId}:${type}:${correlationId}`)}`), fields: {
+      uid: jsonValue(uid), attemptId: jsonValue(attemptId), type: jsonValue(type), status: jsonValue(status),
+      actorUid: jsonValue(actorUid), correlationId: jsonValue(correlationId), reasonCode: jsonValue(reason.slice(0, 1000)),
+      timestamp: { timestampValue: new Date().toISOString() },
+    } }, currentDocument: { exists: false },
+  };
+}
+
+async function expiredVerificationAttempts(env: Env, before: string, limit: number): Promise<RawDoc[]> {
+  if (queryOverride) return queryOverride('verificationAttempts', before, limit)
+    .filter(item => item.data?.expiresAt && Date.parse(String(item.data.expiresAt)) < Date.parse(before))
+    .slice(0, limit);
+  const response = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'verificationAttempts' }],
+    where: { fieldFilter: { field: { fieldPath: 'expiresAt' }, op: 'LESS_THAN', value: { timestampValue: before } } },
+    orderBy: [{ field: { fieldPath: 'expiresAt' }, direction: 'ASCENDING' }],
+    limit,
+  } }) }) as any[] || [];
+  return response.filter(item => item.document).map(item => ({
+    data: decode(item.document), updateTime: item.document.updateTime, name: item.document.name,
+  }));
+}
+
+async function cleanupVerificationRetention(req: Request, env: Env, user: AdminUser) {
+  if (!allowed(user, 'super_admin')) return { error: 'Super admin required', status: 403 };
+  let body: { limit?: unknown; reason?: unknown } = {};
+  try { body = await req.json() as typeof body; } catch { return { error: 'Invalid JSON body', status: 400 }; }
+  const limit = body.limit === undefined ? 25 : Number(body.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 25) return { error: 'Invalid cleanup limit', status: 400 };
+  const supplied = req.headers.get('X-Correlation-ID');
+  const correlationId = supplied || crypto.randomUUID();
+  if (!validCorrelationId(correlationId)) return { error: 'Invalid correlation ID', status: 400 };
+  const retentionDays = Number(env.VERIFICATION_RETENTION_DAYS === undefined ? 30 : env.VERIFICATION_RETENTION_DAYS);
+  if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) return { error: 'Verification retention configuration unavailable', status: 503 };
+  const before = new Date(Date.now() - retentionDays * 86400000).toISOString();
+  const attempts = await expiredVerificationAttempts(env, before, limit);
+  const deletes = attempts
+    .filter(item => item.name && item.updateTime)
+    .map(item => ({ delete: item.name, currentDocument: { updateTime: item.updateTime } }));
+  const reason = typeof body.reason === 'string' && body.reason.trim().length >= 3 ? body.reason.trim() : 'retention_cleanup';
+  const audit = await auditWrite(env, user, 'verification_retention_cleanup', 'verificationAttempt', `before:${before}`, correlationId, reason, undefined, { deletedAttempts: deletes.length, retentionDays });
+  await commit(env, [...deletes, audit]);
+  return { success: true, correlationId, deletedAttempts: deletes.length, retentionDays };
 }
 
 async function identityClaims(env: Env, uid: string) {
@@ -185,6 +249,9 @@ const TARGET_COLLECTIONS: Record<string, string> = {
   complaint: 'complaints', complaints: 'complaints', request: 'equipmentRequests', requests: 'equipmentRequests', equipmentRequests: 'equipmentRequests',
   provider: 'providerConfigs', providerConfig: 'providerConfigs', providerConfigs: 'providerConfigs', 'provider-config': 'providerConfigs', 'provider-configs': 'providerConfigs', provider_config: 'providerConfigs',
   config: 'heavyarConfig', heavyarConfig: 'heavyarConfig', verification: 'verificationCases', verificationCase: 'verificationCases', verificationCases: 'verificationCases', 'verification-case': 'verificationCases', 'verification-cases': 'verificationCases',
+  verificationPolicy: 'verificationPolicies', verificationPolicies: 'verificationPolicies',
+  verificationProfile: 'verificationProfiles', verificationProfiles: 'verificationProfiles',
+  verificationAttempt: 'verificationAttempts', verificationAttempts: 'verificationAttempts',
   equipment: 'equipment', listing: 'equipment', listings: 'equipment', refund: 'refunds', refunds: 'refunds',
 };
 
@@ -199,6 +266,7 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
   const normalizedType = collection === 'users' ? 'user' : collection === 'payments' ? 'payment' : collection === 'complaints' ? 'complaint' : collection === 'equipmentRequests' ? 'request' : collection === 'providerConfigs' ? 'providerConfig' : collection === 'heavyarConfig' ? 'config' : collection === 'verificationCases' ? 'verification' : collection;
   const reason = String(payload.reason || payload.note || '').trim();
   const correlationId = String(req.headers.get('X-Correlation-ID') || crypto.randomUUID());
+  if (!validCorrelationId(correlationId)) return { error: 'Invalid correlation ID', status: 400 };
   if (!actionName || !rawTargetType || !collection || !targetId || reason.length < 3 || reason.length > 1000) return { error: 'Invalid action target or reason', status: 400 };
   if (actionName === 'grant_role' || actionName === 'revoke_role') {
     if (!allowed(u, 'super_admin') || normalizedType !== 'user') return { error: 'Super admin required', status: 403 };
@@ -220,12 +288,13 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     try { await commit(env, [{ update: { name: fullName(env, `adminAudit/${encodeURIComponent(intentId)}`), fields: { state: jsonValue('finalized'), finalizedAt: { timestampValue: new Date().toISOString() } } } }]); } catch { /* intent already proves durable audit */ }
     return { success: true, correlationId, role };
   }
-  const raw = await rawDoc(env, collection, targetId);
-  if (!raw?.data || !raw.updateTime) return { error: 'Target not found', status: 404 };
-  const current = raw.data;
-  let fields: Record<string, any> = {};
   let targetCollection = collection;
   let auditTarget = normalizedType;
+  const raw = await rawDoc(env, collection, targetId);
+  const isDefaultVerificationPolicy = targetCollection === 'verificationPolicies' && targetId === 'default' && actionName === 'update_verification_policy';
+  if ((!raw?.data || !raw.updateTime) && !isDefaultVerificationPolicy) return { error: 'Target not found', status: 404 };
+  const current = raw?.data || {};
+  let fields: Record<string, any> = {};
   if (normalizedType === 'user' && ['suspend_user', 'unsuspend_user', 'add_user_note'].includes(actionName)) {
     if (!allowed(u, 'admin')) return { error: 'Admin required', status: 403 };
     fields = actionName === 'add_user_note' ? { adminNote: jsonValue(reason), adminNoteAt: { timestampValue: new Date().toISOString() }, adminNoteBy: jsonValue(u.uid) } : { suspensionStatus: jsonValue(actionName === 'suspend_user' ? 'temporarily_suspended' : 'active'), suspensionReason: jsonValue(reason), suspensionActor: jsonValue(u.uid), suspensionAt: { timestampValue: new Date().toISOString() } };
@@ -268,16 +337,72 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     if (!allowed(u, 'admin')) return { error: 'Admin required', status: 403 };
     if (typeof payload.enabled !== 'boolean' || !Number.isInteger(payload.priority) || Number(payload.priority) < 1 || Number(payload.priority) > 100) return { error: 'Invalid provider configuration', status: 400 };
     fields = { enabled: { booleanValue: payload.enabled }, priority: { integerValue: String(payload.priority) }, updatedBy: jsonValue(u.uid), updatedAt: { timestampValue: new Date().toISOString() } };
+  } else if (targetCollection === 'verificationPolicies' && actionName === 'update_verification_policy') {
+    if (!allowed(u, 'super_admin')) return { error: 'Super admin required', status: 403 };
+    const policy = normalizeVerificationPolicy(payload.policy);
+    if (!policy) return { error: 'Invalid verification policy', status: 400 };
+    fields = { ...Object.fromEntries(Object.entries(policy).map(([key, value]) => [key, jsonValue(value)])), version: { integerValue: String(Number(current.version || 0) + 1) }, updatedBy: jsonValue(u.uid), updatedAt: { timestampValue: new Date().toISOString() } };
   } else if (normalizedType === 'config' && actionName === 'update_config') {
     if (!allowed(u, 'super_admin')) return { error: 'Super admin required', status: 403 };
     if (!payload.config || Object.keys(payload.config).some(key => /secret|private|token|password|credential|key/i.test(key))) return { error: 'Only non-secret configuration is allowed', status: 400 };
     fields = { ...Object.fromEntries(Object.entries(payload.config).map(([key, value]) => [key, jsonValue(value)])), version: { integerValue: String(Number(current.version || 0) + 1) }, updatedBy: jsonValue(u.uid), updatedAt: { timestampValue: new Date().toISOString() } };
-  } else if (normalizedType === 'verification' && actionName === 'update_verification') {
+  } else if (targetCollection === 'verificationProfiles' && ['start_manual_review', 'complete_manual_review', 'reject_manual_review', 'add_verification_note', 'set_provider_component', 'set_provider_requirements'].includes(actionName)) {
     if (!allowed(u, 'admin')) return { error: 'Admin required', status: 403 };
-    if (!['pending', 'approved', 'rejected', 'needs_review'].includes(String(payload.status))) return { error: 'Invalid verification state', status: 400 };
-    fields = { status: jsonValue(payload.status), reviewedBy: jsonValue(u.uid), reviewedAt: { timestampValue: new Date().toISOString() }, reason: jsonValue(reason) };
+    const manualAction = actionName as 'start_manual_review' | 'complete_manual_review' | 'reject_manual_review';
+    if (['start_manual_review', 'complete_manual_review', 'reject_manual_review'].includes(actionName)) {
+      if (!canTransitionManualReview(current.manualReview?.status || 'unverified', manualAction)) {
+        return { error: 'Invalid manual review transition', status: 409 };
+      }
+      // Manual decisions are intentionally separate from official
+      // identity-provider verification; this action never writes identity.
+      const status = actionName === 'start_manual_review' ? 'manual_review' : actionName === 'complete_manual_review' ? 'verified' : 'rejected';
+      const overallStatus = actionName === 'start_manual_review'
+        ? 'manual_review'
+        : actionName === 'reject_manual_review'
+          ? 'restricted'
+          : current.identity?.status === 'verified' ? 'verified' : 'unverified';
+      fields = {
+        manualReview: jsonValue({ ...(current.manualReview || {}), status }),
+        overallTrust: jsonValue({ ...(current.overallTrust || {}), status: overallStatus }),
+        manualReviewReason: jsonValue(reason), manualReviewBy: jsonValue(u.uid), manualReviewAt: { timestampValue: new Date().toISOString() },
+      };
+      const eventType = actionName === 'start_manual_review' ? 'manual_review_started' : 'manual_review_completed';
+      const writes = [
+        { update: { name: fullName(env, `${targetCollection}/${encodeURIComponent(targetId)}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: raw!.updateTime } },
+        verificationEventWrite(env, targetId, targetId, eventType, status, u.uid, correlationId, reason),
+        await auditWrite(env, u, actionName, auditTarget, targetId, correlationId, reason, current, Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, decodeValue(value)]))),
+      ];
+      await commit(env, writes);
+      return { success: true, correlationId, action: actionName, targetId, manualReviewStatus: status };
+    } else if (actionName === 'set_provider_component') {
+      const component = payload.component;
+      const status = payload.status;
+      // Administrative review may record a component as awaiting review,
+      // rejected, restricted, or reset. It must never manufacture a verified
+      // external/business result. Verified values are reserved for a validated
+      // official provider result processed by the callback boundary.
+      if (!isProviderComponentName(component) ||
+          !['unverified', 'pending', 'manual_review', 'rejected', 'restricted', 'expired'].includes(status)) {
+        return { error: 'Invalid provider component update', status: 400 };
+      }
+      const provider = providerVerificationFor(current);
+      const components = { ...provider.components, [component]: status };
+      fields = { providerVerification: jsonValue({ ...provider, components, status: deriveProviderTrust(components, provider.requiredComponents) }), providerVerificationUpdatedBy: jsonValue(u.uid), providerVerificationUpdatedAt: { timestampValue: new Date().toISOString() } };
+    } else if (actionName === 'set_provider_requirements') {
+      if (!allowed(u, 'super_admin')) return { error: 'Super admin required', status: 403 };
+      const requiredComponents = normalizeRequiredProviderComponents(payload.requiredComponents);
+      if (!requiredComponents) return { error: 'Invalid provider component requirements', status: 400 };
+      const provider = providerVerificationFor(current);
+      fields = { providerVerification: jsonValue({ ...provider, requiredComponents, status: deriveProviderTrust(provider.components, requiredComponents) }), providerVerificationUpdatedBy: jsonValue(u.uid), providerVerificationUpdatedAt: { timestampValue: new Date().toISOString() } };
+    } else fields = { adminNote: jsonValue(reason), adminNoteBy: jsonValue(u.uid), adminNoteAt: { timestampValue: new Date().toISOString() } };
+  } else if (normalizedType === 'verification' && actionName === 'update_verification') {
+    // Legacy verification cases cannot be used to confer any trusted
+    // verification outcome. Manual operations are intentionally constrained to
+    // verificationProfiles' manualReview state, while official results go
+    // through the provider callback boundary.
+    return { error: 'Verification case status changes are not supported', status: 400 };
   } else return { error: 'Unsupported action', status: 400 };
-  const writes = [{ update: { name: fullName(env, `${targetCollection}/${encodeURIComponent(targetId)}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: raw.updateTime } }, await auditWrite(env, u, actionName, auditTarget, targetId, correlationId, reason, current, Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, decodeValue(value)])))];
+  const writes = [{ update: { name: fullName(env, `${targetCollection}/${encodeURIComponent(targetId)}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: raw?.updateTime ? { updateTime: raw.updateTime } : { exists: false } }, await auditWrite(env, u, actionName, auditTarget, targetId, correlationId, reason, current, Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, decodeValue(value)])))];
   await commit(env, writes);
   return { success: true, correlationId, action: actionName, targetId };
 }
@@ -291,6 +416,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   await requireAdmin(user);
   const url = new URL(req.url);
   if (url.pathname === '/api/admin/session' && req.method === 'GET') return { success: true, uid: user.uid, role: user.role };
+  if (url.pathname === '/api/admin/verification-cleanup' && req.method === 'POST') return cleanupVerificationRetention(req, env, user);
   if (url.pathname === '/api/admin/action' && req.method === 'POST') return action(req, env, user);
   if (url.pathname === '/api/admin/roles' && req.method === 'POST') {
     let body: any;
@@ -305,7 +431,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const pathMap: Record<string, string> = {
     '/api/admin/users': 'users', '/api/admin/providers': 'users', '/api/admin/equipment': 'equipment', '/api/admin/requests': 'equipmentRequests',
     '/api/admin/payments': 'payments', '/api/admin/invoices': 'invoices', '/api/admin/refunds': 'refunds', '/api/admin/complaints': 'complaints',
-    '/api/admin/verification': 'verificationCases', '/api/admin/provider-configs': 'providerConfigs', '/api/admin/config': 'heavyarConfig', '/api/admin/audit': 'adminAudit',
+    '/api/admin/verification': 'verificationCases', '/api/admin/verification-profiles': 'verificationProfiles', '/api/admin/verification-attempts': 'verificationAttempts', '/api/admin/verification-events': 'verificationEvents', '/api/admin/provider-configs': 'providerConfigs', '/api/admin/config': 'heavyarConfig', '/api/admin/audit': 'adminAudit',
   };
   if (url.pathname === '/api/admin/overview') {
     const requestStatuses = ['pending', 'requested', 'accepted', 'in_progress', 'completion_requested', 'under_investigation', 'escalated'];

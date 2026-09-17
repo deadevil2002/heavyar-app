@@ -202,7 +202,33 @@ describe('Firestore authorization baseline', () => {
     await assertFails(setDoc(doc(db, 'refundReservations/request-1'), { refundId: 'refund:request-1' }));
     await assertFails(setDoc(doc(db, 'complaints/complaint-1'), { requestId: 'request-1', status: 'open' }));
     await assertFails(setDoc(doc(db, 'verificationCases/case-1'), { uid: 'provider-1', status: 'approved' }));
+    await assertFails(setDoc(doc(db, 'verificationProfiles/provider-1'), { uid: 'provider-1', identity: { status: 'verified' } }));
+    await assertFails(setDoc(doc(db, 'verificationAttempts/attempt-1'), { uid: 'provider-1', correlationId: 'guessable', status: 'verified' }));
+    await assertFails(setDoc(doc(db, 'verificationEvents/event-1'), { uid: 'provider-1', type: 'verification_completed' }));
+    await assertFails(setDoc(doc(db, 'verificationPolicies/default'), { enabled: false }));
+    await assertFails(setDoc(doc(db, 'verificationRateLimits/provider-1'), { count: 0 }));
     await assertFails(setDoc(doc(db, 'heavyarConfig/pricing'), { platformFeeRate: 0.1 }));
+  });
+
+  it('prevents a direct provider acceptance from bypassing an enabled identity policy', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'verificationPolicies/default'), {
+        enabled: true, requireCustomerIdentityVerification: true,
+        verificationRequiredAboveAmountSAR: null, verificationRequiredForHighRiskEquipment: false,
+        verificationRequiredForSpecificRequestTypes: [],
+      });
+    });
+    await assertFails(updateDoc(doc(authed('provider-1'), 'equipmentRequests/request-1'), {
+      status: 'accepted', allowChat: true, updatedAt: serverTimestamp(),
+    }));
+    await env.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'verificationProfiles/customer-1'), {
+        uid: 'customer-1', identity: { status: 'verified' },
+      });
+    });
+    await assertSucceeds(updateDoc(doc(authed('provider-1'), 'equipmentRequests/request-1'), {
+      status: 'accepted', allowChat: true, updatedAt: serverTimestamp(),
+    }));
   });
 
   it('restricts request, chat, and invoice reads to authorized participants', async () => {
@@ -218,6 +244,8 @@ describe('Firestore authorization baseline', () => {
     await assertFails(getDoc(doc(authed('outsider'), 'paymentQuotes/quote-1')));
     await assertFails(getDoc(doc(authed('outsider'), 'paymentEvents/event-1')));
     await assertFails(getDoc(doc(authed('customer-1'), 'providerConfigs/tap')));
+    await assertFails(getDoc(doc(authed('customer-1'), 'verificationAttempts/attempt-1')));
+    await assertFails(getDoc(doc(authed('customer-1'), 'verificationProfiles/customer-1')));
     await assertFails(getDoc(doc(authed('outsider'), 'equipmentRequests/request-1/messages/m')));
   });
 

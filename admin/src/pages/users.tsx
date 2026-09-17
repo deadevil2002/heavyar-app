@@ -13,6 +13,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { useAdminAction } from '@/hooks/use-admin-action';
+import { TrustIndicator } from '@/components/TrustIndicator';
 
 export default function Users() {
   const [search, setSearch] = useState('');
@@ -126,9 +127,7 @@ export default function Users() {
                     </span>
                   </TableCell>
                   <TableCell>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${user.verificationStatus === 'verified' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
-                      {user.verificationStatus === 'verified' ? t('موثق', 'Verified') : t('غير موثق', 'Unverified')}
-                    </span>
+                    <TrustIndicator value={user} language={language} />
                   </TableCell>
                   <TableCell className="text-right">
                     <DropdownMenu>

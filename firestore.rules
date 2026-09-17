@@ -40,6 +40,37 @@ service cloud.firestore {
       return data.isActive == true
         && (!data.keys().hasAny(['moderationStatus']) || data.moderationStatus == 'active');
     }
+    // This mirrors the server's conservative request gate. The policy is
+    // backend-owned; absent/disabled policy intentionally preserves existing
+    // marketplace flows. Direct client writes cannot bypass an enabled policy.
+    function requestTrustSatisfied(data) {
+      return !exists(/databases/$(database)/documents/verificationPolicies/default)
+        || requestTrustWithPolicy(
+          data,
+          get(/databases/$(database)/documents/verificationPolicies/default).data
+        );
+    }
+    // Keep the policy document in one function parameter. Repeating its get()
+    // expression at every predicate can exceed Firestore Rules' 1000
+    // expression ceiling during a lifecycle update.
+    function requestTrustWithPolicy(data, policy) {
+      return policy.enabled != true
+        || (
+          !policy.requireCustomerIdentityVerification
+          && !(policy.verificationRequiredAboveAmountSAR is number
+            && data.amount >= policy.verificationRequiredAboveAmountSAR)
+          && !(policy.verificationRequiredForHighRiskEquipment == true
+            && get(/databases/$(database)/documents/equipment/$(data.equipmentId)).data.highRisk == true)
+          && !(
+            policy.verificationRequiredForSpecificRequestTypes is list
+            && policy.verificationRequiredForSpecificRequestTypes.hasAny([data.requestMode])
+          )
+          || (
+            exists(/databases/$(database)/documents/verificationProfiles/$(data.customerUid))
+            && get(/databases/$(database)/documents/verificationProfiles/$(data.customerUid)).data.identity.status == 'verified'
+          )
+        );
+    }
     // Amounts are non-negative SAR values. int() truncates toward zero, so
     // this is the same half-up rounding used by the mobile UI's
     // Math.round(amount * 0.1).
@@ -104,6 +135,7 @@ service cloud.firestore {
         && request.resource.data.customerUid == request.auth.uid
         && notSuspended(request.auth.uid)
         && notSuspended(request.resource.data.providerUid)
+        && requestTrustSatisfied(request.resource.data)
         && request.resource.data.customerUid != request.resource.data.providerUid
         && trustedProvider(request.resource.data.providerUid)
         && get(/databases/$(database)/documents/equipment/$(request.resource.data.equipmentId)).data.ownerUid
@@ -163,7 +195,10 @@ service cloud.firestore {
           (resource.data.status == 'pending' &&
             ((request.resource.data.status == 'accepted' &&
               request.resource.data.allowChat == true &&
-              request.auth.uid == resource.data.providerUid) ||
+              request.auth.uid == resource.data.providerUid &&
+              // A request created while policy was disabled cannot bypass a
+              // subsequently enabled verification gate at provider acceptance.
+              requestTrustSatisfied(resource.data)) ||
              (request.resource.data.status == 'rejected' &&
               request.resource.data.allowChat == false &&
               request.auth.uid == resource.data.providerUid) ||
@@ -283,6 +318,23 @@ service cloud.firestore {
       allow read, write: if false;
     }
     match /verificationCases/{caseId} {
+      allow read, write: if false;
+    }
+    // Verification and risk records are exclusively server-authoritative. The
+    // Worker returns a deliberately minimized view of a user's own status.
+    match /verificationProfiles/{uid} {
+      allow read, write: if false;
+    }
+    match /verificationAttempts/{attemptId} {
+      allow read, write: if false;
+    }
+    match /verificationEvents/{eventId} {
+      allow read, write: if false;
+    }
+    match /verificationRateLimits/{uid} {
+      allow read, write: if false;
+    }
+    match /verificationPolicies/{policyId} {
       allow read, write: if false;
     }
     match /heavyarConfig/{configId} {

@@ -62,14 +62,25 @@ export type PaginatedResponse<T> = {
 
 // Types
 export type AdminSession = { role: 'admin' | 'super_admin' };
-export type User = { id: string; email: string; nameAr?: string; nameEn?: string; suspensionStatus?: string; verificationStatus?: string; createdAt?: string; role?: string };
+export type TrustStatus = 'unverified' | 'pending' | 'verified' | 'rejected' | 'expired' | 'manual_review' | 'restricted' | 'require_verification' | 'require_manual_review' | 'restrict' | 'block';
+export type TrustFields = {
+  verificationStatus?: TrustStatus;
+  identityStatus?: TrustStatus;
+  trustStatus?: TrustStatus;
+  riskOutcome?: TrustStatus;
+  verificationRequired?: boolean;
+  overallTrust?: { status?: TrustStatus };
+  identity?: { status?: TrustStatus };
+  manualReview?: { status?: TrustStatus };
+};
+export type User = { id: string; email: string; nameAr?: string; nameEn?: string; suspensionStatus?: string; createdAt?: string; role?: string } & TrustFields;
 export type Equipment = { id: string; titleAr?: string; titleEn?: string; ownerUid: string; moderationStatus?: string; isActive?: boolean; rate?: number };
 export type Provider = User;
-export type Request = { id: string; status: string; customerUid: string; providerUid: string; paymentState?: string; totalAmount?: number; events?: any[] };
-export type Payment = { id: string; state: string; amount: number; vatAmount?: number; platformFee?: number; providerReference?: string; invoiceId?: string; events?: any[] };
+export type Request = { id: string; status: string; customerUid: string; providerUid: string; paymentState?: string; totalAmount?: number; events?: any[] } & TrustFields;
+export type Payment = { id: string; state: string; amount: number; vatAmount?: number; platformFee?: number; providerReference?: string; invoiceId?: string; events?: any[] } & TrustFields;
 export type Invoice = { id: string; invoiceNumber?: string; totalAmount?: number; status: string; customerId?: string; providerId?: string; url?: string };
 export type Refund = { id: string; state?: string; amount: number; requestId?: string; originalPaymentId?: string };
-export type Complaint = { id: string; status: string; description: string; customerUid: string; providerUid?: string; requestId?: string };
+export type Complaint = { id: string; status: string; description: string; customerUid: string; providerUid?: string; requestId?: string } & TrustFields;
 export type ProviderConfig = { id: string; providerId?: string; enabled?: boolean; environment?: string; settings?: Record<string, any> };
 export type VersionedConfig = { id: string; version: string; data?: any; key?: string };
 export type AuditEntry = { id: string; actorUid: string; action: string; targetType: string; targetId: string; before?: any; after?: any; reason?: string; timestamp: string };
@@ -115,6 +126,30 @@ export function useInvoices(params: Record<string, any> = {}) { return useListQu
 export function useRefunds(params: Record<string, any> = {}) { return useListQuery<Refund>('refunds', '/refunds', params); }
 export function useComplaints(params: Record<string, any> = {}) { return useListQuery<Complaint>('complaints', '/complaints', params); }
 export function useVerification(params: Record<string, any> = {}) { return useListQuery<any>('verification', '/verification', params); }
+export function useVerificationProfiles(params: Record<string, any> = {}) { return useListQuery<any>('verificationProfiles', '/verification-profiles', params); }
+export function useVerificationAttempts(params: Record<string, any> = {}) { return useListQuery<any>('verificationAttempts', '/verification-attempts', params); }
+export function useVerificationEvents(params: Record<string, any> = {}) { return useListQuery<any>('verificationEvents', '/verification-events', params); }
+export function useVerificationPolicy() {
+  return useQuery({
+    queryKey: ['verificationPolicy', 'default'],
+    queryFn: () => fetchApi<{ success: boolean; item: any }>('/detail/verificationPolicies/default'),
+    retry: false,
+  });
+}
+export function useVerificationProfileDetail(uid?: string) {
+  return useQuery({
+    queryKey: ['verificationProfileDetail', uid],
+    queryFn: () => fetchApi<{ success: boolean; item: any }>(`/detail/verificationProfiles/${encodeURIComponent(uid!)}`),
+    enabled: Boolean(uid),
+  });
+}
+export function useVerificationAttemptEvents(attemptId?: string) {
+  return useQuery({
+    queryKey: ['verificationAttemptEvents', attemptId],
+    queryFn: () => fetchApi<PaginatedResponse<any>>(`/verification-events?attemptId=${encodeURIComponent(attemptId!)}`),
+    enabled: Boolean(attemptId),
+  });
+}
 export function useProviderConfigs(params: Record<string, any> = {}) { return useListQuery<ProviderConfig>('provider-configs', '/provider-configs', params); }
 export function useConfig(params: Record<string, any> = {}) { return useListQuery<VersionedConfig>('config', '/config', params); }
 export function useAudit(params: Record<string, any> = {}) { return useListQuery<AuditEntry>('audit', '/audit', params); }

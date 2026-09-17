@@ -87,6 +87,41 @@ describe('worker security boundary', () => {
     } finally { globalThis.fetch = old; }
   });
 
+  test('an enabled verification policy blocks unverified payment creation before Tap', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    __test.setFirestore((collection) => {
+      if (collection === 'equipmentRequests') return { id: 'r', customerUid: 'customer-1', providerUid: 'provider-1', status: 'completed', paymentStatus: 'unpaid', amount: 100, equipmentId: 'e' };
+      if (collection === 'equipment') return { pricePerDay: 100, isActive: true };
+      if (collection === 'verificationProfiles') return { identity: { status: 'unverified' }, manualReview: { status: 'unverified' } };
+      if (collection === 'verificationPolicies') return { enabled: true, requireCustomerIdentityVerification: true, verificationRequiredAboveAmountSAR: null, verificationRequiredForHighRiskEquipment: false, verificationRequiredForSpecificRequestTypes: [] };
+      return {};
+    });
+    const old = globalThis.fetch;
+    let tapCalled = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => { tapCalled = String(input).includes('tap.company'); return new Response('{}'); }) as typeof fetch;
+    try {
+      const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
+      expect(response.status).toBe(403);
+      expect((await response.json() as any).code).toBe('require_verification');
+      expect(tapCalled).toBe(false);
+    } finally { globalThis.fetch = old; }
+  });
+
+  test('provider start is blocked when an enabled policy finds the accepted customer unverified', async () => {
+    __test.setAuth({ uid: 'provider-1', admin: false });
+    __test.setFirestore((collection, id) => {
+      if (collection === 'equipmentRequests') return { customerUid: 'customer-1', providerUid: 'provider-1', status: 'accepted', amount: 100, equipmentId: 'e' };
+      if (collection === 'equipment') return { pricePerDay: 100, isActive: true };
+      if (collection === 'verificationProfiles') return { identity: { status: 'unverified' }, manualReview: { status: 'unverified' } };
+      if (collection === 'verificationPolicies') return { enabled: true, requireCustomerIdentityVerification: true, verificationRequiredAboveAmountSAR: null, verificationRequiredForHighRiskEquipment: false, verificationRequiredForSpecificRequestTypes: [] };
+      if (collection === 'users' && id === 'customer-1') return {};
+      return {};
+    });
+    const response = await worker.fetch(request('/api/start-request', { requestId: 'r' }, { Authorization: 'Bearer test' }), env);
+    expect(response.status).toBe(403);
+    expect((await response.json() as any).code).toBe('require_verification');
+  });
+
   test('payment uses canonical reservation fields, VAT math, and stable Tap idempotency', async () => {
     __test.setAuth({ uid: 'customer-1', admin: false });
     __test.setFirestore((collection) => collection === 'equipmentRequests'

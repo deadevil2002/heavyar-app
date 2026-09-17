@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAdminAction } from '@/hooks/use-admin-action';
+import { TrustIndicator } from '@/components/TrustIndicator';
 
 export default function Requests() {
   const [search, setSearch] = useState('');
@@ -88,19 +89,20 @@ export default function Requests() {
               <TableHead className="font-semibold text-foreground">{t('الإجمالي', 'Total')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('حالة الدفع', 'Payment State')}</TableHead>
               <TableHead className="font-semibold text-foreground">{t('الحالة', 'Status')}</TableHead>
+              <TableHead className="font-semibold text-foreground">{t('الثقة', 'Trust')}</TableHead>
               <TableHead className="text-right"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                   {t('جاري التحميل...', 'Loading...')}
                 </TableCell>
               </TableRow>
             ) : data?.items?.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                   {t('لم يتم العثور على نتائج', 'No results found')}
                 </TableCell>
               </TableRow>
@@ -129,6 +131,7 @@ export default function Requests() {
                       {item.status}
                     </span>
                   </TableCell>
+                  <TableCell><TrustIndicator value={item} language={language} /></TableCell>
                   <TableCell className="text-right">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>

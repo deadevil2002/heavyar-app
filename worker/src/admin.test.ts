@@ -18,6 +18,7 @@ describe('admin authorization and operational boundary', () => {
     __adminTest.setFirestore(undefined);
     __adminTest.captureCommits(undefined);
     __adminTest.setIdentity(undefined);
+    __adminTest.setQuery(undefined);
   });
   afterEach(() => {
     __test.setAuth(undefined);
@@ -26,6 +27,7 @@ describe('admin authorization and operational boundary', () => {
     __adminTest.setFirestore(undefined);
     __adminTest.captureCommits(undefined);
     __adminTest.setIdentity(undefined);
+    __adminTest.setQuery(undefined);
   });
 
   test('admin endpoints reject unauthenticated requests', async () => {
@@ -36,6 +38,9 @@ describe('admin authorization and operational boundary', () => {
   test('authenticated normal users cannot access admin endpoints', async () => {
     __test.setAuth({ uid: 'customer-1', admin: false });
     expect((await worker.fetch(request('/api/admin/session', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    expect((await worker.fetch(request('/api/admin/action', {
+      action: 'start_manual_review', targetType: 'verificationProfile', targetId: 'customer-1', reason: 'privilege attempt',
+    }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'normal-user-manual-review-01' }), env)).status).toBe(403);
   });
 
   test('trusted admin claim is accepted for session and overview', async () => {
@@ -128,6 +133,102 @@ describe('admin authorization and operational boundary', () => {
     expect(commits.length > 0).toBe(true);
     expect(String((commits[0][0] as any).update.name).includes('role-intent')).toBe(true);
     expect((commits[0][0] as any).update.fields.action.stringValue).toBe('role_change_intent');
+  });
+
+  test('manual review validates transitions, emits a unique verification event, and cannot forge official identity', async () => {
+    __test.setAuth({ uid: 'admin-1', admin: true, role: 'admin' });
+    __adminTest.setFirestore((collection) => collection === 'verificationProfiles' ? {
+      uid: 'provider-1', identity: { status: 'unverified', provider: 'unconfigured' },
+      manualReview: { status: 'unverified' }, overallTrust: { status: 'unverified' },
+    } : null);
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    const started = await worker.fetch(request('/api/admin/action', {
+      action: 'start_manual_review', targetType: 'verificationProfile', targetId: 'provider-1', reason: 'document review',
+    }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'manual-review-correlation-01' }), env);
+    expect(started.status).toBe(200);
+    const writes = commits[0] as any[];
+    expect(writes[0].update.fields.manualReview.mapValue.fields.status.stringValue).toBe('manual_review');
+    expect(String(writes[1].update.name).includes('manual_review_started')).toBe(true);
+    const forged = await worker.fetch(request('/api/admin/action', {
+      action: 'set_provider_component', targetType: 'verificationProfile', targetId: 'provider-1', component: 'individualIdentity', status: 'verified', reason: 'not provider proof',
+    }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'manual-review-correlation-02' }), env);
+    expect(forged.status).toBe(400);
+    __adminTest.setFirestore((collection) => collection === 'verificationProfiles' ? {
+      manualReview: { status: 'verified' }, identity: { status: 'unverified' },
+    } : null);
+    const invalid = await worker.fetch(request('/api/admin/action', {
+      action: 'complete_manual_review', targetType: 'verificationProfile', targetId: 'provider-1', reason: 'no active review',
+    }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'manual-review-correlation-03' }), env);
+    expect(invalid.status).toBe(409);
+  });
+
+  test('legacy verification cases cannot be approved by an administrator', async () => {
+    __test.setAuth({ uid: 'admin-1', admin: true, role: 'admin' });
+    __adminTest.setFirestore((collection) => collection === 'verificationCases' ? { status: 'pending' } : null);
+    const response = await worker.fetch(request('/api/admin/action', {
+      action: 'update_verification', targetType: 'verificationCase', targetId: 'case-1',
+      status: 'approved', reason: 'manual assertion is not provider evidence',
+    }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'legacy-case-denial-0001' }), env);
+    expect(response.status).toBe(400);
+  });
+
+  test('retention cleanup is super-admin-only, bounded, and uses guarded deletes', async () => {
+    __test.setAuth({ uid: 'admin-1', admin: true, role: 'admin' });
+    expect((await worker.fetch(request('/api/admin/verification-cleanup', { limit: 1 }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'retention-cleanup-id-01' }), env)).status).toBe(403);
+    __test.setAuth({ uid: 'super-1', admin: true, role: 'super_admin' });
+    __adminTest.setQuery(() => [
+      { name: 'projects/test/databases/(default)/documents/verificationAttempts/old-1', updateTime: 'old-version', data: { expiresAt: '2000-01-01T00:00:00.000Z' } },
+      { name: 'projects/test/databases/(default)/documents/verificationAttempts/old-2', updateTime: 'old-version-2', data: { expiresAt: '2000-01-02T00:00:00.000Z' } },
+    ]);
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    const response = await worker.fetch(request('/api/admin/verification-cleanup', { limit: 1 }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'retention-cleanup-id-02' }), env);
+    expect(response.status).toBe(200);
+    const writes = commits[0] as any[];
+    expect(writes.length).toBe(2);
+    expect(writes[0].currentDocument.updateTime).toBe('old-version');
+    expect((await response.json() as any).deletedAttempts).toBe(1);
+  });
+
+  test('provider component updates preserve independent states but cannot manufacture verified external results', async () => {
+    __test.setAuth({ uid: 'super-1', admin: true, role: 'super_admin' });
+    __adminTest.setFirestore((collection) => collection === 'verificationProfiles' ? {
+      providerVerification: {
+        status: 'unverified', requiredComponents: ['individualIdentity', 'commercialRegistration'],
+        components: { individualIdentity: 'verified', businessLegalEntity: 'unverified', commercialRegistration: 'unverified', ownershipAuthorization: 'unverified', payoutBank: 'unverified' },
+      },
+    } : null);
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    const response = await worker.fetch(request('/api/admin/action', {
+      action: 'set_provider_component', targetType: 'verificationProfile', targetId: 'provider-1',
+      component: 'commercialRegistration', status: 'manual_review', reason: 'registry review required',
+    }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'provider-component-update-01' }), env);
+    expect(response.status).toBe(200);
+    const providerVerification = (commits[0][0] as any).update.fields.providerVerification.mapValue.fields;
+    expect(providerVerification.status.stringValue).toBe('manual_review');
+    expect(providerVerification.components.mapValue.fields.businessLegalEntity.stringValue).toBe('unverified');
+    const forged = await worker.fetch(request('/api/admin/action', {
+      action: 'set_provider_component', targetType: 'verificationProfile', targetId: 'provider-1',
+      component: 'commercialRegistration', status: 'verified', reason: 'untrusted external assertion',
+    }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'provider-component-update-02' }), env);
+    expect(forged.status).toBe(400);
+  });
+
+  test('verification policy updates are super-admin-only and never mutate immutable payment records', async () => {
+    __test.setAuth({ uid: 'super-1', admin: true, role: 'super_admin' });
+    __adminTest.setFirestore((collection, id) => collection === 'verificationPolicies' && id === 'default' ? { version: 4 } : null);
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    const response = await worker.fetch(request('/api/admin/action', {
+      action: 'update_verification_policy', targetType: 'verificationPolicy', targetId: 'default', reason: 'approved policy update',
+      policy: { enabled: true, requireCustomerIdentityVerification: false, verificationRequiredAboveAmountSAR: null, verificationRequiredForHighRiskEquipment: true, verificationRequiredForSpecificRequestTypes: ['regulated_equipment'] },
+    }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'verification-policy-update-01' }), env);
+    expect(response.status).toBe(200);
+    expect((commits[0][0] as any).update.fields.version.integerValue).toBe('5');
+    expect(JSON.stringify(commits).includes('paymentQuotes')).toBe(false);
+    expect(JSON.stringify(commits).includes('payments/')).toBe(false);
   });
 
   test('suspended accounts cannot start requests', async () => {

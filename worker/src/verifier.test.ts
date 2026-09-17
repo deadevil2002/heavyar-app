@@ -24,7 +24,7 @@ async function rejects(request: Request) {
 
 describe('Firebase ID token contract verification', () => {
   const oldFetch = globalThis.fetch;
-  beforeEach(() => { globalThis.fetch = (async () => new Response(JSON.stringify({ keys: [] }))) as typeof fetch; });
+  beforeEach(() => { __test.setAuth(undefined); globalThis.fetch = (async () => new Response(JSON.stringify({ keys: [] }))) as typeof fetch; });
   afterEach(() => { globalThis.fetch = oldFetch; });
 
   test('rejects expired, future, misordered, and wrong audience/issuer claims', async () => {

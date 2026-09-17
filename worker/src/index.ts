@@ -1,5 +1,6 @@
 import { quoteForRequest, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
 import { handleAdmin, type AdminRole } from './admin';
+import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -7,6 +8,8 @@ export interface Env {
   CLOUDINARY_FOLDER?: string; TAP_SECRET_KEY_TEST?: string; RESEND_API_KEY?: string;
   FIREBASE_PROJECT_ID?: string; FIREBASE_CLIENT_EMAIL?: string; FIREBASE_PRIVATE_KEY?: string;
   CORS_ORIGINS?: string; PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string; OTP_KV?: KVNamespace;
+  IDENTITY_PROVIDER_MODE?: 'official';
+  VERIFICATION_RETENTION_DAYS?: string;
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; email?: string };
 let authOverride: User | undefined;
@@ -15,14 +18,15 @@ let assetOwnedOverride: boolean | undefined;
 let firestoreWrites: Array<{ path: string; fields: Record<string, unknown> }> | undefined;
 let reservationConflict = false;
 let capturedCommits: unknown[] | undefined;
-export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES };
+let verificationProviderOverride: IdentityVerificationProvider | undefined;
+export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 const b64u = (v: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(v))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const cors = (env: Env, origin: string | null) => {
   const allow = (env.CORS_ORIGINS || 'https://heavyar.app,https://www.heavyar.app,https://heavyar-app.web.app,https://heavyar-app.firebaseapp.com').split(',').map(x => x.trim());
-  return { 'Access-Control-Allow-Origin': allow.includes(origin || '') ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', Vary: 'Origin' };
+  return { 'Access-Control-Allow-Origin': allow.includes(origin || '') ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Correlation-ID', Vary: 'Origin' };
 };
 const out = (env: Env, req: Request, value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', ...cors(env, req.headers.get('Origin')) } });
 const err = (message: string): never => { throw new Error(message); };
@@ -43,7 +47,9 @@ async function auth(req: Request, env: Env): Promise<User> {
   const [h, p, s] = token.split('.'); if (!h || !p || !s) authErr();
   let header: any, payload: any;
   try { header = JSON.parse(new TextDecoder().decode(b64(h))); payload = JSON.parse(new TextDecoder().decode(b64(p))); } catch { authErr(); }
-  const now = Date.now(), skew = 60_000;
+  // A small allowance avoids rejecting a legitimate device with a minor clock
+  // offset without accepting a materially future-issued Firebase token.
+  const now = Date.now(), skew = 30_000;
   if (header.alg !== 'RS256' || typeof header.kid !== 'string' || !header.kid ||
       payload.aud !== env.FIREBASE_PROJECT_ID || payload.iss !== `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}` ||
       typeof payload.sub !== 'string' || payload.sub.length === 0 || payload.sub.length > 128 ||
@@ -131,10 +137,240 @@ async function enforceOperationalAccess(env: Env, u: User, equipment?: any) {
   }
   if (equipment?.isActive === false || equipment?.moderationStatus === 'suspended' || equipment?.moderationStatus === 'hidden' || equipment?.adminHidden === true) err('LISTING_UNAVAILABLE');
 }
+function verificationProfileFields(uid: string, now: string) {
+  const profile = defaultVerificationProfile(uid, now);
+  return {
+    uid: { stringValue: profile.uid },
+    identity: { mapValue: { fields: { status: { stringValue: 'unverified' }, provider: { stringValue: 'unconfigured' } } } },
+    business: { mapValue: { fields: { status: { stringValue: 'unverified' } } } },
+    bankAccount: { mapValue: { fields: { status: { stringValue: 'unverified' } } } },
+    manualReview: { mapValue: { fields: { status: { stringValue: 'unverified' } } } },
+    overallTrust: { mapValue: { fields: { status: { stringValue: 'unverified' } } } },
+    providerVerification: { mapValue: { fields: {
+      status: { stringValue: profile.providerVerification.status },
+      requiredComponents: { arrayValue: { values: profile.providerVerification.requiredComponents.map(component => ({ stringValue: component })) } },
+      components: { mapValue: { fields: Object.fromEntries(providerComponentNames.map(component => [component, { stringValue: profile.providerVerification.components[component] }])) } },
+    } } },
+    updatedAt: { timestampValue: now },
+  };
+}
+function safeProfile(profile: any, uid: string) {
+  const p = profile || defaultVerificationProfile(uid, new Date().toISOString());
+  const identityExpiresAt = p.identity?.expiresAt || null;
+  // Expiry is derived only from a backend-written timestamp. This ensures a
+  // stale pending attempt is never presented as still actionable to clients.
+  const identityStatus = p.identity?.status === 'pending' &&
+    Number.isFinite(Date.parse(String(identityExpiresAt))) &&
+    Date.parse(String(identityExpiresAt)) <= Date.now()
+    ? 'expired'
+    : String(p.identity?.status || 'unverified');
+  return {
+    uid,
+    identity: { status: identityStatus, provider: String(p.identity?.provider || 'unconfigured'), verifiedAt: p.identity?.verifiedAt || null, expiresAt: identityExpiresAt },
+    business: { status: String(p.business?.status || 'unverified') },
+    bankAccount: { status: String(p.bankAccount?.status || 'unverified') },
+    manualReview: { status: String(p.manualReview?.status || 'unverified') },
+    overallTrust: { status: String(p.overallTrust?.status || 'unverified') },
+    providerVerification: (() => {
+      const provider = providerVerificationFor(p);
+      return { status: provider.status, requiredComponents: provider.requiredComponents, components: provider.components };
+    })(),
+  };
+}
+function safeAttempt(id: string, value: any) {
+  return { attemptId: id, status: String(value?.status || 'unverified'), provider: String(value?.provider || 'unconfigured'), verificationType: String(value?.verificationType || 'identity'), createdAt: value?.createdAt || null, expiresAt: value?.expiresAt || null, verifiedAt: value?.verifiedAt || null, failureCode: value?.failureCode || null, reviewRequired: value?.reviewRequired === true };
+}
+async function verificationProfile(req: Request, env: Env, u: User) {
+  const profile = await getDoc(env, 'verificationProfiles', u.uid);
+  return out(env, req, { success: true, profile: safeProfile(profile, u.uid) });
+}
+async function verificationAttempt(req: Request, env: Env, u: User, attemptId: string) {
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(attemptId)) return out(env, req, { success: false, error: 'Not found' }, 404);
+  const item = await getDoc(env, 'verificationAttempts', attemptId);
+  if (!item || item.uid !== u.uid) return out(env, req, { success: false, error: 'Not found' }, 404);
+  return out(env, req, { success: true, attempt: safeAttempt(attemptId, item) });
+}
+async function verificationPolicy(req: Request, env: Env, _u: User) {
+  const stored = await getDoc(env, 'verificationPolicies', 'default');
+  // A malformed stored document is not an authorization bypass: it behaves as
+  // the deliberately disabled default until trusted operations replace it.
+  const policy = normalizeVerificationPolicy(stored) || defaultVerificationPolicy();
+  return out(env, req, { success: true, policy: {
+    enabled: policy.enabled,
+    requireCustomerIdentityVerification: policy.requireCustomerIdentityVerification,
+    verificationRequiredAboveAmountSAR: policy.verificationRequiredAboveAmountSAR,
+    verificationRequiredForHighRiskEquipment: policy.verificationRequiredForHighRiskEquipment,
+    verificationRequiredForSpecificRequestTypes: policy.verificationRequiredForSpecificRequestTypes,
+    version: Number(stored?.version || policy.version || 1),
+  } });
+}
+type ProviderResult = { uid: string; correlationId: string; status: 'verified' | 'rejected' };
+/**
+ * This is deliberately fed only by an official provider validator.  There is
+ * no client route which can select the test adapter or submit a result.
+ */
+async function consumeVerificationResult(env: Env, attemptId: string, result: ProviderResult) {
+  const raw = await getRawDoc(env, 'verificationAttempts', attemptId);
+  const attempt = raw?.data;
+  if (!raw?.updateTime || !attempt || !/^[A-Za-z0-9_-]{16,128}$/.test(attemptId) ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(result.uid) ||
+      !/^[A-Za-z0-9_-]{16,128}$/.test(result.correlationId) ||
+      !['verified', 'rejected'].includes(result.status)) return { status: 400, body: { success: false, error: 'Invalid verification callback' } };
+  if (attempt.consumedAt) {
+    if (attempt.uid === result.uid && attempt.correlationId === result.correlationId && attempt.status === result.status) {
+      return { status: 200, body: { success: true, idempotent: true } };
+    }
+    return { status: 409, body: { success: false, error: 'Verification callback rejected' } };
+  }
+  if (!canApplyProviderResult(attempt, { uid: result.uid, correlationId: result.correlationId, now: Date.now() })) {
+    return { status: 409, body: { success: false, error: 'Verification callback rejected' } };
+  }
+  const now = new Date().toISOString();
+  const profile = await getRawDoc(env, 'verificationProfiles', result.uid);
+  const event = result.status === 'verified' ? 'verification_completed' : 'verification_rejected';
+  const profileFields = profile?.data || defaultVerificationProfile(result.uid, now);
+  const identity = { ...(profileFields.identity || {}), status: result.status, provider: String(attempt.provider || 'official'), ...(result.status === 'verified' ? { verifiedAt: now } : {}) };
+  if (result.status === 'verified') delete identity.expiresAt;
+  // A provider result proves only identity. It cannot clear a separate
+  // operator manual-review or restriction state.
+  const manualStatus = String(profileFields.manualReview?.status || 'unverified');
+  const overallStatus = manualStatus === 'manual_review' ? 'manual_review'
+    : manualStatus === 'rejected' || manualStatus === 'restricted' ? 'restricted'
+      : result.status === 'verified' ? 'verified' : 'rejected';
+  const overall = { ...(profileFields.overallTrust || {}), status: overallStatus };
+  const providerVerification = providerVerificationFor(profileFields);
+  const providerComponents: ProviderComponents = {
+    ...providerVerification.components,
+    individualIdentity: result.status,
+  };
+  const providerTrust = deriveProviderTrust(providerComponents, providerVerification.requiredComponents);
+  const writes: any[] = [
+    { update: { name: fullName(env, `verificationAttempts/${attemptId}`), fields: {
+      status: { stringValue: result.status }, consumedAt: { timestampValue: now },
+      ...(result.status === 'verified' ? { verifiedAt: { timestampValue: now } } : { failureCode: { stringValue: 'provider_rejected' } }),
+    } }, updateMask: { fieldPaths: result.status === 'verified' ? ['status', 'consumedAt', 'verifiedAt'] : ['status', 'consumedAt', 'failureCode'] }, currentDocument: { updateTime: raw.updateTime } },
+    { update: { name: fullName(env, `verificationProfiles/${encodeURIComponent(result.uid)}`), fields: {
+      identity: { mapValue: { fields: Object.fromEntries(Object.entries(identity).map(([key, value]) => [key, { stringValue: String(value) }])) } },
+      overallTrust: { mapValue: { fields: Object.fromEntries(Object.entries(overall).map(([key, value]) => [key, { stringValue: String(value) }])) } },
+      providerVerification: { mapValue: { fields: {
+        status: { stringValue: providerTrust },
+        requiredComponents: { arrayValue: { values: providerVerification.requiredComponents.map(component => ({ stringValue: component })) } },
+        components: { mapValue: { fields: Object.fromEntries(providerComponentNames.map(component => [component, { stringValue: providerComponents[component] }])) } },
+      } } },
+      updatedAt: { timestampValue: now },
+    } }, updateMask: { fieldPaths: ['identity', 'overallTrust', 'providerVerification', 'updatedAt'] }, currentDocument: profile?.updateTime ? { updateTime: profile.updateTime } : { exists: false } },
+    { update: { name: fullName(env, `verificationEvents/${attemptId}:${event}:${result.correlationId}`), fields: {
+      uid: { stringValue: result.uid }, attemptId: { stringValue: attemptId }, correlationId: { stringValue: result.correlationId },
+      type: { stringValue: event }, provider: { stringValue: String(attempt.provider || 'official') }, status: { stringValue: result.status }, timestamp: { timestampValue: now },
+    } }, currentDocument: { exists: false } },
+  ];
+  try { await commitWrites(env, writes); } catch { return { status: 409, body: { success: false, error: 'Verification callback rejected' } }; }
+  return { status: 200, body: { success: true, idempotent: false } };
+}
+async function identityCallback(req: Request, env: Env, attemptId: string) {
+  // Official signing/certificate requirements are provider documentation
+  // dependent.  Until configured, this endpoint fails closed before parsing
+  // untrusted payloads. Test adapters are only injectable through __test.
+  if (env.IDENTITY_PROVIDER_MODE !== 'official' || !verificationProviderOverride || verificationProviderOverride.mode !== 'official') {
+    return out(env, req, { success: false, error: 'Identity provider unavailable' }, 503);
+  }
+  let raw: unknown;
+  try { raw = await req.json(); } catch { return out(env, req, { success: false, error: 'Invalid verification callback' }, 400); }
+  let result: ProviderResult;
+  try { result = await verificationProviderOverride.validateResult(raw); } catch { return out(env, req, { success: false, error: 'Invalid verification callback' }, 400); }
+  const attempt = await getDoc(env, 'verificationAttempts', attemptId);
+  if (!attempt || attempt.provider !== verificationProviderOverride.name) {
+    return out(env, req, { success: false, error: 'Verification callback rejected' }, 409);
+  }
+  const consumed = await consumeVerificationResult(env, attemptId, result);
+  return out(env, req, consumed.body, consumed.status);
+}
+async function startVerification(req: Request, env: Env, u: User) {
+  let body: any; try { body = await req.json(); } catch { return out(env, req, { success: false, error: 'Invalid verification request' }, 400); }
+  // Initiation has no client-controlled provider, UID, status, or reference:
+  // accepting only an empty object prevents schema-smuggling as fields evolve.
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) return out(env, req, { success: false, error: 'Invalid verification request' }, 400);
+  await enforceOperationalAccess(env, u);
+  const now = Date.now(), nowIso = new Date(now).toISOString();
+  const rate = await getRawDoc(env, 'verificationRateLimits', u.uid);
+  const prior = rate?.data;
+  const windowStart = Date.parse(String(prior?.windowStartedAt || ''));
+  const count = Number(prior?.count || 0);
+  if (Number.isFinite(windowStart) && now - windowStart < 3600000 && count >= 3) return out(env, req, { success: false, error: 'Verification temporarily unavailable' }, 429);
+  const nextCount = Number.isFinite(windowStart) && now - windowStart < 3600000 ? count + 1 : 1;
+  const attemptId = b64u(crypto.getRandomValues(new Uint8Array(24)));
+  const correlationId = b64u(crypto.getRandomValues(new Uint8Array(24)));
+  const expiresAt = new Date(now + 15 * 60 * 1000).toISOString();
+  const officialProvider = env.IDENTITY_PROVIDER_MODE === 'official' && verificationProviderOverride?.mode === 'official'
+    ? verificationProviderOverride
+    : undefined;
+  let providerName = 'manual_review';
+  let providerReference: string | undefined;
+  if (officialProvider) {
+    try {
+      const started = await officialProvider.start({ uid: u.uid, attemptId, correlationId, expiresAt });
+      if (!started?.referenceId || typeof started.referenceId !== 'string' || started.referenceId.length > 256) throw new Error('invalid');
+      providerName = officialProvider.name;
+      providerReference = started.referenceId;
+    } catch {
+      return out(env, req, { success: false, error: 'Identity provider unavailable' }, 503);
+    }
+  }
+  const profile = await getRawDoc(env, 'verificationProfiles', u.uid);
+  const writes: any[] = [
+    { update: { name: fullName(env, `verificationAttempts/${attemptId}`), fields: {
+        attemptId: { stringValue: attemptId }, uid: { stringValue: u.uid }, provider: { stringValue: providerName },
+      verificationType: { stringValue: 'identity' }, status: { stringValue: 'pending' }, correlationId: { stringValue: correlationId },
+        createdAt: { timestampValue: nowIso }, expiresAt: { timestampValue: expiresAt }, reviewRequired: { booleanValue: !officialProvider },
+        ...(providerReference ? { providerReference: { stringValue: providerReference } } : {}),
+    } }, currentDocument: { exists: false } },
+    { update: { name: fullName(env, `verificationRateLimits/${encodeURIComponent(u.uid)}`), fields: {
+      uid: { stringValue: u.uid }, windowStartedAt: { timestampValue: Number.isFinite(windowStart) && now - windowStart < 3600000 ? prior.windowStartedAt : nowIso },
+      count: { integerValue: String(nextCount) }, updatedAt: { timestampValue: nowIso },
+    } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } },
+    { update: { name: fullName(env, `verificationEvents/${attemptId}:started`), fields: {
+        uid: { stringValue: u.uid }, attemptId: { stringValue: attemptId }, correlationId: { stringValue: correlationId }, type: { stringValue: 'verification_started' },
+        provider: { stringValue: providerName }, status: { stringValue: 'pending' }, timestamp: { timestampValue: nowIso },
+    } }, currentDocument: { exists: false } },
+  ];
+  if (profile?.updateTime) writes.push({ update: { name: fullName(env, `verificationProfiles/${encodeURIComponent(u.uid)}`), fields: {
+    identity: { mapValue: { fields: { status: { stringValue: 'pending' }, provider: { stringValue: providerName }, expiresAt: { timestampValue: expiresAt } } } },
+    manualReview: { mapValue: { fields: { status: { stringValue: officialProvider ? 'unverified' : 'manual_review' } } } },
+    overallTrust: { mapValue: { fields: { status: { stringValue: officialProvider ? 'pending' : 'manual_review' } } } }, updatedAt: { timestampValue: nowIso },
+  } }, updateMask: { fieldPaths: ['identity.status', 'identity.provider', 'identity.expiresAt', 'manualReview.status', 'overallTrust.status', 'updatedAt'] }, currentDocument: { updateTime: profile.updateTime } });
+  else {
+    const initial = verificationProfileFields(u.uid, nowIso);
+    (initial.identity as any).mapValue.fields.status = { stringValue: 'pending' };
+    (initial.identity as any).mapValue.fields.provider = { stringValue: providerName };
+    (initial.identity as any).mapValue.fields.expiresAt = { timestampValue: expiresAt };
+    (initial.manualReview as any).mapValue.fields.status = { stringValue: officialProvider ? 'unverified' : 'manual_review' };
+    (initial.overallTrust as any).mapValue.fields.status = { stringValue: officialProvider ? 'pending' : 'manual_review' };
+    writes.push({ update: { name: fullName(env, `verificationProfiles/${encodeURIComponent(u.uid)}`), fields: initial }, currentDocument: { exists: false } });
+  }
+  try { await commitWrites(env, writes); } catch { return out(env, req, { success: false, error: 'Verification temporarily unavailable' }, 409); }
+  return out(env, req, { success: true, attempt: safeAttempt(attemptId, { status: 'pending', provider: providerName, verificationType: 'identity', createdAt: nowIso, expiresAt, reviewRequired: !officialProvider }) }, 202);
+}
+async function enforceTrustForCustomerAction(env: Env, customerUid: string, request: any, equipment: any) {
+  const [profile, storedPolicy, account] = await Promise.all([getDoc(env, 'verificationProfiles', customerUid), getDoc(env, 'verificationPolicies', 'default'), getDoc(env, 'users', customerUid)]);
+  const policy = normalizeVerificationPolicy(storedPolicy) || defaultVerificationPolicy();
+  const suspension = account?.suspensionStatus === 'temporarily_suspended' || account?.suspensionStatus === 'permanently_suspended';
+  const outcome = evaluateRisk({ suspended: suspension, identityStatus: profile?.identity?.status, manualReviewStatus: profile?.manualReview?.status, policy, amount: Number(request?.finalAmount ?? request?.amount), highRiskEquipment: equipment?.highRisk === true, requestType: request?.requestMode, verificationFailures: Number(profile?.verificationFailures || 0) });
+  if (outcome !== 'allow') err(`TRUST_${outcome.toUpperCase()}`);
+}
+async function enforceTrustForPayment(env: Env, u: User, request: any, equipment: any) {
+  return enforceTrustForCustomerAction(env, u.uid, request, equipment);
+}
 async function startRequest(req: Request, env: Env, u: User) {
   await enforceOperationalAccess(env, u);
   const { requestId } = await req.json() as { requestId?: string }; const raw = requestId ? await getRawDoc(env, 'equipmentRequests', requestId) : null;
   if (!raw?.data || (raw.data.providerUid !== u.uid && !u.admin) || raw.data.status !== 'accepted' || !raw.updateTime) return out(env, req, { success: false, error: 'Invalid request state' }, 409);
+  try {
+    const equipment = await getDoc(env, 'equipment', raw.data.equipmentId);
+    await enforceTrustForCustomerAction(env, String(raw.data.customerUid || ''), raw.data, equipment);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    return out(env, req, { success: false, error: message === 'TRUST_BLOCK' ? 'Account suspended' : 'Identity verification required', code: message.startsWith('TRUST_') ? message.replace('TRUST_', '').toLowerCase() : undefined }, 403);
+  }
   try { await compareAndSwap(env, `equipmentRequests/${encodeURIComponent(requestId!)}`, raw.updateTime, { status: { stringValue: 'in_progress' }, startedAt: { timestampValue: new Date().toISOString() } }); return out(env, req, { success: true, status: 'in_progress' }); } catch { return out(env, req, { success: false, error: 'Request changed' }, 409); }
 }
 async function confirmCompletion(req: Request, env: Env, u: User) {
@@ -275,9 +511,10 @@ async function create(req: Request, env: Env, u: User) {
   const body = await req.json() as { requestId?: string; amount?: number; purpose?: string };
   if (!body.requestId || body.amount !== undefined || (body.purpose && body.purpose !== 'equipment_request')) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', body.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
-  try { await enforceOperationalAccess(env, u, e); } catch (error) {
+  try { await enforceOperationalAccess(env, u, e); await enforceTrustForPayment(env, u, r, e); } catch (error) {
     const message = error instanceof Error ? error.message : '';
-    return out(env, req, { success: false, error: message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : 'Listing unavailable' }, 403);
+    const trust = message.startsWith('TRUST_');
+    return out(env, req, { success: false, error: trust ? 'Identity verification required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : 'Listing unavailable', code: trust ? message.replace('TRUST_', '').toLowerCase() : undefined }, 403);
   }
   if (!owned(u, r) || !r?.customerUid || r.customerUid !== u.uid) return out(env, req, { success: false, error: 'Forbidden' }, 403);
   if (String(r.requestMode || '').toLowerCase() === 'open_ended' && !(Number.isFinite(Number(r.finalAmount)) && Number(r.finalAmount) > 0)) return out(env, req, { success: false, error: 'Final amount required' }, 409);
@@ -510,6 +747,13 @@ export default { async fetch(req: Request, env: Env): Promise<Response> {
     if (path === '/api/send-email-otp' && req.method === 'POST') return await otpSend(req, env);
     if (path === '/api/verify-email-otp' && req.method === 'POST') return await otpVerify(req, env);
     if (path === '/api/register-profile' && req.method === 'POST') return await registerProfile(req, env, await auth(req, env));
+    if (path === '/api/verification/profile' && req.method === 'GET') return await verificationProfile(req, env, await auth(req, env));
+    if (path === '/api/verification/policy' && req.method === 'GET') return await verificationPolicy(req, env, await auth(req, env));
+    if (path === '/api/verification/attempts' && req.method === 'POST') return await startVerification(req, env, await auth(req, env));
+    const verificationAttemptMatch = path.match(/^\/api\/verification\/attempts\/([^/]+)$/);
+    if (verificationAttemptMatch && req.method === 'GET') return await verificationAttempt(req, env, await auth(req, env), verificationAttemptMatch[1]);
+    const identityCallbackMatch = path.match(/^\/api\/webhooks\/identity\/([A-Za-z0-9_-]{16,128})$/);
+    if (identityCallbackMatch && req.method === 'POST') return await identityCallback(req, env, identityCallbackMatch[1]);
     if (path === '/api/start-request' && req.method === 'POST') return await startRequest(req, env, await auth(req, env));
     if (path === '/api/confirm-completion' && req.method === 'POST') return await confirmCompletion(req, env, await auth(req, env));
     if (path === '/api/create-payment' && req.method === 'POST') return await create(req, env, await auth(req, env));
@@ -525,7 +769,7 @@ export default { async fetch(req: Request, env: Env): Promise<Response> {
     return out(env, req, { success: false, error: 'Not found' }, 404);
   } catch (e) {
     const message = e instanceof Error ? e.message : '';
-    const forbidden = message === 'ADMIN_REQUIRED' || message === 'ACCOUNT_SUSPENDED' || message === 'LISTING_UNAVAILABLE';
-    return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : message === 'ADMIN_REQUIRED' ? 'Admin authorization required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : message === 'LISTING_UNAVAILABLE' ? 'Listing unavailable' : 'Internal service error' }, message === 'AUTH_REQUIRED' ? 401 : forbidden ? 403 : 500);
+    const forbidden = message === 'ADMIN_REQUIRED' || message === 'ACCOUNT_SUSPENDED' || message === 'LISTING_UNAVAILABLE' || message.startsWith('TRUST_');
+    return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : message === 'ADMIN_REQUIRED' ? 'Admin authorization required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : message === 'LISTING_UNAVAILABLE' ? 'Listing unavailable' : message.startsWith('TRUST_') ? 'Identity verification required' : 'Internal service error' }, message === 'AUTH_REQUIRED' ? 401 : forbidden ? 403 : 500);
   }
 } };
