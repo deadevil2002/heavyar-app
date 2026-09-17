@@ -502,6 +502,35 @@ describe('admin authorization and operational boundary', () => {
     expect(JSON.stringify(commits[0]).includes('moderationStatus')).toBe(false);
   });
 
+  test('admin equipment aliases prefer canonical public numbers after backfill', async () => {
+    __test.setAuth({ uid: 'ops-1', admin: true, role: 'admin', permissionRole: 'operations' });
+    const listing = {
+      title: 'Crane',
+      publicEquipmentNumber: 'HV-EQP-000042',
+      equipmentNumber: 'legacy-equipment-document-id',
+    };
+    __adminTest.setQuery((collection) => collection === 'equipment' ? [{
+      name: 'projects/p/databases/(default)/documents/equipment/equipment-1', data: listing,
+    }] : collection === 'equipmentRequests' ? [{
+      name: 'projects/p/databases/(default)/documents/equipmentRequests/request-1',
+      data: { equipmentId: 'equipment-1', publicRequestNumber: 'HV-REQ-000009' },
+    }] : []);
+    __adminTest.setFirestore((collection, id) =>
+      collection === 'equipment' && id === 'equipment-1' ? listing : null);
+
+    const equipmentResponse = await worker.fetch(new Request('https://worker.test/api/admin/equipment', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(equipmentResponse.status).toBe(200);
+    expect((await equipmentResponse.json() as any).items[0].equipmentNumber).toBe('HV-EQP-000042');
+
+    const requestResponse = await worker.fetch(new Request('https://worker.test/api/admin/requests', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(requestResponse.status).toBe(200);
+    expect((await requestResponse.json() as any).items[0].equipment.number).toBe('HV-EQP-000042');
+  });
+
   test('staff claim sync jobs have durable bounded retry schema and complete idempotently', async () => {
     const job: any = claimSyncWrite(env, 'staff-1', 'marketing', true, 3);
     expect(String(job.update.name).includes('staffClaimSync')).toBe(true);

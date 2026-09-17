@@ -371,7 +371,8 @@ function displayName(value: Record<string, any> | undefined, fallback = 'Unknown
 }
 
 function publicIdentifier(kind: 'request' | 'equipment', id: string, value: Record<string, any>) {
-  const explicit = value.publicRequestNumber || value.requestNumber || value.publicNumber || value.equipmentNumber || value.listingNumber;
+  const explicit = value[PUBLIC_IDENTIFIER_FIELDS[kind]]
+    || value.requestNumber || value.publicNumber || value.equipmentNumber || value.listingNumber;
   return typeof explicit === 'string' && explicit.trim() ? explicit : `${kind === 'request' ? 'HV-REQ' : 'HV-EQP'}-${id}`;
 }
 
