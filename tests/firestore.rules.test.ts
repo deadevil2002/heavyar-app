@@ -5,6 +5,7 @@ import {
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 
@@ -33,12 +34,16 @@ const request = {
 };
 
 function authed(uid: string) {
-  return env.authenticatedContext(uid).firestore();
+  return asModularFirestore(env.authenticatedContext(uid).firestore());
+}
+
+function asModularFirestore(firestore: unknown): Firestore {
+  return firestore as Firestore;
 }
 
 async function seed() {
   await env.withSecurityRulesDisabled(async (context) => {
-    const db = context.firestore();
+    const db = asModularFirestore(context.firestore());
     await setDoc(doc(db, 'users/provider-1'), {
       uid: 'provider-1', role: 'provider', isVerified: true, crVerified: false,
       nameAr: 'Provider', nameEn: 'Provider', avatar: '',
@@ -141,7 +146,7 @@ describe('Firestore authorization baseline', () => {
 
   it('blocks suspended accounts and moderated listings on direct client paths', async () => {
     await env.withSecurityRulesDisabled(async (context) => {
-      await updateDoc(doc(context.firestore(), 'users/provider-1'), { suspensionStatus: 'temporarily_suspended' });
+      await updateDoc(doc(asModularFirestore(context.firestore()), 'users/provider-1'), { suspensionStatus: 'temporarily_suspended' });
     });
     const provider = authed('provider-1');
     await assertFails(setDoc(doc(provider, 'equipment/suspended-owner-listing'), {
@@ -153,8 +158,8 @@ describe('Firestore authorization baseline', () => {
       ...request, equipmentId: 'hidden-listing',
     }));
     await env.withSecurityRulesDisabled(async (context) => {
-      await updateDoc(doc(context.firestore(), 'users/provider-1'), { suspensionStatus: null });
-      await updateDoc(doc(context.firestore(), 'equipment/equipment-1'), { moderationStatus: 'suspended', isActive: false });
+      await updateDoc(doc(asModularFirestore(context.firestore()), 'users/provider-1'), { suspensionStatus: null });
+      await updateDoc(doc(asModularFirestore(context.firestore()), 'equipment/equipment-1'), { moderationStatus: 'suspended', isActive: false });
     });
     await assertFails(setDoc(doc(authed('customer-1'), 'equipmentRequests/suspended-request'), {
       ...request, equipmentId: 'equipment-1',
@@ -163,7 +168,7 @@ describe('Firestore authorization baseline', () => {
 
   it('blocks suspended deletes and chat/rating writes for suspended participants or moderated listings', async () => {
     await env.withSecurityRulesDisabled(async (context) => {
-      const db = context.firestore();
+      const db = asModularFirestore(context.firestore());
       await updateDoc(doc(db, 'equipmentRequests/request-1'), { allowChat: true });
       await updateDoc(doc(db, 'users/customer-1'), { suspensionStatus: 'temporarily_suspended' });
       await updateDoc(doc(db, 'users/provider-1'), { suspensionStatus: 'temporarily_suspended' });
@@ -173,7 +178,7 @@ describe('Firestore authorization baseline', () => {
       requestId: 'request-1', senderUid: 'customer-1', text: 'blocked', createdAt: new Date(), read: false,
     }));
     await env.withSecurityRulesDisabled(async (context) => {
-      const db = context.firestore();
+      const db = asModularFirestore(context.firestore());
       await updateDoc(doc(db, 'users/customer-1'), { suspensionStatus: null });
       await updateDoc(doc(db, 'users/provider-1'), { suspensionStatus: null });
       await updateDoc(doc(db, 'equipment/equipment-1'), { moderationStatus: 'hidden', isActive: false });
@@ -189,7 +194,7 @@ describe('Firestore authorization baseline', () => {
 
   it('blocks every direct mutation for deletion-requested users while preserving self reads', async () => {
     await env.withSecurityRulesDisabled(async (context) => {
-      const db = context.firestore();
+      const db = asModularFirestore(context.firestore());
       await updateDoc(doc(db, 'users/customer-1'), { accountStatus: 'deletion_requested' });
       await updateDoc(doc(db, 'users/provider-1'), { accountStatus: 'deletion_requested' });
       await updateDoc(doc(db, 'equipmentRequests/request-1'), { allowChat: true });
@@ -238,7 +243,7 @@ describe('Firestore authorization baseline', () => {
 
   it('prevents a direct provider acceptance from bypassing an enabled identity policy', async () => {
     await env.withSecurityRulesDisabled(async (context) => {
-      await setDoc(doc(context.firestore(), 'verificationPolicies/default'), {
+      await setDoc(doc(asModularFirestore(context.firestore()), 'verificationPolicies/default'), {
         enabled: true, requireCustomerIdentityVerification: true,
         verificationRequiredAboveAmountSAR: null, verificationRequiredForHighRiskEquipment: false,
         verificationRequiredForSpecificRequestTypes: [],
@@ -248,7 +253,7 @@ describe('Firestore authorization baseline', () => {
       status: 'accepted', allowChat: true, updatedAt: serverTimestamp(),
     }));
     await env.withSecurityRulesDisabled(async (context) => {
-      await setDoc(doc(context.firestore(), 'verificationProfiles/customer-1'), {
+      await setDoc(doc(asModularFirestore(context.firestore()), 'verificationProfiles/customer-1'), {
         uid: 'customer-1', identity: { status: 'verified' },
       });
     });
@@ -294,7 +299,7 @@ describe('Firestore authorization baseline', () => {
       status: 'in_progress', allowChat: true, updatedAt: serverTimestamp(),
     }));
     await env.withSecurityRulesDisabled(async (context) => {
-      await updateDoc(doc(context.firestore(), 'equipmentRequests/request-1'), {
+      await updateDoc(doc(asModularFirestore(context.firestore()), 'equipmentRequests/request-1'), {
         status: 'in_progress', allowChat: true, startedAt: new Date(),
       });
     });

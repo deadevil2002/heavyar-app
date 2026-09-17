@@ -8,6 +8,25 @@ const storageBucket = import.meta.env.VITE_FIREBASE_STORAGE_BUCKET;
 const messagingSenderId = import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID;
 const appId = import.meta.env.VITE_FIREBASE_APP_ID;
 
+const requiredFirebaseFields = {
+  apiKey,
+  authDomain,
+  projectId,
+  storageBucket,
+  messagingSenderId,
+  appId,
+};
+
+for (const [field, value] of Object.entries(requiredFirebaseFields)) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`[Firebase Config] Missing public field: ${field}`);
+  }
+}
+
+if (projectId !== 'heavyar-app') {
+  throw new Error('[Firebase Config] Refusing a non-Heavyar Firebase project');
+}
+
 const firebaseConfig = {
   apiKey,
   authDomain,
