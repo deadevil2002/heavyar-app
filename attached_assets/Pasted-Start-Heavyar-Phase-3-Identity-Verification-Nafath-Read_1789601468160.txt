@@ -1,0 +1,793 @@
+Start Heavyar Phase 3 — Identity Verification, Nafath Readiness, Trust & Risk Core.
+
+IMPORTANT CURRENT BASELINE
+
+Official repository:
+https://github.com/deadevil2002/heavyar-app
+
+Branch:
+main
+
+Current verified Phase 2 SHA:
+12a44f10ef20a954e069ace7c867a935d0b653cf
+
+Existing production Cloudflare Worker:
+heavyar-api
+
+Production Worker URL:
+https://heavyar-api.heavyar-official.workers.dev
+
+Firebase project:
+heavyar-app
+
+Production Admin Dashboard:
+https://heavyar-app.web.app
+
+Permanent Heavyar Super Admin is already configured and working.
+
+Phase 0, Phase 1, and Phase 2 are complete.
+
+DO NOT rebuild or replace completed architecture.
+
+==================================================
+PRE-FLIGHT
+==================================================
+
+Before modifying anything:
+
+1. Fetch and inspect origin/main.
+
+2. Confirm current remote HEAD is:
+   12a44f10ef20a954e069ace7c867a935d0b653cf
+   or a clean direct successor with no unexpected divergence.
+
+3. Confirm the working tree is clean.
+
+4. Create and push a permanent safety tag:
+
+   heavyar-phase2-baseline
+
+pointing to:
+
+   12a44f10ef20a954e069ace7c867a935d0b653cf
+
+Do not move or rewrite this tag later.
+
+Do not force push.
+
+==================================================
+PHASE 3 PRIMARY GOAL
+==================================================
+
+Build Heavyar's trusted identity-verification and risk-control foundation.
+
+Heavyar is a Saudi marketplace for renting equipment and transactions may be high-value.
+
+The system must support:
+
+- customer identity verification
+- provider identity verification
+- future official Nafath integration
+- manual verification components where legitimate
+- verification requirements for sensitive transactions
+- server-side risk policies
+- admin verification operations
+- trusted verification audit history
+
+Do NOT fake Nafath integration.
+
+Do NOT claim a user is Nafath-verified unless Heavyar has received and validated an official provider result.
+
+Do NOT reverse engineer Nafath.
+
+Do NOT implement unofficial Nafath APIs.
+
+==================================================
+1. CANONICAL TRUST MODEL
+==================================================
+
+Create a server-authoritative trust model.
+
+Do NOT rely on a simple client-writable:
+
+verified: true
+
+Use structured backend-owned states.
+
+Support at minimum:
+
+unverified
+pending
+verified
+rejected
+expired
+manual_review
+restricted
+
+Separate concepts clearly:
+
+- identity verification
+- provider/business verification
+- account suspension
+- risk/restriction state
+
+A verified identity does NOT automatically remove an account suspension.
+
+Normal clients must never be able to write trusted verification or risk state.
+
+==================================================
+2. VERIFICATION PROFILE
+==================================================
+
+Create a trusted verification profile for each user.
+
+Design it so Heavyar can later support multiple verification components.
+
+Example conceptual structure:
+
+identity:
+  status
+  provider
+  verifiedAt
+  expiresAt
+
+business:
+  status
+
+bankAccount:
+  status
+
+manualReview:
+  status
+
+overallTrust:
+  status
+
+Do not blindly use this exact schema if the existing architecture has a safer convention.
+
+Provider overall verification must NOT become verified merely because one component passed.
+
+==================================================
+3. VERIFICATION ATTEMPTS
+==================================================
+
+Create a backend-owned verificationAttempts model.
+
+Include appropriate fields such as:
+
+attemptId
+uid
+provider
+verificationType
+status
+correlationId
+createdAt
+expiresAt
+verifiedAt
+failureCode
+reviewRequired
+consumedAt
+
+Use cryptographically strong opaque correlation/reference IDs.
+
+Attempts must be:
+
+- bound to Firebase UID
+- single-purpose
+- expiring
+- replay-resistant
+- backend-created
+- backend-updated
+
+Normal users may only read safe status information for their own verification attempts.
+
+They must not read provider secrets or raw sensitive provider payloads.
+
+==================================================
+4. NAFATH PROVIDER ABSTRACTION
+==================================================
+
+Create a provider-neutral identity verification interface.
+
+For example:
+
+IdentityVerificationProvider
+
+with a future implementation such as:
+
+NafathVerificationProvider
+
+The mobile app must not contain Nafath-specific secrets or business logic.
+
+Heavyar internal APIs should remain stable even if another official identity provider is added later.
+
+Do not hard-couple the entire application to one provider.
+
+==================================================
+5. OFFICIAL NAFATH DISCOVERY
+==================================================
+
+Inspect the Heavyar environment and existing project documentation for any legitimate official Nafath credentials or integration configuration.
+
+Do NOT invent credentials.
+
+Do NOT search for unofficial workarounds.
+
+If official Nafath integration material is NOT currently available:
+
+finish the complete secure provider architecture,
+API contracts,
+Firestore models,
+mobile flow,
+admin flow,
+state machine,
+tests,
+and secure test provider/mocks.
+
+Then clearly report the exact official external requirement still needed.
+
+Do not stop development early merely because Nafath credentials are absent.
+
+Only the final external provider connection may remain blocked.
+
+==================================================
+6. FUTURE OFFICIAL NAFATH FLOW
+==================================================
+
+The architecture must support this trusted flow:
+
+1. User is authenticated in Heavyar.
+
+2. User requests identity verification.
+
+3. Heavyar backend creates an expiring verification attempt.
+
+4. Heavyar backend communicates with official Nafath.
+
+5. Nafath returns an official reference/correlation identifier.
+
+6. User completes authorization through the official supported method.
+
+7. Heavyar backend receives trusted status through official callback and/or polling.
+
+8. Heavyar validates the official response.
+
+9. Heavyar confirms that:
+   - attempt exists
+   - attempt belongs to correct UID
+   - attempt is not expired
+   - correlation ID matches
+   - result has not already been consumed
+   - provider result is valid
+
+10. Heavyar updates trusted verification state.
+
+The mobile client must never submit:
+
+verified = true
+
+as evidence of successful verification.
+
+==================================================
+7. CALLBACK / REPLAY SECURITY
+==================================================
+
+Build callback-processing foundations with:
+
+- provider validation
+- correlation validation
+- state transition validation
+- attempt expiry validation
+- replay prevention
+- durable idempotency
+- safe error responses
+- append-only audit events
+
+Where official Nafath signing/certificate validation is required, create the secure integration boundary for it.
+
+Do not invent signing rules before official documentation is available.
+
+==================================================
+8. DATA MINIMIZATION
+==================================================
+
+Heavyar must minimize sensitive personal data.
+
+Prefer storing only what is operationally necessary:
+
+- provider name
+- status
+- attempt/reference ID
+- timestamps
+- minimal verification metadata
+- expiry information if applicable
+
+Do NOT store unnecessary:
+
+- full identity documents
+- full official response payloads
+- secrets
+- certificates
+- PIN values
+- authentication challenges
+
+unless officially required and justified.
+
+Never log sensitive identity payloads.
+
+Create redaction helpers where necessary.
+
+==================================================
+9. CUSTOMER VERIFICATION POLICY
+==================================================
+
+Create a trusted policy model to support rules such as:
+
+requireCustomerIdentityVerification
+
+verificationRequiredAboveAmountSAR
+
+verificationRequiredForHighRiskEquipment
+
+verificationRequiredForSpecificRequestTypes
+
+Do NOT invent a SAR threshold.
+
+If no Heavyar threshold has been defined, keep it configurable and disabled/safe by default.
+
+Changes to verification policy must not retroactively alter completed payments, invoices, or immutable Phase 1 quotes.
+
+==================================================
+10. PROVIDER VERIFICATION
+==================================================
+
+Create a dedicated provider verification model.
+
+Support future components such as:
+
+- individual identity
+- business/legal entity
+- commercial registration
+- ownership/authorization
+- payout/bank verification
+- admin manual review
+
+Do not pretend these external checks exist if they are not integrated.
+
+Each component should have its own state.
+
+Overall provider trust should derive safely from required components.
+
+==================================================
+11. ADMIN VERIFICATION CENTER
+==================================================
+
+Extend the existing Admin Dashboard.
+
+Add a real Verification section.
+
+Admin should be able to:
+
+- list verification attempts
+- filter by status
+- inspect safe metadata
+- inspect user/provider identity
+- see verification history
+- see failed attempts
+- see expired attempts
+- see manual-review cases
+- add internal notes
+- review provider verification components
+
+Admin must NOT be able to manually set:
+
+"Nafath verified"
+
+unless that status came from the official provider result.
+
+Manual admin decisions must use separate manual-review fields/states.
+
+==================================================
+12. TRUST / RISK ENGINE
+==================================================
+
+Build a conservative deterministic risk-policy engine.
+
+Do NOT build AI-based fraud scoring in this phase.
+
+Potential trusted signals may include:
+
+- identity verification status
+- provider verification state
+- active suspension
+- account age
+- high-value transaction
+- repeated verification failures
+- repeated failed payments
+- confirmed disputes
+- confirmed complaints
+- abnormal request behavior
+
+Risk outcome should use a clear server-side result such as:
+
+allow
+require_verification
+require_manual_review
+restrict
+block
+
+Do not expose sensitive anti-fraud logic to clients.
+
+Do not permanently suspend someone based solely on one automatic risk signal.
+
+==================================================
+13. TRANSACTION ENFORCEMENT
+==================================================
+
+Integrate verification/risk policy with the existing request and Phase 1 payment architecture.
+
+When trusted policy requires identity verification:
+
+the backend must reject progression to the protected action unless verification requirements are satisfied.
+
+Possible protected actions may include:
+
+- accepting high-value rental
+- starting checkout
+- creating payment
+- sensitive provider actions
+
+Do not rely on UI hiding.
+
+Direct API calls must also be blocked.
+
+Existing unaffected transactions must continue to work.
+
+==================================================
+14. SUSPENSION COMPATIBILITY
+==================================================
+
+Preserve Phase 2 suspension rules.
+
+A suspended user must not bypass suspension by completing identity verification.
+
+Identity verification and administrative suspension are separate controls.
+
+Risk restrictions must also respect existing admin suspension state.
+
+==================================================
+15. MOBILE VERIFICATION UX
+==================================================
+
+Add only the mobile UI necessary for verification.
+
+Do not perform the full Heavyar visual redesign yet.
+
+Arabic first, English supported.
+
+Display trustworthy states such as:
+
+غير موثق
+جاري التحقق
+موثق
+تعذر التحقق
+تحت المراجعة
+انتهت صلاحية التحقق
+
+Only show the trusted verified badge when backend state is actually verified.
+
+Do not display Nafath branding or claim official Nafath verification unless the official integration is actually active and authorized.
+
+==================================================
+16. ADMIN TRUST VISIBILITY
+==================================================
+
+Add safe trust indicators to relevant Admin sections:
+
+Users
+Providers
+Rental Requests
+Payments
+Complaints / Disputes
+
+Admin should be able to understand operational status such as:
+
+Identity verified
+Verification required
+Manual review
+Restricted
+
+without exposing raw sensitive provider payloads or internal anti-fraud implementation details.
+
+==================================================
+17. AUDIT EVENTS
+==================================================
+
+Add trusted append-only events such as:
+
+verification_started
+verification_pending
+verification_completed
+verification_failed
+verification_rejected
+verification_expired
+manual_review_started
+manual_review_completed
+risk_review_started
+risk_restriction_applied
+risk_restriction_removed
+
+Include:
+
+actor where applicable
+uid
+attempt ID
+timestamp
+safe reason/status code
+correlation/request ID
+
+Never include secrets or full sensitive identity responses.
+
+==================================================
+18. RATE LIMITING / ABUSE CONTROL
+==================================================
+
+Protect verification initiation from abuse.
+
+Implement appropriate server-side controls against:
+
+- verification spam
+- rapid repeated retries
+- correlation enumeration
+- callback replay
+- brute-force attempt IDs
+
+Do not rely on client-side timers.
+
+==================================================
+19. FIRESTORE SECURITY RULES
+==================================================
+
+Update rules where required.
+
+Normal users must never be able to:
+
+- mark themselves verified
+- mark another user verified
+- update provider trust
+- update official verification status
+- update risk results
+- alter verification audit records
+- alter admin review decisions
+- create trusted provider callbacks
+- change correlation IDs
+- modify attempt ownership
+
+Do not weaken Phase 0, Phase 1, or Phase 2 security rules.
+
+==================================================
+20. API AUTHORIZATION
+==================================================
+
+All user-specific verification APIs must require valid Firebase authentication.
+
+All admin verification APIs must require trusted admin authorization.
+
+Validate:
+
+- UID ownership
+- role
+- payload schema
+- allowed state transitions
+- attempt expiry
+- replay state
+
+Return safe errors.
+
+Do not leak internal stack traces or provider payloads.
+
+==================================================
+21. PRIVACY / RETENTION
+==================================================
+
+Implement safe retention foundations.
+
+Expired verification attempts should not remain forever without reason.
+
+Firebase TTL may still be unavailable depending on project billing.
+
+Do not require billing solely for cleanup.
+
+If TTL is unavailable, implement a safe deterministic cleanup approach that can run from trusted backend/admin maintenance.
+
+Never weaken authorization just to support cleanup.
+
+==================================================
+22. AUTOMATED TEST PROVIDER
+==================================================
+
+If official Nafath sandbox is not available, implement a TEST-ONLY identity provider adapter.
+
+Requirements:
+
+- only available outside production provider mode
+- cannot accidentally mark production users verified
+- clearly identified in code/tests
+- deterministic automated testing
+- no exposed backdoor endpoint
+- impossible to activate from normal mobile client
+
+Do not create a production "fake verification" feature.
+
+==================================================
+23. TEST COVERAGE
+==================================================
+
+Add strong automated tests including at minimum:
+
+- unauthenticated verification start rejected
+- user cannot start verification for another UID
+- user cannot self-mark verified
+- client cannot update trusted attempt
+- wrong correlation ID rejected
+- expired attempt rejected
+- already-consumed attempt rejected
+- duplicate callback idempotent
+- malformed provider response rejected
+- wrong UID binding rejected
+- replay attempt rejected
+- sensitive provider response not exposed
+- sensitive data not written to logs/audit
+- official provider status cannot be forged by admin
+- permitted manual review action works
+- normal user cannot perform manual review
+- verification-required transaction is blocked
+- verified transaction can continue
+- suspended verified account remains blocked
+- policy change does not rewrite immutable Phase 1 quote
+- provider component state behaves correctly
+- risk engine state transitions are deterministic
+- admin verification APIs require trusted role
+
+Run ALL previous Phase 0, Phase 1, and Phase 2 tests as well.
+
+==================================================
+24. SECURITY REVIEW
+==================================================
+
+Run:
+
+- SAST
+- secret scan
+- privacy/dataflow review
+- dependency audit
+- authorization review
+
+Pay special attention to:
+
+- PII leakage
+- IDOR
+- privilege escalation
+- callback replay
+- state forgery
+- Firebase rule bypass
+- admin privilege bypass
+
+No secret may enter GitHub.
+
+==================================================
+25. DEPLOYMENT
+==================================================
+
+If implementation and all tests pass:
+
+1. Deploy Firestore rules/indexes if required.
+
+2. Deploy only to existing Cloudflare Worker:
+   heavyar-api
+
+3. Preserve all current Worker bindings and secrets.
+
+4. Deploy updated Admin Dashboard to existing Firebase Hosting:
+   https://heavyar-app.web.app
+
+5. Verify production mobile/API compatibility.
+
+6. Run safe smoke tests.
+
+7. Do NOT perform a real Nafath identity verification unless official authorized sandbox/test access is already available.
+
+8. Do NOT perform real payment or refund transactions.
+
+If any high-confidence security regression is found:
+
+DO NOT DEPLOY.
+
+Fix it first.
+
+==================================================
+26. GIT
+==================================================
+
+Review git diff carefully.
+
+Ensure none of the following are committed:
+
+- Nafath credentials
+- certificates
+- private keys
+- Firebase service-account JSON
+- Google OAuth tokens
+- Cloudflare API tokens
+- Tap secrets
+- Cloudinary secrets
+- Resend secrets
+- password material
+- raw identity payload fixtures containing real personal data
+
+Commit normally.
+
+Push only to:
+
+origin/main
+
+Do not force push.
+
+Return final SHA.
+
+==================================================
+STOP CONDITIONS
+==================================================
+
+Only stop for a genuinely external unavoidable blocker such as:
+
+- official Nafath onboarding requirement
+- official Nafath API credentials
+- sandbox approval
+- required Nafath certificate
+- Saudi government/commercial contract
+- external legal retention decision with no safe technical default
+
+Do NOT stop for programming work, Firebase deployment, Cloudflare deployment, Hosting deployment, tests, code editing, or Git tasks that Replit can perform itself.
+
+Do NOT start:
+
+- full mobile visual redesign
+- live Tap activation
+- App Store release
+- Google Play release
+- broad notification overhaul
+
+==================================================
+FINAL REPORT
+==================================================
+
+At completion report:
+
+1. Trust model implemented
+2. Verification states
+3. Verification-attempt model
+4. Identity provider abstraction
+5. Nafath integration readiness
+6. Exact remaining official Nafath requirement, if any
+7. Customer verification policy
+8. Provider verification model
+9. Risk engine
+10. Server-side transaction enforcement
+11. Admin Verification Center
+12. Mobile verification UX
+13. Firestore rule/index changes
+14. Privacy/data-minimization controls
+15. Rate limiting/replay protection
+16. Test counts/results
+17. Security review results
+18. Firebase deployment status
+19. Cloudflare Worker version
+20. Admin Hosting deployment status
+21. Production smoke-test results
+22. Git commit(s)
+23. Final origin/main SHA
+24. Remaining blockers/risks
+25. Exact recommended Phase 4 scope
+
+Then STOP.

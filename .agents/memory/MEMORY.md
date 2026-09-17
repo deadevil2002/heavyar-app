@@ -1,0 +1,10 @@
+- [External persistence contract tests](external-persistence-contract-tests.md) — mocked write capture must also verify real endpoint construction and version preconditions.
+- [Heavyar Cloudflare isolation](heavyar-cloudflare-isolation.md) — use only app-scoped Heavyar credentials; never modify shared Cloudflare integrations or replace its Worker.
+- [Heavyar payment settlement invariants](heavyar-payment-settlement-invariants.md) — paid success requires linked request, payment, invoice, and events; preserve ambiguous provider attempts for reconciliation.
+- [Heavyar identity boundaries](heavyar-identity-boundaries.md) — manual review never substitutes for official identity verification; activate providers only from authorized integration material.
+- [Heavyar notification delivery invariants](heavyar-notification-delivery-invariants.md) — releases must prove canonical ownership, durable outbox writes, and receipt-correct device retries.
+- [Heavyar Firebase Hosting deployment](heavyar-firebase-hosting-deployment.md) — stage admin output with equivalent Hosting config because Firebase rejects public paths outside the config directory.
+- [Authenticated browser QA handoff](authenticated-browser-qa.md) — the browser notebook cannot read shell secrets; hand off short-lived Firebase storage state, never expose credentials through an endpoint.
+- [GitHub release transport](github-release-transport.md) — prefer the configured GitHub SDK for bulk Git objects; verify the tree and independent remote ref before reporting a push.
+- [Cloudflare Worker fingerprints](cloudflare-worker-fingerprints.md) — hash parsed module contents, not changing multipart response boundaries.
+- [Expo managed preview](expo-managed-preview.md) — automation accounts cannot use ngrok; use the dedicated Expo preview domain without changing authentication.

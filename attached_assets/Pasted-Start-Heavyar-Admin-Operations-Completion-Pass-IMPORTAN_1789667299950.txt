@@ -1,0 +1,1122 @@
+Start Heavyar Admin & Operations Completion Pass.
+
+IMPORTANT:
+This is a focused production usability + operations + admin/backend integration pass.
+
+Do NOT redesign the Heavyar mobile application.
+Do NOT start EAS/native builds.
+Do NOT submit to stores.
+Do NOT activate Tap Live.
+Do NOT activate official Nafath yet.
+Do NOT weaken any Phase 0–5 security architecture.
+
+==================================================
+CURRENT BASELINE
+==================================================
+
+Repository:
+https://github.com/deadevil2002/heavyar-app
+
+Branch:
+main
+
+Current verified HEAD:
+312c12475814bcf234511689acbebc84985e57b6
+
+Production Admin:
+https://heavyar-app.web.app
+
+Worker:
+https://heavyar-api.heavyar-official.workers.dev
+
+Firebase:
+heavyar-app
+
+The latest desktop/mobile sidebar fix MUST be preserved.
+
+Before edits:
+- fetch origin/main
+- confirm HEAD
+- confirm clean tree
+- do not force push
+
+==================================================
+PRIMARY GOAL
+==================================================
+
+Make the Heavyar Admin Dashboard operationally clear and production-ready for a real marketplace.
+
+The current backend already contains many features, but several are technically exposed instead of being presented as a professional operations dashboard.
+
+Preserve existing security and business logic while improving:
+
+- human-readable data
+- admin/staff separation
+- ownership management
+- exports
+- equipment moderation
+- request readability
+- driver management
+- campaigns
+- payment gateway visibility
+- Nafath readiness
+- invoices
+- admin navigation/discoverability
+- responsive behavior on every screen size
+
+==================================================
+1. OWNER_BOOTSTRAP AUDIT EVENT
+==================================================
+
+The dashboard currently exposes a raw audit entry such as:
+
+owner_bootstrap
+
+and technical IDs such as:
+heavyar-super-admin-...
+
+This is confusing.
+
+DO NOT delete the underlying immutable audit record.
+
+Instead:
+
+- translate/humanize owner_bootstrap as:
+  Arabic:
+  "تم تفعيل المالك الأول للنظام"
+  English:
+  "Initial system owner activated"
+
+- On Dashboard "Recent Activity", show:
+  human-readable actor name/email where safely available
+  action label
+  date/time
+
+- Do NOT show long raw UID strings on the main dashboard.
+
+- Raw actor UID / target UID may remain available inside Audit Log details with a copy button.
+
+Apply the same human-readable presentation to other technical audit action names.
+
+==================================================
+2. USERS MUST BE SEPARATE FROM STAFF
+==================================================
+
+This is important.
+
+The Users page represents normal Heavyar application accounts.
+
+Remove these actions from the Users page:
+
+- Grant Admin
+- Revoke Admin
+- any staff-role management
+
+Users page may contain only account/customer operational actions such as:
+
+- view account
+- suspend
+- unsuspend
+- trust / verification status
+- account deletion status
+- complaints/disputes summary where appropriate
+
+Do NOT delete normal customer/provider roles.
+
+A marketplace user role such as:
+customer
+provider
+driver-related state
+
+is NOT the same thing as an Admin/Staff permission role.
+
+==================================================
+3. STAFF & PERMISSIONS — SINGLE SOURCE OF TRUTH
+==================================================
+
+Use the dedicated Staff section as the ONLY admin-permission management area.
+
+Staff onboarding must work by invitation.
+
+Required flow:
+
+1. Owner/Super Admin enters an email.
+2. Selects a staff role.
+3. System creates a pending invitation.
+4. Email invitation is sent.
+5. Recipient signs in or creates/uses their Firebase account.
+6. Recipient explicitly accepts the invitation.
+7. Only then are trusted claims/permissions applied.
+8. Audit everything.
+
+Even if the email already belongs to a Heavyar customer/provider account:
+DO NOT silently grant staff privileges immediately.
+
+Always require invitation acceptance.
+
+Show:
+- Active Staff
+- Pending Invitations
+- Expired Invitations
+- Revoked Staff
+
+==================================================
+4. STAFF ROLE MODEL
+==================================================
+
+Make the role model future-ready and least-privilege.
+
+Use clearly separated roles such as:
+
+owner
+super_admin
+admin
+finance
+payouts
+operations
+support
+verification
+marketing
+auditor
+moderator
+
+Recommended meanings:
+
+owner:
+- one canonical system owner
+- unrestricted ownership control
+- can transfer ownership
+
+super_admin:
+- full operational/admin control
+- cannot replace/remove Owner without owner-transfer flow
+
+admin:
+- broad operations but no ownership/secret management
+
+finance:
+- payment/invoice/refund financial visibility
+
+payouts:
+- payout/settlement operations only
+
+operations:
+- requests/equipment/providers/drivers
+
+support:
+- users/complaints/customer service
+- no payment secrets or role control
+
+verification:
+- identity/provider verification cases
+
+marketing:
+- promotional campaigns only
+
+auditor:
+- read-only operational/audit access
+
+moderator:
+- equipment/listing review and moderation
+
+Do not expose permissions merely through UI hiding.
+All permissions must be enforced server-side.
+
+==================================================
+5. OWNERSHIP TRANSFER
+==================================================
+
+Move or prominently expose ownership management inside:
+
+Security → Ownership
+
+The Owner should be able to enter ANY valid email.
+
+Safe flow:
+
+- Owner enters target email.
+- Require recent reauthentication with current password.
+- Create a pending ownership-transfer invitation.
+- If target already has Firebase account, bind invitation safely.
+- If target does not have an account, email them an invitation.
+- Recipient must authenticate and accept.
+- Existing Owner remains Owner until acceptance completes atomically.
+- Then claims/Staff records are updated atomically.
+- Invalidate/refresh relevant tokens/claims.
+- Audit both initiation and completion.
+- Expire unused invitations.
+
+Never transfer ownership just because an email was typed.
+
+Display:
+Current Owner
+Pending Transfer
+Cancel Transfer
+Transfer Ownership
+
+==================================================
+6. HUMAN-READABLE IDENTIFIERS
+==================================================
+
+The dashboard currently shows Firestore document IDs such as:
+
+DYDaK8JL
+m1k3C7dR
+
+as primary business information.
+
+Stop using raw internal IDs as the primary display.
+
+Do NOT change Firestore document IDs.
+
+Instead introduce/use stable public identifiers.
+
+REQUESTS:
+Use existing public request number if one exists.
+
+If none exists, implement a server-authoritative human-readable request number for new requests and safely backfill existing requests without changing document IDs.
+
+Example format may be:
+
+HV-REQ-000001
+
+or another clear Heavyar format.
+
+It must be:
+- unique
+- immutable
+- generated server-side
+- concurrency safe
+
+EQUIPMENT:
+Use a human-readable equipment/listing number if one exists.
+Otherwise create one safely for operational display.
+
+Internal UIDs/doc IDs remain available in Details with Copy ID.
+
+==================================================
+7. RESOLVE NAMES INSTEAD OF UID CODES
+==================================================
+
+Admin tables must show people, not database codes.
+
+USERS:
+- name
+- email
+- role
+- status
+- verification
+- UID only secondary
+
+PROVIDERS:
+- provider name
+- email
+- phone if authorized
+- city
+- verification
+- status
+- UID secondary
+
+DRIVERS:
+- driver full name
+- email/phone where permitted
+- city/region
+- vehicle/equipment types
+- availability
+- moderation status
+- verification
+- UID secondary
+
+EQUIPMENT:
+- equipment title
+- equipment number
+- owner name
+- owner email
+- daily rate
+- city
+- active/hidden
+- moderation state
+
+REQUESTS:
+- public request number
+- customer name
+- customer email where appropriate
+- provider name
+- equipment name/number
+- rental date range
+- total
+- payment state
+- request state
+
+PAYMENTS / INVOICES:
+- request number
+- customer name
+- provider name
+- payment provider/reference
+- amount/status
+
+Avoid N+1 client fetching if possible.
+Prefer safe server-enriched admin responses / batch resolution.
+
+==================================================
+8. DETAILS DRAWER / MODAL
+==================================================
+
+For major entities add a View Details action.
+
+At minimum:
+
+User
+Provider
+Driver
+Equipment
+Request
+Payment
+Invoice
+Complaint
+
+Details must show structured operational information.
+
+Raw UID/internal IDs should appear only in a technical section with Copy buttons.
+
+==================================================
+9. EXCEL EXPORTS
+==================================================
+
+Add a clear "Export Excel" action to appropriate admin sections.
+
+At minimum:
+
+Users
+Providers
+Drivers
+Equipment
+Requests
+Payments
+Invoices
+Refunds
+Complaints
+Staff
+Verification cases
+
+Exports must:
+
+- produce a real .xlsx file
+- respect active filters/search where sensible
+- allow current page or all filtered results
+- paginate safely server-side if exporting all
+- use professional English column names
+- never export secrets
+- never export password material
+- never export full private verification provider payloads
+- never export FCM tokens
+- include human-readable names/IDs
+- use SAR for financial amounts
+- include generated timestamp
+
+Do not introduce a vulnerable spreadsheet dependency.
+Use a maintained dependency compatible with the current environment.
+
+==================================================
+10. DRIVER END-TO-END REVIEW
+==================================================
+
+Audit the MOBILE APP driver registration flow, not only Admin.
+
+Confirm that when a real user registers as a driver in the mobile application:
+
+- driverProfiles is created correctly
+- profile remains bound to Firebase UID
+- name is available or resolved from user profile
+- region
+- city
+- phone where allowed
+- equipment/vehicle capabilities
+- availability/status
+- verification/moderation state
+
+Then Admin → Drivers must automatically list that driver.
+
+Do NOT require Admin to type a UID manually just to discover a registered driver.
+
+Keep UID search as an advanced lookup only.
+
+Add filters:
+- status
+- city
+- region
+- moderation
+- verification
+
+Do not create a fake production driver merely for QA.
+Use automated/emulator tests and safe existing fixtures.
+
+==================================================
+11. EQUIPMENT MODERATION
+==================================================
+
+The current interface displays:
+
+Status: Active/Hidden
+Moderation: Pending Review
+
+but only exposes Hide/Suspend actions.
+
+Correct this model.
+
+Clearly separate:
+
+LISTING VISIBILITY:
+- visible
+- hidden
+- archived
+
+MODERATION:
+- pending_review
+- approved
+- rejected
+- suspended
+
+Add moderator/admin actions:
+
+- Approve
+- Reject
+- Suspend
+- Restore/Re-review where appropriate
+
+Reject must require a reason.
+
+Display:
+- reviewedBy
+- reviewedAt
+- rejection reason if applicable
+
+Clarify with UI help text that:
+
+"Active/Hidden" = owner/marketplace visibility
+
+"Pending/Approved/Rejected" = Heavyar moderation status
+
+A pending or rejected listing must not be publicly rentable.
+
+If the provider edits sensitive listing fields after approval
+(price, identity/category-critical data, ownership-sensitive details),
+apply whatever re-review policy is safest without breaking valid active rentals.
+
+Preserve the already implemented owner hide/show/delete/edit rules.
+
+==================================================
+12. REQUESTS
+==================================================
+
+Fix Requests page readability.
+
+Display:
+- public request number
+- customer NAME
+- provider NAME
+- equipment
+- rental from/to
+- total SAR
+- payment status
+- request status
+- trust/verification
+
+Translate known statuses for Arabic UI.
+
+Example:
+pending → قيد الانتظار
+accepted → مقبول
+in_progress → قيد التنفيذ
+completed → مكتمل
+cancelled → ملغي
+
+Do not change canonical backend status values.
+
+Admin actions must respect the request state machine.
+
+Do not show "Cancel Request" for a state where cancellation is not valid.
+
+Freeze/escalate/cancel must be server-validated.
+
+==================================================
+13. NOTIFICATIONS VS MARKETING CAMPAIGNS
+==================================================
+
+There are two different concepts:
+
+A. Notification Health
+Operational delivery/FCM status.
+
+B. Marketing Campaigns
+Admin-created promotional pushes.
+
+Keep them separate in navigation.
+
+Add a clearly visible Sidebar item:
+
+"الحملات الترويجية"
+"Marketing Campaigns"
+
+The existing campaigns functionality must remain:
+
+- Arabic title/body
+- English title/body
+- all users/customers/providers/drivers audience
+- region/city targeting
+- optional image
+- allowlisted Heavyar deep link
+- immediate send
+- scheduled send
+- recipient estimate
+- audit trail
+- notification preference opt-out
+
+Do not hide Marketing Campaigns below an unclear menu area.
+
+==================================================
+14. SIDEBAR INFORMATION ARCHITECTURE
+==================================================
+
+Keep the responsive fix from commit:
+312c12475814bcf234511689acbebc84985e57b6
+
+Reorganize sidebar into clear groups while preserving desktop/mobile behavior.
+
+Suggested groups:
+
+MAIN
+- Dashboard
+
+MARKETPLACE
+- Users
+- Providers
+- Drivers
+- Equipment
+- Requests
+
+FINANCE
+- Payments
+- Invoices
+- Refunds
+- Payment Gateways
+
+TRUST & SUPPORT
+- Complaints
+- Verification
+- Identity Integrations
+- Notifications
+
+MARKETING
+- Marketing Campaigns
+
+ADMINISTRATION
+- Staff & Permissions
+- System Configuration
+- Provider Configuration
+- Audit Log
+- Security
+
+On desktop:
+sidebar remains fixed and scrollable.
+
+On mobile:
+drawer behavior remains exactly correct.
+
+Do not reintroduce any RTL transform bug.
+
+==================================================
+15. PAYMENT GATEWAYS
+==================================================
+
+A Payment Gateways page already exists.
+Make it easily discoverable and operationally clear.
+
+Keep secrets SERVER-ONLY.
+
+Never allow secret API keys to be returned to Admin browser.
+
+For each gateway show:
+
+- provider name
+- configured / not configured
+- enabled / disabled
+- environment TEST / LIVE
+- adapter available
+- supported payment methods
+- split/marketplace support
+- last health/test result if safe
+- primary/priority if multiple gateways are eventually enabled
+
+Candidates:
+
+Tap
+Moyasar
+MyFatoorah
+
+CURRENT RULES:
+
+Tap:
+- remain TEST only
+- do NOT activate Live
+
+Moyasar:
+- keep disabled unless a real authorized adapter and credentials exist
+
+MyFatoorah:
+- keep disabled unless a real authorized adapter and credentials exist
+
+Do not pretend a gateway is ready merely because an ENV name exists.
+
+The app should only present a usable checkout method if backend reports the gateway as operational and enabled.
+
+No real charge in QA.
+
+==================================================
+16. NAFATH / RABET IDENTITY INTEGRATION PAGE
+==================================================
+
+Create a dedicated Admin section:
+
+Arabic:
+"تكامل نفاذ"
+or
+"مزودات التحقق"
+
+English:
+"Identity Integrations"
+
+Add Nafath via Rabet as the first provider.
+
+IMPORTANT CURRENT STATE:
+
+We have created a Heavyar application in Rabet Solutions and requested the Nafath sandbox/trial subscription.
+
+Rabet activation/documentation is still pending.
+
+Therefore:
+
+Nafath must remain DISABLED.
+
+Do NOT invent undocumented endpoints.
+
+Do NOT activate official verification.
+
+The Admin page should show:
+
+Provider:
+Nafath via Rabet
+
+Mode:
+Sandbox / Production
+
+Status:
+- Waiting for activation
+- Not configured
+- Configured
+- Ready
+- Disabled
+- Enabled
+- Connection error
+
+Readiness indicators:
+- App/Client ID configured
+- Client Secret configured
+- API base URL configured
+- official adapter available
+- JWK/signature validation configured
+- callback configured
+- last connection test
+
+Do NOT show secret values.
+Only display:
+Configured / Missing.
+
+Include a Super Admin Enable toggle.
+
+The toggle MUST remain disabled unless:
+- official adapter exists
+- official required settings exist
+- provider health/config validation passes
+
+If credentials are absent:
+show:
+"بانتظار تفعيل خدمة نفاذ من رابط"
+"Waiting for Rabet Nafath activation"
+
+The backend must remain fail-closed.
+
+Do NOT use the existing test-only verification provider as fake Nafath.
+
+When official Rabet documentation/credentials arrive later,
+the adapter should be attachable without redesigning the UI or trust model.
+
+==================================================
+17. PROVIDER CONFIG UX
+==================================================
+
+The current Provider Config page renders raw JSON.
+
+Replace raw JSON as the primary UI.
+
+Use structured cards/forms for non-secret provider configuration.
+
+Raw JSON may remain only in an Advanced/Developer view if needed.
+
+==================================================
+18. SECURITY PAGE
+==================================================
+
+Keep Change Password.
+
+Add clear sections:
+
+ACCOUNT SECURITY
+- Change Password
+- Recent security/audit info where safe
+
+OWNERSHIP
+- Current Owner
+- Transfer Ownership by email
+- Pending transfer
+- Cancel transfer
+
+STAFF SECURITY
+- link to Staff & Permissions
+
+Do not expose Firebase claims directly to the user unless under an advanced technical view.
+
+==================================================
+19. INVOICE PDF SYSTEM
+==================================================
+
+Audit the current invoice-generation architecture.
+
+If no authoritative PDF generator exists, implement one.
+
+Invoices must be generated from trusted server-side invoice/payment/request data.
+
+PDF requirements:
+
+- Heavyar logo at top
+- professional clean layout
+- English labels
+- SAR currency
+- immutable invoice number
+- issue date/time
+- associated public request number
+- payment status
+- payment provider/reference
+- customer name
+- provider name
+- equipment name
+- rental date/time range
+- subtotal
+- platform fee where applicable
+- VAT where applicable
+- total amount
+- legal/business information from configured Heavyar business settings
+
+Never invent:
+- CR number
+- VAT number
+- tax registration status
+
+If those legal values are not configured, omit or clearly treat the document as a non-tax invoice as appropriate.
+
+Arabic DATA VALUES are allowed even though invoice labels are English.
+
+For example:
+Provider Name: مؤسسة سالم...
+
+Arabic text must render correctly in the PDF:
+- proper Unicode
+- connected Arabic glyphs
+- RTL shaping/alignment where required
+- no squares
+- no reversed/broken letters
+
+Do NOT transliterate or automatically translate user-entered Arabic names.
+
+PDF download must work from Admin.
+
+Where appropriate, customer/provider should also be able to access their own invoice through authorized mobile flow.
+
+Do not expose another user's invoice.
+
+==================================================
+20. BUSINESS CONFIGURATION
+==================================================
+
+Add structured non-secret invoice/business settings for Super Admin where appropriate:
+
+- legal business name Arabic
+- legal business name English
+- commercial registration number
+- VAT registration number
+- support email
+- support phone
+- invoice logo asset reference
+- business address
+
+Do not store secret credentials here.
+
+Audit changes.
+
+==================================================
+21. SEARCH / FILTER / SORT
+==================================================
+
+Improve operational tables with useful filters.
+
+Users:
+role/status/verification
+
+Providers:
+status/verification/city
+
+Drivers:
+status/city/region/moderation
+
+Equipment:
+moderation/visibility/city/owner
+
+Requests:
+status/payment state/date
+
+Payments:
+state/provider/date
+
+Invoices:
+status/date/request number
+
+Complaints:
+status/date
+
+Use server-safe pagination.
+
+==================================================
+22. MOBILE APP CONNECTION REGRESSION
+==================================================
+
+Review corresponding mobile flows so Admin changes do not become disconnected from the app.
+
+Verify:
+
+- driver registration → Admin Drivers
+- equipment creation → Pending Review / moderation
+- equipment approval → visible/rentable according to policy
+- equipment hide/show/delete/edit flow
+- request creation → public request number
+- request statuses
+- notification campaigns recipients
+- invoice ownership access
+- verification state
+- gateway availability
+
+Do NOT perform a visual redesign.
+
+Do NOT run EAS builds.
+
+Use:
+- TypeScript
+- Expo web/dev preview where possible
+- unit/integration tests
+- Firestore emulator
+- Worker tests
+
+==================================================
+23. EXPORT + PRIVACY SECURITY
+==================================================
+
+Exports and details must respect permissions.
+
+Finance/payout staff may access financial export appropriate to role.
+
+Support must not receive:
+- payment secrets
+- provider credentials
+- verification raw provider payloads
+
+Marketing must not access unnecessary financial/identity data.
+
+Auditor is read-only.
+
+All important Admin mutations:
+- actor
+- target
+- reason
+- timestamp
+
+must be audited.
+
+==================================================
+24. RESPONSIVE QA — DO NOT BREAK THE FIX
+==================================================
+
+Admin must remain usable in Arabic RTL and English LTR.
+
+Test:
+
+Desktop:
+1920x1080
+1440x900
+1366x768
+1024x768
+
+Mobile:
+430x932
+390x844
+360x800
+
+Verify all new pages:
+- Staff
+- Campaigns
+- Gateways
+- Identity Integrations
+- Exports
+- invoice details
+- ownership dialogs
+
+No horizontal page overflow.
+Tables may scroll only inside their table container.
+
+==================================================
+25. TESTS
+==================================================
+
+Add tests for at minimum:
+
+- Users page/API cannot grant staff role
+- Staff invitation requires acceptance
+- Existing Heavyar user still requires Staff invitation acceptance
+- expired Staff invite rejected
+- role permissions enforced server-side
+- Owner transfer requires recent reauth
+- ownership does not change before recipient acceptance
+- only Owner can initiate ownership transfer
+- human public request numbers unique
+- internal Firestore IDs unchanged
+- admin enriched user/provider/request names
+- XLSX export redacts forbidden fields
+- driver registration appears in admin source
+- equipment pending moderation not publicly rentable
+- approve equipment works
+- reject equipment requires reason
+- invalid request action rejected
+- marketing campaigns permission enforcement
+- payment gateway enablement fails closed if not configured
+- Nafath cannot enable while provider is not officially configured
+- Nafath test provider cannot masquerade as official
+- invoice authorization
+- PDF generation contains expected English labels
+- Arabic invoice field renders without corruption where testable
+- role-based Admin routes/actions
+- responsive Admin build regression
+
+Run ALL existing Heavyar tests too.
+
+==================================================
+26. SECURITY
+==================================================
+
+Run:
+
+- SAST
+- secret scan
+- dependency audit
+- authorization review
+- privacy/dataflow review
+
+Do not commit:
+
+- Rabet Client Secret
+- Rabet credentials
+- Tap secrets
+- Moyasar secrets
+- MyFatoorah keys
+- Firebase service-account JSON
+- Cloudflare token
+- Resend key
+- Expo token
+- signing credentials
+
+==================================================
+27. DEPLOYMENT
+==================================================
+
+After all tests pass:
+
+Deploy only required changes to existing:
+
+Firebase project:
+heavyar-app
+
+Cloudflare Worker:
+heavyar-api
+
+Firebase Hosting:
+https://heavyar-app.web.app
+
+Preserve all current bindings/secrets.
+
+Do NOT:
+- perform real payment
+- activate Tap Live
+- activate Nafath
+- create EAS build
+- submit stores
+
+==================================================
+28. GIT
+==================================================
+
+Review git diff carefully.
+
+Commit normally.
+Push only to:
+
+origin/main
+
+No force push.
+
+Return final SHA.
+
+==================================================
+FINAL REPORT
+==================================================
+
+Report:
+
+1. owner_bootstrap presentation fix
+2. Users vs Staff separation
+3. Staff invitation behavior
+4. Staff roles implemented
+5. Ownership transfer behavior
+6. human-readable request/equipment IDs
+7. name/email enrichment
+8. Excel exports
+9. driver mobile/admin verification
+10. equipment moderation behavior
+11. request improvements
+12. marketing campaigns visibility/status
+13. payment gateway page/readiness
+14. Nafath/Rabet readiness page and disabled status
+15. provider config UX
+16. Security page
+17. invoice PDF implementation and Arabic rendering result
+18. filters/search/detail views
+19. responsive QA results
+20. Worker tests
+21. Firestore tests
+22. Mobile tests/typecheck
+23. Admin build/typecheck
+24. security scan
+25. deployed Worker version
+26. Hosting deployment
+27. final Git SHA
+28. anything still externally blocked
+
+Then STOP.
+
+Do not start another phase.

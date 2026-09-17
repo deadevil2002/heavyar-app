@@ -1,0 +1,183 @@
+Do NOT deploy anything yet.
+
+I want you to diagnose the Cloudflare authorization problem completely and tell me EXACTLY what access I must grant manually.
+
+Current Heavyar Cloudflare details:
+
+Account ID:
+e43da79a0ea995c11c90e7819fb0c6e6
+
+Existing Worker:
+heavyar-api
+
+Existing token name:
+Heavyar Replit Deploy
+
+Current Replit secrets:
+CLOUDFLARE_API_TOKEN
+CLOUDFLARE_ACCOUNT_ID
+
+Your task is AUTHORIZATION DIAGNOSIS ONLY.
+
+==================================================
+1. VERIFY THE EXACT ACCOUNT BEING USED
+==================================================
+
+Confirm the actual value loaded at runtime for:
+
+CLOUDFLARE_ACCOUNT_ID
+
+It must equal exactly:
+
+e43da79a0ea995c11c90e7819fb0c6e6
+
+Check for stale or conflicting values from:
+
+- Replit Secrets
+- shell environment
+- .env files
+- wrangler.toml / wrangler.json / wrangler.jsonc
+- Cloudflare MCP/connector
+- previous account integrations
+- cached CLI authentication
+
+Do not print any secret token value.
+
+==================================================
+2. IDENTIFY THE TOKEN TYPE
+==================================================
+
+Determine whether CLOUDFLARE_API_TOKEN is:
+
+- Cloudflare Account API Token
+- User API Token
+- OAuth token
+- legacy API token
+
+Use the correct Cloudflare verification endpoint for that token type.
+
+Do not assume a User Token verification endpoint if this is an Account API Token.
+
+==================================================
+3. TEST AUTHORIZATION WITHOUT MUTATION
+==================================================
+
+Perform READ-ONLY tests only.
+
+Test access to:
+
+- Heavyar account metadata
+- existing heavyar-api Worker
+- Worker settings
+- Worker versions
+- Worker deployments
+- Worker schedules/triggers where applicable
+
+Record:
+- endpoint
+- HTTP status
+- Cloudflare error code
+- Cloudflare error message
+
+Do not deploy.
+Do not create or modify any resource.
+
+==================================================
+4. DETERMINE EXACTLY WHAT PERMISSION IS MISSING
+==================================================
+
+Use Cloudflare's CURRENT official API/Workers authorization documentation.
+
+Do not guess.
+
+Determine the exact permission(s) required for:
+
+A. Reading the existing Worker configuration
+B. Reading versions/deployments
+C. Updating/deploying the existing Worker
+D. Preserving settings/secrets safely
+
+Then tell me EXACTLY what I must select in the Cloudflare UI.
+
+I need the exact wording as it appears in Cloudflare, for example:
+
+- resource type
+- permission group
+- role
+- Read / Edit / Admin
+- Account-level vs Individual Worker
+- Entire Account vs Specified Worker
+- which Worker to select
+
+If more than one permission is truly required, list ALL of them together now.
+
+Do not make me add one permission at a time.
+
+==================================================
+5. OPEN / REQUEST THE CORRECT AUTHORIZATION IF POSSIBLE
+==================================================
+
+If Replit can initiate a Cloudflare authorization/integration request for the exact required permission, open that request for me now.
+
+If Replit cannot open the Cloudflare permission UI directly, then stop and show me one compact instruction block like:
+
+Cloudflare → Account API Tokens → Heavyar Replit Deploy → Edit
+
+Resource:
+[exact resource]
+
+Permission:
+[exact permission]
+
+Access:
+[Read / Edit / Admin]
+
+Scope:
+[Heavyar account / heavyar-api only]
+
+And include every required permission in the SAME response.
+
+==================================================
+6. IMPORTANT SAFETY RULES
+==================================================
+
+Do NOT ask for:
+
+- Cloudflare Account Owner
+- Global Administrator
+- DNS permissions
+- Zone permissions
+- R2
+- D1
+- KV
+- AI
+- Pages
+- unrelated Workers
+- billing permissions
+
+unless one of those is objectively required for deploying the existing heavyar-api Worker.
+
+Do NOT broaden access "just to make it work."
+
+Use least privilege.
+
+==================================================
+7. FINAL RESPONSE FORMAT
+==================================================
+
+Return only:
+
+1. Token type detected
+2. Runtime Account ID detected
+3. Whether Account ID matches Heavyar
+4. Exact failing endpoints and Cloudflare error codes
+5. Exact missing permission(s)
+6. Exact Cloudflare UI path to add them
+7. Exact resource scope
+8. Whether the existing CLOUDFLARE_API_TOKEN value can continue being used after the permission change
+9. Whether I must replace/update the token value in Replit
+10. Whether any Cloudflare MCP/connector login is conflicting
+
+Then STOP.
+
+Do not deploy until I manually confirm the permission change.

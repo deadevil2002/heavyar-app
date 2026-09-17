@@ -1,0 +1,83 @@
+Continue the current Heavyar Phase 0 task from exactly where you stopped.
+
+The Cloudflare API token has now been corrected to grant the required write access for Workers Scripts on the Heavyar account only.
+
+Do NOT create a new Worker.
+Do NOT replace or rename the existing Worker.
+Do NOT modify iSaudi or Tabbakheen resources.
+Do NOT broaden Cloudflare permissions.
+
+Use the existing production target only:
+
+Account:
+Heavyar.official@gmail.com's Account
+
+Worker:
+heavyar-api
+
+Production URL:
+https://heavyar-api.heavyar-official.workers.dev
+
+==================================================
+TASK
+==================================================
+
+1. Re-validate the current CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.
+
+2. Confirm the token can:
+   - read the Heavyar account
+   - access the existing heavyar-api Worker
+   - create/deploy a new version of that existing Worker
+
+3. Before deployment:
+   - verify the Worker source currently passes TypeScript/build checks
+   - verify the Phase 0 Worker tests still pass
+   - verify existing production bindings/secrets will be preserved
+   - confirm no new Worker will be created
+
+4. Deploy the current Phase 0 Worker changes to the existing heavyar-api Worker only.
+
+5. After deployment:
+   - verify the deployment/version succeeded
+   - run a safe production smoke test
+   - verify the Worker is reachable
+   - verify authentication protections are active
+   - verify no existing secrets/bindings were removed
+   - do not perform real payment charges
+
+6. If deployment fails:
+   - stop
+   - report the exact Cloudflare permission/API error
+   - do not change unrelated resources
+   - do not create replacement infrastructure
+
+7. If deployment succeeds:
+   - continue the remaining Phase 0 validation
+   - verify Firebase deployment state
+   - re-run all relevant final acceptance checks
+   - inspect git diff
+   - verify no secrets or temporary files are included
+   - commit the completed Phase 0 changes
+   - push normally to origin/main
+   - verify the pushed commit SHA exists remotely
+
+Do NOT force push.
+
+==================================================
+FINAL OUTPUT
+==================================================
+
+Return:
+
+- Cloudflare account verified
+- Worker verified
+- Worker deployment result
+- Production Worker version/deployment identifier
+- Firebase status
+- Final test results
+- Any remaining blockers
+- Final Git commit SHA pushed to main
+
+Then STOP.
+
+Do not start Phase 1 automatically.

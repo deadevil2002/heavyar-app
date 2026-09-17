@@ -1,0 +1,540 @@
+Start Heavyar Final Developer Handoff — Release Preparation Only.
+
+IMPORTANT:
+This is the FINAL Replit preparation phase.
+
+I do NOT want Replit to submit Heavyar to Google Play or the Apple App Store.
+
+My human developer will handle:
+- final Android native/store build
+- final iOS native/store build
+- Apple Developer provisioning
+- Google Play Console
+- App Store Connect
+- physical-device final testing
+- store submission
+
+Replit's job now is to leave the repository, backend, documentation, and release configuration completely ready for that developer.
+
+==================================================
+CURRENT VERIFIED BASELINE
+==================================================
+
+Official repository:
+https://github.com/deadevil2002/heavyar-app
+
+Branch:
+main
+
+Current expected SHA:
+c7c2965b9f27533596a2d7a39cbe3651ff156395
+
+Permanent mobile identities:
+
+Android:
+com.heavyar.app
+
+iOS:
+com.heavyar.app
+
+Expo scheme:
+heavyar
+
+Expo/EAS project:
+
+Owner:
+isaudi.ai
+
+Project:
+heavyar
+
+Project UUID:
+57eb8d63-5541-479e-b81b-89733b8068e5
+
+Firebase project:
+heavyar-app
+
+Cloudflare Worker:
+heavyar-api
+
+Worker URL:
+https://heavyar-api.heavyar-official.workers.dev
+
+Admin Dashboard:
+https://heavyar-app.web.app
+
+Official GitHub repository remains the single source of truth.
+
+==================================================
+1. PRE-FLIGHT
+==================================================
+
+Fetch origin/main.
+
+Confirm the repository is at:
+
+c7c2965b9f27533596a2d7a39cbe3651ff156395
+
+or a clean direct successor with no unexpected changes.
+
+Confirm working tree is clean.
+
+Create and push a permanent tag:
+
+heavyar-phase5-baseline
+
+pointing to the final Phase 5 SHA.
+
+Do not move this tag later.
+
+Do not force push.
+
+==================================================
+2. DO NOT RUN MORE EAS BUILDS
+==================================================
+
+Do NOT start another Android or iOS EAS build.
+
+The two Android attempts already failed because Expo build workers could not reliably reach the package registry.
+
+This was classified as an external Expo infrastructure/network failure.
+
+Do not attempt another paid/metered build.
+
+Do not request another build budget.
+
+Do not request another Expo OAuth authorization.
+
+Do not request Apple credentials.
+
+==================================================
+3. DO NOT SUBMIT TO STORES
+==================================================
+
+Do NOT:
+
+- submit to Google Play
+- submit to App Store Connect
+- create a Play production/internal release
+- create an App Store/TestFlight submission
+- activate production rollout
+- upload store builds
+- modify store listings
+- activate Tap Live
+- activate unofficial Nafath
+
+==================================================
+4. CREATE FINAL DEVELOPER HANDOFF DOCUMENT
+==================================================
+
+Create a professional document in the repository:
+
+docs/HEAVYAR_RELEASE_HANDOFF.md
+
+This document must allow a competent mobile developer to continue without needing to reverse-engineer the project.
+
+Include:
+
+A. Project identity
+- Android applicationId
+- iOS bundle identifier
+- Expo scheme
+- Expo project owner/name/UUID
+- Firebase project
+- Worker URL
+- Admin URL
+
+B. Repository
+- GitHub URL
+- branch
+- final SHA
+- baseline tags
+- package manager
+- Node/Bun requirements if relevant
+
+C. Architecture
+Briefly describe:
+
+- Expo/React Native mobile app
+- Firebase Auth
+- Firestore
+- Cloudflare Worker
+- Firebase Hosting Admin
+- Cloudinary
+- Resend
+- Tap TEST payment adapter
+- verification/trust architecture
+- notification outbox architecture
+- Expo notifications
+
+D. Environment variable names
+
+List ONLY variable/secret names.
+
+Never include values.
+
+Separate:
+
+Mobile/public environment
+Worker secrets
+Firebase deployment credentials
+Cloudflare deployment credentials
+Expo/EAS credentials
+payment/email/media credentials
+
+Clearly label which ones are:
+- public configuration
+- server secrets
+- deployment-only secrets
+
+E. Android handoff
+Include exact steps for the developer to:
+
+- verify com.heavyar.app
+- install dependencies
+- run Expo Doctor
+- create Android preview APK
+- create production AAB
+- inspect resulting native libraries
+- verify Android 16 KB page-size compatibility
+- validate notification permission
+- validate Firebase
+- validate deep links
+- validate push delivery
+- validate payment return path
+- increment versionCode correctly
+
+Do not include private signing keys.
+
+F. iOS handoff
+Include exact steps for:
+
+- Apple Developer/App Store Connect setup
+- bundle ID com.heavyar.app
+- distribution certificate/provisioning
+- registering physical test device if internal distribution is used
+- APNs capability
+- push notification entitlement
+- GoogleService-Info.plist validation
+- ITSAppUsesNonExemptEncryption=false
+- privacy manifest inspection
+- archive validation
+- incrementing buildNumber
+
+Do not include Apple passwords, private keys, or certificates.
+
+G. Real-device QA checklist
+Create a concise but comprehensive checklist covering:
+
+Authentication:
+- registration/login
+- persistence
+- logout
+- password recovery
+
+Customer/provider:
+- equipment
+- requests
+- acceptance/rejection
+- lifecycle
+- completion
+
+Payments:
+- TEST payment only
+- redirect
+- return
+- backend verification
+- failed/pending behavior
+
+Notifications:
+- foreground
+- background
+- terminated app
+- inbox
+- unread badge
+- deep link
+- token ownership
+
+Verification:
+- unverified
+- pending
+- verified test states
+- restrictions
+- suspension behavior
+
+Admin:
+- super_admin access
+- normal user 403
+- operations
+- verification
+- payments
+- notifications
+
+Cloudinary:
+- upload
+- ownership
+- delete
+
+Account deletion:
+- request
+- account lock
+- token revocation
+
+Arabic/English:
+- RTL
+- LTR
+- major screen layout
+
+H. Android 16 KB verification instructions
+Document exactly how the developer should verify the generated APK/AAB at binary level.
+
+State clearly that Phase 5 could not conclusively verify this because Expo failed before producing an APK.
+
+I. Known blockers
+Document:
+
+1. Android EAS builds failed twice because Expo build workers encountered package-registry ConnectionRefused / FailedToOpenSocket errors.
+
+2. iOS internal build requires Apple distribution signing credentials and device provisioning.
+
+3. Real-device push/deep-link/cold-start testing remains pending.
+
+4. Official Nafath integration remains disabled pending authorized onboarding/API/certificate materials.
+
+5. Tap Live remains disabled.
+
+J. Remaining dependency advisories
+
+Document:
+
+image-size@1.2.1
+
+as build-tooling/Metro exposure only if that remains accurate.
+
+Document that no known exploitable critical/high deployed runtime advisory remains.
+
+==================================================
+5. STORE ASSET HANDOFF
+==================================================
+
+Create:
+
+docs/STORE_ASSET_CHECKLIST.md
+
+Document what already exists and what the developer/designer still needs.
+
+Include at minimum:
+
+Already present:
+- app icon
+- adaptive icon
+- splash
+- privacy URL
+- terms URL
+- support URL
+- account deletion URL/process
+
+Still required:
+- Google Play screenshots
+- Google Play feature graphic
+- localized short description
+- localized full description
+- App Store screenshots
+- App Store promotional/metadata fields
+- final privacy/data disclosures
+- support/contact review
+
+Do not invent store screenshots.
+
+Do not fabricate legal/business claims.
+
+==================================================
+6. STORE COMPLIANCE HANDOFF
+==================================================
+
+Create:
+
+docs/STORE_COMPLIANCE_CHECKLIST.md
+
+Prepare checklists for:
+
+Google Play:
+- target API
+- 16 KB compatibility
+- Data Safety
+- account deletion
+- privacy policy
+- permissions
+- notification permission
+- content rating
+- app access
+- ads declaration
+- financial/payment disclosures if relevant
+
+Apple:
+- privacy nutrition labels
+- account deletion
+- privacy policy
+- export compliance
+- required reason APIs
+- privacy manifests
+- push entitlement
+- App Transport Security
+- support URL
+- review notes
+
+Clearly distinguish:
+- already satisfied in code
+- must be completed by developer/store owner
+- must be verified on final binary
+
+==================================================
+7. FINAL CONFIGURATION AUDIT
+==================================================
+
+Perform one final read-only/config audit.
+
+Verify:
+
+- no old Rork Android package is active
+- Android identity is com.heavyar.app
+- iOS identity is com.heavyar.app
+- Expo projectId is correct
+- Expo scheme is heavyar
+- Firebase Android/iOS configs correspond to permanent identities
+- Worker production URL is correct
+- admin Hosting URL is correct
+- Tap remains TEST
+- Nafath production remains disabled
+
+Fix only genuine configuration mistakes.
+
+Do not refactor working code.
+
+==================================================
+8. SECRET SAFETY
+==================================================
+
+Scan tracked repository content again.
+
+Ensure Git does NOT contain:
+
+- EXPO_TOKEN
+- Cloudflare token
+- Firebase service-account JSON
+- Apple credentials
+- Apple private keys
+- Android signing keys
+- Play Console service-account key
+- Tap secret
+- Resend API key
+- Cloudinary API secret
+- Nafath credentials
+- passwords
+
+Do not print secret values in the final response.
+
+==================================================
+9. FINAL TEST PASS
+==================================================
+
+Run all non-native-build validation that can be done without another EAS build.
+
+At minimum:
+
+- Worker tests
+- Firestore rule tests
+- request transition tests
+- payment tests
+- verification/trust tests
+- notification tests
+- deletion tests
+- Mobile TypeScript
+- Admin TypeScript/build
+- Worker TypeScript/build
+- Expo Doctor
+- Expo dependency validation
+- clean web export
+- secret scan
+- SAST
+- dependency audit
+- privacy/dataflow scan
+- git diff --check
+
+Do NOT trigger another metered EAS build.
+
+==================================================
+10. PRODUCTION SERVICE CHECK
+==================================================
+
+Perform safe checks only.
+
+Confirm:
+
+Worker health:
+https://heavyar-api.heavyar-official.workers.dev
+
+Admin:
+https://heavyar-app.web.app
+
+Privacy/Terms/Support/Deletion routes.
+
+Do not create:
+- real payment
+- real refund
+- real Nafath verification
+
+==================================================
+11. GIT
+==================================================
+
+If only documentation/configuration changes are necessary:
+
+review git diff.
+
+Confirm no secret material.
+
+Commit with a clear message such as:
+
+docs: add Heavyar release developer handoff
+
+Push only to:
+
+origin/main
+
+Do not force push.
+
+Return final SHA.
+
+==================================================
+12. FINAL HANDOFF REPORT
+==================================================
+
+Report:
+
+1. Final repository SHA
+2. Permanent Android ID
+3. Permanent iOS ID
+4. Expo project identity
+5. Firebase identities
+6. Worker/Admin production status
+7. Test results
+8. Security scan results
+9. Remaining dependency advisories
+10. Android build blocker
+11. iOS build blocker
+12. Android 16 KB verification status
+13. Real-device validation status
+14. Nafath status
+15. Tap status
+16. Release documentation files created
+17. Store assets still required
+18. Exact tasks the human developer must perform
+19. Whether the repository is ready for developer handoff
+
+Then STOP permanently.
+
+Do not start Phase 6 automatically.
+Do not request another build.
+Do not request store credentials.
+Do not submit anything.

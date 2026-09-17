@@ -1,0 +1,728 @@
+Start Heavyar Phase 5 — Permanent App Identity Migration, Native Build Readiness & Real-Device Validation.
+
+IMPORTANT BASELINE
+
+Official repository:
+https://github.com/deadevil2002/heavyar-app
+
+Branch:
+main
+
+Current verified Phase 4 SHA:
+8d0faab02eca935f354f24ec86e79c701c467810
+
+Existing production Cloudflare Worker:
+heavyar-api
+
+Production Worker URL:
+https://heavyar-api.heavyar-official.workers.dev
+
+Firebase project:
+heavyar-app
+
+Production Admin Dashboard:
+https://heavyar-app.web.app
+
+Permanent Heavyar Super Admin is already configured and working.
+
+Phase 0 through Phase 4 are complete.
+
+Official Nafath production integration remains intentionally disabled until authorized onboarding materials exist.
+
+Live Tap remains intentionally disabled.
+
+Do not weaken completed architecture.
+
+==================================================
+PERMANENT MOBILE APP IDENTITY
+==================================================
+
+The existing Android package:
+
+app.rork.8mcv0eg4e2l3to7ex9wvv
+
+is NOT acceptable for store release and must now be permanently replaced.
+
+Adopt these permanent identifiers:
+
+Android applicationId / package:
+com.heavyar.app
+
+iOS bundleIdentifier:
+com.heavyar.app
+
+These identifiers should be treated as permanent Heavyar production identity from this phase onward.
+
+Do not use Rork-generated identifiers again.
+
+==================================================
+PRE-FLIGHT
+==================================================
+
+1. Fetch origin/main.
+
+2. Confirm remote HEAD is:
+   8d0faab02eca935f354f24ec86e79c701c467810
+   or a clean direct successor with no unexpected divergence.
+
+3. Confirm working tree is clean.
+
+4. Create and push permanent tag:
+
+   heavyar-phase4-baseline
+
+pointing to:
+
+   8d0faab02eca935f354f24ec86e79c701c467810
+
+Do not move or rewrite this tag.
+
+Do not force push.
+
+==================================================
+1. FULL APP IDENTITY AUDIT
+==================================================
+
+Before editing, inspect all places where app identity is defined or referenced.
+
+Check at minimum:
+
+- app.json
+- app.config.*
+- package.json
+- eas.json
+- Android configuration
+- iOS configuration
+- Expo Router configuration
+- deep-link schemes
+- Firebase config
+- notifications
+- OAuth redirect assumptions
+- Cloudinary
+- Worker callbacks
+- payment return URLs
+- push registration
+- any Rork-generated metadata
+- native generated files if present
+
+Find all references to the old package/bundle identifiers.
+
+Document them before migration.
+
+==================================================
+2. MIGRATE ANDROID PACKAGE
+==================================================
+
+Change the permanent Android package/application ID to:
+
+com.heavyar.app
+
+Ensure all generated/native configuration is consistent.
+
+Do not leave stale references to:
+
+app.rork.8mcv0eg4e2l3to7ex9wvv
+
+unless required only for historical migration documentation.
+
+Verify:
+
+- manifest
+- package namespaces
+- intent filters
+- deep links
+- notification channels
+- Firebase Android registration
+- Expo/EAS configuration
+- release builds
+
+==================================================
+3. MIGRATE IOS BUNDLE IDENTIFIER
+==================================================
+
+Set the permanent iOS bundle identifier to:
+
+com.heavyar.app
+
+Verify:
+
+- Expo configuration
+- push capability assumptions
+- URL schemes
+- deep links
+- Firebase iOS registration
+- future APNs configuration
+- EAS build configuration
+
+Do not create unnecessary Apple certificates manually.
+
+==================================================
+4. FIREBASE MOBILE APP REGISTRATION
+==================================================
+
+Inspect existing Firebase mobile app registrations.
+
+For Android:
+
+If no Firebase Android app exists for:
+
+com.heavyar.app
+
+create/register it safely in the existing Firebase project:
+
+heavyar-app
+
+Use official Firebase APIs/CLI where authorized.
+
+Do not create a new Firebase project.
+
+For iOS:
+
+If no Firebase iOS app exists for:
+
+com.heavyar.app
+
+create/register it in the same project if safely possible.
+
+Preserve the existing Firebase web/admin configuration.
+
+Do not remove old Firebase app registrations during this phase unless they are proven unused and removal is necessary.
+
+Prefer preserving them for rollback/history.
+
+==================================================
+5. FIREBASE CLIENT CONFIG
+==================================================
+
+Obtain/configure the correct Firebase public client configuration for the new mobile identities.
+
+Android:
+ensure google-services configuration is correct if native builds require it.
+
+iOS:
+ensure GoogleService-Info configuration is correct if native builds require it.
+
+These public Firebase app config files are not server secrets, but handle them according to standard Firebase/Expo practices.
+
+Do not expose service-account credentials.
+
+==================================================
+6. DEEP LINKS
+==================================================
+
+Create a permanent Heavyar application scheme if one is not already stable.
+
+Prefer:
+
+heavyar
+
+Review every deep link generated from:
+
+- notifications
+- payments
+- verification
+- complaints
+- requests
+- auth flows
+
+Ensure old Rork-specific schemes do not remain active unless required for migration compatibility.
+
+Use allowlisted routes.
+
+==================================================
+7. PAYMENT RETURN FLOW
+==================================================
+
+Review Tap TEST payment redirects/return URLs after the app identity change.
+
+Ensure the architecture supports returning from provider checkout into:
+
+Heavyar app
+
+without trusting the redirect itself as proof of payment.
+
+Backend verification remains authoritative.
+
+Do not create real payments.
+
+Do not activate Tap Live.
+
+==================================================
+8. NOTIFICATION NATIVE READINESS
+==================================================
+
+Validate the Phase 4 notification architecture with the permanent app IDs.
+
+Android:
+- notification permission
+- FCM registration
+- foreground/background behavior
+- notification tap/deep links
+
+iOS:
+- Expo Notifications configuration
+- APNs readiness
+- entitlement/capability assumptions
+- notification tap/deep links
+
+No server credential may be bundled in the mobile app.
+
+==================================================
+9. EAS PROJECT / BUILD CONFIGURATION
+==================================================
+
+Inspect whether an existing Expo/EAS project is correctly associated with Heavyar.
+
+Do not continue using a Rork-owned or unrelated EAS identity if present.
+
+Heavyar must ultimately be owned/controlled by the user's own Expo/EAS account.
+
+Prepare proper:
+
+development
+preview
+production
+
+build profiles.
+
+Ensure production is not accidentally configured as development-client.
+
+Versioning must be reproducible.
+
+If the project already has a legitimate user-owned EAS project:
+reuse it safely.
+
+If no legitimate Heavyar EAS project exists:
+prepare configuration and create/link one if current authorization allows it.
+
+If owner login/authorization is genuinely required:
+STOP only for that exact authorization step and clearly state what the user must approve.
+
+Do not ask the user to perform programming work.
+
+==================================================
+10. VERSIONING
+==================================================
+
+Establish a durable versioning policy.
+
+Use appropriate:
+
+version
+android.versionCode
+ios.buildNumber
+
+Do not reset version counters later.
+
+If no release version has been formally chosen, use a safe initial pre-release version consistent with the existing app history.
+
+Document the policy.
+
+==================================================
+11. CURRENT STORE REQUIREMENTS
+==================================================
+
+Verify current requirements directly against the latest official documentation from:
+
+- Google Play
+- Android Developers
+- Apple Developer
+- App Store Connect
+- Expo/EAS
+
+Do not rely on stale assumptions.
+
+Check current requirements for:
+
+- Android target API
+- Android 16 KB page-size compatibility
+- required Android permissions
+- foreground/background restrictions
+- notification permission
+- Data Safety implications
+- iOS minimum supported deployment target
+- required privacy manifests
+- Required Reason APIs if applicable
+- push notification entitlements
+- App Transport Security
+- Sign in requirements if any
+- account deletion requirements
+- privacy policy requirements
+
+Do not submit anything to stores yet.
+
+==================================================
+12. 16 KB ANDROID PAGE-SIZE REVIEW
+==================================================
+
+Perform an explicit Android 16 KB compatibility analysis.
+
+Inspect every native library bundled by the app.
+
+If a native dependency is incompatible:
+upgrade safely or replace only if necessary.
+
+Provide evidence from the resulting native build/artifacts where possible.
+
+Do not merely state that Expo supports it globally.
+
+==================================================
+13. ANDROID PERMISSIONS AUDIT
+==================================================
+
+Audit final requested Android permissions.
+
+Keep only what Heavyar actually needs.
+
+Review at minimum:
+
+- notifications
+- camera
+- photo/media picker
+- location if used
+- network
+- storage/file access
+
+Avoid broad legacy storage permissions.
+
+Ensure permission requests occur contextually.
+
+==================================================
+14. IOS PERMISSION AUDIT
+==================================================
+
+Review every iOS usage description.
+
+Ensure descriptions are accurate and user-facing.
+
+Do not request permissions that Heavyar does not use.
+
+Review:
+
+- camera
+- photo library
+- location
+- notifications
+- any other native capability
+
+==================================================
+15. REAL DEVICE BUILD PREPARATION
+==================================================
+
+Prepare installable native builds.
+
+Target:
+
+Android preview/internal build
+
+and, if current Apple/EAS authorization permits:
+
+iOS preview/internal build
+
+Do not publish to Play Store or App Store yet.
+
+Do not request production release signing manually if EAS can securely manage it.
+
+==================================================
+16. ANDROID BUILD
+==================================================
+
+Produce a real Android build from a clean checkout.
+
+Prefer an internal/preview APK for real-device testing plus an AAB readiness build if practical.
+
+Verify:
+
+- applicationId = com.heavyar.app
+- Firebase initialization
+- authentication
+- Firestore access
+- Cloudinary
+- Worker API access
+- push registration
+- deep links
+- request lifecycle
+- payment screen
+- verification screen
+
+No real payment.
+
+==================================================
+17. IOS BUILD
+==================================================
+
+If Apple account/EAS authorization is already available, produce an iOS internal/preview build.
+
+Verify bundle identifier:
+
+com.heavyar.app
+
+If Apple authorization is required and unavailable:
+do not fake or bypass it.
+
+Report exact user authorization required and continue every other task that does not depend on it.
+
+==================================================
+18. REAL DEVICE PUSH VALIDATION
+==================================================
+
+Where real-device build and credentials are available, test push delivery end-to-end.
+
+Test:
+
+- logged-in customer
+- provider where practical
+- foreground notification
+- background notification
+- app-closed notification
+- unread count
+- notification inbox
+- tap/deep link
+- logout/login ownership transfer behavior
+- stale token handling
+
+Do not send sensitive content in push payloads.
+
+If physical device interaction must be performed by the user, produce one concise test checklist only after Replit has completed everything it can automatically.
+
+==================================================
+19. SESSION / AUTH DEVICE TESTS
+==================================================
+
+Validate on native runtime where available:
+
+- Firebase sign-in
+- session persistence
+- token refresh
+- logout
+- suspended account behavior
+- restricted account behavior
+- admin remains web-only where appropriate
+
+==================================================
+20. MOBILE SECURITY REVIEW
+==================================================
+
+Perform final native-client security review.
+
+Check:
+
+- secrets in bundle
+- public vs secret Firebase config
+- debug endpoints
+- production Worker URL
+- insecure HTTP
+- excessive logs
+- auth tokens
+- AsyncStorage
+- deep-link injection
+- exported Android components
+- WebView usage if any
+- clipboard exposure
+- screenshots/sensitive screens where appropriate
+
+Do not add security theater that harms usability.
+
+==================================================
+21. REMAINING DEPENDENCY HIGH FINDINGS
+==================================================
+
+Review:
+
+image-size@1.2.1 advisories
+js-yaml@4.3.1 advisory
+
+If a safe compatible patched dependency path is now available:
+upgrade it and rerun full regressions.
+
+If no safe fix exists:
+retain documented build-time-only classification.
+
+Do not destabilize the runtime merely to silence an audit.
+
+==================================================
+22. RELEASE ASSET INVENTORY
+==================================================
+
+Prepare a release-readiness inventory for later store submission.
+
+Identify whether Heavyar already has:
+
+- production app icon
+- adaptive Android icon
+- splash assets
+- screenshots
+- feature graphic
+- app description
+- short description
+- privacy policy URL
+- support URL
+- terms URL
+- account deletion URL/process
+
+Do not invent legal text in this phase.
+
+Report missing assets clearly.
+
+==================================================
+23. BACKEND REGRESSION
+==================================================
+
+Run complete regression for:
+
+Phase 0 security
+Phase 1 payments
+Phase 2 admin
+Phase 3 trust/verification
+Phase 4 notifications
+
+Do not create real:
+- charges
+- refunds
+- Nafath verifications
+
+==================================================
+24. FULL TEST MATRIX
+==================================================
+
+Run at minimum:
+
+- Worker tests
+- Firestore emulator tests
+- request transitions
+- payment tests
+- admin tests
+- verification tests
+- notification tests
+- mobile TypeScript
+- admin TypeScript
+- Worker TypeScript
+- lint
+- Expo dependency checks
+- clean web export
+- native config validation
+- Android build
+- iOS build where authorized
+- security scans
+- dependency scans
+- secret scans
+- privacy/dataflow scan
+
+==================================================
+25. DEPLOYMENT
+==================================================
+
+If backend/frontend source changes are required:
+
+deploy only to existing:
+
+Cloudflare Worker:
+heavyar-api
+
+Firebase Hosting:
+https://heavyar-app.web.app
+
+Firebase project:
+heavyar-app
+
+Preserve bindings and secrets.
+
+Do not create another production backend.
+
+==================================================
+26. GIT
+==================================================
+
+Review git diff carefully.
+
+Do not commit:
+
+- EAS credentials
+- Apple certificates/private keys
+- Play signing keys
+- Firebase service-account JSON
+- FCM server credentials
+- Cloudflare tokens
+- Tap secrets
+- Nafath credentials
+- passwords
+
+Commit normally.
+
+Push only:
+
+origin/main
+
+Do not force push.
+
+Return final SHA.
+
+==================================================
+STOP CONDITIONS
+==================================================
+
+Stop only for external account authorization that cannot safely be automated, such as:
+
+- Expo/EAS owner login
+- Apple Developer authorization
+- Google Play Console authorization
+- APNs credential approval
+
+If one occurs:
+
+complete every independent task first.
+
+Then report ONE precise action the user must take.
+
+Do not ask the user to manually edit code, run builds, deploy, or move files.
+
+==================================================
+DO NOT DO YET
+==================================================
+
+Do not:
+
+- submit to Google Play
+- submit to Apple App Store
+- activate Tap Live
+- activate fake Nafath
+- remove rollback Firebase registrations
+- rotate unrelated production secrets
+- redesign the application
+
+==================================================
+FINAL REPORT
+==================================================
+
+Report:
+
+1. Permanent Android application ID
+2. Permanent iOS bundle identifier
+3. Firebase Android registration status
+4. Firebase iOS registration status
+5. EAS project status
+6. Deep-link scheme
+7. Payment return-flow readiness
+8. Android notification readiness
+9. iOS notification readiness
+10. Version/versionCode/buildNumber
+11. Current Google Play requirements checked
+12. Current Apple requirements checked
+13. Android 16 KB compatibility result
+14. Android permission audit
+15. iOS permission audit
+16. Android native build result
+17. iOS native build result
+18. Real-device push test result
+19. Remaining external authorization required
+20. Dependency audit status
+21. Native security review
+22. Store/release asset inventory
+23. Full regression results
+24. Deployment status
+25. Git commit(s)
+26. Final origin/main SHA
+27. Exact blockers before store submission
+28. Recommended Phase 6 scope
+
+Then STOP.

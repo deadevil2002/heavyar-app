@@ -1,0 +1,527 @@
+Start Heavyar Phase 1 — Payment & Trust Core.
+
+IMPORTANT:
+Phase 0 is COMPLETE and is now the production safety baseline.
+
+Official repository:
+https://github.com/deadevil2002/heavyar-app
+
+Branch:
+main
+
+Current verified Phase 0 baseline commit:
+b6d957bfc6a4ee14cc8b721c24f64e7bd5ed7df5
+
+Existing production Cloudflare Worker:
+heavyar-api
+
+Production URL:
+https://heavyar-api.heavyar-official.workers.dev
+
+Firebase project:
+heavyar-app
+
+Before making any Phase 1 changes:
+
+1. Confirm origin/main is exactly at the Phase 0 baseline or later with no unexpected divergence.
+2. Confirm the working tree is clean.
+3. Create and push a permanent Git tag:
+   heavyar-phase0-baseline
+   pointing to:
+   b6d957bfc6a4ee14cc8b721c24f64e7bd5ed7df5
+
+Do not modify or rewrite the Phase 0 baseline tag later.
+
+==================================================
+PHASE 1 GOAL
+==================================================
+
+Build a production-grade payment and financial trust architecture for Heavyar.
+
+Heavyar is a Saudi equipment-rental marketplace where transaction values may be high.
+
+The mobile client must NEVER be authoritative for:
+- payment amount
+- payment status
+- invoice status
+- final financial settlement
+- platform fees
+- refunds
+- payment confirmation
+
+All financial authority must live on the trusted backend.
+
+Do NOT implement Nafath yet.
+Do NOT activate live Tap credentials.
+Do NOT create real charges during development/testing.
+Do NOT redesign the whole UI.
+Do NOT build the full Admin Dashboard yet.
+Do NOT replace Firebase or Cloudflare.
+Do NOT create a new Cloudflare Worker.
+
+Continue using the existing:
+heavyar-api
+
+Preserve all existing production bindings and secrets.
+
+==================================================
+1. PAYMENT ORCHESTRATOR
+==================================================
+
+Create a server-side Payment Orchestrator inside the existing Heavyar backend.
+
+The mobile application must communicate only with Heavyar's internal payment API.
+
+The mobile app must NOT directly depend on Tap-specific business logic.
+
+Design a provider adapter architecture such as:
+
+PaymentProvider
+TapPaymentProvider
+
+The architecture must support adding other Saudi/payment providers later without rewriting the mobile application.
+
+The internal payment API should use a provider-neutral contract.
+
+Do not add another gateway now unless needed for testing architecture.
+
+==================================================
+2. AUTHORITATIVE SERVER-SIDE PRICING
+==================================================
+
+The backend must calculate and validate the payable amount from trusted Firestore data.
+
+Never trust an amount sent by the mobile client.
+
+The client may send identifiers such as:
+- requestId
+- payment purpose
+
+But the backend must resolve:
+- equipment
+- owner/provider
+- renter/customer
+- rental dates
+- agreed pricing
+- fees
+- taxes if applicable
+- discounts if applicable
+- final payable amount
+
+from trusted backend data.
+
+Reject:
+- mismatched users
+- invalid request states
+- impossible amounts
+- already-paid requests
+- cancelled requests
+- unauthorized payment attempts
+
+==================================================
+3. PRICE / QUOTE LOCKING
+==================================================
+
+Create a trusted price snapshot for a rental before payment.
+
+The financial snapshot should be immutable once payment begins.
+
+Store sufficient fields to reconstruct what the customer was charged.
+
+Include an expiry mechanism where appropriate.
+
+Do not allow subsequent equipment-price changes to alter an already-approved payment snapshot.
+
+==================================================
+4. PAYMENT STATE MACHINE
+==================================================
+
+Create a clear canonical payment state machine.
+
+For example:
+
+created
+pending
+requires_action
+processing
+paid
+failed
+cancelled
+expired
+refund_pending
+refunded
+partially_refunded
+
+Use the project's existing naming conventions when appropriate.
+
+Payment status transitions must be validated server-side.
+
+The mobile client must never directly write privileged financial statuses.
+
+==================================================
+5. IDEMPOTENCY
+==================================================
+
+Implement robust idempotency for:
+
+- payment creation
+- webhook processing
+- payment verification
+- refunds where applicable
+- invoice creation
+
+Repeated requests must not:
+- create duplicate charges
+- create duplicate invoices
+- mark the same rental paid multiple times
+- duplicate financial ledger entries
+
+Use durable Firestore-backed idempotency, not Worker memory.
+
+==================================================
+6. TAP PROVIDER ADAPTER
+==================================================
+
+Keep the existing Tap integration functional, but move Tap-specific logic behind the provider adapter.
+
+Use the existing TEST credentials only.
+
+Do not activate live payments.
+
+Do not make a real charge.
+
+Verify Tap responses server-side.
+
+Never trust client-supplied Tap status.
+
+Ensure charge/payment IDs are tied to:
+- the correct Heavyar request
+- correct authenticated user
+- correct authoritative amount
+- correct currency
+
+==================================================
+7. WEBHOOK SECURITY
+==================================================
+
+Implement a trusted payment webhook architecture.
+
+Where Tap supports provider-side verification/signature validation, implement it correctly.
+
+If provider verification requires fetching the transaction from Tap, verify the remote transaction before changing Heavyar state.
+
+A webhook must never blindly mark a request paid.
+
+Webhook processing must:
+- validate provider
+- validate transaction ID
+- validate amount
+- validate currency
+- validate Heavyar request association
+- be idempotent
+- record an immutable event/audit entry
+
+==================================================
+8. FINANCIAL EVENT LOG / LEDGER FOUNDATION
+==================================================
+
+Create a trusted financial event log.
+
+Record important events such as:
+
+payment_created
+payment_pending
+payment_confirmed
+payment_failed
+payment_cancelled
+refund_requested
+refund_completed
+invoice_created
+
+Records should contain appropriate identifiers and timestamps.
+
+Do not store sensitive card/payment credentials.
+
+The financial history must be append-oriented and difficult for normal clients to alter.
+
+==================================================
+9. INVOICE AUTHORITY
+==================================================
+
+Move invoice creation/number authority to trusted backend logic.
+
+Do not allow the mobile app to choose invoice numbers.
+
+Invoice numbers must be:
+- unique
+- atomic
+- deterministic/recoverable
+- protected from concurrent creation
+
+Preserve compatibility with existing invoice UI/data where possible.
+
+Do not yet build ZATCA Phase 2 integration unless existing code already requires it.
+
+Prepare architecture cleanly for future Saudi e-invoicing requirements.
+
+==================================================
+10. PLATFORM FEES FOUNDATION
+==================================================
+
+Create a configurable financial model capable of supporting later:
+
+- platform commission
+- fixed service fee
+- provider payout
+- customer total
+- VAT configuration if applicable
+
+Do NOT hardcode commercial fee percentages unless an existing Heavyar business rule already defines them.
+
+Prepare trusted backend configuration for future Admin management.
+
+Secrets must never be stored in Firestore admin configuration.
+
+==================================================
+11. PAYMENT PROVIDER CONFIGURATION MODEL
+==================================================
+
+Prepare a backend configuration model for future Admin Dashboard control.
+
+It should support concepts such as:
+
+provider:
+tap
+
+enabled:
+true/false
+
+environment:
+test/live
+
+priority
+
+supported payment methods
+
+marketplace/split-payment capability
+
+health/status
+
+Do NOT expose provider secrets.
+
+Do NOT return secret credentials to the mobile app or future admin browser.
+
+The Admin Dashboard will be implemented in a later phase.
+
+==================================================
+12. SECURITY RULES
+==================================================
+
+Review Firestore security rules for all new payment/invoice/ledger collections.
+
+Normal users must not be able to forge:
+
+- payment status
+- invoice status
+- payment amount
+- platform fee
+- provider payout
+- refund state
+- financial ledger entries
+
+Where possible, trusted backend-only financial documents should not be writable directly by mobile clients at all.
+
+Do not weaken existing Phase 0 rules.
+
+==================================================
+13. CONCURRENCY
+==================================================
+
+Handle concurrent operations safely.
+
+Examples:
+- two payment attempts at the same time
+- webhook arriving while user verifies payment
+- repeated webhook delivery
+- duplicate completion request
+- simultaneous invoice creation
+
+Use Firestore transactions or equivalent trusted mechanisms where appropriate.
+
+==================================================
+14. CLIENT INTEGRATION
+==================================================
+
+Update the mobile app minimally so it uses the new internal payment architecture.
+
+Do not perform a broad UI redesign.
+
+Existing flows should continue working.
+
+The UI should correctly handle:
+- loading
+- pending
+- success
+- failure
+- expired payment
+- retryable states
+
+Never display a successful payment merely because the browser/provider redirect returned success.
+
+Heavyar backend confirmation must be authoritative.
+
+==================================================
+15. SECURITY / DEPENDENCY REVIEW
+==================================================
+
+Phase 0 reported:
+0 critical dependency findings
+57 high transitive findings
+
+Review those high findings.
+
+Do NOT perform broad dependency upgrades just to reduce the number.
+
+Determine whether each relevant finding is:
+- runtime reachable
+- development tooling only
+- transitive and non-exploitable
+- fixable safely
+
+Apply only low-risk upgrades that do not destabilize the Expo/Firebase/Worker stack.
+
+Document remaining findings.
+
+==================================================
+16. TESTING
+==================================================
+
+Add strong automated tests for the financial architecture.
+
+At minimum test:
+
+- unauthenticated payment creation rejected
+- unauthorized user rejected
+- client-supplied amount ignored/rejected
+- authoritative price calculation
+- duplicate payment creation
+- duplicate webhook
+- wrong transaction/request association
+- wrong amount
+- wrong currency
+- already-paid request
+- cancelled request
+- invoice number concurrency
+- payment state transition validation
+- financial event creation
+- client cannot write privileged financial fields
+- provider adapter behavior
+- Tap test-mode verification
+
+Use mocks/test fixtures.
+
+Do not create real charges.
+
+==================================================
+17. DEPLOYMENT
+==================================================
+
+After implementation:
+
+Run all existing Phase 0 tests plus all new Phase 1 tests.
+
+Run:
+- mobile TypeScript
+- lint
+- Worker TypeScript/build
+- Worker tests
+- Firestore rules tests
+- request transition tests
+- dependency/security scans
+- relevant payment tests
+
+If any real compile/security/regression issue remains:
+DO NOT deploy.
+DO NOT push broken code.
+
+If all acceptance checks pass:
+
+1. deploy updated Firestore rules/indexes if required
+2. deploy ONLY to existing Cloudflare Worker:
+   heavyar-api
+3. preserve existing Worker bindings and secrets
+4. perform safe production smoke tests
+5. do not create a real charge
+6. confirm existing endpoints remain protected
+7. verify the mobile preview/build
+
+==================================================
+18. GIT
+==================================================
+
+After successful validation and deployment:
+
+Review git diff carefully.
+
+Confirm:
+- no secret values
+- no API tokens
+- no private keys
+- no service-account JSON
+- no generated sensitive files
+
+Then make one or more clear commits and push only to:
+
+origin/main
+
+Do not force push.
+
+Return the final commit SHA.
+
+==================================================
+STOP CONDITIONS
+==================================================
+
+Stop and ask me only if an unavoidable external business/account decision is required, such as:
+
+- Tap requires new Marketplace credentials
+- Tap requires live account activation
+- legal/commercial commission percentage is required
+- external provider contract is required
+
+Do not ask me to manually perform programming, deployments, file edits, or tests that Replit can perform itself.
+
+Do NOT start:
+- Nafath
+- full Admin Dashboard
+- full notification overhaul
+- full UI redesign
+
+Those are later phases.
+
+==================================================
+FINAL REPORT
+==================================================
+
+At completion report:
+
+1. Payment architecture implemented
+2. Provider abstraction implemented
+3. Tap adapter status
+4. Server-authoritative pricing behavior
+5. Payment states
+6. Idempotency mechanism
+7. Webhook verification behavior
+8. Financial event/ledger model
+9. Invoice numbering model
+10. Firestore security changes
+11. Tests added and results
+12. Dependency/security review results
+13. Firebase deployment status
+14. Cloudflare deployed Worker version
+15. Production smoke test results
+16. Git commits and final SHA
+17. Remaining risks/blockers
+18. Exact recommendation for Phase 2
+
+Then STOP.

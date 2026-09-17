@@ -1,0 +1,277 @@
+Before starting the Heavyar website/landing-page work, perform a focused MOBILE DATA CONNECTION AND FIREBASE/WORKER QA pass.
+
+Do NOT redesign anything.
+Do NOT change Firestore rules unless you prove they are incorrect.
+Do NOT change payment, Nafath, Admin, Hosting, or Cloudflare configuration unless strictly required to fix a verified mobile data bug.
+Do NOT create fake production data.
+
+==================================================
+CURRENT OBSERVATION
+==================================================
+
+The Heavyar mobile preview currently loads successfully, but the Search screen shows:
+
+0 results
+
+The Admin currently contains existing test users/equipment/requests.
+
+Current Firestore rules intentionally expose public equipment only when:
+
+isActive == true
+visibility == "visible"
+moderationStatus == "approved"
+
+The Admin previously showed existing equipment in a "pending review" state.
+
+Therefore, first determine whether the empty mobile result is EXPECTED because no equipment is currently public/approved, or whether there is a real Firebase/Worker/mobile query problem.
+
+==================================================
+1. VERIFY MOBILE FIREBASE CONNECTION
+==================================================
+
+Confirm the mobile app is connected to the correct Firebase project:
+
+heavyar-app
+
+Verify:
+- Firebase app initialization
+- projectId
+- authDomain
+- API key source
+- Firestore instance
+- current environment selection
+- no stale development Firebase project
+- no Replit-only Firebase mismatch
+- no accidental emulator usage
+- no duplicate Firebase initialization
+
+Do not expose public or private credential values in the report.
+
+==================================================
+2. VERIFY BACKEND CONNECTION
+==================================================
+
+Confirm the mobile app is using the correct Heavyar Worker:
+
+https://heavyar-api.heavyar-official.workers.dev
+
+Check:
+- health endpoint
+- equipment/listings API path
+- request API
+- driver API
+- notifications API
+- authentication token attachment
+- CORS/runtime behavior
+- error handling
+
+Do not change the Worker if it is healthy.
+
+==================================================
+3. INSPECT CURRENT EQUIPMENT DATA
+==================================================
+
+Read the existing equipment records safely.
+
+For each existing equipment record, report only:
+
+- public equipment number
+- title
+- owner display name
+- isActive
+- visibility
+- moderationStatus
+- whether it SHOULD be visible to an ordinary customer
+- if not visible, the exact reason
+
+Do not expose internal UID values unless needed in a technical appendix.
+
+==================================================
+4. VERIFY PUBLIC-LISTING LOGIC
+==================================================
+
+Confirm that the current production rules intentionally require:
+
+isActive == true
+AND visibility == "visible"
+AND moderationStatus == "approved"
+
+for public equipment discovery.
+
+Confirm whether the mobile Search query is consistent with this rule.
+
+If all current test equipment is pending/rejected/hidden:
+state clearly that "0 results" is expected and that Firebase connectivity is healthy.
+
+Do NOT weaken this rule just to display test data.
+
+==================================================
+5. VERIFY ADMIN MODERATION FLOW
+==================================================
+
+Confirm the intended flow is:
+
+Provider creates equipment
+→ equipment enters pending review
+→ Admin reviews
+→ Admin approves
+→ equipment becomes eligible for customer discovery
+→ customer sees it in Search if active and visible
+
+Check that Admin approval actually updates the correct backend fields.
+
+Do not automatically approve production listings.
+
+==================================================
+6. SAFE TEST USING EXISTING DATA
+==================================================
+
+If there is an existing clearly non-production TEST equipment record that can safely be used:
+
+- identify it
+- approve it using the NORMAL Admin moderation path
+- ensure isActive=true
+- ensure visibility=visible
+
+Only do this if it is unquestionably existing test data.
+
+Do NOT modify real customer/provider listings.
+
+Then verify that this single approved test listing appears in the mobile Search screen.
+
+If there is no clearly safe test listing:
+do not mutate production data.
+Instead report the exact manual Admin action I can perform to approve one test record.
+
+==================================================
+7. VERIFY MOBILE SEARCH
+==================================================
+
+Test:
+
+- Arabic
+- English
+- grid view
+- list view
+- category filters
+- region/city filters
+- no-filter state
+- approved listing
+- hidden listing
+- pending listing
+- rejected listing
+- suspended listing if supported
+
+Expected behavior:
+Only valid public approved listings should appear.
+
+==================================================
+8. VERIFY AUTHENTICATED USER DATA
+==================================================
+
+Using safe existing test accounts only, verify:
+
+Customer:
+- profile loads
+- requests load
+- notifications load
+
+Provider:
+- own equipment loads even when not public
+- own requests load
+- listing status is visible
+- pending/approved/hidden state is understandable
+
+Do not create new fake production accounts.
+
+==================================================
+9. VERIFY DRIVER DATA PATH
+==================================================
+
+Confirm the mobile driver registration and search APIs are correctly connected.
+
+Do not create a fake driver.
+
+Report whether:
+- driver registration endpoint exists
+- profile save path is correct
+- Admin Driver section reads from the same canonical source
+- customer/provider driver search reads from the same canonical source
+
+==================================================
+10. FIRESTORE RULES REVIEW
+==================================================
+
+Review the CURRENT deployed Firestore rules against the current app architecture.
+
+Important:
+Direct client creation/update of equipment and requests is intentionally disabled because the Worker is authoritative.
+
+Do not treat:
+
+allow create: if false
+allow update: if false
+
+as bugs if the mobile app correctly uses authenticated Worker endpoints.
+
+Only change rules if a real architecture mismatch is proven.
+
+==================================================
+11. PREVIEW / EXPO DIFFERENCE
+==================================================
+
+Determine whether Replit's Expo web preview has any data-access limitation that differs from a native Android/iOS build.
+
+Check:
+- Firebase Auth persistence
+- web Firebase behavior
+- Worker authentication
+- browser CORS
+- unsupported native-only modules
+
+If the zero-result screen is caused by DATA STATE rather than Expo preview, state that clearly.
+
+==================================================
+12. DO NOT DEPLOY UNLESS NEEDED
+==================================================
+
+If everything is correctly connected and the empty state is caused only by there being no approved public equipment:
+
+DO NOT modify code.
+DO NOT deploy.
+DO NOT create a commit.
+
+If there is a genuine connection/query bug:
+- fix only that bug
+- run regressions
+- deploy only the affected component
+- commit normally
+- push non-force to origin/main
+
+==================================================
+RETURN
+==================================================
+
+Return:
+
+1. Firebase connection status
+2. Firebase project detected
+3. Worker connection status
+4. Number of equipment records found
+5. Number public/approved
+6. Number pending review
+7. Number hidden
+8. Exact reason mobile Search currently shows 0 results
+9. Whether this is expected or a bug
+10. Mobile Search query correctness
+11. Admin moderation flow correctness
+12. Provider own-equipment visibility result
+13. Customer data result
+14. Driver data-path result
+15. Expo preview-specific limitations, if any
+16. Whether any code/rules/deployment change was actually necessary
+17. Final Git SHA if changed
+
+Then STOP.
+
+Do NOT start the website task yet.

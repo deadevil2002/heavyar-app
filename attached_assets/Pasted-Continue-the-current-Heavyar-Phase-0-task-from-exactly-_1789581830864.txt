@@ -1,0 +1,302 @@
+Continue the current Heavyar Phase 0 task from exactly where you stopped.
+
+Do NOT restart the audit.
+Do NOT create a new project.
+Do NOT start a new phase.
+Do NOT redo work that has already passed.
+
+The current Heavyar source of truth remains:
+
+GitHub:
+https://github.com/deadevil2002/heavyar-app
+
+Branch:
+main
+
+==================================================
+IMPORTANT CHANGE IN HOW EXTERNAL ACCOUNTS ARE HANDLED
+==================================================
+
+From this point forward, YOU must decide the safest and most appropriate connection method for each external service required by Heavyar.
+
+Do not assume the user knows whether a service should use:
+
+- OAuth
+- MCP
+- Replit Connector
+- API token
+- CLI authentication
+- service account
+- app-scoped secrets
+- account authorization
+- another supported method
+
+Inspect the actual project, Replit capabilities, provider requirements, and security implications, then choose the safest supported method yourself.
+
+Handle external services ONE AT A TIME.
+
+For each service:
+
+1. Detect whether Heavyar actually uses it.
+2. Determine whether current access is already valid.
+3. Determine the safest supported authorization method.
+4. Prefer least-privilege access.
+5. Keep Heavyar credentials isolated from unrelated projects.
+6. Never modify or disconnect credentials used by iSaudi, Tabbakheen, or any other project.
+7. Never ask the user to paste credentials into chat.
+8. If user intervention is required, present exactly ONE clear authorization action at a time.
+9. Wait for the user to complete that action.
+10. Verify the account/project/service yourself.
+11. Continue automatically to the next required service.
+12. Do not ask the user to decide the technical authorization method unless there is a genuine unavoidable choice.
+
+==================================================
+CURRENTLY CONFIRMED
+==================================================
+
+Cloudflare Heavyar access has already been validated using Heavyar-specific app-scoped credentials.
+
+Confirmed:
+
+Account:
+Heavyar.official@gmail.com's Account
+
+Existing production Worker:
+heavyar-api
+
+Production Worker URL:
+https://heavyar-api.heavyar-official.workers.dev
+
+Cloudflare API access:
+confirmed
+
+Important:
+Do not replace these Heavyar credentials.
+Do not create another Worker.
+Do not modify existing iSaudi or Tabbakheen Cloudflare integrations.
+
+==================================================
+SERVICES TO DISCOVER AND VALIDATE
+==================================================
+
+Inspect the Heavyar codebase and current Replit environment and determine which external services actually require access.
+
+Known or potentially relevant services include:
+
+- GitHub
+- Firebase / Google Cloud
+- Cloudflare
+- Cloudinary
+- Resend
+- Tap Payments
+- any current notification provider
+- any other backend or external provider discovered in the repository
+
+Future services such as Nafath should NOT be connected or implemented during Phase 0 unless they already exist and are required to preserve current functionality.
+
+Do not connect unnecessary services just because they exist.
+
+==================================================
+FIREBASE
+==================================================
+
+Heavyar currently uses Firebase.
+
+Existing production project:
+
+heavyar-app
+
+Do not create a replacement Firebase project.
+
+Determine yourself the safest supported method for Replit to gain the access required for Phase 0.
+
+The user should only be asked to perform the minimum account authorization necessary.
+
+After authorization, independently verify that the connected project is exactly:
+
+heavyar-app
+
+Before any Firebase production deployment, verify:
+
+- target project
+- current production rules
+- indexes
+- compatibility with existing data
+- that deployment will not lock out current users or break production
+
+==================================================
+GITHUB
+==================================================
+
+GitHub source of truth:
+
+https://github.com/deadevil2002/heavyar-app
+
+Branch:
+main
+
+You previously found historical PAT-shaped credentials in tracked Rork history / Git history.
+
+Determine the exact safe remediation required.
+
+Do not expose credential values.
+
+If the user needs to revoke or rotate credentials, tell the user exactly what category of credential must be handled and how to identify the affected credential without exposing its value.
+
+Do not damage the current working GitHub connector/app authorization.
+
+Before push:
+
+- verify current HEAD
+- verify remote main
+- inspect git diff
+- verify no secrets are being committed
+- verify no generated or unrelated files are included
+
+Never force push.
+
+==================================================
+CLOUDINARY
+==================================================
+
+Determine whether Phase 0 requires direct Cloudinary management access.
+
+If yes:
+- choose the safest connection mechanism
+- use least privilege
+- never expose API secret to the mobile app
+- preserve existing Heavyar assets
+- do not affect unrelated Cloudinary projects/environments
+
+If direct provider access is not required to complete Phase 0, do not block the release solely because of it.
+
+==================================================
+RESEND
+==================================================
+
+Determine whether Resend access is actually required by the current Heavyar production baseline.
+
+If access is required:
+- choose the safest Replit/provider authorization method
+- use Heavyar-specific credentials only
+- do not expose API keys client-side
+
+If it is not required for Phase 0, document it for a later phase and continue.
+
+==================================================
+TAP PAYMENTS
+==================================================
+
+Tap currently exists in the Heavyar codebase.
+
+Do not perform the future modular payment gateway redesign in this phase.
+
+For Phase 0, only preserve and secure the existing integration sufficiently to avoid regression.
+
+Determine whether Tap provider account access is required to complete current security validation.
+
+If external Tap authorization is required:
+- explain exactly why
+- request only the minimum user action
+- do not ask for secret values in chat
+
+Do not activate new payment products, marketplace splitting, or production business configuration during Phase 0.
+
+==================================================
+SEQUENTIAL AUTHORIZATION WORKFLOW
+==================================================
+
+Do not give the user a long checklist of accounts to connect manually.
+
+Instead use this workflow:
+
+SERVICE 1
+→ inspect
+→ decide method
+→ if already authorized, verify and continue
+→ if not authorized, ask for ONE action
+→ wait
+→ verify
+
+Then SERVICE 2.
+
+Repeat until every service required for Phase 0 is verified.
+
+This is important because the user wants Replit to manage the technical setup and minimize manual intervention.
+
+==================================================
+AFTER EXTERNAL ACCESS IS COMPLETE
+==================================================
+
+Resume and complete Phase 0.
+
+Re-run the relevant acceptance checks.
+
+Previously passed checks included:
+
+- Mobile TypeScript
+- lint with no errors
+- request transition tests
+- Firestore Rules tests
+- Worker tests
+- Worker TypeScript
+- SAST/dataflow scans
+- dependency security scan
+- independent code review
+
+Do not rely blindly on previous results after external deployment/config changes.
+Re-run checks affected by the final configuration.
+
+==================================================
+DEPLOYMENT
+==================================================
+
+You are authorized to deploy Phase 0 changes yourself when:
+
+- required production accounts are verified
+- the exact production target is confirmed
+- local/security tests pass
+- deployment is safe for current production data
+- no unresolved critical security blocker remains
+
+Replit should perform deployments itself whenever technically possible.
+
+The user should not be asked to manually deploy something Replit can safely deploy.
+
+==================================================
+COMMIT AND PUSH
+==================================================
+
+After successful production validation:
+
+1. Review final git diff.
+2. Verify secrets are not tracked.
+3. Verify working changes belong only to Heavyar Phase 0.
+4. Commit with a clear Phase 0 security-baseline message.
+5. Push normally to origin/main.
+6. Verify the pushed SHA exists remotely.
+
+If any critical requirement fails:
+do not push.
+
+==================================================
+FINAL REPORT
+==================================================
+
+After Phase 0 is fully complete, return one concise report containing:
+
+- canonical application tree
+- external services verified
+- authorization method used for each service
+- security fixes completed
+- Firebase target verified
+- Cloudflare target verified
+- production deployments performed
+- final tests and results
+- remaining non-blocking risks
+- final Git commit SHA
+- confirmation origin/main contains the completed Phase 0 baseline
+
+Then STOP.
+
+Do not start Phase 1, Admin Dashboard, modular payment gateways, Nafath, or UI redesign automatically.

@@ -1,0 +1,42 @@
+modules = ["nodejs-24", "python-base-3.13"]
+
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
+
+[nix]
+channel = "stable-25_05"
+packages = ["jdk21_headless"]
+
+[userenv]
+
+[userenv.shared]
+EXPO_PUBLIC_FIREBASE_API_KEY = "AIzaSyAgMZNv0rJe7ho36I0_DmjSlgNQm_HN10E"
+EXPO_PUBLIC_FIREBASE_APP_ID = "1:894313164992:web:ec7ecdea9fa4630d96fd25"
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN = "heavyar-app.firebaseapp.com"
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID = "894313164992"
+EXPO_PUBLIC_FIREBASE_PROJECT_ID = "heavyar-app"
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET = "heavyar-app.firebasestorage.app"
+EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME = "dlph6yiz2"
+EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET = "heavyar_unsigned"
+VITE_FIREBASE_API_KEY = "AIzaSyAgMZNv0rJe7ho36I0_DmjSlgNQm_HN10E"
+VITE_FIREBASE_APP_ID = "1:894313164992:web:ec7ecdea9fa4630d96fd25"
+VITE_FIREBASE_AUTH_DOMAIN = "heavyar-app.firebaseapp.com"
+VITE_FIREBASE_MESSAGING_SENDER_ID = "894313164992"
+VITE_FIREBASE_PROJECT_ID = "heavyar-app"
+VITE_FIREBASE_STORAGE_BUCKET = "heavyar-app.firebasestorage.app"

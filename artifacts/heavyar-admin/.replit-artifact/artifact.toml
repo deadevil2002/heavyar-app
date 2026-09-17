@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/heavyar-admin/"
+title = "Heavyar Admin"
+description = "Production operations dashboard for Heavyar administrators to manage users, providers, equipment, rental requests, payments, invoices, refunds, disputes, configuration, and audit history through the authoritative Heavyar API."
+version = "1.0.0"
+id = "artifacts/heavyar-admin"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/heavyar-admin/" ]
+localPort = 21059
+
+[services.development]
+run = "pnpm --filter heavyar-admin run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "heavyar-admin", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/heavyar-admin/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21059"
+BASE_PATH = "/heavyar-admin/"

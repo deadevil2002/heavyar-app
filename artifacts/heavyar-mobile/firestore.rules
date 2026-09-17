@@ -1,0 +1,418 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function self(uid) { return signedIn() && request.auth.uid == uid; }
+    function participant(data) {
+      return signedIn() &&
+        (data.customerUid == request.auth.uid || data.providerUid == request.auth.uid);
+    }
+    function serverTime() {
+      return request.resource.data.updatedAt == request.time;
+    }
+    function publicSnapshot(snapshot, uid) {
+      return snapshot is map
+        && snapshot.keys().hasOnly(['uid', 'nameAr', 'nameEn', 'avatar'])
+        && snapshot.uid == uid
+        && snapshot.nameAr is string
+        && snapshot.nameEn is string
+        && snapshot.avatar is string;
+    }
+    function trustedProvider(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid))
+        && get(/databases/$(database)/documents/users/$(uid)).data.role == 'provider'
+        && (get(/databases/$(database)/documents/users/$(uid)).data.isVerified == true
+          || get(/databases/$(database)/documents/users/$(uid)).data.crVerified == true);
+    }
+    function trustedSnapshot(snapshot, uid) {
+      return publicSnapshot(snapshot, uid)
+        && snapshot.nameAr == get(/databases/$(database)/documents/users/$(uid)).data.nameAr
+        && snapshot.nameEn == get(/databases/$(database)/documents/users/$(uid)).data.nameEn
+        && snapshot.avatar == get(/databases/$(database)/documents/users/$(uid)).data.avatar;
+    }
+    // Shared mutation gate: deletion-requested accounts are inactive even
+    // when their suspension fields are clear. Reads remain governed by the
+    // individual collection rules so clients can display deletion status.
+    function activeAccount(uid) {
+      return !exists(/databases/$(database)/documents/users/$(uid))
+        || (!get(/databases/$(database)/documents/users/$(uid)).data.keys().hasAny(['suspensionStatus'])
+          || (get(/databases/$(database)/documents/users/$(uid)).data.suspensionStatus != 'temporarily_suspended'
+            && get(/databases/$(database)/documents/users/$(uid)).data.suspensionStatus != 'permanently_suspended'))
+        && (!get(/databases/$(database)/documents/users/$(uid)).data.keys().hasAny(['accountStatus'])
+          || (get(/databases/$(database)/documents/users/$(uid)).data.accountStatus != 'deletion_requested'
+            && get(/databases/$(database)/documents/users/$(uid)).data.accountStatus != 'restricted'));
+    }
+    function notSuspended(uid) { return activeAccount(uid); }
+    function publicListing(data) {
+      return data.isActive == true
+        && data.visibility == 'visible'
+        && data.moderationStatus == 'approved';
+    }
+    // This mirrors the server's conservative request gate. The policy is
+    // backend-owned; absent/disabled policy intentionally preserves existing
+    // marketplace flows. Direct client writes cannot bypass an enabled policy.
+    function requestTrustSatisfied(data) {
+      return !exists(/databases/$(database)/documents/verificationPolicies/default)
+        || requestTrustWithPolicy(
+          data,
+          get(/databases/$(database)/documents/verificationPolicies/default).data
+        );
+    }
+    // Keep the policy document in one function parameter. Repeating its get()
+    // expression at every predicate can exceed Firestore Rules' 1000
+    // expression ceiling during a lifecycle update.
+    function requestTrustWithPolicy(data, policy) {
+      return policy.enabled != true
+        || (
+          !policy.requireCustomerIdentityVerification
+          && !(policy.verificationRequiredAboveAmountSAR is number
+            && data.amount >= policy.verificationRequiredAboveAmountSAR)
+          && !(policy.verificationRequiredForHighRiskEquipment == true
+            && get(/databases/$(database)/documents/equipment/$(data.equipmentId)).data.highRisk == true)
+          && !(
+            policy.verificationRequiredForSpecificRequestTypes is list
+            && policy.verificationRequiredForSpecificRequestTypes.hasAny([data.requestMode])
+          )
+          || (
+            exists(/databases/$(database)/documents/verificationProfiles/$(data.customerUid))
+            && get(/databases/$(database)/documents/verificationProfiles/$(data.customerUid)).data.identity.status == 'verified'
+          )
+        );
+    }
+    // Amounts are non-negative SAR values. int() truncates toward zero, so
+    // this is the same half-up rounding used by the mobile UI's
+    // Math.round(amount * 0.1).
+    function platformFeeFor(amount) {
+      return int(amount * 0.1 + 0.5);
+    }
+
+    // Client accounts may create only an ordinary, unprivileged profile.
+    match /users/{uid} {
+      allow read: if self(uid);
+      // User provisioning (including roles and verification) is backend-only.
+      allow create: if false;
+      allow update: if self(uid)
+        && notSuspended(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'nameAr', 'nameEn', 'avatar', 'avatarPublicId',
+          'region', 'city', 'customCity', 'crNumber'
+        ]);
+      allow delete: if false;
+    }
+
+    // Only intentionally public, active listings are readable. Owners may
+    // edit listing content, but never transfer ownership or alter timestamps.
+    match /equipment/{equipmentId} {
+      allow read: if publicListing(resource.data) ||
+        (signedIn() && resource.data.ownerUid == request.auth.uid);
+       allow create: if false
+        && request.resource.data.ownerUid == request.auth.uid
+        && notSuspended(request.auth.uid)
+        && trustedProvider(request.auth.uid)
+        && request.resource.data.isActive == true
+        && request.resource.data.keys().hasOnly([
+          'ownerUid', 'titleAr', 'titleEn', 'descriptionAr', 'descriptionEn',
+          'category', 'region', 'city', 'customCity', 'district', 'location',
+          'customCategory', 'pricePerDay', 'images', 'availability', 'isActive',
+          'ownerPublic',
+          'createdAt', 'updatedAt'
+        ])
+        && (!request.resource.data.keys().hasAny(['ownerPublic']) ||
+          trustedSnapshot(request.resource.data.ownerPublic, request.auth.uid));
+      // Listing edits and deletes are Worker-authoritative. In particular,
+      // client writes cannot bypass active-rental locks, availability overlap
+      // checks, moderation state, or the audit trail.
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    match /equipmentRequests/{requestId} {
+      allow read: if participant(resource.data);
+       allow create: if false
+         /*
+         Legacy client lifecycle writes are disabled after Worker migration.
+         The Worker validates listing ownership, trust policy, suspension and
+         payment invariants before committing requests and notifications.
+         */
+         && signedIn()
+        && request.resource.data.customerUid == request.auth.uid
+        && notSuspended(request.auth.uid)
+        && notSuspended(request.resource.data.providerUid)
+        && requestTrustSatisfied(request.resource.data)
+        && request.resource.data.customerUid != request.resource.data.providerUid
+        && trustedProvider(request.resource.data.providerUid)
+        && get(/databases/$(database)/documents/equipment/$(request.resource.data.equipmentId)).data.ownerUid
+          == request.resource.data.providerUid
+        && publicListing(get(/databases/$(database)/documents/equipment/$(request.resource.data.equipmentId)).data)
+        && request.resource.data.status == 'pending'
+        && request.resource.data.paymentStatus == 'unpaid'
+        && request.resource.data.allowChat == false
+        && request.resource.data.currency == 'SAR'
+        && request.resource.data.paymentId == ''
+        && request.resource.data.paidAt == null
+        && (
+          (request.resource.data.requestMode == 'fixed_days'
+            && request.resource.data.numberOfDays is int
+            && request.resource.data.numberOfDays >= 1
+            && request.resource.data.amount ==
+              get(/databases/$(database)/documents/equipment/$(request.resource.data.equipmentId)).data.pricePerDay
+              * request.resource.data.numberOfDays
+            && request.resource.data.platformFee ==
+              platformFeeFor(request.resource.data.amount)
+            && request.resource.data.providerAmount ==
+              request.resource.data.amount - request.resource.data.platformFee)
+          || (request.resource.data.requestMode == 'open_ended'
+            && !request.resource.data.keys().hasAny(['numberOfDays'])
+            && request.resource.data.amount ==
+              get(/databases/$(database)/documents/equipment/$(request.resource.data.equipmentId)).data.pricePerDay
+            && request.resource.data.platformFee == 0
+            && request.resource.data.providerAmount == 0)
+        )
+        && request.resource.data.keys().hasOnly([
+          'equipmentId', 'customerUid', 'providerUid', 'status', 'requestMode',
+          'numberOfDays', 'startDate',
+          'endDate', 'notes', 'amount', 'platformFee', 'providerAmount',
+          'paymentStatus', 'paymentId', 'paidAt', 'currency', 'allowChat',
+          'customerPublic', 'providerPublic', 'createdAt', 'updatedAt'
+        ])
+        // Public snapshots contain no privileged account fields and cannot
+        // impersonate either request participant.
+        && (!request.resource.data.keys().hasAny(['customerPublic']) ||
+          trustedSnapshot(request.resource.data.customerPublic, request.resource.data.customerUid))
+        && (!request.resource.data.keys().hasAny(['providerPublic']) ||
+          trustedSnapshot(request.resource.data.providerPublic, request.resource.data.providerUid));
+       // Payment state, prices, fees, identity, and invoice references are
+       // server-owned. The client can perform only the legacy lifecycle
+       // transition. Direct client transitions cannot atomically emit Worker
+       // notifications; migrate these actions to authenticated Worker routes
+       // before removing this compatibility allowance.
+        allow update: if false
+          && participant(resource.data)
+         && notSuspended(request.auth.uid)
+         && notSuspended(resource.data.customerUid)
+         && notSuspended(resource.data.providerUid)
+         && publicListing(get(/databases/$(database)/documents/equipment/$(resource.data.equipmentId)).data)
+        && request.resource.data.customerUid == resource.data.customerUid
+        && request.resource.data.providerUid == resource.data.providerUid
+        && request.resource.data.equipmentId == resource.data.equipmentId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'allowChat', 'updatedAt'
+        ]) && serverTime()
+        && (
+          (resource.data.status == 'pending' &&
+            ((request.resource.data.status == 'accepted' &&
+              request.resource.data.allowChat == true &&
+              request.auth.uid == resource.data.providerUid &&
+              // A request created while policy was disabled cannot bypass a
+              // subsequently enabled verification gate at provider acceptance.
+              requestTrustSatisfied(resource.data)) ||
+             (request.resource.data.status == 'rejected' &&
+              request.resource.data.allowChat == false &&
+              request.auth.uid == resource.data.providerUid) ||
+             (request.resource.data.status == 'cancelled' &&
+               request.resource.data.allowChat == false &&
+               request.auth.uid == resource.data.customerUid))) ||
+           (resource.data.status == 'accepted' &&
+             ((request.resource.data.status == 'cancelled' &&
+               request.resource.data.allowChat == false &&
+               request.auth.uid == resource.data.customerUid))) ||
+          (resource.data.status == 'in_progress' &&
+            request.resource.data.status == 'completion_requested' &&
+            request.resource.data.allowChat == true &&
+            request.auth.uid == resource.data.providerUid)
+        )
+        || (participant(resource.data)
+           && notSuspended(request.auth.uid)
+           && notSuspended(resource.data.customerUid)
+           && notSuspended(resource.data.providerUid)
+           && publicListing(get(/databases/$(database)/documents/equipment/$(resource.data.equipmentId)).data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'customerPublic', 'providerPublic', 'updatedAt'
+          ])
+          && serverTime()
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['customerPublic']) ||
+            (request.auth.uid == resource.data.customerUid &&
+              trustedSnapshot(request.resource.data.customerPublic, resource.data.customerUid)))
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['providerPublic']) ||
+            trustedSnapshot(request.resource.data.providerPublic, resource.data.providerUid)));
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data)
+          && get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.allowChat == true;
+        allow create: if signedIn()
+          && request.resource.data.requestId == requestId
+          && request.resource.data.senderUid == request.auth.uid
+          && notSuspended(request.auth.uid)
+          && request.resource.data.keys().hasOnly(['requestId', 'senderUid', 'text', 'createdAt', 'read'])
+          && get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.allowChat == true
+          && participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data)
+          && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.customerUid)
+          && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.providerUid)
+          && publicListing(get(/databases/$(database)/documents/equipment/$(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.equipmentId)).data);
+        allow update, delete: if false;
+      }
+    }
+
+    match /ratings/{ratingId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.fromUid == request.auth.uid
+        && notSuspended(request.auth.uid)
+        && request.resource.data.stars is int
+        && request.resource.data.stars >= 1 && request.resource.data.stars <= 5
+        && request.resource.data.comment is string
+        && request.resource.data.keys().hasOnly([
+          'requestId', 'fromUid', 'toUid', 'equipmentId', 'stars', 'comment', 'createdAt'
+        ])
+        && get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.status == 'completed'
+        && (get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.customerUid == request.auth.uid
+          || get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.providerUid == request.auth.uid)
+        && request.resource.data.toUid != request.auth.uid
+        && (request.resource.data.toUid ==
+          get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.customerUid
+          || request.resource.data.toUid ==
+          get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.providerUid)
+        && request.resource.data.equipmentId ==
+          get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.equipmentId
+        && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.customerUid)
+        && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.providerUid)
+        && publicListing(get(/databases/$(database)/documents/equipment/$(get(/databases/$(database)/documents/equipmentRequests/$(request.resource.data.requestId)).data.equipmentId)).data);
+      allow update, delete: if false;
+    }
+
+    // Financial records are written by the backend only. Participants may read
+    // only records attached to a request they participate in.
+    function requestParticipant(requestId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/equipmentRequests/$(requestId))
+        && participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data);
+    }
+
+    match /payments/{paymentId} {
+      allow read: if requestParticipant(resource.data.requestId);
+      allow write: if false;
+    }
+    match /paymentQuotes/{quoteId} {
+      allow read: if requestParticipant(resource.data.requestId);
+      allow write: if false;
+    }
+    match /paymentEvents/{eventId} {
+      allow read: if requestParticipant(resource.data.requestId);
+      allow write: if false;
+    }
+    // Provider credentials and configuration are never client-readable. If a
+    // future public configuration is needed, expose a separate safe document.
+    match /providerConfigs/{providerConfigId} {
+      allow read, write: if false;
+    }
+    match /paymentIdempotency/{idempotencyId} {
+      allow read, write: if false;
+    }
+    match /invoiceCounters/{counterId} {
+      allow read, write: if false;
+    }
+    // Operational records are API-only. The admin browser uses authenticated
+    // Worker endpoints and never receives direct Firestore write authority.
+    match /adminAudit/{auditId} {
+      allow read, write: if false;
+    }
+    match /refunds/{refundId} {
+      allow read, write: if false;
+    }
+    match /refundReservations/{requestId} {
+      allow read, write: if false;
+    }
+    match /complaints/{complaintId} {
+      allow read, write: if false;
+    }
+    match /verificationCases/{caseId} {
+      allow read, write: if false;
+    }
+    // Verification and risk records are exclusively server-authoritative. The
+    // Worker returns a deliberately minimized view of a user's own status.
+    match /verificationProfiles/{uid} {
+      allow read, write: if false;
+    }
+    match /verificationAttempts/{attemptId} {
+      allow read, write: if false;
+    }
+    match /verificationEvents/{eventId} {
+      allow read, write: if false;
+    }
+    match /verificationRateLimits/{uid} {
+      allow read, write: if false;
+    }
+    match /verificationPolicies/{policyId} {
+      allow read, write: if false;
+    }
+    match /heavyarConfig/{configId} {
+      allow read, write: if false;
+    }
+    // Phone ownership is an API transaction invariant. It must never be
+    // enumerable or writable by mobile clients.
+    match /phoneOwners/{ownerId} {
+      allow read, write: if false;
+    }
+    match /authRecoveryRateLimits/{limitId} {
+      allow read, write: if false;
+    }
+    match /configVersions/{versionId} {
+      allow read, write: if false;
+    }
+    match /invoices/{invoiceId} {
+      allow read: if signedIn()
+        && exists(/databases/$(database)/documents/equipmentRequests/$(resource.data.requestId))
+        && participant(get(/databases/$(database)/documents/equipmentRequests/$(resource.data.requestId)).data);
+      allow write: if false;
+    }
+    // Notification state is API-owned. Clients may read only their inbox;
+    // token, preference, delivery, and read-state mutations go through the
+    // authenticated Worker so ownership and mandatory categories are enforced.
+    match /notifications/{notificationId} {
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+    match /deviceTokens/{tokenId} {
+      allow read, write: if false;
+    }
+    match /notificationPreferences/{uid} {
+      allow read, write: if false;
+    }
+    match /notificationDeliveries/{deliveryId} {
+      allow read, write: if false;
+    }
+    match /driverProfiles/{uid} {
+      allow read, write: if false;
+    }
+    match /driverRequests/{requestId} {
+      allow read, write: if false;
+    }
+    match /campaigns/{campaignId} {
+      allow read, write: if false;
+    }
+    match /campaignRecipients/{recipientId} {
+      allow read, write: if false;
+    }
+    match /staffMembers/{uid} {
+      allow read, write: if false;
+    }
+    match /staffInvitations/{invitationId} {
+      allow read, write: if false;
+    }
+    match /paymentGateways/{gatewayId} {
+      allow read, write: if false;
+    }
+    match /equipmentReservations/{reservationId} {
+      allow read, write: if false;
+    }
+    // Public numbers are reserved only by trusted Worker transactions.
+    match /publicIdentifierCounters/{counterId} {
+      allow read, write: if false;
+    }
+    match /listingAudit/{auditId} {
+      allow read, write: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

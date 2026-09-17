@@ -1,0 +1,440 @@
+You are now executing Heavyar PHASE 0 — Production Safety Baseline.
+
+SOURCE OF TRUTH:
+https://github.com/deadevil2002/heavyar-app
+Branch: main
+
+Heavyar is a high-value Saudi equipment-rental marketplace.
+Security, financial correctness, and production safety take priority over speed.
+
+You already completed an audit of this repository.
+
+THIS TASK IS IMPLEMENTATION, NOT AUDIT.
+
+You are authorized to:
+- inspect
+- modify
+- test
+- run builds
+- configure the project
+- fix issues discovered within this phase
+- commit and push to GitHub ONLY after all Phase 0 acceptance checks pass
+- deploy backend/Worker/Firebase configuration ONLY when required by this phase and only after local validation succeeds
+
+Do NOT start the payment abstraction phase, Admin Dashboard build, Nafath integration, major UI redesign, or new product features yet.
+
+==================================================
+PHASE 0 GOAL
+==================================================
+
+Create one trustworthy, secure, maintainable Heavyar baseline before further development.
+
+Phase 0 must solve four areas:
+
+A. Canonical application source
+B. Security boundary
+C. Firestore authorization baseline
+D. Backend endpoint protection
+
+Do not perform broad cosmetic refactors.
+
+==================================================
+A. RESOLVE THE DUPLICATE EXPO APPLICATIONS
+==================================================
+
+The audit found:
+- one Expo application at repository root
+- another complete Expo application under /expo
+
+They are not identical.
+
+Do NOT simply delete one.
+
+Perform a controlled comparison.
+
+1. Determine which application tree represents the latest functional Heavyar implementation.
+
+Use evidence such as:
+- Git history
+- request lifecycle completeness
+- payment implementation
+- legal/help screens
+- Firebase configuration
+- Cloudinary integration
+- recently implemented features
+- package versions
+- routing
+- build configuration
+
+2. Create a feature-difference inventory between root and /expo.
+
+3. Choose ONE canonical application tree.
+
+4. Before removing or archiving the duplicate:
+- migrate any newer or required feature that exists only in the non-canonical tree
+- preserve legal/privacy/help pages
+- preserve working request lifecycle functionality
+- preserve working Cloudinary functionality
+- preserve current payment functionality temporarily, even though it will be secured later
+
+5. Remove or archive obsolete duplicated runtime code only after confirming nothing required is lost.
+
+6. End Phase 0 with ONE clear Expo application and ONE dependency/lockfile strategy.
+
+Do not redesign the application.
+
+==================================================
+B. ESTABLISH SERVER-AUTHORITATIVE SECURITY
+==================================================
+
+The mobile application must NOT be trusted for privileged or financial state.
+
+Identify and immediately restrict all client-side writes involving sensitive fields.
+
+At minimum, protect:
+
+- role
+- verification status
+- admin status
+- paymentStatus
+- paymentId
+- paidAt
+- finalAmount
+- finalPlatformFee
+- finalProviderAmount
+- invoice identifiers
+- rating aggregates
+- complaint/admin counters
+- account suspension status
+- identity verification results
+
+The mobile client may request an action, but must not directly assert privileged outcomes.
+
+Preserve normal allowed user profile fields.
+
+Do not break normal registration/login.
+
+==================================================
+C. FIRESTORE RULES BASELINE
+==================================================
+
+The audit found Firestore Rules are not tracked in the repository.
+
+First, determine whether the currently deployed production rules can be retrieved safely using available Firebase tooling.
+
+If they can be retrieved:
+- preserve them
+- compare them against actual application behavior
+- migrate them into source control before changing them
+
+If they cannot be retrieved:
+DO NOT invent destructive rules blindly.
+
+Instead:
+- derive the minimum secure rules from actual current data models and application behavior
+- validate using Firebase Emulator tests before any deployment
+
+Add to source control as appropriate:
+
+- firestore.rules
+- firestore.indexes.json
+- rule tests / emulator tests
+- storage rules if Firebase Storage is actually used
+
+Rules must enforce ownership and role restrictions independently of UI.
+
+Critical requirements:
+
+CUSTOMER / PROVIDER:
+- cannot self-promote role
+- cannot mark themselves verified
+- cannot change another user's protected fields
+- cannot arbitrarily modify financial fields
+- cannot mark requests paid
+- cannot force completion outside allowed lifecycle
+- cannot read private information of unrelated users
+
+REQUESTS:
+Enforce allowed participants and valid lifecycle transitions.
+
+Known lifecycle concepts include:
+
+pending
+accepted
+in_progress
+completion_requested
+completed
+cancelled/rejected where currently supported
+
+Preserve the existing initiator-cannot-self-confirm logic.
+
+CHAT:
+Only request participants may access the request chat.
+
+PUBLIC DATA:
+Keep only intentionally public provider/equipment information readable publicly.
+
+==================================================
+D. SECURE CLOUDFLARE WORKER ENDPOINTS
+==================================================
+
+The audit identified unsafe Worker endpoints.
+
+Implement Firebase ID token authentication for sensitive endpoints.
+
+Build or reuse ONE shared server-side authentication helper.
+
+For every sensitive Worker endpoint:
+
+1. Read Authorization: Bearer <Firebase ID token>
+2. Verify token server-side
+3. Resolve the authenticated UID
+4. Validate role / ownership / request participation
+5. Reject unauthorized callers
+
+Do not trust UID supplied in request body when the authenticated UID can be derived from the token.
+
+--------------------------------------------------
+PAYMENT CREATE ENDPOINT
+--------------------------------------------------
+
+The mobile client must NOT control the authoritative payment amount.
+
+For create payment:
+
+- authenticate the user
+- validate they are the correct customer
+- load the request server-side
+- load required pricing data server-side
+- calculate or verify the payable amount using trusted stored data
+- reject arbitrary client amount overrides
+- reject invalid request states
+- prevent payment for another user's request
+
+Do NOT redesign payment providers yet.
+
+Keep Tap temporarily as the current provider.
+
+--------------------------------------------------
+PAYMENT VERIFY ENDPOINT
+--------------------------------------------------
+
+Verification must:
+
+- authenticate the caller
+- load the request
+- confirm the caller owns/participates appropriately
+- verify the charge directly with Tap
+- confirm charge metadata belongs to the same Heavyar request
+- never trust client-supplied payment result
+
+The server must be the only authority allowed to mark payment state as paid.
+
+--------------------------------------------------
+CLOUDINARY DELETE
+--------------------------------------------------
+
+Do not allow arbitrary deletion by publicId.
+
+Require authentication.
+
+Before deletion:
+- verify the authenticated user owns the associated equipment/media
+OR
+- verify an authorized admin action
+
+Reject unrelated asset deletion attempts.
+
+--------------------------------------------------
+OTP
+--------------------------------------------------
+
+Improve the current OTP security baseline without building an unnecessary new authentication system.
+
+At minimum:
+- rate limit OTP requests
+- limit verification attempts
+- expire OTPs
+- avoid logging OTP values
+- avoid plaintext long-lived OTP persistence
+- return generic responses that reduce account enumeration
+
+If a durable backend store is required and existing architecture does not support it safely yet, implement the safest minimal solution and document it.
+
+==================================================
+E. ENVIRONMENT SAFETY
+==================================================
+
+Remove dangerous silent production fallbacks.
+
+Firebase configuration must fail clearly when required environment values are missing rather than silently using placeholder configuration.
+
+Separate configuration concepts for:
+- development
+- production
+
+Do not expose server secrets through Expo public environment variables.
+
+Review .gitignore.
+
+Scan the entire Git history and current tracked files for:
+
+- Firebase private keys
+- service account JSON
+- Tap secret keys
+- Cloudinary API secrets
+- private signing keys
+- passwords
+- access tokens
+
+IMPORTANT:
+Do not print secret values in your response.
+
+If an exposed secret is discovered:
+- identify the secret TYPE and file/history location
+- do not reproduce the secret value
+- tell the user which credential must be rotated
+- continue only where safe
+
+==================================================
+F. REQUEST STATE SAFETY
+==================================================
+
+Preserve the working request lifecycle.
+
+Do NOT redesign pricing or request UX in this phase.
+
+Centralize transition validation as much as practical so mobile UI, backend and Firestore rules do not contradict each other.
+
+Specifically verify:
+
+- provider accept/reject
+- customer cancellation before work begins
+- start work
+- request completion/end
+- initiator cannot self-confirm
+- other party confirms completion
+- completed state cannot be forced arbitrarily
+
+Add tests for critical state transitions.
+
+==================================================
+G. TESTING REQUIREMENTS
+==================================================
+
+Before declaring Phase 0 complete, run all reasonable checks available in this repository.
+
+At minimum:
+
+- TypeScript checks
+- lint
+- Expo/static build validation where possible
+- Worker TypeScript/build checks
+- Firebase Rules emulator tests
+- unit tests for request transition validation
+- tests for unauthorized Worker access
+- tests that arbitrary payment amounts are rejected/ignored
+- tests that unrelated Cloudinary assets cannot be deleted
+- tests that users cannot modify protected financial fields
+- tests that role escalation is rejected
+
+Fix Phase 0 regressions before proceeding.
+
+Do not suppress real errors just to make tests green.
+
+==================================================
+H. DEPLOYMENT RULE
+==================================================
+
+Only deploy Phase 0 backend/rules changes if ALL of these are true:
+
+1. local validation passes
+2. security tests pass
+3. production configuration required for deployment is present
+4. deployment will not knowingly break current production data
+
+If an account login, OAuth authorization, billing approval, 2FA, or external-provider permission is required:
+
+STOP only at that specific step and ask the user to complete the required login/authorization.
+
+Do not ask the user to manually deploy something Replit can deploy itself.
+
+==================================================
+I. GIT RULE
+==================================================
+
+Before modifying:
+- confirm current HEAD
+- confirm working tree is clean
+
+After implementation:
+- inspect git diff carefully
+- ensure no generated files, secrets, temporary logs, credentials, or unrelated changes are included
+
+Only after ALL Phase 0 acceptance criteria pass:
+
+Commit with a clear message similar to:
+
+"Secure Heavyar production baseline"
+
+Then push to:
+origin/main
+
+Do not force push.
+
+If tests fail or security is unresolved:
+DO NOT PUSH.
+
+==================================================
+PHASE 0 ACCEPTANCE CRITERIA
+==================================================
+
+Phase 0 is complete only when:
+
+- one canonical Expo application remains
+- required features from duplicate app are preserved
+- Git has a clear single source tree
+- Worker sensitive endpoints require authenticated authorization
+- payment amount cannot be arbitrarily controlled by the mobile client
+- mobile client cannot mark payment paid
+- arbitrary Cloudinary deletion is blocked
+- sensitive user/financial fields are protected
+- Firestore Rules are tracked and tested
+- critical request transitions are enforced
+- role escalation is blocked
+- environment configuration fails safely
+- repository contains no known production secrets
+- relevant checks/tests pass
+- production deploy succeeds if deployment is required
+- final working tree is clean
+- successful changes are committed and pushed to origin/main
+
+==================================================
+FINAL REPORT
+==================================================
+
+Return ONE concise final report containing:
+
+1. Canonical Expo tree selected and why
+2. Features migrated from the duplicate tree
+3. Security issues fixed
+4. Firestore Rules protections added
+5. Worker endpoints secured
+6. Request lifecycle protections
+7. Tests executed and results
+8. Deployments performed and production targets
+9. Credentials that still require user rotation, if any
+10. Remaining known risks
+11. Git commit SHA pushed to main
+
+Then STOP.
+
+Do NOT begin:
+- modular payment gateway implementation
+- Admin Dashboard
+- Nafath
+- UI redesign
+- notification overhaul
+- new business features
+
+Those are later phases.

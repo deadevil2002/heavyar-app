@@ -1,0 +1,733 @@
+Start Heavyar Phase 4 — Notifications, Dependency Remediation, UX Polish & Release Readiness.
+
+IMPORTANT BASELINE
+
+Official repository:
+https://github.com/deadevil2002/heavyar-app
+
+Branch:
+main
+
+Current verified Phase 3 SHA:
+b4af79372f8836c828e10e619cf4c5dd8e9441de
+
+Existing production Cloudflare Worker:
+heavyar-api
+
+Production Worker URL:
+https://heavyar-api.heavyar-official.workers.dev
+
+Firebase project:
+heavyar-app
+
+Production Admin Dashboard:
+https://heavyar-app.web.app
+
+Permanent Heavyar Super Admin is already configured and working.
+
+Phase 0, Phase 1, Phase 2, and Phase 3 are complete.
+
+Official Nafath production integration is intentionally disabled until authorized credentials/documentation are available.
+
+Do NOT weaken or replace completed architecture.
+
+==================================================
+PRE-FLIGHT
+==================================================
+
+1. Fetch origin/main.
+
+2. Confirm remote HEAD is exactly:
+   b4af79372f8836c828e10e619cf4c5dd8e9441de
+   or a clean direct successor with no unexpected divergence.
+
+3. Confirm working tree is clean.
+
+4. Create and push permanent tag:
+
+   heavyar-phase3-baseline
+
+pointing to:
+
+   b4af79372f8836c828e10e619cf4c5dd8e9441de
+
+Do not move or rewrite this tag.
+
+Do not force push.
+
+==================================================
+PHASE 4 PRIMARY GOALS
+==================================================
+
+This phase has four goals:
+
+1. Remediate mobile dependency/security advisories safely.
+2. Build production-grade notification infrastructure.
+3. Perform focused UX/accessibility/reliability polish.
+4. Prepare Heavyar for final store/security release phases.
+
+Do NOT activate live Tap.
+Do NOT implement unofficial Nafath.
+Do NOT submit to Apple or Google stores yet.
+Do NOT perform a full visual redesign.
+Do NOT replace Firebase, Cloudflare, or Expo.
+
+==================================================
+1. DEPENDENCY SECURITY REMEDIATION
+==================================================
+
+Phase 3 reported unresolved critical/high advisories in the mobile/tooling dependency graph.
+
+Perform a complete dependency audit covering:
+
+- root Expo/mobile dependencies
+- Worker dependencies
+- Admin dependencies
+- transitive dependencies
+- build tooling
+
+Classify every critical/high finding as:
+
+- production-runtime reachable
+- development/build-only
+- transitive but unreachable
+- false positive
+- safely upgradeable
+- blocked by Expo/React Native compatibility
+
+Do NOT blindly run broad major-version upgrades.
+
+Prioritize safe upgrades that preserve:
+
+- Expo compatibility
+- React Native compatibility
+- Firebase behavior
+- Expo Router behavior
+- Cloudinary behavior
+- payment flow
+- request lifecycle
+- admin behavior
+
+For every unresolved critical/high advisory:
+document exact package, path, exposure, and reason it remains.
+
+The target is:
+zero exploitable critical/high findings in production runtime.
+
+==================================================
+2. NOTIFICATION ARCHITECTURE
+==================================================
+
+Build Heavyar's trusted notification system.
+
+Use Firebase Cloud Messaging where appropriate.
+
+The architecture must support:
+
+- push notifications
+- in-app notification inbox
+- read/unread state
+- notification categories
+- notification deep links
+- server-authoritative event generation
+- per-user targeting
+- future notification preferences
+
+Do not trust clients to create privileged notifications.
+
+==================================================
+3. DEVICE TOKEN MANAGEMENT
+==================================================
+
+Implement secure FCM token registration.
+
+Device tokens must be bound to:
+
+- Firebase UID
+- installation/device identifier if appropriate
+- platform
+- createdAt
+- updatedAt
+- lastSeenAt
+- active/revoked state
+
+Protect against:
+
+- one user registering tokens for another user
+- stale tokens accumulating forever
+- duplicate tokens
+- invalid token reuse
+
+Users may only manage their own device tokens.
+
+==================================================
+4. TRUSTED NOTIFICATION EVENTS
+==================================================
+
+Generate notifications from trusted backend events.
+
+At minimum support appropriate notifications for:
+
+Rental requests:
+- new rental request
+- provider accepted
+- provider rejected
+- request cancelled
+- rental starting
+- completion requested
+- rental completed
+
+Payments:
+- payment pending
+- payment confirmed
+- payment failed
+- refund state where applicable
+
+Verification:
+- verification required
+- verification pending
+- verification completed
+- manual review required
+- verification rejected/expired
+
+Complaints/disputes:
+- complaint received
+- admin response
+- status changed
+- resolution
+
+Admin/suspension:
+- account temporarily suspended
+- suspension lifted
+- account restricted where user notification is appropriate
+
+Do not expose internal fraud/risk logic in notification text.
+
+==================================================
+5. PUSH DELIVERY
+==================================================
+
+Implement server-side push delivery.
+
+Use trusted backend credentials only.
+
+No FCM server credentials may exist in the client.
+
+Handle:
+
+- successful delivery
+- invalid registration tokens
+- unregistered tokens
+- retryable failures
+- permanent failures
+
+Automatically deactivate clearly invalid tokens.
+
+Do not endlessly retry dead tokens.
+
+==================================================
+6. IN-APP NOTIFICATION INBOX
+==================================================
+
+Create a mobile notification center.
+
+Support:
+
+- unread count
+- chronological list
+- read/unread
+- mark one read
+- mark all read
+- deep-link navigation
+- pagination
+- safe empty/error/loading states
+
+Do not download an unbounded collection.
+
+Arabic first.
+English supported.
+
+==================================================
+7. NOTIFICATION PREFERENCES
+==================================================
+
+Create safe user preferences for optional notification categories.
+
+Critical transactional/security notifications must not be disableable if disabling would create operational or safety problems.
+
+Allow optional categories where appropriate.
+
+Preference updates must affect delivery behavior server-side.
+
+==================================================
+8. ADMIN NOTIFICATIONS
+==================================================
+
+Extend Admin Dashboard with operational notification visibility where useful.
+
+Admins should be able to inspect failed notification delivery or system notification health without viewing secrets.
+
+Do NOT turn the admin dashboard into a raw FCM console.
+
+==================================================
+9. DEEP LINK RELIABILITY
+==================================================
+
+Review all notification deep links.
+
+Ensure notification taps open the correct authenticated screen safely.
+
+Examples:
+
+request
+payment
+verification
+complaint
+profile/suspension
+
+Prevent arbitrary route injection from server payloads.
+
+Use an allowlisted route/action model.
+
+==================================================
+10. MOBILE ERROR / LOADING STATES
+==================================================
+
+Review core customer/provider screens for production UX reliability.
+
+Focus on:
+
+- loading states
+- retry actions
+- offline/network errors
+- empty states
+- unauthorized/session-expired states
+- disabled action feedback
+- duplicate-tap prevention
+- long-running request feedback
+
+Do not redesign the whole application.
+
+==================================================
+11. RTL / LTR QUALITY
+==================================================
+
+Perform a focused Arabic/English QA pass.
+
+Fix:
+
+- incorrect RTL spacing
+- directional icons
+- mixed Arabic/English alignment
+- clipped text
+- hard-coded Arabic where translations should exist
+- untranslated system states
+- incorrect mirrored controls
+
+Arabic remains default.
+
+==================================================
+12. ACCESSIBILITY
+==================================================
+
+Improve production accessibility for critical flows.
+
+At minimum review:
+
+- accessible labels
+- button roles
+- touch target size
+- meaningful text contrast
+- screen-reader-friendly status labels
+- form error association
+- focus behavior where applicable
+
+Do not make cosmetic-only changes that risk regressions.
+
+==================================================
+13. AUTH SESSION RELIABILITY
+==================================================
+
+Review Firebase session behavior across:
+
+- customer mobile
+- provider mobile
+- admin web
+
+Ensure:
+
+- expired tokens refresh safely
+- unauthorized responses do not create infinite retry loops
+- logout clears local sensitive state
+- account suspension/restriction is reflected after token/session refresh
+- admin claims refresh correctly after role changes
+
+==================================================
+14. PRIVACY / LOGGING REVIEW
+==================================================
+
+Review application and backend logs.
+
+Remove or redact accidental logging of:
+
+- email where unnecessary
+- phone
+- payment references where sensitive
+- identity metadata
+- FCM tokens
+- verification IDs
+- provider payloads
+
+Do not remove useful security/audit logging.
+
+Use structured safe logging.
+
+==================================================
+15. MOBILE DATA STORAGE REVIEW
+==================================================
+
+Audit AsyncStorage/local state.
+
+Ensure sensitive information is not unnecessarily persisted.
+
+Do not persist:
+
+- payment secrets
+- auth tokens manually if Firebase manages them
+- verification provider payloads
+- admin claims
+- FCM server credentials
+- private user data that is not required offline
+
+==================================================
+16. CLOUDINARY REVIEW
+==================================================
+
+Review existing upload/deletion flow.
+
+Confirm:
+
+- unsigned preset cannot be abused beyond intended constraints where Cloudinary configuration allows controls
+- deletion remains backend-authorized
+- ownership is verified
+- arbitrary public IDs cannot be deleted
+- file-type and size validation is enforced appropriately
+- URLs stored in Firestore remain safe
+
+Do not expose Cloudinary API secret.
+
+==================================================
+17. PAYMENT REGRESSION
+==================================================
+
+Re-run Phase 1 financial security acceptance.
+
+Ensure Phase 4 changes do not break:
+
+- server-authoritative prices
+- immutable quotes
+- idempotency
+- verified Tap transaction handling
+- invoices
+- financial events
+- refund foundation
+
+Do not create a real charge.
+
+==================================================
+18. ADMIN REGRESSION
+==================================================
+
+Verify Admin Dashboard still enforces:
+
+- super_admin
+- admin
+- normal user denial
+- trusted server-side authorization
+- audit logging
+- suspension enforcement
+- verification controls
+
+Normal user admin API access must remain 403.
+
+==================================================
+19. FIRESTORE SECURITY REGRESSION
+==================================================
+
+Run comprehensive Firestore rule tests.
+
+Specifically confirm clients cannot forge:
+
+- payment state
+- invoices
+- notification ownership
+- verification state
+- admin role
+- suspension
+- provider trust
+- risk result
+- audit logs
+
+==================================================
+20. RELEASE ENVIRONMENT REVIEW
+==================================================
+
+Prepare a production-release environment checklist.
+
+Review:
+
+- application identifiers
+- Android package name
+- iOS bundle identifier
+- Expo configuration
+- production Firebase config
+- production Cloudflare Worker URL
+- deep-link schemes
+- versioning strategy
+- EAS configuration if already present
+- build profiles
+- environment separation
+
+Do NOT publish to Apple or Google yet.
+
+Do not rotate or expose production secrets unnecessarily.
+
+==================================================
+21. ANDROID RELEASE READINESS
+==================================================
+
+Check current Google Play technical readiness.
+
+Review:
+
+- current target SDK compatibility
+- 16 KB page-size compatibility where applicable
+- Android permissions
+- notification permission behavior
+- exported components
+- deep links
+- cleartext traffic
+- release signing assumptions
+- versionCode strategy
+
+Do not generate or expose signing credentials unless already configured through the appropriate secure system.
+
+==================================================
+22. IOS RELEASE READINESS
+==================================================
+
+Check current iOS technical readiness.
+
+Review:
+
+- bundle identifier consistency
+- required usage descriptions
+- push notification capability readiness
+- deep-link configuration
+- privacy permission declarations
+- buildNumber strategy
+- Firebase iOS configuration
+- notification behavior
+
+Do not publish or request Apple credentials unless required in a later release phase.
+
+==================================================
+23. SECURITY HEADERS / ADMIN WEB
+==================================================
+
+Review Firebase Hosting/Admin web security.
+
+Add or verify appropriate protections where supported:
+
+- CSP
+- X-Content-Type-Options
+- Referrer-Policy
+- frame protection / frame-ancestors
+- permissions policy where appropriate
+
+Do not break Firebase authentication.
+
+==================================================
+24. RATE LIMITING
+==================================================
+
+Review existing Cloudflare Worker sensitive endpoints.
+
+Ensure meaningful abuse protection exists for:
+
+- login-adjacent operations where applicable
+- OTP
+- payment creation
+- payment verification
+- verification attempts
+- complaint submissions
+- device-token registration
+
+Do not rely only on client-side throttling.
+
+==================================================
+25. OBSERVABILITY FOUNDATION
+==================================================
+
+Create lightweight operational observability.
+
+At minimum provide safe structured indicators for:
+
+- Worker failures
+- payment provider errors
+- notification failures
+- verification provider errors
+- authorization failures
+- unexpected server exceptions
+
+Do not log secrets or excessive PII.
+
+Do not add an expensive external monitoring product unless already available.
+
+==================================================
+26. TESTING
+==================================================
+
+Run all existing tests from Phase 0 through Phase 3.
+
+Add Phase 4 tests covering at minimum:
+
+- device token ownership
+- duplicate FCM token handling
+- invalid token deactivation
+- notification read authorization
+- notification pagination
+- notification preference enforcement
+- critical notification cannot be improperly suppressed
+- deep-link payload allowlist
+- suspended user notification behavior
+- normal user cannot create trusted notification
+- server-generated notification event
+- auth refresh behavior where testable
+- sensitive fields absent from logs
+- Admin authorization regression
+- payment security regression
+- verification security regression
+
+==================================================
+27. FULL SECURITY REVIEW
+==================================================
+
+Run:
+
+- dependency audit
+- SAST
+- secret scan
+- privacy/dataflow scan
+- authorization review
+- deployed frontend bundle scan
+
+If a critical/high finding affects production runtime:
+
+fix it before deployment where safely possible.
+
+If blocked by framework compatibility:
+document it precisely.
+
+==================================================
+28. DEPLOYMENT
+==================================================
+
+Only after all acceptance checks pass:
+
+1. Deploy required Firestore rules/indexes.
+2. Deploy only to existing Cloudflare Worker:
+   heavyar-api
+3. Preserve all bindings/secrets.
+4. Deploy updated Admin Dashboard to existing Firebase Hosting if changed.
+5. Verify:
+   https://heavyar-app.web.app
+6. Verify mobile web/dev preview as appropriate.
+7. Perform safe production smoke tests.
+8. Do not create real payments/refunds.
+9. Do not perform official Nafath verification.
+
+==================================================
+29. GIT
+==================================================
+
+Review git diff.
+
+Ensure no:
+
+- API tokens
+- Firebase service-account JSON
+- FCM server credentials
+- private keys
+- signing credentials
+- Tap secrets
+- Cloudinary secrets
+- Resend secrets
+- Nafath credentials
+- passwords
+
+are committed.
+
+Commit normally.
+
+Push only to:
+
+origin/main
+
+Do not force push.
+
+Return final SHA.
+
+==================================================
+STOP CONDITIONS
+==================================================
+
+Only stop for genuinely external blockers such as:
+
+- Expo/EAS account authorization requiring owner action
+- Apple Developer account action
+- Google Play Console action
+- official Nafath credentials
+- external business/provider agreement
+
+Do not stop for programming, tests, Firebase deployment, Cloudflare deployment, Hosting deployment, or Git work Replit can perform.
+
+Do NOT submit to stores yet.
+
+==================================================
+FINAL REPORT
+==================================================
+
+Report:
+
+1. Dependency remediation results
+2. Remaining critical/high findings and exact exposure
+3. Notification architecture
+4. FCM token architecture
+5. Notification categories/events
+6. In-app inbox
+7. Notification preferences
+8. Deep-link handling
+9. RTL/LTR fixes
+10. Accessibility improvements
+11. Auth/session reliability improvements
+12. Privacy/logging changes
+13. Cloudinary review
+14. Payment regression results
+15. Verification/trust regression results
+16. Firestore security results
+17. Android release-readiness findings
+18. iOS release-readiness findings
+19. Admin web security findings
+20. Observability/rate-limit improvements
+21. Test counts/results
+22. Firebase deployment status
+23. Cloudflare Worker version
+24. Admin Hosting deployment status
+25. Production smoke-test results
+26. Git commit(s)
+27. Final origin/main SHA
+28. Remaining blockers
+29. Exact recommended Phase 5 scope
+
+Then STOP.

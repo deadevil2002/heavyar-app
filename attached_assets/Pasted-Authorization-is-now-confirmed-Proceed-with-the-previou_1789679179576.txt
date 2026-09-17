@@ -1,0 +1,175 @@
+Authorization is now confirmed.
+
+Proceed with the previously approved Heavyar release using ONLY:
+
+CLOUDFLARE_HEAVYAR_DEPLOY_TOKEN
+
+Do not use the old CLOUDFLARE_API_TOKEN for deployment.
+
+Current verified Worker:
+heavyar-api
+
+Current deployed Worker version:
+0182e148-a337-45fd-a4c1-d982e967fec5
+
+Current reviewed Git SHA:
+80418b621d41ea42efd63efaf608d180ef0e4ee7
+
+You already recorded the existing production configuration:
+- 8 secret bindings
+- 1 plain-text binding
+- 1 cron schedule
+
+==================================================
+1. DEPLOY EXISTING WORKER ONLY
+==================================================
+
+Deploy the already-reviewed Worker source to the EXISTING:
+
+heavyar-api
+
+Do NOT create a new Worker.
+
+Preserve exactly:
+- all existing secrets
+- all bindings
+- plain-text variables
+- cron schedules
+- routes
+- workers.dev configuration
+- all existing production settings
+
+Do not expose or rotate any secret.
+
+==================================================
+2. VERIFY AFTER DEPLOYMENT
+==================================================
+
+After deployment:
+
+- confirm new Worker version ID
+- verify all 8 secret bindings still exist
+- verify the plain-text binding still exists
+- verify the cron schedule still exists
+- compare configuration fingerprints with the pre-deployment inventory
+
+If anything is unexpectedly missing:
+STOP immediately and do not deploy Hosting.
+
+==================================================
+3. PRODUCTION SMOKE TESTS
+==================================================
+
+Run safe production checks for:
+
+- /health
+- authenticated admin session
+- dashboard/overview
+- Users
+- Providers
+- Drivers
+- Equipment
+- Requests
+- Payments
+- Invoices
+- Refunds
+- Complaints
+- Verification
+- Notifications
+- Marketing Campaigns
+- Staff & Permissions
+- Payment Gateways
+- Identity Integrations / Nafath
+- Security / Ownership
+
+Verify:
+- public request numbers
+- public equipment numbers
+- enriched names/emails
+- equipment moderation
+- driver listing
+- staff invitation endpoints
+- ownership-transfer readiness
+- gateway readiness
+- Nafath remains disabled/fail-closed
+
+==================================================
+4. XLSX PRODUCTION VERIFICATION
+==================================================
+
+Run authenticated production XLSX export verification.
+
+Confirm:
+- HTTP 200
+- valid .xlsx
+- audit record created
+- no forbidden secret/private fields exported
+
+==================================================
+5. FIREBASE HOSTING
+==================================================
+
+ONLY after the Worker passes production verification:
+
+Deploy the already-reviewed Admin build to the EXISTING Firebase Hosting site:
+
+https://heavyar-app.web.app
+
+Do not create another Hosting site.
+
+Then verify the LIVE Admin against the LIVE Worker.
+
+Preserve the responsive sidebar fix on:
+- Arabic RTL desktop
+- English LTR desktop
+- mobile drawer
+
+==================================================
+6. SAFETY
+==================================================
+
+Keep disabled:
+- Tap LIVE
+- Nafath/Rabet official verification
+- Moyasar
+- MyFatoorah
+
+Do NOT:
+- create real payments
+- perform refunds
+- perform real Nafath verification
+- run EAS/native builds
+- submit to stores
+- create fake production users/drivers/invoices
+
+==================================================
+7. GIT
+==================================================
+
+If no source fix is needed:
+do not create a new commit.
+
+If a real source fix is required:
+- review it
+- test it
+- commit normally
+- push non-force to origin/main
+
+==================================================
+RETURN ONLY
+==================================================
+
+Return:
+
+1. previous Worker version
+2. new Worker version
+3. secrets/bindings preservation result
+4. cron preservation result
+5. production smoke-test results
+6. XLSX production verification
+7. Hosting deployment result
+8. live Admin verification
+9. final Git SHA
+10. any remaining real blocker
+
+Then STOP.

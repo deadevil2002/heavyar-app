@@ -1,0 +1,652 @@
+Start Heavyar Phase 2 — Admin Dashboard & Operations Core.
+
+IMPORTANT BASELINE
+
+Official repository:
+https://github.com/deadevil2002/heavyar-app
+
+Branch:
+main
+
+Current verified Phase 1 commit:
+bd027acd3207a672818c3808a4f1ba12a8f23218
+
+Phase 0 baseline:
+b6d957bfc6a4ee14cc8b721c24f64e7bd5ed7df5
+
+Existing production Cloudflare Worker:
+heavyar-api
+
+Production URL:
+https://heavyar-api.heavyar-official.workers.dev
+
+Firebase project:
+heavyar-app
+
+Phase 1 payment trust architecture is complete and MUST NOT be weakened.
+
+Before changing anything:
+
+1. Confirm origin/main is at:
+   bd027acd3207a672818c3808a4f1ba12a8f23218
+   or a clean direct successor with no unexpected divergence.
+
+2. Confirm the working tree is clean.
+
+3. Create and push a permanent tag:
+   heavyar-phase1-baseline
+   pointing to:
+   bd027acd3207a672818c3808a4f1ba12a8f23218
+
+Do not rewrite or move this tag later.
+
+==================================================
+PHASE 2 GOAL
+==================================================
+
+Build the production Admin Dashboard and operational control layer for Heavyar.
+
+The dashboard must use the SAME authoritative backend and state machines as the mobile app.
+
+Do NOT duplicate financial or request business logic in the browser.
+
+Do NOT weaken Phase 0 or Phase 1 security.
+
+Do NOT implement Nafath yet.
+
+Do NOT activate live Tap credentials.
+
+Do NOT redesign the entire customer/provider mobile UI.
+
+Do NOT create another Cloudflare Worker unless there is an unavoidable technical reason. Prefer extending the existing heavyar-api backend.
+
+==================================================
+1. ADMIN AUTHORIZATION
+==================================================
+
+Implement trusted server-side admin authorization.
+
+Do NOT rely only on:
+- hidden routes
+- email checks in the browser
+- a Firestore role field controlled by the client
+
+Use a trusted server-side mechanism such as Firebase custom claims or an equivalent backend-controlled admin entitlement.
+
+Support at minimum:
+
+super_admin
+admin
+
+Architecture should allow future scoped roles such as:
+finance_admin
+support_admin
+operations_admin
+
+Only super_admin may grant or revoke admin privileges.
+
+All privileged admin actions must be checked server-side.
+
+==================================================
+2. ADMIN DASHBOARD SHELL
+==================================================
+
+Create a professional responsive Heavyar Admin Dashboard.
+
+Arabic first, English secondary.
+
+Support:
+- RTL Arabic
+- LTR English
+- desktop
+- tablet
+- mobile browser
+
+Use Heavyar's existing dark/gold identity where appropriate.
+
+Do not over-design.
+
+Create clear navigation for:
+
+Dashboard
+Users
+Providers
+Equipment
+Rental Requests
+Payments
+Invoices
+Refunds
+Complaints / Disputes
+Verification
+Payment Providers
+Configuration
+Audit Logs
+
+Pages may initially contain production-grade operational MVP functionality; do not build fake placeholders.
+
+==================================================
+3. DASHBOARD OVERVIEW
+==================================================
+
+Create a useful operational dashboard showing trusted backend metrics such as:
+
+- total users
+- active providers
+- equipment listings
+- active rental requests
+- requests by status
+- payments by canonical status
+- paid volume in SAR
+- pending payment volume
+- failed payments
+- open complaints
+- suspended accounts
+- recent operational events
+
+Do not compute sensitive metrics from untrusted client-side data.
+
+Avoid expensive unbounded Firestore scans.
+
+Use suitable indexed queries or trusted aggregates where needed.
+
+==================================================
+4. USERS MANAGEMENT
+==================================================
+
+Admin should be able to:
+
+- search users
+- filter by account type/status
+- inspect account details
+- inspect relevant activity
+- see verification state
+- see active requests
+- see complaints/disputes
+- see suspension state
+
+Administrative actions should support:
+
+- suspend
+- unsuspend
+- add admin note
+- review account history
+
+Do NOT permanently delete user data casually.
+
+Design deletion workflows with auditability and future legal/data-retention requirements in mind.
+
+==================================================
+5. PROVIDER MANAGEMENT
+==================================================
+
+Provide a dedicated provider management view.
+
+Support:
+
+- provider profile
+- listed equipment
+- rental history
+- payment history
+- complaint history
+- future verification readiness
+- suspension status
+- operational notes
+
+Do not implement Nafath verification yet.
+
+Prepare clear verification fields/states for a future phase without pretending verification occurred.
+
+==================================================
+6. EQUIPMENT MANAGEMENT
+==================================================
+
+Admin should be able to:
+
+- search/filter equipment
+- inspect equipment details
+- see provider
+- see listing status
+- see associated requests
+- temporarily hide/unhide listings
+- flag listings for review
+- suspend abusive/fraudulent listings
+
+Do not allow the admin browser to directly bypass trusted backend validation.
+
+All privileged modifications must go through trusted backend endpoints.
+
+==================================================
+7. RENTAL REQUEST OPERATIONS
+==================================================
+
+Create a full operational request view.
+
+Admin should see:
+
+- request ID
+- customer
+- provider
+- equipment
+- rental dates
+- canonical request status
+- payment state
+- invoice
+- pricing snapshot
+- timeline/history
+- relevant financial events
+- complaint/dispute association
+
+Admin actions must use the existing trusted state-machine architecture.
+
+Do not allow arbitrary status writes.
+
+Support controlled operational interventions such as:
+- cancel where legally/business-valid
+- freeze/escalate
+- add admin note
+- mark under investigation
+
+Do not invent financial state transitions outside Phase 1 rules.
+
+==================================================
+8. PAYMENT OPERATIONS
+==================================================
+
+Build an operational Payments section based on Phase 1 financial records.
+
+Admin should be able to inspect:
+
+- internal payment ID
+- request ID
+- provider
+- canonical status
+- authoritative quote
+- amount
+- VAT
+- platform fee
+- currency
+- provider reference
+- timestamps
+- invoice
+- financial event history
+
+Sensitive provider secrets must NEVER be visible in the dashboard.
+
+No card/payment credentials should be stored or exposed.
+
+==================================================
+9. REFUND FOUNDATION
+==================================================
+
+Implement safe refund workflow foundations.
+
+Do NOT enable dangerous arbitrary refund actions without provider support and trusted validation.
+
+Architecture should support:
+
+refund_requested
+refund_pending
+partially_refunded
+refunded
+refund_failed
+
+If current Tap TEST integration safely supports test refunds, implement via provider adapter.
+
+Otherwise:
+- implement backend workflow/state foundation
+- keep the external execution disabled
+- clearly mark it as unavailable until provider support is configured
+
+Refunds must be:
+- server-authorized
+- idempotent
+- audited
+- tied to original payment
+- constrained by original paid amount
+
+==================================================
+10. COMPLAINTS / DISPUTES
+==================================================
+
+Create a central complaints/disputes system.
+
+Support complaints involving:
+- customer
+- provider
+- equipment
+- rental request
+- payment
+- delivery/handover where applicable
+
+Statuses should support a controlled lifecycle such as:
+
+open
+under_review
+waiting_customer
+waiting_provider
+resolved
+closed
+
+Do NOT auto-suspend accounts simply because raw complaints exist.
+
+Admin should make confirmed decisions based on reviewed cases.
+
+Keep a complete audit trail.
+
+==================================================
+11. SUSPENSIONS
+==================================================
+
+Implement trusted account/listing suspension controls.
+
+Suspension must be stored and enforced server-side.
+
+Support:
+
+active
+temporarily_suspended
+permanently_suspended
+
+Include:
+- reason
+- admin actor
+- timestamp
+- internal note
+- optional end date
+
+Suspended users must not be able to bypass restrictions from the mobile client.
+
+==================================================
+12. INVOICE MANAGEMENT
+==================================================
+
+Use the Phase 1 trusted backend invoice authority.
+
+Admin may:
+- inspect invoices
+- search by invoice number
+- search by request/payment
+- see authoritative amount breakdown
+- see payment association
+- download or view representation if already supported
+
+Do not allow manual invoice-number modification.
+
+Do not implement full ZATCA Phase 2 yet.
+
+Prepare future-safe fields where appropriate.
+
+==================================================
+13. PAYMENT PROVIDER MANAGEMENT
+==================================================
+
+Expose only SAFE provider configuration.
+
+Admin may view/manage non-secret settings such as:
+
+provider name
+enabled/disabled
+test/live display state
+priority
+supported methods
+marketplace capability
+health status
+
+DO NOT expose:
+- API secrets
+- private keys
+- service-account credentials
+- webhook secrets
+
+Secrets remain only in secure server-side secret storage.
+
+Do not allow browser code to retrieve them.
+
+==================================================
+14. CONFIGURATION
+==================================================
+
+Create trusted non-secret Heavyar configuration management.
+
+Examples:
+
+platform fee policy
+VAT policy metadata
+operational thresholds
+support configuration
+feature flags
+future verification thresholds
+
+Financial configuration changes must:
+
+- be authorized
+- be audited
+- have timestamps
+- preferably use versioned policies
+- never retroactively alter existing immutable Phase 1 quotes/invoices
+
+==================================================
+15. AUDIT LOG
+==================================================
+
+Implement an append-oriented admin audit log.
+
+Record:
+
+- admin identity
+- action
+- target type
+- target ID
+- before/after summary where appropriate
+- timestamp
+- reason/note
+- request/correlation ID
+
+Examples:
+- user suspended
+- equipment hidden
+- request intervention
+- refund requested
+- configuration changed
+- admin role changed
+
+Normal clients must have no write access to audit logs.
+
+Do not store secrets in audit entries.
+
+==================================================
+16. SEARCH / PAGINATION / PERFORMANCE
+==================================================
+
+Do not implement pages that download entire Firestore collections.
+
+Use:
+- pagination
+- indexed filters
+- sensible result limits
+- debounced search where appropriate
+
+Add Firestore indexes only when justified.
+
+Preserve existing production indexes.
+
+==================================================
+17. FIRESTORE SECURITY
+==================================================
+
+Review and update rules for all new collections.
+
+The admin web browser should not receive unrestricted Firestore write access merely because it is an admin.
+
+Prefer trusted backend operations for sensitive mutations.
+
+Normal users must not:
+- assign themselves admin roles
+- modify suspensions
+- change audit logs
+- change provider configuration
+- change platform financial configuration
+- issue refunds
+- forge complaint resolution
+- modify verification state
+
+Do not weaken existing financial protections.
+
+==================================================
+18. API SECURITY
+==================================================
+
+All admin endpoints must:
+
+- require valid Firebase authentication
+- verify trusted admin privilege server-side
+- validate request payloads
+- enforce least privilege
+- reject unauthorized users
+- return safe errors
+- avoid leaking secrets
+- log privileged mutations
+
+Add rate limits or abuse protection where appropriate.
+
+==================================================
+19. MOBILE COMPATIBILITY
+==================================================
+
+Do not redesign the mobile app.
+
+Only make minimal client changes required to respect:
+- suspension
+- listing moderation
+- dispute status
+- trusted backend changes
+
+Existing request/payment flows must continue working.
+
+==================================================
+20. TESTING
+==================================================
+
+Add automated tests covering at minimum:
+
+- unauthenticated admin endpoint rejected
+- authenticated normal user rejected
+- admin accepted for allowed action
+- super_admin-only action enforcement
+- user cannot self-assign admin role
+- suspension enforcement
+- equipment moderation
+- controlled request intervention
+- payment record read behavior
+- refund validation
+- duplicate refund prevention
+- audit log creation
+- configuration update authorization
+- immutable Phase 1 quote remains unchanged after policy changes
+- complaint lifecycle validation
+- Firestore rule protections
+
+Run ALL Phase 0 and Phase 1 tests too.
+
+==================================================
+21. DEPLOYMENT
+==================================================
+
+After implementation run:
+
+- mobile TypeScript
+- admin TypeScript/build
+- lint
+- Worker TypeScript/build
+- Worker tests
+- Firestore rules tests
+- request transition tests
+- Phase 1 payment tests
+- Phase 2 admin/operations tests
+- dependency/security scans
+
+If any critical or high-confidence security regression exists:
+DO NOT deploy.
+
+If everything passes:
+
+1. deploy required Firestore rules/indexes
+2. deploy only to existing:
+   heavyar-api
+3. preserve all existing bindings/secrets
+4. deploy/admin-host the dashboard using the most appropriate existing Heavyar architecture
+5. perform safe production smoke tests
+6. verify normal mobile flows still work
+7. verify normal users cannot access admin APIs/pages
+
+Do not create real charges.
+
+==================================================
+22. GIT
+==================================================
+
+Review git diff carefully.
+
+Ensure no:
+- API tokens
+- private keys
+- service-account JSON
+- Cloudflare secrets
+- Tap secrets
+- Cloudinary secrets
+- Resend secrets
+
+Then commit clearly and push only:
+
+origin/main
+
+Do not force push.
+
+Return final commit SHA.
+
+==================================================
+STOP CONDITIONS
+==================================================
+
+Stop only for unavoidable external decisions such as:
+
+- a specific business policy with no safe default
+- external provider contract/credential
+- legal retention policy requiring owner decision
+- Tap live/marketplace activation
+
+Do not ask me to perform programming, deployments, file edits, or tests Replit can do.
+
+Do NOT start:
+- Nafath
+- full visual redesign
+- live Tap activation
+- App Store / Google Play release work
+
+==================================================
+FINAL REPORT
+==================================================
+
+Report:
+
+1. Admin authorization model
+2. Dashboard deployment URL
+3. Dashboard sections delivered
+4. User/provider/equipment management
+5. Request operations
+6. Payment/refund operations
+7. Complaints/disputes model
+8. Suspension model
+9. Configuration model
+10. Audit log
+11. Firestore rule/index changes
+12. Tests and results
+13. Firebase deployment
+14. Cloudflare deployment/version
+15. Admin production smoke tests
+16. Mobile regression results
+17. Git commit(s) and final SHA
+18. Remaining risks/blockers
+19. Exact recommendation for Phase 3
+
+Then STOP.

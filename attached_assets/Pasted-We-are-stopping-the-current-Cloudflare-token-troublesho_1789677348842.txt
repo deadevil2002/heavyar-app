@@ -1,0 +1,230 @@
+We are stopping the current Cloudflare token troubleshooting approach.
+
+The old Heavyar deployment worked previously.
+The current standalone API token is active but Cloudflare repeatedly returns 403/9109/10000 for the existing Heavyar Worker APIs.
+
+I want you to establish a NEW, clean, project-specific Cloudflare authorization for THIS Replit workspace only.
+
+IMPORTANT:
+Do NOT disconnect or modify Cloudflare integrations used by my other projects.
+Do NOT touch iSaudi or Tabbakheen Cloudflare accounts.
+Do NOT delete the current Heavyar token until the replacement authorization is proven working.
+
+==================================================
+HEAVYAR CLOUDLFARE TARGET
+==================================================
+
+Account ID:
+e43da79a0ea995c11c90e7819fb0c6e6
+
+Existing Worker:
+heavyar-api
+
+Production URL:
+https://heavyar-api.heavyar-official.workers.dev
+
+This is the ONLY Cloudflare account/Worker you may use.
+
+==================================================
+1. PREFERRED METHOD — INTERACTIVE AUTHORIZATION
+==================================================
+
+First determine the safest supported Cloudflare authorization method available inside Replit for this workspace.
+
+Preferred order:
+
+1. Replit Cloudflare OAuth / official connector
+2. Official Cloudflare MCP authorization
+3. Wrangler browser OAuth authorization
+4. Dedicated new Heavyar-only Account API Token
+
+If an interactive authorization method can provide the required Worker read + deploy access:
+
+OPEN THE AUTHORIZATION PAGE FOR ME NOW.
+
+I want to personally sign in and authorize the correct Heavyar Cloudflare account.
+
+Do not reuse the currently attached Cloudflare MCP if it is authenticated to another Cloudflare account.
+
+If necessary, attach a NEW Cloudflare connection to THIS workspace only.
+
+==================================================
+2. REQUIRED ACCESS
+==================================================
+
+The new authorization only needs enough access to:
+
+- identify the Heavyar account
+- read existing heavyar-api Worker metadata/configuration
+- read Worker versions/deployments
+- update/deploy the EXISTING heavyar-api Worker
+- preserve existing Worker bindings/secrets/settings
+- read schedules/triggers if required for preservation
+
+It must NOT have unnecessary access to:
+
+- DNS
+- Zones
+- R2
+- D1
+- KV
+- Pages
+- AI
+- Billing
+- unrelated Workers
+- other Cloudflare accounts
+
+Do not request broad Account Owner/Admin access.
+
+==================================================
+3. IF OAUTH / CONNECTOR CAN DEPLOY
+==================================================
+
+If the official Replit/Cloudflare authorization supports Worker deployment:
+
+- open that authorization flow
+- let me authenticate interactively
+- after authorization, verify the connected account ID is exactly:
+
+e43da79a0ea995c11c90e7819fb0c6e6
+
+- verify access to existing:
+  heavyar-api
+
+Do not deploy yet.
+
+Report that authorization succeeded and wait only if user interaction is required.
+
+==================================================
+4. IF INTERACTIVE AUTH CANNOT DEPLOY
+==================================================
+
+If OAuth/MCP is read-only or cannot deploy Workers, do NOT keep retrying it.
+
+Instead request a BRAND-NEW dedicated Account API Token for Heavyar.
+
+Give me ALL required Cloudflare token settings in ONE response.
+
+I want the exact Cloudflare Dashboard path and exact values to select.
+
+For example:
+
+Token name:
+Heavyar Replit Worker Deploy
+
+Account:
+Heavyar account
+e43da79a0ea995c11c90e7819fb0c6e6
+
+Permissions:
+[list every required permission together]
+
+Resources:
+[list exact account/Worker scope]
+
+Do not make me add permissions one by one.
+
+==================================================
+5. USE A NEW SECRET NAME IF TOKEN FALLBACK IS NEEDED
+==================================================
+
+If a new API token is required, do NOT immediately overwrite the old secret.
+
+Ask me to save the new credential as:
+
+CLOUDFLARE_HEAVYAR_DEPLOY_TOKEN
+
+Then validate the NEW token explicitly.
+
+Only after it passes all validation should you switch deployment to it.
+
+Keep:
+
+CLOUDFLARE_ACCOUNT_ID =
+e43da79a0ea995c11c90e7819fb0c6e6
+
+==================================================
+6. VALIDATION BEFORE ANY DEPLOYMENT
+==================================================
+
+The new authorization must pass ALL of these before deployment:
+
+- account lookup succeeds
+- heavyar-api Worker read succeeds
+- settings read succeeds
+- versions read succeeds
+- deployments read succeeds
+- schedules/triggers read succeeds if required
+
+Then inspect and record the current Worker bindings/configuration so they can be preserved safely.
+
+If any required read still returns 403:
+STOP.
+
+Do not request random additional permissions.
+
+==================================================
+7. AFTER AUTHORIZATION IS CONFIRMED
+==================================================
+
+Only after the new authorization is proven valid:
+
+resume the already-reviewed Heavyar deployment from Git SHA:
+
+80418b621d41ea42efd63efaf608d180ef0e4ee7
+
+Deploy only to EXISTING:
+
+heavyar-api
+
+Preserve:
+- secrets
+- variables
+- bindings
+- routes
+- cron schedules
+- Worker configuration
+
+Then run production smoke tests.
+
+Only after Worker validation succeeds:
+deploy the reviewed Admin build to:
+
+https://heavyar-app.web.app
+
+==================================================
+8. SAFETY
+==================================================
+
+Keep disabled:
+
+- Tap LIVE
+- Nafath/Rabet official verification
+- Moyasar
+- MyFatoorah
+
+Do NOT:
+- create a real payment
+- create a refund
+- perform a real Nafath verification
+- run EAS/native builds
+- submit to stores
+- create a new Worker
+- modify another Cloudflare account
+
+==================================================
+WHAT I WANT FROM YOU NOW
+==================================================
+
+Do not start another API-token guessing cycle.
+
+Your FIRST action should be:
+
+Either:
+A. open a fresh Cloudflare authorization page for the Heavyar account,
+
+OR, if interactive authorization cannot provide Worker deployment access:
+
+B. give me the complete exact new token configuration I must create, all permissions at once.
+
+Then wait for my authorization/input before deployment.
