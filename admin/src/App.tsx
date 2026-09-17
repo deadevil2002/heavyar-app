@@ -31,6 +31,7 @@ import Verification from '@/pages/verification';
 import ProviderConfigs from '@/pages/providers-config';
 import Configuration from '@/pages/configuration';
 import Audit from '@/pages/audit';
+import Notifications from '@/pages/notifications';
 import Login from '@/pages/login';
 
 function Router() {
@@ -75,6 +76,7 @@ function Router() {
           <Route path="/providers-config" component={ProviderConfigs} />
           <Route path="/configuration" component={Configuration} />
           <Route path="/audit" component={Audit} />
+          <Route path="/notifications" component={Notifications} />
           <Route component={NotFound} />
         </Switch>
       </RoutedErrorBoundary>

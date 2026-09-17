@@ -35,20 +35,10 @@ let db: Firestore;
 
 function getFirebaseApp(): FirebaseApp {
   if (!app) {
-    console.log('[Firebase Config]', {
-      authDomain: firebaseConfig.authDomain,
-      projectId: firebaseConfig.projectId,
-      storageBucket: firebaseConfig.storageBucket,
-      messagingSenderId: firebaseConfig.messagingSenderId,
-      hasApiKey: Boolean(firebaseConfig.apiKey),
-      hasAppId: Boolean(firebaseConfig.appId),
-    });
     if (getApps().length === 0) {
       app = initializeApp(firebaseConfig);
-      console.log('[Firebase] App initialized');
     } else {
       app = getApp();
-      console.log('[Firebase] Using existing app');
     }
   }
   return app;
@@ -65,11 +55,8 @@ function getFirebaseAuth(): Auth {
       } else {
         auth = getAuth(firebaseApp);
       }
-      console.log('[Firebase] Auth initialized');
     } catch (error) {
-      console.log('[Firebase] Auth init fallback:', error);
       auth = getAuth(firebaseApp);
-      console.log('[Firebase] Auth fallback initialized');
     }
   }
   return auth;
@@ -79,7 +66,6 @@ function getFirebaseDb(): Firestore {
   if (!db) {
     const firebaseApp = getFirebaseApp();
     db = getFirestore(firebaseApp);
-    console.log('[Firebase] Firestore initialized');
   }
   return db;
 }

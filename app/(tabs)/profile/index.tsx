@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera, Trash2 } from 'lucide-react-native';
+import { Settings, Package, Star, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera, Trash2, Bell } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
@@ -243,6 +243,7 @@ export default function ProfileScreen() {
   const menuItems = [
     ...(user?.role === 'provider' ? [{ icon: Package, label: t('my_equipment'), route: '/my-equipment' as const }] : []),
     { icon: Shield, label: isRTL ? 'التحقق والموثوقية' : 'Verification & trust', route: '/verification' as const },
+    { icon: Bell, label: t('notifications'), route: '/notifications' as const },
     { icon: Receipt, label: t('invoices'), route: '/invoices' as const },
     { icon: Settings, label: t('settings'), route: '/settings' as const },
   ];
@@ -508,6 +509,8 @@ export default function ProfileScreen() {
             {menuItems.map((item, index) => (
               <Pressable
                 key={index}
+                accessibilityRole="button"
+                accessibilityLabel={item.label}
                 style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
                 onPress={() => router.push(item.route as any)}
               >
@@ -522,7 +525,7 @@ export default function ProfileScreen() {
             ))}
           </View>
 
-          <Pressable style={[styles.logoutButton, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={handleLogout}>
+          <Pressable accessibilityRole="button" accessibilityLabel={t('logout')} style={[styles.logoutButton, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={handleLogout}>
             <LogOut size={20} color={Colors.error} />
             <Text style={styles.logoutText}>{t('logout')}</Text>
           </Pressable>

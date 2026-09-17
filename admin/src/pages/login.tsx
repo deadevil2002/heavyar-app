@@ -52,6 +52,7 @@ export default function Login() {
             <Input 
               id="email" 
               type="email" 
+              autoComplete="email"
               placeholder="admin@heavyar.com" 
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -65,6 +66,7 @@ export default function Login() {
             <Input 
               id="password" 
               type="password" 
+              autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required 
@@ -73,7 +75,7 @@ export default function Login() {
             />
           </div>
           
-          <Button type="submit" className="w-full mt-6 text-primary-foreground font-semibold h-11" disabled={loading}>
+          <Button type="submit" className="w-full mt-6 text-primary-foreground font-semibold h-11" disabled={loading} aria-busy={loading}>
             {loading ? t('جاري تسجيل الدخول...', 'Signing in...') : t('تسجيل الدخول', 'Sign In')}
           </Button>
         </form>

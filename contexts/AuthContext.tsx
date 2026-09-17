@@ -11,8 +11,8 @@ import {
   updateUserProfile,
 } from '@/services/authService';
 import {
-  requestNotificationPermission,
-  registerDeviceToken,
+  registerCurrentDevice,
+  revokeCurrentDevice,
 } from '@/services/notificationService';
 
 const AUTH_PROFILE_KEY = 'heavyar_user_profile';
@@ -24,8 +24,6 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
-    console.log('[AuthContext] Setting up auth state listener');
-
     const loadCachedProfile = async () => {
       try {
         const cached = await AsyncStorage.getItem(AUTH_PROFILE_KEY);
@@ -33,17 +31,14 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
           const parsed = JSON.parse(cached) as User;
           setUser(parsed);
           setIsAuthenticated(true);
-          console.log('[AuthContext] Loaded cached profile for:', parsed.uid);
         }
       } catch (e) {
-        console.log('[AuthContext] Error loading cached profile:', e);
       }
     };
 
     void loadCachedProfile();
 
     const unsubscribe = subscribeToAuthState(async (firebaseUser) => {
-      console.log('[AuthContext] Auth state changed:', firebaseUser?.uid || 'null');
       if (firebaseUser) {
         try {
           const profile = await fetchUserProfile(firebaseUser.uid);
@@ -51,15 +46,10 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
             setUser(profile);
             setIsAuthenticated(true);
             await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
-            console.log('[AuthContext] Profile loaded for:', profile.uid);
-
             try {
-              const token = await requestNotificationPermission();
-              if (token) {
-                await registerDeviceToken(profile.uid, token);
-              }
-            } catch (notifError) {
-              console.log('[AuthContext] Notification setup skipped:', notifError);
+              await registerCurrentDevice();
+            } catch {
+              // Notifications are optional; authentication must still complete.
             }
           } else {
             const fallbackUser: User = {
@@ -87,7 +77,10 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
             await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(fallbackUser));
           }
         } catch (e) {
-          console.log('[AuthContext] Error fetching profile:', e);
+          setUser(null);
+          setIsAuthenticated(false);
+          await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+          setAuthError('SESSION_EXPIRED');
         }
       } else {
         setUser(null);
@@ -101,13 +94,11 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
-    console.log('[AuthContext] Login attempt for:', email);
     setAuthError(null);
     try {
       await loginWithEmail(email, password);
     } catch (e: unknown) {
       const error = e as { code?: string; message?: string };
-      console.log('[AuthContext] Login error:', error.code, error.message);
       let errorMsg = 'فشل تسجيل الدخول';
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
         errorMsg = 'البريد الإلكتروني أو كلمة المرور غير صحيحة';
@@ -124,7 +115,6 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   }, []);
 
   const register = useCallback(async (name: string, email: string, phone: string, password: string, role: 'customer' | 'provider' = 'customer', crNumber?: string, region?: string, city?: string, customCity?: string) => {
-    console.log('[AuthContext] Register attempt for:', email, 'role:', role);
     setAuthError(null);
     try {
       await registerWithEmail(email, password, {
@@ -139,7 +129,6 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       });
     } catch (e: unknown) {
       const error = e as { code?: string; message?: string };
-      console.log('[AuthContext] Register error:', error.code, error.message);
       let errorMsg = 'فشل إنشاء الحساب';
       if (error.code === 'auth/email-already-in-use') {
         errorMsg = 'البريد الإلكتروني مستخدم بالفعل';
@@ -154,13 +143,17 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   }, []);
 
   const logout = useCallback(async () => {
-    console.log('[AuthContext] Logout');
     setAuthError(null);
     try {
+      await revokeCurrentDevice().catch(() => undefined);
       await logoutUser();
       await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
-    } catch (e) {
-      console.log('[AuthContext] Logout error:', e);
+      setUser(null);
+      setIsAuthenticated(false);
+    } catch {
+      await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+      setUser(null);
+      setIsAuthenticated(false);
     }
   }, []);
 
@@ -172,8 +165,10 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         setUser(profile);
         await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
       }
-    } catch (e) {
-      console.log('[AuthContext] Refresh profile error:', e);
+    } catch {
+      setUser(null);
+      setIsAuthenticated(false);
+      await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
     }
   }, [user?.uid]);
 
@@ -201,15 +196,12 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         if (normalizedExisting === null) ruleSafeUpdates.crNumber = null as never;
       }
 
-      console.log('[ProfileWrite] AuthContext.updateProfile', { incomingKeys: Object.keys(updates), outgoingKeys: Object.keys(ruleSafeUpdates) });
-
       await updateUserProfile(user.uid, ruleSafeUpdates);
       const updated = { ...user, ...ruleSafeUpdates };
       setUser(updated);
       await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(updated));
-    } catch (e) {
-      console.log('[AuthContext] Update profile error:', e);
-      throw e;
+    } catch (error) {
+      throw error;
     }
   }, [user]);
 

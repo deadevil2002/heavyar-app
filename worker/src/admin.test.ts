@@ -237,6 +237,6 @@ describe('admin authorization and operational boundary', () => {
       customerUid: 'customer-1', providerUid: 'provider-1', status: 'accepted',
     });
     const response = await worker.fetch(request('/api/start-request', { requestId: 'request-1' }, { Authorization: 'Bearer test' }), env);
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
   });
 });

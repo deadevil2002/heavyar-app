@@ -12,14 +12,21 @@ export const queryClient = new QueryClient({
   },
 });
 
-async function getToken() {
+async function getToken(forceRefresh = false) {
   const auth = getFirebaseAuth();
   if (!auth.currentUser) return null;
-  return await auth.currentUser.getIdToken();
+  return await auth.currentUser.getIdToken(forceRefresh);
 }
 
-export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const token = await getToken();
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, hasRetried = false): Promise<T> {
+  const token = await getToken(hasRetried);
   if (!token) throw new Error('Unauthorized');
 
   const url = `${API_BASE}${endpoint}`;
@@ -41,10 +48,17 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): 
       const errorData = await response.json();
       message = errorData.error || errorData.message || message;
     } catch (e) {}
-    if (response.status === 403) {
-      throw new Error('Forbidden: ' + message);
+    if (response.status === 401 && !hasRetried) {
+      return fetchApi<T>(endpoint, options, true);
     }
-    throw new Error(message || 'API Error');
+    if (response.status === 401) {
+      await getFirebaseAuth().signOut();
+      throw new ApiError('Session expired. Please sign in again.', response.status);
+    }
+    if (response.status === 403) {
+      throw new ApiError('Forbidden: ' + message, response.status);
+    }
+    throw new ApiError(message || 'API Error', response.status);
   }
   
   const data = await response.json();
@@ -86,6 +100,21 @@ export type VersionedConfig = { id: string; version: string; data?: any; key?: s
 export type AuditEntry = { id: string; actorUid: string; action: string; targetType: string; targetId: string; before?: any; after?: any; reason?: string; timestamp: string };
 export type OverviewMetrics = { totalUsers: number; activeProviders: number; activeRequests: number; payments: number; equipmentListings: number; invoices: number; openComplaints: number };
 export type OverviewResponse = { success: boolean; metrics: OverviewMetrics };
+export type NotificationFailure = {
+  id: string;
+  category?: string;
+  eventType?: string;
+  status?: string;
+  reasonCode?: string;
+  createdAt?: string;
+  retryable?: boolean;
+};
+export type NotificationHealthResponse = {
+  success: boolean;
+  summary?: { sent?: number; failed?: number; pending?: number; deactivatedTokens?: number };
+  failures?: NotificationFailure[];
+  nextCursor?: string;
+};
 
 // Hooks
 
@@ -100,6 +129,20 @@ export function useOverview() {
   return useQuery({
     queryKey: ['overview'],
     queryFn: () => fetchApi<OverviewResponse>('/overview'),
+  });
+}
+
+export function useNotificationHealth(params: Record<string, any> = {}) {
+  return useQuery({
+    queryKey: ['notificationHealth', params],
+    queryFn: () => {
+      const searchParams = new URLSearchParams({ limit: '25' });
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== '') searchParams.set(key, String(value));
+      });
+      return fetchApi<NotificationHealthResponse>(`/notification-health?${searchParams.toString()}`);
+    },
+    retry: false,
   });
 }
 

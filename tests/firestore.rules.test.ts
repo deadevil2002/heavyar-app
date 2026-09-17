@@ -114,7 +114,7 @@ describe('Firestore authorization baseline', () => {
     await assertFails(updateDoc(doc(db, 'users/customer-1'), { isVerified: true }));
   });
 
-  it('allows an approved provider listing and valid participant request snapshots', async () => {
+  it('allows approved listings but denies direct request creation after Worker migration', async () => {
     const provider = authed('provider-1');
     await assertSucceeds(setDoc(doc(provider, 'equipment/new-listing'), {
       ownerUid: 'provider-1', ownerPublic: { uid: 'provider-1', nameAr: 'Provider', nameEn: 'Provider', avatar: '' },
@@ -123,7 +123,7 @@ describe('Firestore authorization baseline', () => {
       location: { lat: 24, lng: 46 }, pricePerDay: 100, images: [],
       availability: true, isActive: true, createdAt: new Date(), updatedAt: new Date(),
     }));
-    await assertSucceeds(setDoc(doc(authed('customer-1'), 'equipmentRequests/new-request'), {
+    await assertFails(setDoc(doc(authed('customer-1'), 'equipmentRequests/new-request'), {
       ...request, customerPublic: { uid: 'customer-1', nameAr: 'Customer', nameEn: 'Customer', avatar: '' },
       providerPublic: { uid: 'provider-1', nameAr: 'Provider', nameEn: 'Provider', avatar: '' },
     }));
@@ -134,7 +134,7 @@ describe('Firestore authorization baseline', () => {
       ...request, amount: 1, platformFee: 0, providerAmount: 1,
     }));
     const { numberOfDays: _days, ...openEndedRequest } = request;
-    await assertSucceeds(setDoc(doc(authed('customer-1'), 'equipmentRequests/open-ended'), {
+    await assertFails(setDoc(doc(authed('customer-1'), 'equipmentRequests/open-ended'), {
       ...openEndedRequest, requestMode: 'open_ended', amount: 100, platformFee: 0, providerAmount: 0,
     }));
   });
@@ -226,7 +226,7 @@ describe('Firestore authorization baseline', () => {
         uid: 'customer-1', identity: { status: 'verified' },
       });
     });
-    await assertSucceeds(updateDoc(doc(authed('provider-1'), 'equipmentRequests/request-1'), {
+    await assertFails(updateDoc(doc(authed('provider-1'), 'equipmentRequests/request-1'), {
       status: 'accepted', allowChat: true, updatedAt: serverTimestamp(),
     }));
   });
@@ -256,9 +256,9 @@ describe('Firestore authorization baseline', () => {
     await assertFails(getDocs(collection(customer, 'equipmentRequests')));
   });
 
-  it('allows only provider acceptance and exact lifecycle transitions', async () => {
+  it('denies all direct lifecycle updates after Worker migration', async () => {
     const provider = authed('provider-1');
-    await assertSucceeds(updateDoc(doc(provider, 'equipmentRequests/request-1'), {
+    await assertFails(updateDoc(doc(provider, 'equipmentRequests/request-1'), {
       status: 'accepted', allowChat: true, updatedAt: serverTimestamp(),
     }));
     await assertFails(updateDoc(doc(authed('customer-1'), 'equipmentRequests/request-1'), {
@@ -272,7 +272,7 @@ describe('Firestore authorization baseline', () => {
         status: 'in_progress', allowChat: true, startedAt: new Date(),
       });
     });
-    await assertSucceeds(updateDoc(doc(provider, 'equipmentRequests/request-1'), {
+    await assertFails(updateDoc(doc(provider, 'equipmentRequests/request-1'), {
       status: 'completion_requested', allowChat: true, updatedAt: serverTimestamp(),
     }));
     await assertFails(updateDoc(doc(provider, 'equipmentRequests/request-1'), {

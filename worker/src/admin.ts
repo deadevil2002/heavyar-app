@@ -1,6 +1,7 @@
 import type { Env } from './index';
 import { canTransitionManualReview, deriveProviderTrust, isProviderComponentName, normalizeRequiredProviderComponents, providerComponentNames, providerVerificationFor, verificationStatuses } from './verification';
 import { normalizeVerificationPolicy } from './verification';
+import { notificationWrite } from './notifications';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; email?: string };
@@ -64,7 +65,9 @@ async function rawDoc(env: Env, collection: string, id: string): Promise<RawDoc 
 
 async function commit(env: Env, writes: unknown[]) {
   if (commitOverride) { commitOverride.push(writes); return; }
-  await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes }) });
+  const safeWrites = (writes as any[]).map(write => String(write?.update?.name || '').includes('/notificationOutbox/')
+    ? { ...write, currentDocument: undefined } : write);
+  await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes: safeWrites }) });
 }
 
 function cursorValue(env: Env, collection: string, cursor: string | null) {
@@ -97,6 +100,9 @@ const FILTERS: Record<string, string[]> = {
   providerConfigs: ['enabled', 'environment'],
   heavyarConfig: ['key'],
   adminAudit: ['actorUid', 'action', 'targetType'],
+  notificationDeliveries: ['status', 'uid'],
+  notifications: ['uid', 'category', 'read'],
+  deviceTokens: ['uid', 'active', 'platform'],
 };
 
 async function listCollection(env: Env, collection: string, query: Record<string, string>, limit = 30, cursor: string | null = null) {
@@ -146,6 +152,54 @@ async function recentAudit(env: Env) {
     } }) }) as any[] || [];
     return response.filter(item => item.document).map(item => ({ id: String(item.document.name).split('/').pop(), ...redact(decode(item.document)) }));
   } catch { return []; }
+}
+async function notificationHealth(env: Env) {
+  const [success, permanent, retryable, ticketed, queued, active, deactivated] = await Promise.all([
+    countCollection(env, 'notificationDeliveries', { field: 'status', value: 'success' }),
+    countCollection(env, 'notificationDeliveries', { field: 'status', value: 'permanent' }),
+    countCollection(env, 'notificationDeliveries', { field: 'status', value: 'retryable' }),
+    countCollection(env, 'notificationDeliveries', { field: 'status', value: 'ticketed' }),
+    countCollection(env, 'notificationOutbox', { field: 'status', value: 'pending' }),
+    countCollection(env, 'deviceTokens', { field: 'active', value: true }),
+    countCollection(env, 'deviceTokens', { field: 'active', value: false }),
+    countCollection(env, 'notifications', { field: 'read', value: false }),
+  ]);
+  let recent: any[] = [];
+  try {
+    const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+      from: [{ collectionId: 'notificationDeliveries' }],
+      where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: { stringValue: 'retryable' } } },
+      orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' }], limit: 10,
+    } }) }) as any[] || [];
+    recent = rows.filter(row => row.document).map(row => { const d = decode(row.document); return {
+      id: String(row.document.name).split('/').pop(), category: d.category || 'unknown', event: d.event || 'unknown',
+      retryable: d.status === 'retryable', reasonCode: d.errorCode || 'unknown', createdAt: d.createdAt,
+    }; });
+  } catch { /* health remains available when delivery storage is degraded */ }
+  return { success: true, health: { deliveries: { success, permanent, retryable, ticketed }, pending: Number(ticketed || 0) + Number(queued || 0), activeDevices: active, deactivatedTokens: deactivated }, recent };
+}
+async function cleanupNotificationDeliveries(req: Request, env: Env) {
+  let body: any; try { body = await req.json(); } catch { body = {}; }
+  const limit = Number(body.limit || 50);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) return { error: 'Invalid cleanup limit', status: 400 };
+  const before = new Date(Date.now() - 30 * 86400000).toISOString();
+  const response = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'notificationDeliveries' }], where: { fieldFilter: { field: { fieldPath: 'createdAt' }, op: 'LESS_THAN', value: { timestampValue: before } } }, orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' }], limit } }) }) as any[] || [];
+  const writes = response.filter(x => x.document).map(x => ({ delete: x.document.name, currentDocument: { updateTime: x.document.updateTime } }));
+  if (writes.length) await commit(env, writes);
+  return { success: true, deleted: writes.length, hasMore: response.length >= limit };
+}
+async function retryNotificationDeliveries(req: Request, env: Env) {
+  let body: any; try { body = await req.json(); } catch { body = {}; }
+  const limit = Number(body.limit || 25);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) return { error: 'Invalid retry limit', status: 400 };
+  const response = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'notificationDeliveries' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: { stringValue: 'retryable' } } }, limit } }) }) as any[] || [];
+  const now = new Date().toISOString();
+  const writes = response.filter(x => x.document).map(x => {
+    const d = decode(x.document), attempts = Number(d.attempts || 0);
+    return { update: { name: x.document.name, fields: { attempts: { integerValue: String(Math.min(5, attempts + 1)) }, nextAttemptAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['attempts', 'nextAttemptAt'] }, currentDocument: { updateTime: x.document.updateTime } };
+  }).filter((x: any, index: number) => Number(decode(response[index]?.document).attempts || 0) < 5);
+  if (writes.length) await commit(env, writes);
+  return { success: true, queued: writes.length, hasMore: response.length >= limit };
 }
 
 function allowed(u: AdminUser, role: AdminRole) { return u.role === 'super_admin' || (role === 'admin' && u.role === 'admin'); }
@@ -330,6 +384,7 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
       { update: { name: fullName(env, `refundReservations/${encodeURIComponent(requestId)}`), fields: { refundId: jsonValue(targetId), createdAt: { timestampValue: new Date().toISOString() } } }, currentDocument: { exists: false } },
       { update: { name: fullName(env, `${targetCollection}/${encodeURIComponent(targetId)}`), fields: refundFields }, currentDocument: { exists: false } },
       await auditWrite(env, u, actionName, auditTarget, targetId, correlationId, reason, undefined, Object.fromEntries(Object.entries(refundFields).map(([key, value]) => [key, decodeValue(value)]))),
+      ...(payment.data.customerUid ? [await notificationWrite(fullName.bind(null, env), String(payment.data.customerUid), 'refund_updated', new Date().toISOString(), requestId)] : []),
     ];
     await commit(env, writes);
     return { success: true, correlationId, action: actionName, targetId };
@@ -402,7 +457,17 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     // through the provider callback boundary.
     return { error: 'Verification case status changes are not supported', status: 400 };
   } else return { error: 'Unsupported action', status: 400 };
-  const writes = [{ update: { name: fullName(env, `${targetCollection}/${encodeURIComponent(targetId)}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: raw?.updateTime ? { updateTime: raw.updateTime } : { exists: false } }, await auditWrite(env, u, actionName, auditTarget, targetId, correlationId, reason, current, Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, decodeValue(value)])))];
+  const now = new Date().toISOString(), notify: any[] = [];
+  if (normalizedType === 'user' && actionName === 'suspend_user') notify.push(await notificationWrite(fullName.bind(null, env), targetId, 'account_suspended', now, undefined, correlationId));
+  if (normalizedType === 'user' && actionName === 'unsuspend_user') notify.push(await notificationWrite(fullName.bind(null, env), targetId, 'suspension_lifted', now, undefined, correlationId));
+  if (normalizedType === 'complaint') {
+    const event = actionName === 'resolve_complaint' || actionName === 'close_complaint' ? 'complaint_resolved' : 'complaint_status_changed';
+    for (const uid of [current.customerUid, current.providerUid].filter((value, index, values) => typeof value === 'string' && value && values.indexOf(value) === index)) notify.push(await notificationWrite(fullName.bind(null, env), uid, event, now, targetId, correlationId));
+  }
+  if (normalizedType === 'request' && actionName === 'cancel_request') {
+    for (const uid of [current.customerUid, current.providerUid].filter((value, index, values) => typeof value === 'string' && value && values.indexOf(value) === index)) notify.push(await notificationWrite(fullName.bind(null, env), uid, 'rental_cancelled', now, targetId, correlationId));
+  }
+  const writes = [{ update: { name: fullName(env, `${targetCollection}/${encodeURIComponent(targetId)}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: raw?.updateTime ? { updateTime: raw.updateTime } : { exists: false } }, await auditWrite(env, u, actionName, auditTarget, targetId, correlationId, reason, current, Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, decodeValue(value)]))), ...notify];
   await commit(env, writes);
   return { success: true, correlationId, action: actionName, targetId };
 }
@@ -417,6 +482,17 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const url = new URL(req.url);
   if (url.pathname === '/api/admin/session' && req.method === 'GET') return { success: true, uid: user.uid, role: user.role };
   if (url.pathname === '/api/admin/verification-cleanup' && req.method === 'POST') return cleanupVerificationRetention(req, env, user);
+  if ((url.pathname === '/api/admin/notification-health' || url.pathname === '/api/admin/notifications/health') && req.method === 'GET') {
+    const result = await notificationHealth(env);
+    return { success: true, summary: {
+      sent: result.health.deliveries.success,
+      failed: (result.health.deliveries.permanent || 0) + (result.health.deliveries.retryable || 0),
+      pending: result.health.pending,
+      deactivatedTokens: result.health.deactivatedTokens,
+    }, failures: result.recent || [] };
+  }
+  if (url.pathname === '/api/admin/notifications/delivery-cleanup' && req.method === 'POST') return cleanupNotificationDeliveries(req, env);
+  if (url.pathname === '/api/admin/notification-retry' && req.method === 'POST') return retryNotificationDeliveries(req, env);
   if (url.pathname === '/api/admin/action' && req.method === 'POST') return action(req, env, user);
   if (url.pathname === '/api/admin/roles' && req.method === 'POST') {
     let body: any;

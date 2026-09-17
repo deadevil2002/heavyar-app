@@ -15,11 +15,11 @@ import {
   Unsubscribe,
   limit,
 } from 'firebase/firestore';
-import { getFirebaseDb } from './firebaseConfig';
+import { getFirebaseAuth, getFirebaseDb } from './firebaseConfig';
 import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice, PublicUserSnapshot } from '@/types';
 import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
-import { canTransition } from './requestTransitions';
+import { WORKER_BASE_URL } from '@/constants/worker';
 
 const loggedIndexFallbacks = new Set<string>();
 
@@ -423,9 +423,6 @@ export async function fetchRequestById(id: string): Promise<EquipmentRequest | n
 }
 
 export async function createRequest(data: Omit<EquipmentRequest, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
-  const db = getFirebaseDb();
-  console.log('[Firestore] Creating request');
-
   if (!data.equipmentId || !data.customerUid || !data.providerUid) {
     throw new Error('Missing required fields for request creation');
   }
@@ -435,50 +432,23 @@ export async function createRequest(data: Omit<EquipmentRequest, 'id' | 'created
   }
 
   const requestMode: EquipmentRequest['requestMode'] = data.requestMode || 'fixed_days';
-  const openEndedPrice = Number((data as EquipmentRequest & { pricePerDay?: number }).pricePerDay);
-  const payload: Record<string, unknown> = {
-    equipmentId: data.equipmentId,
-    customerUid: data.customerUid,
-    providerUid: data.providerUid,
-    customerPublic: data.customerPublic ? sanitizePublicUserSnapshot(data.customerPublic) : undefined,
-    providerPublic: data.providerPublic ? sanitizePublicUserSnapshot(data.providerPublic) : undefined,
-    status: 'pending',
-    requestMode,
-    startDate: data.startDate,
-    endDate: data.endDate,
-    notes: data.notes,
-    amount: requestMode === 'open_ended' ? openEndedPrice : data.amount,
-    platformFee: requestMode === 'open_ended' ? 0 : data.platformFee,
-    providerAmount: requestMode === 'open_ended' ? 0 : data.providerAmount,
-    paymentStatus: 'unpaid',
-    paymentId: data.paymentId,
-    paidAt: data.paidAt,
-    currency: data.currency,
-    allowChat: false,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  };
-
   if (requestMode === 'fixed_days') {
     if (typeof data.numberOfDays !== 'number' || !Number.isFinite(data.numberOfDays) || data.numberOfDays < 1) {
       throw new Error('Invalid numberOfDays for fixed_days request');
     }
-    payload.numberOfDays = Math.trunc(data.numberOfDays);
+    data.numberOfDays = Math.trunc(data.numberOfDays);
   }
-
-  for (const key of Object.keys(payload)) {
-    if (payload[key] === undefined) delete payload[key];
-  }
-
-  console.log('[RequestWrite] createRequest payload', {
-    keys: Object.keys(payload),
-    requestMode,
-    hasNumberOfDays: Object.prototype.hasOwnProperty.call(payload, 'numberOfDays'),
+  const response = await workerRequest<{ request?: { id?: string } }>('/api/requests', {
+    method: 'POST',
+    body: JSON.stringify({
+      equipmentId: data.equipmentId,
+      requestMode,
+      ...(requestMode === 'fixed_days' ? { numberOfDays: data.numberOfDays } : {}),
+    }),
   });
-
-  const docRef = await addDoc(collection(db, 'equipmentRequests'), payload);
-  console.log('[Firestore] Request created:', docRef.id);
-  return docRef.id;
+  const id = response.request?.id;
+  if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error('Invalid request response');
+  return id;
 }
 
 export async function updateRequestStatus(
@@ -486,35 +456,38 @@ export async function updateRequestStatus(
   status: EquipmentRequest['status'],
   currentUid: string
 ): Promise<void> {
-  const db = getFirebaseDb();
-  console.log('[Firestore] Updating request status:', requestId, '->', status);
-
-  const snap = await getDoc(doc(db, 'equipmentRequests', requestId));
-  if (!snap.exists()) throw new Error('Request not found');
-
-  const request = snap.data();
-  const current = request.status as string;
-  const actor = request.providerUid === currentUid ? 'provider' :
-    request.customerUid === currentUid ? 'customer' : null;
-  if (!actor || !canTransition(current as EquipmentRequest['status'], status, actor)) {
-    throw new Error(`Invalid status transition: ${current} -> ${status}`);
-  }
-
-  const updates: Record<string, unknown> = {
-    status,
-    updatedAt: serverTimestamp(),
+  void currentUid;
+  const action: Record<EquipmentRequest['status'], string> = {
+    pending: '',
+    accepted: 'accept',
+    rejected: 'reject',
+    cancelled: 'cancel',
+    in_progress: 'start',
+    completion_requested: 'request_completion',
+    completed: 'complete',
   };
+  const nextAction = action[status];
+  if (!nextAction) throw new Error('Invalid request transition');
+  await workerRequest(`/api/requests/${encodeURIComponent(requestId)}/transition`, {
+    method: 'POST',
+    body: JSON.stringify({ action: nextAction }),
+  });
+}
 
-  if (status === 'accepted') {
-    updates.allowChat = true;
-  }
-
-  if (status === 'completed' || status === 'rejected' || status === 'cancelled') {
-    updates.allowChat = false;
-  }
-
-  await updateDoc(doc(db, 'equipmentRequests', requestId), updates);
-  console.log('[Firestore] Request status updated');
+async function workerRequest<T>(path: string, init: RequestInit): Promise<T> {
+  const auth = getFirebaseAuth();
+  const current = auth.currentUser;
+  const token = await current?.getIdToken();
+  if (!token) throw new Error('AUTH_REQUIRED');
+  const send = (authToken: string) => fetch(`${WORKER_BASE_URL}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}`, ...(init.headers || {}) },
+  });
+  let response = await send(token);
+  if (response.status === 401 && auth.currentUser) response = await send(await auth.currentUser.getIdToken(true));
+  const body = await response.json().catch(() => ({})) as { success?: boolean; error?: string; request?: unknown };
+  if (!response.ok || body.success === false) throw new Error(body.error || 'REQUEST_UNAVAILABLE');
+  return body as T;
 }
 
 export async function updatePaymentStatus(

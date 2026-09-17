@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { User, onAuthStateChanged } from 'firebase/auth';
+import { User, onAuthStateChanged, onIdTokenChanged } from 'firebase/auth';
 import { getFirebaseAuth } from './firebase';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -7,12 +7,14 @@ type AuthContextType = {
   user: User | null;
   loading: boolean;
   logout: () => Promise<void>;
+  refreshClaims: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
   logout: async () => {},
+  refreshClaims: async () => {},
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -22,7 +24,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const auth = getFirebaseAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
+    const unsubscribe = onIdTokenChanged(auth, (u) => {
       setUser(u);
       setLoading(false);
       // Invalidate queries when auth state changes
@@ -37,8 +39,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
+  const refreshClaims = async () => {
+    if (!getFirebaseAuth().currentUser) return;
+    await getFirebaseAuth().currentUser!.getIdToken(true);
+    await queryClient.invalidateQueries({ queryKey: ['adminSession'] });
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, logout }}>
+    <AuthContext.Provider value={{ user, loading, logout, refreshClaims }}>
       {children}
     </AuthContext.Provider>
   );

@@ -13,8 +13,6 @@ import StatusBadge from '@/components/StatusBadge';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
-import { getFirebaseAuth } from '@/services/firebaseConfig';
-import { WORKER_BASE_URL } from '@/constants/worker';
 
 export default function RequestDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -121,18 +119,8 @@ export default function RequestDetailScreen() {
             else if (action === 'request_completion') newStatus = 'completion_requested';
             else if (action === 'confirm_completion') newStatus = 'completed';
             else if (action === 'cancel') newStatus = 'cancelled';
-            if (action === 'start' || action === 'confirm_completion') {
-              const token = await getFirebaseAuth().currentUser?.getIdToken();
-              if (!token) throw new Error('Authentication required');
-              const endpoint = action === 'start' ? 'start-request' : 'confirm-completion';
-              const response = await fetch(`${WORKER_BASE_URL}/api/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ requestId: request.id }) });
-              if (!response.ok) throw new Error('Unable to update request');
-            } else {
-              await updateRequestStatus(request.id, newStatus, currentUid);
-            }
-            console.log('[RequestDetail] Status updated to:', newStatus);
-          } catch (e) {
-            console.error('[RequestDetail] Action error:', e);
+            await updateRequestStatus(request.id, newStatus, currentUid);
+          } catch {
             showDialog(t('error_title'), t('error_generic_message'), [{ text: t('ok'), style: 'default' }]);
           }
         },

@@ -1,12 +1,28 @@
-import { Tabs } from "expo-router";
+import { Tabs, useFocusEffect } from "expo-router";
 import { Home, Search, PlusCircle, FileText, User } from "lucide-react-native";
-import React from "react";
+import React, { useCallback, useState } from "react";
 import { View, StyleSheet } from "react-native";
 import Colors from "@/constants/colors";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { listNotifications } from "@/services/notificationService";
 
 export default function TabLayout() {
   const { t } = useLanguage();
+  const { isAuthenticated } = useAuth();
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    if (!isAuthenticated) {
+      setUnreadCount(0);
+      return () => { active = false; };
+    }
+    void listNotifications()
+      .then((page) => { if (active) setUnreadCount(page.unreadCount); })
+      .catch(() => { if (active) setUnreadCount(0); });
+    return () => { active = false; };
+  }, [isAuthenticated]));
 
   return (
     <Tabs
@@ -61,6 +77,7 @@ export default function TabLayout() {
         name="profile"
         options={{
           title: t('profile'),
+          tabBarBadge: unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : undefined,
           tabBarIcon: ({ color, size }) => <User size={size} color={color} />,
         }}
       />

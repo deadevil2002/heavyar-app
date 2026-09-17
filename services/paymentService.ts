@@ -52,7 +52,6 @@ export interface VerifyPaymentResponse {
 }
 
 export async function createPayment(params: CreatePaymentParams): Promise<CreatePaymentResponse> {
-  console.log('[PaymentService] Creating payment for request:', params.requestId);
   try {
     const token = await getFirebaseAuth().currentUser?.getIdToken();
     if (!token) return { success: false, error: 'Please sign in before paying' };
@@ -64,16 +63,13 @@ export async function createPayment(params: CreatePaymentParams): Promise<Create
 
     const result = await response.json() as CreatePaymentResponse;
     result.status = result.canonicalStatus ?? result.paymentState ?? result.status;
-    console.log('[PaymentService] Create payment result:', result.success, result.status);
     return result;
-  } catch (error) {
-    console.error('[PaymentService] Create payment error:', error);
+  } catch {
     return { success: false, error: 'Network error creating payment' };
   }
 }
 
 export async function verifyPayment(paymentId: string): Promise<VerifyPaymentResponse> {
-  console.log('[PaymentService] Verifying payment:', paymentId);
   try {
     const token = await getFirebaseAuth().currentUser?.getIdToken();
     if (!token) return { success: false, error: 'Please sign in before verifying payment' };
@@ -85,10 +81,8 @@ export async function verifyPayment(paymentId: string): Promise<VerifyPaymentRes
 
     const result = await response.json() as VerifyPaymentResponse;
     result.status = result.canonicalStatus ?? result.paymentState ?? result.status;
-    console.log('[PaymentService] Verify result:', result.success, result.status);
     return result;
-  } catch (error) {
-    console.error('[PaymentService] Verify payment error:', error);
+  } catch {
     return { success: false, error: 'Network error verifying payment' };
   }
 }

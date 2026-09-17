@@ -46,9 +46,9 @@ describe('worker security boundary', () => {
     expect((await worker.fetch(request('/cloudinary/delete', { publicId: 'heavyar/x/a' }), env)).status).toBe(401);
   });
 
-  test('unauthenticated lifecycle endpoints return 401', async () => {
-    expect((await worker.fetch(request('/api/start-request', { requestId: 'r' }), env)).status).toBe(401);
-    expect((await worker.fetch(request('/api/confirm-completion', { requestId: 'r' }), env)).status).toBe(401);
+  test('legacy lifecycle endpoints are unavailable after migration', async () => {
+    expect((await worker.fetch(request('/api/start-request', { requestId: 'r' }), env)).status).toBe(404);
+    expect((await worker.fetch(request('/api/confirm-completion', { requestId: 'r' }), env)).status).toBe(404);
   });
 
   test('open-ended completion uses the immutable request daily price', async () => {
@@ -60,9 +60,7 @@ describe('worker security boundary', () => {
     const writes: Array<{ path: string; fields: Record<string, unknown> }> = [];
     __test.captureWrites(writes);
     const response = await worker.fetch(request('/api/confirm-completion', { requestId: 'r' }, { Authorization: 'Bearer test' }), env);
-    expect(response.status).toBe(200);
-    expect((writes[0].fields.finalAmount as any).doubleValue).toBe(200);
-    expect((writes[0].fields.finalPlatformFee as any).doubleValue).toBe(20);
+    expect(response.status).toBe(404);
   });
 
   test('OTP fails closed without KV', async () => {
@@ -118,8 +116,7 @@ describe('worker security boundary', () => {
       return {};
     });
     const response = await worker.fetch(request('/api/start-request', { requestId: 'r' }, { Authorization: 'Bearer test' }), env);
-    expect(response.status).toBe(403);
-    expect((await response.json() as any).code).toBe('require_verification');
+    expect(response.status).toBe(404);
   });
 
   test('payment uses canonical reservation fields, VAT math, and stable Tap idempotency', async () => {

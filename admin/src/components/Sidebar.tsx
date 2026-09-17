@@ -2,7 +2,7 @@ import { Link, useLocation } from 'wouter';
 import { 
   LayoutDashboard, Users, Truck, Wrench, FileText, 
   CreditCard, FileBox, Undo2, AlertOctagon, ShieldCheck, 
-  Settings, Database, History, LogOut, Globe, Menu, X
+  Settings, Database, History, Bell, LogOut, Globe, Menu, X
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { useAppState } from '@/lib/app-state';
@@ -30,6 +30,7 @@ export function Sidebar() {
     { href: '/refunds', icon: Undo2, label: t('المستردات', 'Refunds') },
     { href: '/complaints', icon: AlertOctagon, label: t('الشكاوى', 'Complaints') },
     { href: '/verification', icon: ShieldCheck, label: t('التحقق', 'Verification') },
+    { href: '/notifications', icon: Bell, label: t('الإشعارات', 'Notifications') },
   ];
 
   const adminLinks = [
@@ -42,7 +43,7 @@ export function Sidebar() {
     const isActive = location === href || (href !== '/' && location.startsWith(href));
     return (
       <Link href={href} onClick={() => setIsOpen(false)}>
-        <div className={`flex items-center gap-3 px-4 py-3 rounded-md transition-colors cursor-pointer ${isActive ? 'bg-primary/20 text-primary font-medium' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'}`}>
+        <div aria-current={isActive ? 'page' : undefined} className={`flex items-center gap-3 px-4 py-3 rounded-md transition-colors cursor-pointer ${isActive ? 'bg-primary/20 text-primary font-medium' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'}`}>
           <Icon className="w-5 h-5 flex-shrink-0" />
           <span>{label}</span>
         </div>
@@ -54,12 +55,12 @@ export function Sidebar() {
     <>
       <div className="md:hidden fixed top-0 left-0 right-0 h-16 bg-card border-b border-border z-50 flex items-center justify-between px-4">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => setIsOpen(!isOpen)}>
+          <Button variant="ghost" size="icon" onClick={() => setIsOpen(!isOpen)} aria-label={t('فتح القائمة', 'Open menu')} aria-expanded={isOpen}>
             {isOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
           </Button>
           <div className="font-bold text-xl tracking-tight text-primary">HEAVYAR</div>
         </div>
-        <Button variant="ghost" size="icon" onClick={toggleLanguage} title={t('تغيير اللغة', 'Toggle Language')}>
+         <Button variant="ghost" size="icon" onClick={toggleLanguage} title={t('تغيير اللغة', 'Toggle Language')} aria-label={t('تغيير اللغة', 'Toggle Language')}>
           <Globe className="w-5 h-5" />
         </Button>
       </div>

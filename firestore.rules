@@ -96,7 +96,7 @@ service cloud.firestore {
     match /equipment/{equipmentId} {
       allow read: if publicListing(resource.data) ||
         (signedIn() && resource.data.ownerUid == request.auth.uid);
-      allow create: if signedIn()
+       allow create: if signedIn()
         && request.resource.data.ownerUid == request.auth.uid
         && notSuspended(request.auth.uid)
         && trustedProvider(request.auth.uid)
@@ -131,7 +131,13 @@ service cloud.firestore {
 
     match /equipmentRequests/{requestId} {
       allow read: if participant(resource.data);
-      allow create: if signedIn()
+       allow create: if false
+         /*
+         Legacy client lifecycle writes are disabled after Worker migration.
+         The Worker validates listing ownership, trust policy, suspension and
+         payment invariants before committing requests and notifications.
+         */
+         && signedIn()
         && request.resource.data.customerUid == request.auth.uid
         && notSuspended(request.auth.uid)
         && notSuspended(request.resource.data.providerUid)
@@ -178,9 +184,13 @@ service cloud.firestore {
           trustedSnapshot(request.resource.data.customerPublic, request.resource.data.customerUid))
         && (!request.resource.data.keys().hasAny(['providerPublic']) ||
           trustedSnapshot(request.resource.data.providerPublic, request.resource.data.providerUid));
-      // Payment state, prices, fees, identity, and invoice references are
-      // server-owned. The client can perform only the lifecycle transition.
-       allow update: if participant(resource.data)
+       // Payment state, prices, fees, identity, and invoice references are
+       // server-owned. The client can perform only the legacy lifecycle
+       // transition. Direct client transitions cannot atomically emit Worker
+       // notifications; migrate these actions to authenticated Worker routes
+       // before removing this compatibility allowance.
+        allow update: if false
+          && participant(resource.data)
          && notSuspended(request.auth.uid)
          && notSuspended(resource.data.customerUid)
          && notSuspended(resource.data.providerUid)
@@ -203,10 +213,12 @@ service cloud.firestore {
               request.resource.data.allowChat == false &&
               request.auth.uid == resource.data.providerUid) ||
              (request.resource.data.status == 'cancelled' &&
-              request.resource.data.allowChat == false))) ||
+               request.resource.data.allowChat == false &&
+               request.auth.uid == resource.data.customerUid))) ||
            (resource.data.status == 'accepted' &&
              ((request.resource.data.status == 'cancelled' &&
-              request.resource.data.allowChat == false))) ||
+               request.resource.data.allowChat == false &&
+               request.auth.uid == resource.data.customerUid))) ||
           (resource.data.status == 'in_progress' &&
             request.resource.data.status == 'completion_requested' &&
             request.resource.data.allowChat == true &&
@@ -345,6 +357,22 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/equipmentRequests/$(resource.data.requestId))
         && participant(get(/databases/$(database)/documents/equipmentRequests/$(resource.data.requestId)).data);
       allow write: if false;
+    }
+    // Notification state is API-owned. Clients may read only their inbox;
+    // token, preference, delivery, and read-state mutations go through the
+    // authenticated Worker so ownership and mandatory categories are enforced.
+    match /notifications/{notificationId} {
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+    match /deviceTokens/{tokenId} {
+      allow read, write: if false;
+    }
+    match /notificationPreferences/{uid} {
+      allow read, write: if false;
+    }
+    match /notificationDeliveries/{deliveryId} {
+      allow read, write: if false;
     }
     match /{document=**} { allow read, write: if false; }
   }
