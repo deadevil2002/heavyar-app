@@ -972,8 +972,26 @@ describe('GCC and email verification architecture', () => {
     expect(verification.includes('وثّق بريدك الإلكتروني')).toBe(true);
     expect(verification.includes('&amp;')).toBe(true);
     expect(verification.includes('A <User>')).toBe(false);
+    expect(verification.indexOf('dir="rtl"') < verification.indexOf('dir="ltr"')).toBe(true);
+    expect(verification.includes('support@mail.heavyar.com')).toBe(true);
+    expect(verification.includes('Firebase')).toBe(true);
     expect(reset.includes('Reset password')).toBe(true);
     expect(reset.includes('Heavyar')).toBe(true);
+    expect(reset.includes('support@mail.heavyar.com')).toBe(true);
+    const englishFirst = heavyarEmailVerificationTemplate('https://example.test/verify', 'User', undefined, 'en');
+    expect(englishFirst.indexOf('dir="ltr"') < englishFirst.indexOf('dir="rtl"')).toBe(true);
+  });
+
+  test('production Resend sender is restricted to the verified mail subdomain', () => {
+    expect(__test.resendFrom({})).toBe('Heavyar <noreply@mail.heavyar.com>');
+    expect(__test.resendSenderDomainValid('Heavyar <noreply@mail.heavyar.com>')).toBe(true);
+    expect(__test.resendSenderDomainValid('Heavyar <noreply@heavyar.app>')).toBe(false);
+    expect(__test.resendSenderDomainValid('Heavyar <noreply@other.mail.heavyar.com>')).toBe(false);
+  });
+
+  test('email verification cooldown defaults to one day and never drops below five minutes', () => {
+    expect(__test.normalizeEmailVerificationPolicy({}).reminderCooldownSeconds).toBe(86400);
+    expect(__test.normalizeEmailVerificationPolicy({ reminderCooldownSeconds: 60 }).reminderCooldownSeconds).toBe(300);
   });
 
   test('market configuration exposes disabled FX and future phone verification without SMS activation', async () => {

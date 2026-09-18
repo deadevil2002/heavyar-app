@@ -447,9 +447,13 @@ function redact(value: any): any {
     .filter(([key]) => !sensitiveWords.test(key))
     .map(([key, item]) => [key, item && typeof item === 'object' ? redact(item) : item]));
 }
-function emailVerificationTemplate(url: string, name: string, support: string) {
+function emailVerificationTemplate(url: string, name: string, support: string, language: 'ar' | 'en') {
   const escape = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character));
-  return `<div style="font-family:Arial,sans-serif;color:#172033;max-width:560px;margin:auto"><h1 style="color:#0b6b61">Heavyar</h1><p>مرحباً ${escape(name || 'Heavyar user')}،</p><p>Hello ${escape(name || 'Heavyar user')},</p><p>وثّق بريدك الإلكتروني للاستفادة من جميع خدمات Heavyar.</p><p>Verify your email to unlock all Heavyar services.</p><p><a href="${escape(url)}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">توثيق البريد / Verify email</a></p><p>إذا لم تطلب هذه الرسالة، يمكنك تجاهلها. / If you did not request this, you can ignore it.</p><p>الدعم / Support: <a href="mailto:${escape(support)}">${escape(support)}</a></p></div>`;
+  const action = escape(url), greeting = escape(name || (language === 'ar' ? 'مستخدم Heavyar' : 'Heavyar user')), safeSupport = escape(support);
+  const ar = `<div dir="rtl" lang="ar"><p>مرحباً ${greeting}،</p><p>وثّق بريدك الإلكتروني لتأكيد حسابك والاستفادة من خدمات Heavyar.</p><p><a href="${action}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:7px;text-decoration:none;display:inline-block;font-weight:700">توثيق البريد الإلكتروني</a></p><p>استخدم الرابط قريباً؛ تتحكم Firebase في صلاحيته ومدة انتهائه. إذا لم تطلب التسجيل، تجاهل الرسالة.</p></div>`;
+  const en = `<div dir="ltr" lang="en"><p>Hello ${greeting},</p><p>Verify your email to confirm your account and use Heavyar services.</p><p><a href="${action}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:7px;text-decoration:none;display:inline-block;font-weight:700">Verify email</a></p><p>Use the link promptly; Firebase controls its validity and expiry. If you did not register, ignore this email.</p></div>`;
+  const primary = language === 'ar' ? ar : en, secondary = language === 'ar' ? en : ar;
+  return `<div style="background:#f3f6f5;padding:24px;font-family:Arial,sans-serif;color:#172033"><div style="max-width:580px;margin:auto;background:#fff;border:1px solid #dfe8e5;border-radius:12px;overflow:hidden"><div style="background:#073f3a;color:#fff;padding:22px 28px"><div style="font-size:28px;font-weight:800">HEAVYAR</div></div><div style="padding:28px">${primary}<hr style="border:0;border-top:1px solid #e8eeec;margin:24px 0">${secondary}<p style="color:#65736f;font-size:13px">الدعم / Support: <a href="mailto:${safeSupport}">${safeSupport}</a></p></div></div></div>`;
 }
 async function emailVerificationReminder(req: Request, env: Env, user: AdminUser) {
   if (!can(user, 'support.manage') && !can(user, 'config.manage')) return { error: 'Support permission required', status: 403 };
@@ -460,16 +464,22 @@ async function emailVerificationReminder(req: Request, env: Env, user: AdminUser
   if (!person?.data || !email) return { error: 'User not found', status: 404 };
   if (person.data.emailVerified === true) return { success: true, alreadyVerified: true };
   const rate = await rawDoc(env, 'emailVerificationRateLimits', uid), policy = await rawDoc(env, 'emailVerificationPolicies', 'default'), cooldownSeconds = Math.min(604800, Math.max(300, Number(policy?.data?.reminderCooldownSeconds) || 86400)), now = Date.now();
+  if (policy?.data?.allowReminders === false) return { error: 'Verification reminders disabled', status: 409 };
   if (rate?.data?.nextAllowedAt && Date.parse(String(rate.data.nextAllowedAt)) > now) return { error: 'Verification email cooldown active', status: 429 };
-  let delivered = false, deliveryOutcome: 'accepted' | 'auth_failed' | 'sender_rejected' | 'rate_limited' | 'provider_error' | 'not_configured' = env.RESEND_API_KEY ? 'provider_error' : 'not_configured';
-  if (env.RESEND_API_KEY && env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
+  let delivered = false, providerMessageId = '', deliveryOutcome: 'accepted' | 'firebase_accepted' | 'auth_failed' | 'sender_rejected' | 'rate_limited' | 'provider_error' | 'not_configured' = env.RESEND_API_KEY ? 'provider_error' : 'not_configured';
+  const resendFrom = env.RESEND_FROM_EMAIL || 'Heavyar <noreply@mail.heavyar.com>';
+  const resendSenderValid = /@mail\.heavyar\.com>?\s*$/i.test(resendFrom);
+  if (env.RESEND_API_KEY && !resendSenderValid) deliveryOutcome = 'sender_rejected';
+  if (env.RESEND_API_KEY && resendSenderValid && env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
     try {
       const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
       const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:sendOobCode`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', email, returnOobLink: true }) });
       const result: any = await response.json().catch(() => ({}));
       if (response.ok && typeof result.oobLink === 'string') {
-        const sent = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: env.RESEND_FROM_EMAIL || 'Heavyar <noreply@heavyar.app>', to: [email], subject: 'Verify your Heavyar email / وثّق بريدك الإلكتروني', html: emailVerificationTemplate(result.oobLink, String(person.data.nameEn || person.data.nameAr || ''), env.RESEND_SUPPORT_EMAIL || 'support@heavyar.app') }) });
+        const language: 'ar' | 'en' = person.data.language === 'en' || person.data.preferredLanguage === 'en' ? 'en' : 'ar';
+        const sent = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: resendFrom, to: [email], subject: language === 'ar' ? 'وثّق بريدك الإلكتروني في Heavyar / Verify your Heavyar email' : 'Verify your Heavyar email / وثّق بريدك الإلكتروني في Heavyar', html: emailVerificationTemplate(result.oobLink, String(person.data.nameEn || person.data.nameAr || ''), env.RESEND_SUPPORT_EMAIL || 'support@mail.heavyar.com', language) }) });
         delivered = sent.ok;
+        if (sent.ok) providerMessageId = String((await sent.json().catch(() => ({})) as any)?.id || '');
         deliveryOutcome = sent.ok ? 'accepted' : sent.status === 401 || sent.status === 403 ? 'auth_failed' : sent.status === 429 ? 'rate_limited' : sent.status === 400 ? 'sender_rejected' : 'provider_error';
       }
     } catch { delivered = false; }
@@ -479,10 +489,11 @@ async function emailVerificationReminder(req: Request, env: Env, user: AdminUser
       const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
       const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:sendOobCode`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', email }) });
       delivered = response.ok;
+      if (delivered) deliveryOutcome = 'firebase_accepted';
     } catch { delivered = false; }
   }
   const nowIso = new Date(now).toISOString();
-  await commit(env, [{ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(uid)}`), fields: { uid: jsonValue(uid), lastSentAt: { timestampValue: nowIso }, nextAllowedAt: { timestampValue: new Date(now + cooldownSeconds * 1000).toISOString() }, count: { integerValue: String(Number(rate?.data?.count || 0) + 1) } } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } }, await auditWrite(env, user, 'email_verification_reminder', 'user', uid, crypto.randomUUID(), delivered ? 'verification reminder sent' : 'verification reminder delivery unavailable', undefined, { delivered, deliveryOutcome })]);
+  await commit(env, [{ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(uid)}`), fields: { uid: jsonValue(uid), lastSentAt: { timestampValue: nowIso }, nextAllowedAt: { timestampValue: new Date(now + cooldownSeconds * 1000).toISOString() }, count: { integerValue: String(Number(rate?.data?.count || 0) + 1) } } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } }, await auditWrite(env, user, 'email_verification_reminder', 'user', uid, crypto.randomUUID(), delivered ? 'verification reminder sent' : 'verification reminder delivery unavailable', undefined, { delivered, deliveryOutcome, ...(providerMessageId ? { providerMessageId } : {}) })]);
   return { success: delivered, accepted: true, delivered, deliveryOutcome };
 }
 const COUNTRY_CONTRACTS: Record<string, { nameEn: string; nameAr: string; dialCode: string; nativeCurrency: string; enabled: boolean }> = {
@@ -550,8 +561,10 @@ function authConfigProjection(env: Env, raw: any) {
   const passwordEndpointReady = !!env.FIREBASE_PROJECT_ID && !!env.FIREBASE_WEB_API_KEY && !!env.FIREBASE_CLIENT_EMAIL && !!env.FIREBASE_PRIVATE_KEY;
   const effective = { ...requested, requirePhoneOnSignup: requested.phoneIndexReady && requested.requirePhoneOnSignup, requireMobileDuringSignup: requested.phoneIndexReady && requested.requirePhoneOnSignup, allowEmailLogin: requested.allowEmailLogin, allowPhoneLogin: requested.phoneIndexReady && passwordEndpointReady && requested.allowPhoneLogin === true, requirePhoneVerification: false };
   const firebaseReset = env.FIREBASE_WEB_API_KEY || env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY ? 'configured' : 'blocked';
+  const resendFrom = env.RESEND_FROM_EMAIL || 'Heavyar <noreply@mail.heavyar.com>';
+  const senderDomainVerified = env.RESEND_SENDER_DOMAIN_VERIFIED === 'true' && /@mail\.heavyar\.com>?\s*$/i.test(resendFrom);
   const blocked = { allowEmailLogin: requested.allowEmailLogin !== effective.allowEmailLogin, allowPhoneLogin: requested.allowPhoneLogin !== effective.allowPhoneLogin, requirePhoneVerification: requested.requirePhoneVerification !== effective.requirePhoneVerification, requirePhoneOnSignup: requested.requirePhoneOnSignup !== effective.requirePhoneOnSignup };
-  return { requested, effective, blocked, status: { firebaseReset, resend: env.RESEND_API_KEY ? 'sender_unverified' : 'not_configured', phoneProvider: 'not_required_for_alias', phonePasswordLogin: effective.allowPhoneLogin ? 'configured' : 'blocked', phoneIndexReady: requested.phoneIndexReady, senderDomainVerified: false }, accountRecovery: { firebaseReset, resend: { bound: !!env.RESEND_API_KEY, delivery: false, senderDomainVerified: false }, phoneRecovery: requested.phoneIndexReady ? 'configured' : 'disabled' }, mismatch: { email: blocked.allowEmailLogin, phone: blocked.allowPhoneLogin, verification: blocked.requirePhoneVerification, phoneRequirement: blocked.requirePhoneOnSignup }, version: Number(raw?.version || 1) };
+  return { requested, effective, blocked, status: { firebaseReset, resend: senderDomainVerified ? 'configured' : env.RESEND_API_KEY ? 'sender_unverified' : 'not_configured', phoneProvider: 'not_required_for_alias', phonePasswordLogin: effective.allowPhoneLogin ? 'configured' : 'blocked', phoneIndexReady: requested.phoneIndexReady, senderDomainVerified }, accountRecovery: { firebaseReset, resend: { bound: !!env.RESEND_API_KEY, delivery: senderDomainVerified, senderDomainVerified }, phoneRecovery: requested.phoneIndexReady ? 'configured' : 'disabled' }, mismatch: { email: blocked.allowEmailLogin, phone: blocked.allowPhoneLogin, verification: blocked.requirePhoneVerification, phoneRequirement: blocked.requirePhoneOnSignup }, version: Number(raw?.version || 1) };
 }
 
 function validCorrelationId(value: string) {
@@ -1228,7 +1241,7 @@ async function sendAuthorityInvitation(
     method: 'POST',
     headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      from: 'Heavyar <noreply@heavyar.app>',
+      from: env.RESEND_FROM_EMAIL || 'Heavyar <noreply@mail.heavyar.com>',
       to: [email],
       subject,
       html: `<p>${escapeHtml(label)}</p><p>This ${type === 'ownership' ? 'ownership transfer' : 'staff access'} invitation expires at <strong>${escapeHtml(expiresAt)}</strong>.</p><p><a href="${acceptanceUrl}">Accept ${type === 'ownership' ? 'ownership transfer' : 'staff invitation'}</a></p><p>Accepting this link requires signing in with the invited, email-verified account.</p>`,

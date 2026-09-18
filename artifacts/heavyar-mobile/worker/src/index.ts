@@ -34,7 +34,7 @@ let refreshTokenRevokeOverride: ((env: Env, uid: string) => Promise<void>) | und
 let passwordVerifierOverride: ((email: string, password: string) => Promise<{ localId?: string }>) | undefined;
 let customTokenOverride: ((uid: string) => Promise<string>) | undefined;
 let phoneLoginLimiterOverride: ((phoneHash: string, ipHash: string) => Promise<boolean | null>) | undefined;
-  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, runRetryDelivery: retryDueNotificationDeliveries };
+  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -1352,33 +1352,46 @@ export const DEFAULT_AUTH_CONFIG = Object.freeze({
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character));
 }
-/** Inactive until a verified sender is configured; never embeds secrets or tokens. */
-export function heavyarPasswordResetTemplate(resetUrl: string, supportEmail = 'support@heavyar.app'): string {
-  const url = escapeHtml(resetUrl), support = escapeHtml(supportEmail);
-  return `<div style="font-family:Arial,sans-serif;color:#172033;max-width:560px;margin:auto"><h1 style="color:#0b6b61">Heavyar</h1><p>مرحباً،</p><p>Hello,</p><p>اضغط الزر أدناه لإعادة تعيين كلمة المرور. / Use the button below to reset your password.</p><p><a href="${url}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">إعادة تعيين كلمة المرور / Reset password</a></p><p>ينتهي الرابط خلال 60 دقيقة. / This link expires in 60 minutes.</p><p>لأمانك، لا تطلب Heavyar كلمة مرورك أبداً. / For your security, Heavyar will never ask for your password.</p><p>إذا لم تطلب ذلك، يمكنك تجاهل هذه الرسالة. / If you did not request this, you can ignore this message.</p><p>الدعم / Support: <a href="mailto:${support}">${support}</a></p></div>`;
+const DEFAULT_RESEND_FROM = 'Heavyar <noreply@mail.heavyar.com>';
+const DEFAULT_RESEND_SUPPORT = 'support@mail.heavyar.com';
+function emailFrame(primary: string, secondary: string, supportEmail: string): string {
+  const support = escapeHtml(supportEmail);
+  return `<div style="background:#f3f6f5;padding:24px;font-family:Arial,sans-serif;color:#172033"><div style="max-width:580px;margin:auto;background:#fff;border:1px solid #dfe8e5;border-radius:12px;overflow:hidden"><div style="background:#073f3a;color:#fff;padding:22px 28px"><div style="font-size:28px;font-weight:800;letter-spacing:.4px">HEAVYAR</div><div style="color:#d8b24b;font-size:13px;margin-top:4px">Equipment marketplace</div></div><div style="padding:28px">${primary}<hr style="border:0;border-top:1px solid #e8eeec;margin:24px 0">${secondary}<p style="color:#65736f;font-size:13px;margin-top:28px">الدعم / Support: <a href="mailto:${support}" style="color:#0b6b61">${support}</a></p></div></div></div>`;
 }
-export function heavyarEmailVerificationTemplate(verificationUrl: string, name = '', supportEmail = 'support@heavyar.app'): string {
-  const url = escapeHtml(verificationUrl), support = escapeHtml(supportEmail), greeting = escapeHtml(name.trim() || 'Heavyar user');
-  return `<div style="font-family:Arial,sans-serif;color:#172033;max-width:560px;margin:auto"><h1 style="color:#0b6b61">Heavyar</h1><p>مرحباً ${greeting}،</p><p>Hello ${greeting},</p><p>وثّق بريدك الإلكتروني للاستفادة من جميع خدمات Heavyar.</p><p>Verify your email to unlock all Heavyar services.</p><p><a href="${url}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">توثيق البريد / Verify email</a></p><p>إذا لم تنشئ حساباً في Heavyar، يمكنك تجاهل هذه الرسالة. / If you did not register for Heavyar, you can ignore this email.</p><p>لن تطلب Heavyar كلمة مرورك أبداً. / Heavyar will never ask for your password.</p><p>الدعم / Support: <a href="mailto:${support}">${support}</a></p></div>`;
+/** Firebase owns the action code; templates only present the escaped official action URL. */
+export function heavyarPasswordResetTemplate(resetUrl: string, supportEmail = DEFAULT_RESEND_SUPPORT, language: 'ar' | 'en' = 'ar'): string {
+  const url = escapeHtml(resetUrl);
+  const ar = `<div dir="rtl" lang="ar"><p>مرحباً،</p><p>استخدم الزر الآمن أدناه لإعادة تعيين كلمة مرور حسابك في Heavyar.</p><p><a href="${url}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:7px;text-decoration:none;display:inline-block;font-weight:700">إعادة تعيين كلمة المرور</a></p><p>استخدم الرابط قريباً؛ تتحكم Firebase في صلاحيته ومدة انتهائه. لن تطلب Heavyar كلمة مرورك أبداً.</p><p>إذا لم تطلب إعادة التعيين، تجاهل هذه الرسالة واترك كلمة مرورك دون تغيير.</p></div>`;
+  const en = `<div dir="ltr" lang="en"><p>Hello,</p><p>Use the secure button below to reset your Heavyar account password.</p><p><a href="${url}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:7px;text-decoration:none;display:inline-block;font-weight:700">Reset password</a></p><p>Use the link promptly; Firebase controls its validity and expiry. Heavyar will never ask for your password.</p><p>If you did not request a reset, ignore this email and leave your password unchanged.</p></div>`;
+  return emailFrame(language === 'ar' ? ar : en, language === 'ar' ? en : ar, supportEmail);
 }
-function resendFrom(env: Env) { return env.RESEND_FROM_EMAIL || 'Heavyar <noreply@heavyar.app>'; }
+export function heavyarEmailVerificationTemplate(verificationUrl: string, name = '', supportEmail = DEFAULT_RESEND_SUPPORT, language: 'ar' | 'en' = 'ar'): string {
+  const url = escapeHtml(verificationUrl), greeting = escapeHtml(name.trim() || (language === 'ar' ? 'مستخدم Heavyar' : 'Heavyar user'));
+  const ar = `<div dir="rtl" lang="ar"><p>مرحباً ${greeting}،</p><p>وثّق بريدك الإلكتروني لتأكيد حسابك والاستفادة من خدمات Heavyar.</p><p><a href="${url}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:7px;text-decoration:none;display:inline-block;font-weight:700">توثيق البريد الإلكتروني</a></p><p>استخدم الرابط قريباً؛ تتحكم Firebase في صلاحيته ومدة انتهائه. لن تطلب Heavyar كلمة مرورك أبداً.</p><p>إذا لم تطلب التسجيل في Heavyar، تجاهل هذه الرسالة.</p></div>`;
+  const en = `<div dir="ltr" lang="en"><p>Hello ${greeting},</p><p>Verify your email to confirm your account and use Heavyar services.</p><p><a href="${url}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:7px;text-decoration:none;display:inline-block;font-weight:700">Verify email</a></p><p>Use the link promptly; Firebase controls its validity and expiry. Heavyar will never ask for your password.</p><p>If you did not register for Heavyar, ignore this email.</p></div>`;
+  return emailFrame(language === 'ar' ? ar : en, language === 'ar' ? en : ar, supportEmail);
+}
+function resendFrom(env: Env) { return env.RESEND_FROM_EMAIL || DEFAULT_RESEND_FROM; }
+function resendSenderDomainValid(sender: string): boolean {
+  const match = sender.match(/@([A-Za-z0-9.-]+)>?\s*$/);
+  return match?.[1]?.toLowerCase() === 'mail.heavyar.com';
+}
 type ResendOutcome = 'accepted' | 'auth_failed' | 'sender_rejected' | 'rate_limited' | 'provider_error' | 'not_configured';
+type EmailDeliveryResult = { delivered: boolean; provider: 'resend' | 'firebase' | 'none'; outcome: ResendOutcome | 'firebase_accepted' | 'firebase_failed'; messageId?: string };
 let resendLastDeliverySucceeded = false;
 let resendLastOutcome: ResendOutcome = 'not_configured';
 async function resendSenderReady(env: Env) {
   if (!env.RESEND_API_KEY) { resendLastOutcome = 'not_configured'; return false; }
-  if (env.RESEND_SENDER_DOMAIN_VERIFIED === 'true') return true;
-  const match = resendFrom(env).match(/@([A-Za-z0-9.-]+)/);
-  if (!match) { resendLastOutcome = 'sender_rejected'; return false; }
+  if (!resendSenderDomainValid(resendFrom(env))) { resendLastOutcome = 'sender_rejected'; return false; }
   return true;
 }
-async function sendResend(env: Env, to: string, subject: string, html: string) {
-  if (!await resendSenderReady(env)) return false;
+async function sendResend(env: Env, to: string, subject: string, html: string): Promise<EmailDeliveryResult> {
+  if (!await resendSenderReady(env)) return { delivered: false, provider: 'none', outcome: resendLastOutcome };
   const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: resendFrom(env), to: [to], subject, html }) });
-  const error: any = response.ok ? null : await response.json().catch(() => null);
-  resendLastOutcome = response.ok ? 'accepted' : response.status === 401 || response.status === 403 ? 'auth_failed' : response.status === 429 ? 'rate_limited' : response.status === 400 && /sender|domain|from/i.test(String(error?.name || '')) ? 'sender_rejected' : 'provider_error';
+  const result: any = await response.json().catch(() => null);
+  resendLastOutcome = response.ok ? 'accepted' : response.status === 401 || response.status === 403 ? 'auth_failed' : response.status === 429 ? 'rate_limited' : response.status === 400 && /sender|domain|from/i.test(String(result?.name || result?.message || '')) ? 'sender_rejected' : 'provider_error';
   resendLastDeliverySucceeded = response.ok;
-  return response.ok;
+  return { delivered: response.ok, provider: response.ok ? 'resend' : 'none', outcome: resendLastOutcome, ...(response.ok && typeof result?.id === 'string' ? { messageId: result.id } : {}) };
 }
 async function firebaseActionLink(env: Env, email: string, requestType: 'VERIFY_EMAIL' | 'PASSWORD_RESET'): Promise<string | null> {
   if (!env.FIREBASE_PROJECT_ID || !email) return null;
@@ -1429,9 +1442,12 @@ async function enforceEmailVerified(env: Env, u: User, action: 'rental' | 'listi
   // emailVerified=false remains enforceable in tests.
   if (policy.enabled && required && u.emailVerified !== true && !(u.testInjected && u.emailVerified === undefined)) err('EMAIL_VERIFICATION_REQUIRED');
 }
-async function deliverEmailVerification(env: Env, email: string, idToken: string, name: string) {
+async function deliverEmailVerification(env: Env, email: string, idToken: string, name: string, language: 'ar' | 'en'): Promise<EmailDeliveryResult> {
   const link = await firebaseActionLink(env, email, 'VERIFY_EMAIL');
-  if (link && await sendResend(env, email, 'Verify your Heavyar email / وثّق بريدك الإلكتروني', heavyarEmailVerificationTemplate(link, name, env.RESEND_SUPPORT_EMAIL || 'support@heavyar.app'))) return true;
+  if (link) {
+    const resend = await sendResend(env, email, language === 'ar' ? 'وثّق بريدك الإلكتروني في Heavyar / Verify your Heavyar email' : 'Verify your Heavyar email / وثّق بريدك الإلكتروني في Heavyar', heavyarEmailVerificationTemplate(link, name, env.RESEND_SUPPORT_EMAIL || DEFAULT_RESEND_SUPPORT, language));
+    if (resend.delivered) return resend;
+  }
   // Firebase remains the safe delivery fallback while Resend is absent or
   // its sender domain is not yet accepted; the account/link authority stays
   // entirely within Firebase in either case.
@@ -1442,8 +1458,8 @@ async function deliverEmailVerification(env: Env, email: string, idToken: string
     const response = await fetch(endpoint, {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...(env.FIREBASE_WEB_API_KEY ? {} : { Authorization: `Bearer ${await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit')}` }) }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', idToken }),
     });
-    return response.ok;
-  } catch { return false; }
+    return { delivered: response.ok, provider: response.ok ? 'firebase' : 'none', outcome: response.ok ? 'firebase_accepted' : 'firebase_failed' };
+  } catch { return { delivered: false, provider: 'none', outcome: 'firebase_failed' }; }
 }
 async function emailVerificationSend(req: Request, env: Env, u: User) {
   const raw = req.headers.get('Authorization') || '', token = raw.replace(/^Bearer\s+/, '');
@@ -1452,10 +1468,12 @@ async function emailVerificationSend(req: Request, env: Env, u: User) {
   if (prior?.nextAllowedAt && Date.parse(String(prior.nextAllowedAt)) > now) return out(env, req, { success: false, error: 'Verification email cooldown active' }, 429);
   const account = await getDoc(env, 'users', u.uid), email = String(u.email || account?.email || account?.emailLower || '').trim().toLowerCase();
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return out(env, req, { success: false, error: 'Verification unavailable' }, 503);
-  const delivery = await deliverEmailVerification(env, email, token, String(account?.nameEn || account?.nameAr || ''));
-  const cooldown = new Date(now + 60 * 1000).toISOString();
-  await commitWrites(env, [{ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, lastSentAt: { timestampValue: new Date(now).toISOString() }, nextAllowedAt: { timestampValue: cooldown }, count: { integerValue: String(Number(prior?.count || 0) + 1) } } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } }, { update: { name: fullName(env, `emailVerificationEvents/${crypto.randomUUID()}`), fields: { uid: { stringValue: u.uid }, type: { stringValue: 'self_resend' }, delivery: { booleanValue: delivery }, createdAt: { timestampValue: new Date(now).toISOString() } } }, currentDocument: { exists: false } }]);
-  return out(env, req, { success: delivery, accepted: true, deliveryStatus: delivery ? 'sent' : 'delivery_unavailable' }, delivery ? 202 : 503);
+  const policy = await emailVerificationPolicy(env);
+  const language = account?.language === 'en' || account?.preferredLanguage === 'en' ? 'en' : 'ar';
+  const delivery = await deliverEmailVerification(env, email, token, String(account?.nameEn || account?.nameAr || ''), language);
+  const cooldown = new Date(now + policy.reminderCooldownSeconds * 1000).toISOString();
+  await commitWrites(env, [{ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, lastSentAt: { timestampValue: new Date(now).toISOString() }, nextAllowedAt: { timestampValue: cooldown }, count: { integerValue: String(Number(prior?.count || 0) + 1) } } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } }, { update: { name: fullName(env, `emailVerificationEvents/${crypto.randomUUID()}`), fields: { uid: { stringValue: u.uid }, type: { stringValue: 'self_resend' }, delivery: { booleanValue: delivery.delivered }, provider: { stringValue: delivery.provider }, deliveryOutcome: { stringValue: delivery.outcome }, ...(delivery.messageId ? { providerMessageId: { stringValue: delivery.messageId } } : {}), createdAt: { timestampValue: new Date(now).toISOString() } } }, currentDocument: { exists: false } }]);
+  return out(env, req, { success: delivery.delivered, accepted: true, deliveryStatus: delivery.delivered ? 'sent' : 'delivery_unavailable', provider: delivery.provider }, delivery.delivered ? 202 : 503);
 }
 async function emailVerificationStatus(req: Request, env: Env, u: User) {
   const profile = await getDoc(env, 'users', u.uid);
@@ -1585,10 +1603,10 @@ async function phonePasswordLogin(req: Request, env: Env) {
     return out(env, req, { success: false, error: 'Authentication unavailable' }, 503);
   }
 }
-async function recoveryResponse(req: Request, env: Env, identifier: string, type: string, outcome: string) {
+async function recoveryResponse(req: Request, env: Env, identifier: string, type: string, outcome: string, provider: 'resend' | 'firebase' | 'none' = 'none', providerMessageId?: string) {
   try {
     const ip = req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For')?.split(',')[0].trim() || 'unknown';
-    await createDoc(env, `authRecoveryAudit/${crypto.randomUUID()}`, { identifierType: { stringValue: type }, identifierHash: { stringValue: await hashedId(identifier.slice(0, 256)) }, ipHash: { stringValue: await hashedId(`ip:${ip}`) }, outcome: { stringValue: outcome }, createdAt: { timestampValue: new Date().toISOString() } });
+    await createDoc(env, `authRecoveryAudit/${crypto.randomUUID()}`, { identifierType: { stringValue: type }, identifierHash: { stringValue: await hashedId(identifier.slice(0, 256)) }, ipHash: { stringValue: await hashedId(`ip:${ip}`) }, outcome: { stringValue: outcome }, provider: { stringValue: provider }, ...(providerMessageId ? { providerMessageId: { stringValue: providerMessageId } } : {}), createdAt: { timestampValue: new Date().toISOString() } });
   } catch { /* recovery remains enumeration-safe if audit storage is degraded */ }
   return out(env, req, { success: true, accepted: true }, 202);
 }
@@ -1633,19 +1651,26 @@ async function passwordReset(req: Request, env: Env) {
   }
   // Firebase's official OOB endpoint performs the account lookup and sends
   // the provider-controlled email without returning a link to this API.
-  let deliveryOutcome = 'provider_unavailable';
+  let deliveryOutcome = 'provider_unavailable', deliveryProvider: 'resend' | 'firebase' | 'none' = 'none', providerMessageId: string | undefined;
   if (env.FIREBASE_WEB_API_KEY || env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
     try {
       if (env.RESEND_API_KEY && await resendSenderReady(env) && !resetEmail.endsWith('@invalid.heavyar')) {
         const link = await firebaseActionLink(env, resetEmail, 'PASSWORD_RESET');
-        const branded = !!link && await sendResend(env, resetEmail, 'Reset your Heavyar password / إعادة تعيين كلمة المرور', heavyarPasswordResetTemplate(link, env.RESEND_SUPPORT_EMAIL || 'support@heavyar.app'));
-        deliveryOutcome = branded ? 'branded_delivery_requested' : await firebasePasswordResetDelivery(env, resetEmail) ? 'delivery_requested' : 'provider_error';
+        const language: 'ar' | 'en' = 'ar';
+        const branded = link ? await sendResend(env, resetEmail, 'إعادة تعيين كلمة مرور Heavyar / Reset your Heavyar password', heavyarPasswordResetTemplate(link, env.RESEND_SUPPORT_EMAIL || DEFAULT_RESEND_SUPPORT, language)) : null;
+        if (branded?.delivered) {
+          deliveryOutcome = 'branded_delivery_requested'; deliveryProvider = 'resend'; providerMessageId = branded.messageId;
+        } else {
+          const firebase = await firebasePasswordResetDelivery(env, resetEmail);
+          deliveryOutcome = firebase ? 'delivery_requested' : 'provider_error'; deliveryProvider = firebase ? 'firebase' : 'none';
+        }
       } else {
-        deliveryOutcome = await firebasePasswordResetDelivery(env, resetEmail) ? 'delivery_requested' : 'provider_error';
+        const firebase = await firebasePasswordResetDelivery(env, resetEmail);
+        deliveryOutcome = firebase ? 'delivery_requested' : 'provider_error'; deliveryProvider = firebase ? 'firebase' : 'none';
       }
     } catch { /* generic 202 response is intentional */ }
   }
-  return recoveryResponse(req, env, auditId, auditType, deliveryOutcome);
+  return recoveryResponse(req, env, auditId, auditType, deliveryOutcome, deliveryProvider, providerMessageId);
 }
 async function registerProfile(req: Request, env: Env, u: User) {
   if (!env.FIREBASE_PROJECT_ID || !u.email) return out(env, req, { success: false, error: 'Registration unavailable' }, 503);
@@ -1697,7 +1722,7 @@ async function registerProfile(req: Request, env: Env, u: User) {
     return out(env, req, { success: false, error: 'Registration temporarily unavailable', errorCode: 'REGISTRATION_RETRY_REQUIRED' }, 503);
   }
   if (u.emailVerified !== true && idToken) {
-    const delivered = await deliverEmailVerification(env, email, idToken, nameEn || nameAr);
+    const delivered = await deliverEmailVerification(env, email, idToken, nameEn || nameAr, 'ar');
     await commitWrites(env, [{ update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields: { lastEmailVerificationSentAt: { timestampValue: new Date().toISOString() }, lastEmailVerificationDelivery: { booleanValue: delivered } } }, updateMask: { fieldPaths: ['lastEmailVerificationSentAt', 'lastEmailVerificationDelivery'] } }]).catch(() => undefined);
   }
   return out(env, req, { success: true, uid: u.uid, emailVerified: u.emailVerified === true });
