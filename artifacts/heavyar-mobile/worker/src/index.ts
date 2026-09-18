@@ -1,6 +1,6 @@
 import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
 import { buildLegacyCatalog, calculateCommercial, majorToMinor, minorToMajor, resolveRule, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
-import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
+import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
 import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry } from './completion';
@@ -2596,6 +2596,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
   const path = new URL(req.url).pathname;
   try {
     if (path === '/health') return out(env, req, { success: true, service: 'heavyar-api' });
+    if (path === '/api/seo/published') return await handlePublishedSeo(req, env);
     if ((path === '/api/send-email-otp' || path === '/api/verify-email-otp') && req.method === 'POST') return out(env, req, { success: false, error: 'Deprecated verification flow', errorCode: 'DEPRECATED_VERIFICATION_FLOW' }, 410);
      if (path === '/api/auth/config' && req.method === 'GET') return await authConfig(req, env);
       if (path === '/api/config/markets' && req.method === 'GET') return await marketConfig(req, env);
@@ -2681,6 +2682,14 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
        }
        const result = await handleAdmin(req, env, user);
       const status = typeof result === 'object' && result && 'status' in result && typeof (result as any).status === 'number' ? Number((result as any).status) : 200;
+       if (path === '/api/admin/seo' || path.startsWith('/api/admin/seo/')) {
+         const { status: _status, ...body } = result as any;
+         const response = out(env, req, body, status);
+         response.headers.set('Cache-Control', 'private, no-store');
+         response.headers.set('X-Robots-Tag', 'noindex, nofollow');
+         response.headers.set('Vary', 'Origin, Authorization');
+         return response;
+       }
       if (status !== 200) { const { status: _status, ...body } = result as any; return out(env, req, body, status); }
       return out(env, req, result);
     }

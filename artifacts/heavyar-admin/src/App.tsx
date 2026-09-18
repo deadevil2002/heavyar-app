@@ -45,6 +45,7 @@ import Campaigns from '@/pages/campaigns';
 import Staff from '@/pages/staff';
 import Gateways from '@/pages/gateways';
 import IdentityIntegrations from '@/pages/identity-integrations';
+import SeoPage from '@/pages/seo';
 
 function BootstrapRequired() {
   const { logout, refreshClaims } = useAuth();
@@ -166,6 +167,7 @@ function AdminRouter() {
           <Route path="/notifications" component={Notifications} />
           <Route path="/security" component={Security} />
           <Route path="/campaigns" component={Campaigns} />
+          <Route path="/seo" component={SeoPage} />
           <Route path="/staff" component={Staff} />
           <Route path="/gateways" component={Gateways} />
           <Route component={NotFound} />

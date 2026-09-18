@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, Truck, Wrench, FileText, 
   CreditCard, FileBox, Undo2, AlertOctagon, ShieldCheck, 
   Settings, Database, History, Bell, LogOut, Globe, Menu, X,
-  Shield, Megaphone, UserCog, Wallet, Car
+  Shield, Megaphone, UserCog, Wallet, Car, Search
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { useAppState } from '@/lib/app-state';
@@ -65,6 +65,7 @@ export function Sidebar() {
       title: t('التسويق', 'Marketing'),
       links: [
         { href: '/campaigns', icon: Megaphone, label: t('الحملات الترويجية', 'Marketing Campaigns') },
+        { href: '/seo', icon: Search, label: t('تحسين الظهور والبحث', 'SEO & Search') },
       ]
     },
     {

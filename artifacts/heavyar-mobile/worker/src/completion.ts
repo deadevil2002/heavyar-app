@@ -15,6 +15,9 @@ export const STAFF_ROLES = [
 export type StaffRole = (typeof STAFF_ROLES)[number];
 
 export type Permission =
+  | 'seo.read'
+  | 'seo.edit'
+  | 'seo.publish'
   | 'fees.read'
   | 'fees.manage'
   | 'owner.transfer'
@@ -32,16 +35,16 @@ export type Permission =
   | 'config.manage';
 
 const ROLE_PERMISSIONS: Record<StaffRole, readonly Permission[]> = {
-  owner: ['fees.read', 'fees.manage', 'owner.transfer', 'staff.manage', 'finance.read', 'finance.mutate', 'payouts.read', 'payouts.mutate', 'operations.manage', 'support.manage', 'verification.manage', 'moderation.manage', 'marketing.campaign', 'audit.read', 'config.manage'],
-  super_admin: ['fees.read', 'fees.manage', 'staff.manage', 'finance.read', 'finance.mutate', 'payouts.read', 'payouts.mutate', 'operations.manage', 'support.manage', 'verification.manage', 'moderation.manage', 'marketing.campaign', 'audit.read', 'config.manage'],
-  admin: ['finance.read', 'operations.manage', 'support.manage', 'verification.manage', 'moderation.manage', 'marketing.campaign', 'audit.read'],
+  owner: ['seo.read', 'seo.edit', 'seo.publish', 'fees.read', 'fees.manage', 'owner.transfer', 'staff.manage', 'finance.read', 'finance.mutate', 'payouts.read', 'payouts.mutate', 'operations.manage', 'support.manage', 'verification.manage', 'moderation.manage', 'marketing.campaign', 'audit.read', 'config.manage'],
+  super_admin: ['seo.read', 'seo.edit', 'seo.publish', 'fees.read', 'fees.manage', 'staff.manage', 'finance.read', 'finance.mutate', 'payouts.read', 'payouts.mutate', 'operations.manage', 'support.manage', 'verification.manage', 'moderation.manage', 'marketing.campaign', 'audit.read', 'config.manage'],
+  admin: ['seo.read', 'finance.read', 'operations.manage', 'support.manage', 'verification.manage', 'moderation.manage', 'marketing.campaign', 'audit.read'],
   finance: ['fees.read', 'finance.read', 'finance.mutate', 'audit.read'],
   payouts: ['payouts.read', 'payouts.mutate', 'audit.read'],
   operations: ['operations.manage', 'audit.read'],
   support: ['support.manage', 'audit.read'],
   verification: ['verification.manage', 'audit.read'],
-  marketing: ['marketing.campaign'],
-  auditor: ['fees.read', 'audit.read'],
+  marketing: ['seo.read', 'seo.edit', 'marketing.campaign'],
+  auditor: ['seo.read', 'fees.read', 'audit.read'],
   moderator: ['moderation.manage', 'audit.read'],
 };
 

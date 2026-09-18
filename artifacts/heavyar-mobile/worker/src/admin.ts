@@ -8,6 +8,8 @@ import { createAdminExportService, createInvoicePdfService, type DocumentBinaryR
 import { ensurePublicIdentifier, formatPublicIdentifier, isPublicIdentifier, PUBLIC_IDENTIFIER_COUNTER_IDS, PUBLIC_IDENTIFIER_FIELDS, type PublicIdentifierKind } from './public-identifiers';
 import { legacyProviderReady } from './moderation';
 import { handleCommercialAdmin, CommercialPersistenceError } from './commercial-admin';
+import { handleSeoAdmin, SeoPersistenceError, type SeoStore } from './seo-admin';
+import { handleSeoPublic } from './seo-public';
 import { minorToMajor, type CommercialSnapshot } from './commercial';
 
 export type AdminRole = 'super_admin' | 'admin';
@@ -2117,6 +2119,43 @@ async function ownership(req: Request, env: Env, user: AdminUser, operation: 'in
   return { success: true, status: 'pending', expiresAt };
 }
 
+function seoStore(env: Env, user?: AdminUser): SeoStore {
+  return {
+    read: async (collection, id) => {
+      try { return await rawDoc(env, collection, id); }
+      catch { throw new SeoPersistenceError('SEO storage is temporarily unavailable.'); }
+    },
+    save: async (prior, versions, change) => {
+      if (!user) throw new SeoPersistenceError('Read-only SEO storage.');
+      try {
+        if (prior && !prior.updateTime) throw new SeoPersistenceError('SEO version precondition unavailable.');
+        const writes: any[] = [{
+          update: { name: fullName(env, 'seoSettings/state'), fields: Object.fromEntries(Object.entries(change.state).map(([key, value]) => [key, jsonValue(value)])) },
+          currentDocument: prior ? { updateTime: prior.updateTime } : { exists: false },
+        }];
+        for (const version of change.writes) {
+          const previous = versions.get(version.id);
+          if (previous && !previous.updateTime) throw new SeoPersistenceError('SEO version precondition unavailable.');
+          writes.push({
+            update: { name: fullName(env, `seoVersions/${version.id}`), fields: Object.fromEntries(Object.entries(version).map(([key, value]) => [key, jsonValue(value)])) },
+            currentDocument: previous ? { updateTime: previous.updateTime } : { exists: false },
+          });
+        }
+        writes.push(await auditWrite(env, user, change.audit.action, 'seoSettings', change.audit.versionId, crypto.randomUUID(), change.audit.reason,
+          { state: change.audit.before, scopes: change.audit.changes.map(item => ({ scope: item.scope, value: item.before })) },
+          { state: change.audit.after, scopes: change.audit.changes.map(item => ({ scope: item.scope, value: item.after })) }));
+        await commit(env, writes);
+      } catch (error) {
+        if (error instanceof FirestoreConflictError) throw new SeoPersistenceError('SEO configuration changed. Reload before confirming.', 409);
+        throw new SeoPersistenceError('SEO configuration could not be saved. No changes were committed.');
+      }
+    },
+  };
+}
+export async function handlePublishedSeo(req: Request, env: Env): Promise<Response> {
+  return handleSeoPublic(req, seoStore(env));
+}
+
 export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const url = new URL(req.url);
   // This route is intentionally before requireAdmin: an invited customer or a
@@ -2134,6 +2173,11 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
       (url.pathname === '/api/admin/owner-bootstrap' && (user.role === 'super_admin' || user.permissionRole === 'super_admin')));
   if (!bootstrapException) await requireAdmin(user, env);
   else requireVerifiedAdmin(user);
+  if (url.pathname === '/api/admin/seo' || url.pathname.startsWith('/api/admin/seo/')) {
+    return handleSeoAdmin(req, seoStore(env, user), {
+      uid: user.uid, canRead: can(user, 'seo.read'), canEdit: can(user, 'seo.edit'), canPublish: can(user, 'seo.publish'),
+    });
+  }
   if (url.pathname === '/api/admin/commercial' || url.pathname === '/api/admin/commercial/preview') {
     return handleCommercialAdmin(req, {
       read: async (collection, id) => {

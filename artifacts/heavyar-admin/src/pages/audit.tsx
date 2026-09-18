@@ -13,6 +13,10 @@ export default function Audit() {
   
   const { data, isLoading } = useAudit({ limit: 50, ...(cursor ? { cursor } : {}) });
   const actionLabels: Record<string, [string, string]> = {
+    seo_draft_created: ['إنشاء مسودة تحسين الظهور والبحث', 'SEO draft created'],
+    seo_draft_edited: ['تعديل مسودة تحسين الظهور والبحث', 'SEO draft edited'],
+    seo_published: ['نشر إعدادات تحسين الظهور والبحث', 'SEO configuration published'],
+    seo_republished: ['إعادة نشر إصدار تحسين الظهور والبحث', 'SEO previous version republished'],
     commission_create: ['إنشاء إصدار للعمولات', 'Commission version created'],
     commission_publish: ['اعتماد إصدار للعمولات', 'Commission version published'],
     commission_retire: ['إيقاف إصدار للعمولات', 'Commission version retired'],
