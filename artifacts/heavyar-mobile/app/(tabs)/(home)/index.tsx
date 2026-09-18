@@ -97,7 +97,7 @@ export default function HomeScreen() {
                 <Text style={styles.seeAll}>{t('see_all')}</Text>
               </Pressable>
             </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={[styles.categoriesScroll, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <ScrollView testID="home-category-scroll" horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.categoriesScroll, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               {mockCategories.map(cat => (
                 <CategoryCard key={cat.id} category={cat} onPress={handleCategoryPress} isSelected={selectedCategory === cat.id} />
               ))}

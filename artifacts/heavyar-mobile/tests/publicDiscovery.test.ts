@@ -133,9 +133,23 @@ describe('canonical mobile public discovery', () => {
     expect(query).toContain("where('moderationStatus', '==', 'approved')");
     expect(query).not.toContain("orderBy('createdAt'");
   });
+  it('keeps horizontal Home scrolling but hides web and native indicators', () => {
+    const home = source('../app/(tabs)/(home)/index.tsx');
+    const horizontalRows = home.match(/<ScrollView\b[^>]*\bhorizontal\b[^>]*>/g) || [];
+    expect(horizontalRows).toHaveLength(2);
+    for (const row of horizontalRows) {
+      expect(row).toContain('showsHorizontalScrollIndicator={false}');
+      expect(row).not.toContain('scrollEnabled={false}');
+    }
+    const categories = horizontalRows.find(row => row.includes('home-category-scroll'));
+    expect(categories).toContain("flexDirection: isRTL ? 'row-reverse' : 'row'");
+    expect(categories).toContain('styles.categoriesScroll');
+  });
   it('wraps full country labels in both directions and never restores fake category counts', () => {
     const filters = source('../components/DiscoveryFilters.tsx');
     expect(filters).toContain("flexWrap: 'wrap'");
+    expect(filters).not.toContain('ScrollView');
+    expect(filters).toContain("maxWidth: '100%'");
     expect(filters).toContain("'row-reverse'");
     expect(filters).toContain("t('inactive')");
     expect(source('../components/CategoryCard.tsx')).not.toMatch(/category\.count|equipmentCount/);
