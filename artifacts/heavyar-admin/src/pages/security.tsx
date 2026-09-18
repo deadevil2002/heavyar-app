@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { userErrorMessage } from '@/lib/error-messages';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -19,16 +20,16 @@ import {
 } from '@/lib/operations';
 import { Link } from 'wouter';
 
-const passwordSchema = z.object({
-  currentPassword: z.string().min(1, 'Current password is required'),
-  newPassword: z.string().min(8, 'New password must be at least 8 characters'),
-  confirmPassword: z.string().min(1, 'Confirm password is required'),
+const passwordSchema = (language: string) => z.object({
+  currentPassword: z.string().min(1, language === 'ar' ? 'أدخل كلمة المرور الحالية.' : 'Enter your current password.'),
+  newPassword: z.string().min(8, language === 'ar' ? 'أدخل كلمة مرور من 8 أحرف على الأقل.' : 'Use at least 8 characters for the new password.'),
+  confirmPassword: z.string().min(1, language === 'ar' ? 'أكد كلمة المرور الجديدة.' : 'Confirm your new password.'),
 }).refine(data => data.newPassword === data.confirmPassword, {
-  message: 'Passwords do not match',
+  message: language === 'ar' ? 'كلمتا المرور غير متطابقتين.' : 'The passwords do not match.',
   path: ['confirmPassword'],
 });
 
-type PasswordValues = z.infer<typeof passwordSchema>;
+type PasswordValues = z.infer<ReturnType<typeof passwordSchema>>;
 
 export default function Security() {
   const { toast } = useToast();
@@ -45,7 +46,7 @@ export default function Security() {
   const cancelTransfer = useCancelOwnershipTransfer();
 
   const form = useForm<PasswordValues>({
-    resolver: zodResolver(passwordSchema as any),
+    resolver: zodResolver(passwordSchema(language) as any),
     defaultValues: {
       currentPassword: '',
       newPassword: '',
@@ -79,7 +80,7 @@ export default function Security() {
     } catch (error: any) {
       toast({
         title: t('فشل تحديث كلمة المرور', 'Failed to update password'),
-        description: error.message || t('تأكد من صحة كلمة المرور الحالية', 'Please check your current password'),
+        description: userErrorMessage(error, language),
         variant: 'destructive',
       });
     } finally {
@@ -107,11 +108,11 @@ export default function Security() {
           setTransferPassword('');
         },
         onError: (err: any) => {
-          toast({ title: t('فشل النقل', 'Transfer failed'), description: err.message, variant: 'destructive' });
+          toast({ title: t('فشل النقل', 'Transfer failed'), description: userErrorMessage(err, language), variant: 'destructive' });
         }
       });
     } catch (err: any) {
-      toast({ title: t('فشل المصادقة', 'Authentication failed'), description: err.message, variant: 'destructive' });
+      toast({ title: t('فشل المصادقة', 'Authentication failed'), description: userErrorMessage(err, language), variant: 'destructive' });
     } finally {
       setIsTransferring(false);
     }
@@ -121,7 +122,7 @@ export default function Security() {
     if (!confirm(t('هل أنت متأكد من إلغاء النقل؟', 'Are you sure you want to cancel the transfer?'))) return;
     cancelTransfer.mutate({}, {
       onSuccess: () => toast({ title: t('تم الإلغاء', 'Transfer cancelled') }),
-      onError: (err: any) => toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' })
+      onError: (err: any) => toast({ title: t('تعذر إلغاء النقل', 'Could not cancel transfer'), description: userErrorMessage(err, language), variant: 'destructive' })
     });
   };
 

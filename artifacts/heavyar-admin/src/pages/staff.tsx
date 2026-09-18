@@ -1,7 +1,9 @@
 import { useState } from 'react';
+import { userErrorMessage } from '@/lib/error-messages';
 import { useAppState } from '@/lib/app-state';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { MoreVertical, UserCog, UserMinus, Mail, Loader2, RefreshCw, XCircle } from 'lucide-react';
@@ -53,8 +55,8 @@ export default function Staff() {
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
   const { toast } = useToast();
 
-  const { data: staffData, isLoading: staffLoading } = useStaff();
-  const { data: invitesData, isLoading: invitesLoading } = useStaffInvitations();
+  const { data: staffData, isLoading: staffLoading, error: staffError } = useStaff();
+  const { data: invitesData, isLoading: invitesLoading, error: invitesError } = useStaffInvitations();
 
   const inviteStaff = useInviteStaff();
   const revokeStaff = useRevokeStaff();
@@ -77,7 +79,7 @@ export default function Staff() {
         setInviteEmail('');
       },
       onError: (err: any) => {
-        toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' });
+        toast({ title: t('تعذر إرسال الدعوة', 'Could not send invitation'), description: userErrorMessage(err, language), variant: 'destructive' });
       }
     });
   };
@@ -94,17 +96,17 @@ export default function Staff() {
   const handleResendInvite = (id: string) => {
     resendInvite.mutate({ id }, {
       onSuccess: () => toast({ title: t('تمت إعادة إرسال الدعوة', 'Invitation resent') }),
-      onError: (err: any) => toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' }),
+      onError: (err: any) => toast({ title: t('تعذر إعادة إرسال الدعوة', 'Could not resend invitation'), description: userErrorMessage(err, language), variant: 'destructive' }),
     });
   };
   const submitReason = () => {
-    if (!reasonTarget || reason.trim().length < 3) return;
+    if (!reasonTarget || reason.trim().length < 3 || cancelInvite.isPending || revokeStaff.isPending) return;
     const callbacks = {
-      onSuccess: () => {
-        toast({ title: reasonTarget.kind === 'revoke' ? t('تم سحب الصلاحيات', 'Roles revoked') : t('تم إلغاء الدعوة', 'Invitation cancelled') });
+      onSuccess: (result: any) => {
+        toast({ title: reasonTarget.kind === 'revoke' ? t('تم سحب الصلاحيات', 'Roles revoked') : result?.idempotent ? userErrorMessage('INVITATION_ALREADY_CANCELLED', language) : t('تم إلغاء الدعوة', 'Invitation cancelled') });
         setReasonTarget(null);
       },
-      onError: (err: any) => toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' }),
+      onError: (err: any) => toast({ title: reasonTarget.kind === 'cancel' ? t('تعذر إلغاء الدعوة', 'Could not cancel invitation') : t('تعذر سحب الصلاحية', 'Could not revoke access'), description: userErrorMessage(err, language), variant: 'destructive' }),
     };
     if (reasonTarget.kind === 'revoke') revokeStaff.mutate({ uid: reasonTarget.id, reason: reason.trim() }, callbacks);
     else cancelInvite.mutate({ id: reasonTarget.id, reason: reason.trim() }, callbacks);
@@ -136,15 +138,16 @@ export default function Staff() {
 
   return (
     <div className="space-y-6">
-      <Dialog open={Boolean(reasonTarget)} onOpenChange={open => !open && setReasonTarget(null)}>
+      {(staffError || invitesError) && <p role="alert" className="text-sm text-destructive">{userErrorMessage(staffError || invitesError, language)}</p>}
+      <Dialog open={Boolean(reasonTarget)} onOpenChange={open => { if (!open && !cancelInvite.isPending && !revokeStaff.isPending) setReasonTarget(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{reasonTarget?.kind === 'revoke' ? t('سحب صلاحيات الموظف', 'Revoke staff roles') : t('إلغاء الدعوة', 'Cancel invitation')}</DialogTitle>
             <DialogDescription>{t('أدخل سبباً واضحاً ليتم تسجيله في سجل التدقيق.', 'Enter a clear reason; it will be recorded in the audit log.')}</DialogDescription>
           </DialogHeader>
-          <Input autoFocus value={reason} onChange={e => setReason(e.target.value)} placeholder={t('السبب (مطلوب)', 'Reason (required)')} />
+          <Textarea autoFocus value={reason} maxLength={1000} onChange={e => setReason(e.target.value)} placeholder={t('السبب (مطلوب)', 'Reason (required)')} aria-label={t('السبب', 'Reason')} />
           <DialogFooter>
-            <Button variant="outline" onClick={() => setReasonTarget(null)}>{t('إلغاء', 'Cancel')}</Button>
+            <Button variant="outline" disabled={cancelInvite.isPending || revokeStaff.isPending} onClick={() => setReasonTarget(null)}>{t('إلغاء', 'Cancel')}</Button>
             <Button variant="destructive" onClick={submitReason} disabled={reason.trim().length < 3 || revokeStaff.isPending || cancelInvite.isPending}>{t('تأكيد', 'Confirm')}</Button>
           </DialogFooter>
         </DialogContent>
@@ -156,7 +159,7 @@ export default function Staff() {
         </div>
 
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => exportXlsx.mutate({ entity: 'staff', scope: 'all_filtered' })} disabled={exportXlsx.isPending}>
+          <Button variant="outline" onClick={() => exportXlsx.mutate({ entity: 'staff', scope: 'all_filtered' }, { onSuccess: () => toast({ title: t('تم تصدير الفريق', 'Staff exported') }), onError: error => toast({ title: t('تعذر تصدير الفريق', 'Could not export staff'), description: userErrorMessage(error, language), variant: 'destructive' }) })} disabled={exportXlsx.isPending}>
             {exportXlsx.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {t('تصدير Excel', 'Export Excel')}
           </Button>

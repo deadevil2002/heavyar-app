@@ -12,7 +12,9 @@ import {
 } from 'wouter';
 import { useAdminSession, queryClient, fetchApi } from '@/lib/api';
 import { AuthProvider, useAuth } from '@/lib/auth';
-import { AppStateProvider } from '@/lib/app-state';
+import { AppStateProvider, useAppState } from '@/lib/app-state';
+import { safeErrorCode, userErrorMessage } from '@/lib/error-messages';
+import VerifyAdminEmail from '@/pages/verify-email';
 import { Layout } from '@/components/Layout';
 import { Button } from '@/components/ui/button';
 import { LogOut, ShieldAlert, Loader2 } from 'lucide-react';
@@ -45,6 +47,8 @@ import IdentityIntegrations from '@/pages/identity-integrations';
 
 function BootstrapRequired() {
   const { logout, refreshClaims } = useAuth();
+  const { language } = useAppState();
+  const t = (ar: string, en: string) => language === 'ar' ? ar : en;
 
   const bootstrapMutation = useMutation({
     mutationFn: () => fetchApi('/owner-bootstrap', { method: 'POST' }),
@@ -56,17 +60,18 @@ function BootstrapRequired() {
   return (
     <div className="flex flex-col h-screen items-center justify-center bg-background text-center p-4">
       <ShieldAlert className="w-16 h-16 text-primary mb-4" />
-      <h1 className="text-2xl font-bold mb-2">Bootstrap Required</h1>
+      <h1 className="text-2xl font-bold mb-2">{t('إعداد حساب المالك', 'Set up owner account')}</h1>
       <p className="text-muted-foreground mb-8 max-w-md">
-        This system has no registered owner. As a legacy super admin, you must bootstrap your account to assume ownership before accessing the system.
+        {t('لا يوجد مالك مسجل لهذا النظام. إذا كنت مسؤول النظام المخوّل، أكمل إعداد حساب المالك للمتابعة.', 'This system has no registered owner. If you are the authorized system administrator, complete owner setup to continue.')}
       </p>
+      {bootstrapMutation.error && <p role="alert" className="mb-4 text-destructive">{userErrorMessage(bootstrapMutation.error, language)}</p>}
       <div className="flex gap-4">
         <Button onClick={() => bootstrapMutation.mutate()} disabled={bootstrapMutation.isPending}>
           {bootstrapMutation.isPending && <Loader2 className="ms-2 h-4 w-4 animate-spin" />}
-          Bootstrap Owner Account
+           {t('إعداد حساب المالك', 'Set up owner account')}
         </Button>
         <Button variant="outline" onClick={logout} disabled={bootstrapMutation.isPending}>
-          <LogOut className="w-4 h-4 me-2" /> Sign Out
+          <LogOut className="w-4 h-4 me-2" /> {t('تسجيل الخروج', 'Sign out')}
         </Button>
       </div>
     </div>
@@ -75,7 +80,7 @@ function BootstrapRequired() {
 
 function Router() {
   const [location] = useLocation();
-  const { user, loading, logout } = useAuth();
+  const { user, loading } = useAuth();
   const publicPages: Record<string, PublicPageKind> = {
     '/privacy': 'privacy',
     '/terms': 'terms',
@@ -91,9 +96,7 @@ function Router() {
     return <AcceptInvite />;
   }
 
-  const { data: session, isLoading: isSessionLoading, error } = useAdminSession();
-
-  if (loading || (user && isSessionLoading)) {
+  if (loading) {
     return <div className="flex h-screen items-center justify-center bg-background"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div>;
   }
 
@@ -101,15 +104,34 @@ function Router() {
     return <Login />;
   }
 
+  return <AdminRouter />;
+}
+
+function AdminRouter() {
+  const { logout } = useAuth();
+  const { language } = useAppState();
+  const t = (ar: string, en: string) => language === 'ar' ? ar : en;
+  const { data: session, isLoading: isSessionLoading, error } = useAdminSession();
+  if (isSessionLoading) {
+    return <div className="flex h-screen items-center justify-center bg-background"><Loader2 className="h-8 w-8 animate-spin" /></div>;
+  }
+  const verificationRequired = error && ['ADMIN_EMAIL_VERIFICATION_REQUIRED', 'EMAIL_VERIFICATION_REQUIRED'].includes(safeErrorCode(error));
+  if (verificationRequired) {
+    return <main className="min-h-screen flex flex-col items-center justify-center gap-5 bg-background p-5">
+      <h1 className="text-2xl font-bold">HEAVYAR</h1>
+      <div className="w-full max-w-lg"><VerifyAdminEmail /></div>
+      <Button variant="outline" onClick={logout}><LogOut className="me-2 h-4 w-4" />{t('تسجيل الخروج', 'Sign out')}</Button>
+    </main>;
+  }
   if (error) {
     return (
       <div className="flex flex-col h-screen items-center justify-center bg-background text-center p-4">
         <ShieldAlert className="w-16 h-16 text-destructive mb-4" />
-        <h1 className="text-2xl font-bold mb-2">Access Denied</h1>
-        <p className="text-muted-foreground mb-8">You do not have permission to access the Heavyar Admin Dashboard.</p>
+        <h1 className="text-2xl font-bold mb-2">{t('تعذر فتح لوحة الإدارة', 'Could not open Admin')}</h1>
+        <p className="text-muted-foreground mb-8">{userErrorMessage(error, language)}</p>
         <div className="flex gap-4">
           <Button variant="outline" onClick={logout} className="gap-2">
-            <LogOut className="w-4 h-4" /> Sign Out
+            <LogOut className="w-4 h-4" /> {t('تسجيل الخروج', 'Sign out')}
           </Button>
         </div>
       </div>

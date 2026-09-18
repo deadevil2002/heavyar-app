@@ -14,13 +14,11 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAppState } from '@/lib/app-state';
+import { userErrorMessage } from '@/lib/error-messages';
+import { adminActionPolicy, actionSuccessMessage } from '@/lib/admin-feedback';
 
-export type AdminActionPolicy = 'confirmation' | 'optional' | 'required';
-export function adminActionPolicy(action: string): AdminActionPolicy {
-  if (['approve_listing', 'approve_provider', 'approve_driver', 'rereview_listing', 'restore_provider', 'restore_driver', 'unhide_equipment', 'show_equipment'].includes(action)) return 'confirmation';
-  if (['hide_equipment'].includes(action)) return 'optional';
-  return 'required';
-}
+export { adminActionPolicy } from '@/lib/admin-feedback';
+export type { AdminActionPolicy } from '@/lib/admin-feedback';
 
 type ActionData = { targetId: string; targetType: string; action: string; title: string; description: string; payload?: any; endpoint?: string; reasonRequired?: boolean; reasonLabel?: string };
 function AdminActionDialog({ open, onOpenChange, data, reason, setReason, confirm, pending, t }: {
@@ -29,12 +27,12 @@ function AdminActionDialog({ open, onOpenChange, data, reason, setReason, confir
   const policy = data ? adminActionPolicy(data.action) : 'required';
   const required = data?.reasonRequired ?? policy === 'required';
   const showInput = required || policy === 'optional' || Boolean(data?.reasonLabel);
-  return <Dialog open={open} onOpenChange={onOpenChange}>
+  return <Dialog open={open} onOpenChange={value => { if (!pending) onOpenChange(value); }}>
     <DialogContent>
       <DialogHeader><DialogTitle>{data?.title}</DialogTitle><DialogDescription>{data?.description}</DialogDescription></DialogHeader>
       {showInput && <div className="py-4"><Input autoFocus value={reason} onChange={e => setReason(e.target.value)} placeholder={data?.reasonLabel || t('السبب (مطلوب)', 'Reason (required)...')} /></div>}
       <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)}>{t('إلغاء', 'Cancel')}</Button>
+        <Button variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>{t('إلغاء', 'Cancel')}</Button>
         <Button variant="destructive" onClick={confirm} disabled={pending || (required && reason.trim().length < 3)}>{pending ? t('جاري التنفيذ...', 'Executing...') : t('تأكيد', 'Confirm')}</Button>
       </DialogFooter>
     </DialogContent>
@@ -44,6 +42,7 @@ function AdminActionDialog({ open, onOpenChange, data, reason, setReason, confir
 export function useAdminAction() {
   const [isOpen, setIsOpen] = useState(false);
   const [reason, setReason] = useState('');
+  const [pending, setPending] = useState(false);
   const [actionData, setActionData] = useState<{ targetId: string; targetType: string; action: string; title: string; description: string; payload?: any; endpoint?: string; reasonRequired?: boolean; reasonLabel?: string } | null>(null);
   
   const { language } = useAppState();
@@ -59,13 +58,14 @@ export function useAdminAction() {
   };
 
   const confirmAction = async () => {
-    if (!actionData) return;
+    if (!actionData || pending) return;
     const reasonRequired = actionData.reasonRequired ?? adminActionPolicy(actionData.action) === 'required';
     if (reasonRequired && reason.trim().length < 3) {
       toast({ title: t('السبب مطلوب', 'Reason required'), description: t('يجب إدخال 3 أحرف على الأقل', 'Must be at least 3 characters'), variant: 'destructive' });
       return;
     }
     
+    setPending(true);
     try {
       if (actionData.endpoint) {
         await fetchApi(actionData.endpoint, { method: 'POST', body: JSON.stringify({ uid: actionData.targetId, ...(reason.trim() ? { reason: reason.trim() } : {}) }) });
@@ -79,15 +79,16 @@ export function useAdminAction() {
         });
       }
       
-      // Invalidate everything just to be safe, or targeted
-      queryClient.invalidateQueries();
-      toast({ title: t('تم التنفيذ', 'Action successful') });
+      await queryClient.invalidateQueries();
+      toast({ title: actionSuccessMessage(actionData.action, language) });
       setIsOpen(false);
     } catch (err: any) {
-      toast({ title: t('خطأ', 'Error'), description: err.message, variant: 'destructive' });
+      toast({ title: t('تعذر تنفيذ الإجراء', 'Could not complete action'), description: userErrorMessage(err, language), variant: 'destructive' });
+    } finally {
+      setPending(false);
     }
   };
 
-  const actionDialog = <AdminActionDialog open={isOpen} onOpenChange={setIsOpen} data={actionData} reason={reason} setReason={setReason} confirm={confirmAction} pending={actionMut.isPending} t={t} />;
+  const actionDialog = <AdminActionDialog open={isOpen} onOpenChange={setIsOpen} data={actionData} reason={reason} setReason={setReason} confirm={confirmAction} pending={pending} t={t} />;
   return { triggerAction, actionDialog };
 }

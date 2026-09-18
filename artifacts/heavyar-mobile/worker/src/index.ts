@@ -2142,6 +2142,9 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       return out(env, req, { success: false, error: e.message, code: e.code }, e.status);
     }
     const message = e instanceof Error ? e.message : '';
+    if (message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'Email verification is required before performing this action.', errorCode: message, verificationSubject: 'actor' }, 403);
+    if (message === 'ADMIN_REQUIRED') return out(env, req, { success: false, error: 'Admin authorization required', errorCode: 'PERMISSION_DENIED' }, 403);
+    if (message === 'AUTH_REQUIRED') return out(env, req, { success: false, error: 'Authentication required', errorCode: 'AUTH_REQUIRED' }, 401);
      const forbidden = message === 'ADMIN_REQUIRED' || message === 'ACCOUNT_SUSPENDED' || message === 'ACCOUNT_DELETION_REQUESTED' || message === 'LISTING_UNAVAILABLE' || message.startsWith('TRUST_');
      return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : message === 'ADMIN_REQUIRED' ? 'Admin authorization required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : message === 'ACCOUNT_DELETION_REQUESTED' ? 'Account deletion requested' : message === 'LISTING_UNAVAILABLE' ? 'Listing unavailable' : message.startsWith('TRUST_') ? 'Identity verification required' : 'Internal service error' }, message === 'AUTH_REQUIRED' ? 401 : forbidden ? 403 : 500);
 } }, async scheduled(_event: unknown, env: Env, executionCtx: { waitUntil(promise: Promise<unknown>): void }) {

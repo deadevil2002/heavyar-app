@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { userErrorMessage } from '@/lib/error-messages';
 import { useAppState } from '@/lib/app-state';
 import { useProviderConfigs, useActionMutation, useAdminSession } from '@/lib/api';
 import { Switch } from '@/components/ui/switch';
@@ -61,7 +62,7 @@ export default function ProviderConfigs() {
       });
       setEditingRow(null);
     } catch (error) {
-      toast({ title: t('فشل الحفظ', 'Save failed'), description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
+      toast({ title: t('فشل الحفظ', 'Save failed'), description: userErrorMessage(error, language), variant: 'destructive' });
     }
   };
 
@@ -127,9 +128,9 @@ export default function ProviderConfigs() {
                       <p className="text-xs text-muted-foreground font-mono mt-0.5">ID: {item.id}</p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">{t('مفعل', 'Enabled')}</span>
+                  <div className="flex min-w-0 max-w-full flex-wrap items-center gap-4">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="min-w-0 break-words text-sm font-medium">{t('مفعل', 'Enabled')}</span>
                      <Switch checked={editingRow === item.id ? draft.enabled : item.enabled} disabled={editingRow !== item.id} onCheckedChange={enabled => setDraft({ ...draft, enabled })} />
                     </div>
                     <Button variant="ghost" size="icon" onClick={() => toggleExpand(item.id)}>
@@ -151,8 +152,8 @@ export default function ProviderConfigs() {
                          </div>
                        ) : formattedSettings.length > 0 ? (
                         formattedSettings.map((s: any) => (
-                          <div key={s.key} className="space-y-1">
-                            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{s.label}</p>
+                          <div key={s.key} className="min-w-0 space-y-1">
+                            <p className="break-words text-xs font-medium text-muted-foreground uppercase tracking-wider">{s.label}</p>
                             {s.type === 'boolean' ? (
                               <div className="flex items-center gap-2">
                                 <Switch checked={s.value} disabled />

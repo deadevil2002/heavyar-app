@@ -20,6 +20,7 @@ import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User,
 import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
 import { WORKER_BASE_URL } from '@/constants/worker';
+import { listingCountryCode } from './locationHierarchy';
 
 const loggedIndexFallbacks = new Set<string>();
 
@@ -106,7 +107,11 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
     district: (data.district as string) || '',
     location: (data.location as { lat: number; lng: number }) || { lat: 0, lng: 0 },
     pricePerDay: (data.pricePerDay as number) || 0,
-    countryCode: typeof data.countryCode === 'string' ? data.countryCode as Equipment['countryCode'] : undefined,
+    countryCode: listingCountryCode({
+      countryCode: typeof data.countryCode === 'string' ? data.countryCode : undefined,
+      region: typeof data.region === 'string' ? data.region : undefined,
+      city: typeof data.city === 'string' ? data.city : undefined,
+    }) as Equipment['countryCode'],
     nativeCurrency: typeof data.nativeCurrency === 'string' ? data.nativeCurrency : (typeof data.currency === 'string' ? data.currency : 'SAR'),
     nativePricePerDay: typeof data.nativePricePerDay === 'number' ? data.nativePricePerDay : ((data.pricePerDay as number) || 0),
     displayCurrency: typeof data.displayCurrency === 'string' ? data.displayCurrency : undefined,
@@ -115,7 +120,7 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
     displayRateTimestamp: toISOString(data.displayRateTimestamp),
     images: parseImages(data.images),
     availability: (data.availability as boolean) ?? true,
-    isActive: (data.isActive as boolean) ?? true,
+    isActive: data.isActive === true,
     visibility: data.visibility === 'visible' || data.visibility === 'hidden' || data.visibility === 'archived'
       ? data.visibility
       : undefined,
@@ -211,42 +216,17 @@ function parseRating(id: string, data: Record<string, unknown>): Rating {
 
 export async function fetchEquipmentList(): Promise<Equipment[]> {
   const db = getFirebaseDb();
-  try {
-    const q = query(
-      collection(db, 'equipment'),
-      where('isActive', '==', true),
-      where('visibility', '==', 'visible'),
-      where('moderationStatus', '==', 'approved'),
-      orderBy('createdAt', 'desc')
-    );
-    const snap = await getDocs(q);
-    const items = snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
-    return items;
-  } catch (indexError: unknown) {
-    if (isMissingIndexError(indexError)) {
-      warnIndexFallbackOnce('equipment:isActive+createdAt', indexError);
-    } else {
-    }
-    try {
-      const fallbackQ = query(
-        collection(db, 'equipment'),
-        where('isActive', '==', true),
-        where('visibility', '==', 'visible'),
-        where('moderationStatus', '==', 'approved'),
-      );
-      const fallbackSnap = await getDocs(fallbackQ);
-      const items = fallbackSnap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
-      items.sort((a, b) => {
-        if (!a.createdAt && !b.createdAt) return 0;
-        if (!a.createdAt) return 1;
-        if (!b.createdAt) return -1;
-        return b.createdAt.localeCompare(a.createdAt);
-      });
-      return items;
-    } catch (fallbackError) {
-      throw fallbackError;
-    }
-  }
+  // Firestore orderBy also requires field existence. A missing createdAt must
+  // not exclude otherwise eligible public equipment; sort after eligibility.
+  const publicQuery = query(
+    collection(db, 'equipment'),
+    where('isActive', '==', true),
+    where('visibility', '==', 'visible'),
+    where('moderationStatus', '==', 'approved'),
+  );
+  const snap = await getDocs(publicQuery);
+  return snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function fetchEquipmentById(id: string): Promise<Equipment | null> {

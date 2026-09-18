@@ -10,5 +10,5 @@
 - [Expo managed preview](expo-managed-preview.md) — automation accounts cannot use ngrok; use the dedicated Expo preview domain without changing authentication.
 - [Heavyar mobile alias authentication](heavyar-mobile-alias-auth.md) — mobile is an alternate identifier for the same Firebase email/password account; never use Firebase Phone OTP.
 - [Firebase custom-token QA](firebase-custom-token-qa.md) — verify custom-token identity from the returned ID token subject; the REST response may omit localId.
-- [Heavyar Resend production status](heavyar-resend-production.md) — Resend is bound but returns auth_failed; Firebase password-reset fallback remains operational.
+- [Heavyar Resend production status](heavyar-resend-production.md) — branded sending is verified; delivery feedback requires separate signed-webhook configuration.
 - [Worker deletion preview budgets](worker-deletion-preview-budgets.md) — destructive previews must use set-based reads and reject unsafe target sizes before any partial result.

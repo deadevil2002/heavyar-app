@@ -1,4 +1,5 @@
 import { useGateways, useUpdateGateway } from '@/lib/operations';
+import { userErrorMessage } from '@/lib/error-messages';
 import { useAdminSession } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,7 +23,7 @@ export default function Gateways() {
     if (!isSuperAdmin) return;
     updateGateway.mutate({ gatewayId, enabled }, {
       onSuccess: () => toast({ title: t('تم التحديث بنجاح', 'Updated successfully') }),
-      onError: (err: any) => toast({ title: t('فشل التحديث', 'Update failed'), description: err.message, variant: 'destructive' })
+      onError: (err: any) => toast({ title: t('فشل التحديث', 'Update failed'), description: userErrorMessage(err, language), variant: 'destructive' })
     });
   };
 
@@ -75,8 +76,8 @@ export default function Gateways() {
                     </CardDescription>
                   </div>
 
-                  <div className="flex gap-4 items-center">
-                    <div className="flex gap-2">
+                  <div className="flex min-w-0 flex-wrap gap-4 items-center">
+                    <div className="flex min-w-0 flex-wrap gap-2">
                       {isEnabled ? (
                         <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
                           {t('مفعل', 'Enabled')}
@@ -92,8 +93,8 @@ export default function Gateways() {
                       )}
                     </div>
                     {isSuperAdmin && (
-                      <div className="flex flex-col items-end gap-1">
-                        <div className="flex items-center">
+                      <div className="flex min-w-0 flex-col items-end gap-1">
+                        <div className="flex items-center gap-2">
                           <Switch
                             checked={isEnabled}
                             onCheckedChange={(v) => handleToggle(gateway.id, v)}

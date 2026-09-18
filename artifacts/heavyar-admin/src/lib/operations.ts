@@ -1,6 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchApi, fetchApiBinary, downloadBlob, API_BASE, fetchAuthenticatedPublic } from './api';
 import { adminActionPayload, adminDetailEndpoint, adminExportEndpoint, normalizeGatewayRows } from './operations-contract';
+import { SafeApiError } from './error-messages';
+import { cancellationPayload, invitationId } from './invitation-contract';
+import { invitationRefreshKeys, refreshQueries } from './admin-feedback';
 
 // --- Staff & Permissions ---
 
@@ -46,7 +49,7 @@ async function fetchPublic<T>(path: string, options: RequestInit = {}): Promise<
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || body.message || response.statusText);
+  if (!response.ok || body.error) throw new SafeApiError(body, response.status);
   return body;
 }
 
@@ -91,9 +94,7 @@ export function useInviteStaff() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (data: { email: string; role: string }) => fetchApi('/staff/invite', { method: 'POST', body: JSON.stringify(data) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['staff-invitations'] });
-    },
+    onSettled: () => refreshQueries(queryClient, invitationRefreshKeys),
   });
 }
 
@@ -101,34 +102,30 @@ export function useRevokeStaff() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (data: { uid: string; reason: string }) => fetchApi('/staff/revoke', { method: 'POST', body: JSON.stringify(data) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['staff'] });
-    },
+    onSettled: () => refreshQueries(queryClient, invitationRefreshKeys),
   });
 }
 
 export function useCancelStaffInvitation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { id: string; reason: string }) => fetchApi('/staff/invitations/cancel', { method: 'POST', body: JSON.stringify(data) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['staff-invitations'] });
-    },
+    mutationFn: (data: { id: string; reason: string }) => fetchApi('/staff/invitations/cancel', { method: 'POST', body: JSON.stringify(cancellationPayload(data)) }),
+    onSettled: () => refreshQueries(queryClient, invitationRefreshKeys),
   });
 }
 
 export function useResendStaffInvitation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { id: string }) => fetchApi('/staff/invitations/resend', { method: 'POST', body: JSON.stringify(data) }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['staff-invitations'] }),
+    mutationFn: (data: { id: string }) => fetchApi('/staff/invitations/resend', { method: 'POST', body: JSON.stringify({ id: invitationId(data.id) }) }),
+    onSettled: () => refreshQueries(queryClient, invitationRefreshKeys),
   });
 }
 
 export function useStaffInvitationDetails(id?: string) {
   return useQuery({
     queryKey: ['staff-invitation-details', id],
-    queryFn: () => fetchApi<{ success: boolean; invitation: StaffInvitation }>(`/staff/invitations/details?id=${encodeURIComponent(id!)}`),
+    queryFn: () => fetchApi<{ success: boolean; invitation: StaffInvitation }>(`/staff/invitations/details?id=${encodeURIComponent(invitationId(id!))}`),
     enabled: Boolean(id),
   });
 }
@@ -143,8 +140,10 @@ export function usePublicStaffInvitationDetails(token?: string) {
 }
 
 export function useAcceptStaffInvitation() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (data: { token: string }) => fetchAuthenticatedPublic('/api/staff/invitations/accept', { method: 'POST', body: JSON.stringify(data) }),
+    onSettled: () => refreshQueries(queryClient, invitationRefreshKeys),
   });
 }
 

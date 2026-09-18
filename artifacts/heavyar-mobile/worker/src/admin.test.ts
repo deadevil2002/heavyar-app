@@ -556,12 +556,12 @@ describe('admin authorization and operational boundary', () => {
     expect((commits[2][0] as any).update.fields.isActive.booleanValue).toBe(false);
   });
 
-  test('approval actions fail closed when Firebase email verification is absent', async () => {
+  test('staff approval is independent of the listing owner publishing gate', async () => {
     __test.setAuth({ uid: 'moderator-1', admin: true, role: 'admin', permissionRole: 'moderator' });
     __adminTest.setFirestore((collection) => collection === 'equipment' ? { ownerUid: 'owner-1', moderationStatus: 'pending_review' } : collection === 'users' ? { emailVerified: false } : null);
+    __adminTest.captureCommits([]);
     const listing = await worker.fetch(request('/api/admin/action', { action: 'approve_listing', targetType: 'equipment', targetId: 'listing-unverified', reason: 'review complete' }, { Authorization: 'Bearer test' }), env);
-    expect(listing.status).toBe(403);
-    expect((await listing.json()).errorCode).toBe('EMAIL_VERIFICATION_REQUIRED');
+    expect(listing.status).toBe(200);
   });
 
   test('ownership initiation stays pending and never changes the canonical owner before acceptance', async () => {

@@ -42,7 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refreshClaims = async () => {
     if (!getFirebaseAuth().currentUser) return;
     await getFirebaseAuth().currentUser!.getIdToken(true);
-    await queryClient.invalidateQueries({ queryKey: ['adminSession'] });
+    await queryClient.invalidateQueries();
   };
 
   return (

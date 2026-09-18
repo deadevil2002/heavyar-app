@@ -1,5 +1,5 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Animated, ActivityIndicator } from 'react-native';
+import React, { useState, useCallback, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, Animated, ActivityIndicator, RefreshControl, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Search, Bell, Globe, ChevronLeft, ChevronRight } from 'lucide-react-native';
@@ -8,54 +8,28 @@ import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories } from '@/mocks/categories';
-import { fetchEquipmentList } from '@/services/firestoreService';
-import { Equipment } from '@/types';
+import { useDiscovery } from '@/contexts/DiscoveryContext';
+import DiscoveryFilters from '@/components/DiscoveryFilters';
 import EquipmentCard from '@/components/EquipmentCard';
 import CategoryCard from '@/components/CategoryCard';
 import EmptyState from '@/components/EmptyState';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
-import { GCC_COUNTRIES } from '@/constants/gcc';
-import { citiesForLocation, filterListingsByLocation, regionsForCountry } from '@/services/locationHierarchy';
-import { fetchMarketConfig, type MarketConfig } from '@/services/authService';
 
 export default function HomeScreen() {
   const { isRTL, t, localizedText, setLanguage } = useLanguage();
   const { user, isAuthenticated } = useAuth();
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
-  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
-  const [selectedCity, setSelectedCity] = useState<string | null>(null);
-  const [markets, setMarkets] = useState<MarketConfig[]>([]);
-  const [equipmentList, setEquipmentList] = useState<Equipment[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
+  const { equipment: filteredEquipment, filters, markets, setFilter, resetFilters, loading, refreshing, error, refresh, hasFilters } = useDiscovery();
+  const [showFilters, setShowFilters] = useState(false);
+  const selectedCategory = filters.category;
   const scrollAnim = useRef(new Animated.Value(0)).current;
-
-  const loadEquipment = useCallback(async () => {
-    setLoading(true);
-    try {
-      const items = await fetchEquipmentList();
-      setEquipmentList(items);
-    } catch (e) {
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadEquipment();
-  }, [loadEquipment]);
-  useEffect(() => { void fetchMarketConfig().then(setMarkets); }, []);
-
-  const filteredEquipment = filterListingsByLocation(equipmentList, { countryCode: selectedCountry || undefined, region: selectedRegion || undefined, city: selectedCity || undefined }).filter(e => !selectedCategory || e.category === selectedCategory);
   const featuredEquipment = filteredEquipment.filter(e => e.availability).slice(0, 5);
-  const recentEquipment = filteredEquipment.slice(0, 10);
 
   const handleCategoryPress = useCallback((categoryId: string) => {
-    setSelectedCategory(prev => prev === categoryId ? null : categoryId);
-  }, []);
+    setFilter('category', selectedCategory === categoryId ? '' : categoryId);
+  }, [selectedCategory, setFilter]);
 
   const handleSearch = useCallback(() => {
     router.push('/(tabs)/search');
@@ -83,6 +57,7 @@ export default function HomeScreen() {
       <SafeAreaView edges={['top']} style={styles.safeArea}>
         <Animated.ScrollView
           showsVerticalScrollIndicator={false}
+          refreshControl={<RefreshControl refreshing={refreshing && !loading} onRefresh={refresh} tintColor={Colors.gold} />}
           onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollAnim } } }], { useNativeDriver: true })}
           scrollEventThrottle={16}
         >
@@ -108,10 +83,12 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          <Pressable style={[styles.searchBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={handleSearch}>
+          <View style={[styles.searchBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <Search size={20} color={Colors.textMuted} />
-            <Text style={[styles.searchText, { textAlign: isRTL ? 'right' : 'left' }]}>{t('search_placeholder')}</Text>
-          </Pressable>
+            <TextInput testID="home-search-input" style={[styles.searchText, { textAlign: isRTL ? 'right' : 'left', color: Colors.textPrimary }]}
+              placeholder={t('search_placeholder')} placeholderTextColor={Colors.textMuted}
+              value={filters.text} onChangeText={text => setFilter('text', text)} onSubmitEditing={handleSearch} />
+          </View>
 
           <View style={styles.section}>
             <View style={[styles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -120,29 +97,34 @@ export default function HomeScreen() {
                 <Text style={styles.seeAll}>{t('see_all')}</Text>
               </Pressable>
             </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoriesScroll}>
+            <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={[styles.categoriesScroll, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               {mockCategories.map(cat => (
                 <CategoryCard key={cat.id} category={cat} onPress={handleCategoryPress} isSelected={selectedCategory === cat.id} />
               ))}
             </ScrollView>
           </View>
           <View style={styles.locationFilters}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}><View style={styles.filterRow}>{GCC_COUNTRIES.map(country => {
-              const enabled = markets.find(m => m.code === country.code)?.enabled === true;
-              const chosen = selectedCountry === country.code;
-              return <Pressable key={country.code} disabled={!enabled} accessibilityState={{ disabled: !enabled }} style={[styles.filterChip, chosen && styles.filterChipSelected, !enabled && styles.filterChipDisabled]} onPress={() => { setSelectedCountry(chosen ? null : country.code); setSelectedRegion(null); setSelectedCity(null); }}><Text style={[styles.filterChipText, chosen && styles.filterChipTextSelected, !enabled && styles.filterChipTextDisabled]}>{localizedText(country.nameAr, country.nameEn)}{!enabled ? ` (${t('inactive')})` : ''}</Text></Pressable>;
-            })}</View></ScrollView>
-            {selectedCountry && <ScrollView horizontal showsHorizontalScrollIndicator={false}><View style={styles.filterRow}>{regionsForCountry(selectedCountry, markets).map(region => <Pressable key={region.id} style={[styles.filterChip, selectedRegion === region.id && styles.filterChipSelected]} onPress={() => { setSelectedRegion(selectedRegion === region.id ? null : region.id); setSelectedCity(null); }}><Text style={[styles.filterChipText, selectedRegion === region.id && styles.filterChipTextSelected]}>{localizedText(region.nameAr, region.nameEn)}</Text></Pressable>)}</View></ScrollView>}
-            {selectedRegion && <ScrollView horizontal showsHorizontalScrollIndicator={false}><View style={styles.filterRow}>{citiesForLocation(selectedCountry || undefined, selectedRegion, markets).map(city => <Pressable key={city.id} style={[styles.filterChip, selectedCity === city.id && styles.filterChipSelected]} onPress={() => setSelectedCity(selectedCity === city.id ? null : city.id)}><Text style={[styles.filterChipText, selectedCity === city.id && styles.filterChipTextSelected]}>{localizedText(city.nameAr, city.nameEn)}</Text></Pressable>)}</View></ScrollView>}
+            <View style={[styles.filterRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <Pressable accessibilityRole="button" accessibilityState={{ expanded: showFilters }} onPress={() => setShowFilters(value => !value)} style={styles.filterChip}>
+                <Text style={styles.seeAll}>{t('filters')} · {filters.countryCode}</Text>
+              </Pressable>
+              {hasFilters && <Pressable accessibilityRole="button" onPress={resetFilters} style={styles.filterChip}><Text style={styles.seeAll}>{t('reset_filters')}</Text></Pressable>}
+            </View>
+            {showFilters && <DiscoveryFilters filters={filters} markets={markets} setFilter={setFilter} />}
           </View>
 
           {loading ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color={Colors.gold} />
             </View>
-          ) : equipmentList.length === 0 ? (
+          ) : error ? (
             <View style={styles.emptyContainer}>
-              <EmptyState title={t('no_equipment')} />
+              <EmptyState title={t('discovery_load_error')} />
+              <Pressable accessibilityRole="button" onPress={refresh} style={styles.filterChip}><Text style={styles.seeAll}>{t('discovery_retry')}</Text></Pressable>
+            </View>
+          ) : filteredEquipment.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <EmptyState title={hasFilters ? t('no_results') : t('no_equipment')} />
             </View>
           ) : (
             <>
@@ -167,13 +149,13 @@ export default function HomeScreen() {
 
               <View style={styles.section}>
                 <View style={[styles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                  <Text style={styles.sectionTitle}>{t('recent')}</Text>
+                    <Text style={styles.sectionTitle}>{t('all_equipment')}</Text>
                   <Pressable onPress={handleSearch}>
                     <Text style={styles.seeAll}>{t('see_all')}</Text>
                   </Pressable>
                 </View>
                 <View style={styles.recentList}>
-                  {recentEquipment.map(eq => (
+                  {filteredEquipment.map(eq => (
                     <EquipmentCard key={eq.id} equipment={eq} />
                   ))}
                 </View>
@@ -294,8 +276,8 @@ const styles = StyleSheet.create({
   categoriesScroll: {
     paddingHorizontal: 20,
   },
-  locationFilters: { marginTop: 12, gap: 8 },
-  filterRow: { paddingHorizontal: 20, gap: 8, flexDirection: 'row' },
+  locationFilters: { marginTop: 12, gap: 8, paddingHorizontal: 20 },
+  filterRow: { gap: 8, flexDirection: 'row', flexWrap: 'wrap' },
   filterChip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
   filterChipSelected: { backgroundColor: Colors.gold, borderColor: Colors.gold },
   filterChipDisabled: { opacity: 0.5 },

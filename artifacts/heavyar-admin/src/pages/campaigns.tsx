@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { userErrorMessage } from '@/lib/error-messages';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -76,7 +77,7 @@ export default function Campaigns() {
     } catch (error: any) {
       toast({
         title: t('فشل جلب التقدير', 'Failed to estimate'),
-        description: error.message,
+        description: userErrorMessage(error, language),
         variant: 'destructive',
       });
     } finally {
@@ -121,7 +122,7 @@ export default function Campaigns() {
     } catch (error: any) {
       toast({
         title: t('فشل إنشاء الحملة', 'Failed to create campaign'),
-        description: error.message,
+        description: userErrorMessage(error, language),
         variant: 'destructive',
       });
     } finally {

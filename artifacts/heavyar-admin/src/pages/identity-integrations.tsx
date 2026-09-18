@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { userErrorMessage } from '@/lib/error-messages';
 import { useAppState } from '@/lib/app-state';
 import { Button } from '@/components/ui/button';
 import { useIdentityIntegrations, useUpdateIdentityIntegration } from '@/lib/operations';
@@ -37,7 +38,7 @@ export default function IdentityIntegrations() {
         toast({ title: t('تم التحديث بنجاح', 'Updated successfully') });
       },
       onError: (err: any) => {
-        toast({ title: t('فشل التحديث', 'Update failed'), description: err.message, variant: 'destructive' });
+        toast({ title: t('فشل التحديث', 'Update failed'), description: userErrorMessage(err, language), variant: 'destructive' });
       }
     });
   };
@@ -91,8 +92,8 @@ export default function IdentityIntegrations() {
                   </div>
                 </div>
                 
-                <div className="flex items-center gap-2 bg-background p-3 rounded-lg border border-border shadow-sm">
-                  <Label htmlFor={`toggle-${integration.id}`} className="cursor-pointer font-medium">
+                <div className="flex min-w-0 max-w-full items-center gap-3 bg-background p-3 rounded-lg border border-border shadow-sm">
+                  <Label htmlFor={`toggle-${integration.id}`} className="min-w-0 break-words cursor-pointer font-medium">
                     {t('تفعيل الخدمة', 'Enable Service')}
                   </Label>
                   <Switch 

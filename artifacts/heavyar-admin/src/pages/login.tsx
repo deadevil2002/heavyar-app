@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { userErrorMessage } from '@/lib/error-messages';
 import { useAuth } from '@/lib/auth';
 import { getFirebaseAuth } from '@/lib/firebase';
 import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
@@ -31,7 +32,7 @@ export default function Login() {
     } catch (err: any) {
       toast({
         title: t('فشل تسجيل الدخول', 'Login failed'),
-        description: err.message || t('الرجاء التحقق من بيانات الاعتماد', 'Please check your credentials'),
+        description: userErrorMessage(err, language),
         variant: 'destructive',
       });
     } finally {

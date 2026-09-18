@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { userErrorMessage, safeErrorCode, SafeApiError } from '@/lib/error-messages';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2, Trash2, AlertTriangle, ShieldCheck, Database, Info } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -58,7 +59,7 @@ export function DeletionDialog({ open, onOpenChange, targetUser, selectedIds, se
     previewMut.mutateAsync(payload)
       .then(setPreview)
       .catch(err => {
-        toast({ title: t('خطأ', 'Error'), description: err.message, variant: 'destructive' });
+        toast({ title: t('تعذر معاينة الحذف', 'Could not preview deletion'), description: userErrorMessage(err, language), variant: 'destructive' });
         onOpenChange(false);
       })
       .finally(() => setLoading(false));
@@ -82,7 +83,7 @@ export function DeletionDialog({ open, onOpenChange, targetUser, selectedIds, se
 
     try {
       if (!preview?.previewToken) {
-        throw new Error(t('رمز المعاينة مفقود. الرجاء إعادة المحاولة.', 'Missing preview token. Please try again.'));
+        throw new SafeApiError('CONFLICT', 409);
       }
 
       const payload = {
@@ -96,13 +97,12 @@ export function DeletionDialog({ open, onOpenChange, targetUser, selectedIds, se
       onJobStarted(res.jobId);
       onOpenChange(false);
     } catch (err: any) {
-      const msg = err.message?.toLowerCase() || '';
-      if (msg.includes('expire') || msg.includes('token') || msg.includes('consum') || msg.includes('معاينة') || msg.includes('صلاحية')) {
-         toast({ title: t('انتهت صلاحية الجلسة', 'Session expired'), description: t('الرجاء إعادة المحاولة.', 'Please try again.'), variant: 'destructive' });
+      if (safeErrorCode(err) === 'CONFLICT') {
+         toast({ title: t('يجب تحديث معاينة الحذف', 'Refresh deletion preview'), description: userErrorMessage(err, language), variant: 'destructive' });
          setPreview(null);
          loadPreview();
       } else {
-         toast({ title: t('خطأ', 'Error'), description: err.message, variant: 'destructive' });
+         toast({ title: t('تعذر بدء الحذف', 'Could not start deletion'), description: userErrorMessage(err, language), variant: 'destructive' });
       }
     }
   };

@@ -1,6 +1,9 @@
 import { QueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import { getFirebaseAuth } from './firebase';
 import { adminListParams } from './operations-contract';
+import { SafeApiError } from './error-messages';
+import { accountRefreshKeys, refreshQueries } from './admin-feedback';
+import { useEffect } from 'react';
 
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://heavyar-api.heavyar-official.workers.dev';
 export const API_BASE = configuredApiBase.replace(/\/+$/, '').replace(/\/api\/admin$/, '') + '/api/admin';
@@ -21,16 +24,11 @@ async function getToken(forceRefresh = false) {
   return await auth.currentUser.getIdToken(forceRefresh);
 }
 
-export class ApiError extends Error {
-  constructor(message: string, public readonly status: number) {
-    super(message);
-    this.name = 'ApiError';
-  }
-}
+export class ApiError extends SafeApiError {}
 
 export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, hasRetried = false): Promise<T> {
   const token = await getToken(hasRetried);
-  if (!token) throw new Error('Unauthorized');
+   if (!token) throw new ApiError('UNAUTHENTICATED', 401);
 
   const url = `${API_BASE}${endpoint}`;
 
@@ -46,10 +44,10 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, h
   const response = await fetch(url, { ...options, headers });
 
   if (!response.ok) {
-    let message = response.statusText;
+    let message: unknown = null;
     try {
       const errorData = await response.json();
-      message = errorData.error || errorData.message || message;
+      message = errorData;
     } catch (e) {}
     if (response.status === 401 && !hasRetried) {
       return fetchApi<T>(endpoint, options, true);
@@ -58,15 +56,12 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, h
       await getFirebaseAuth().signOut();
       throw new ApiError('Session expired. Please sign in again.', response.status);
     }
-    if (response.status === 403) {
-      throw new ApiError('Forbidden: ' + message, response.status);
-    }
-    throw new ApiError(message || 'API Error', response.status);
+    throw new ApiError(message, response.status);
   }
 
   const data = await response.json();
   if (data.error) {
-    throw new Error(data.error);
+    throw new ApiError(data, response.status);
   }
   return data;
 }
@@ -74,26 +69,26 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, h
 /** Authenticated endpoints intentionally outside the admin namespace (for invitation acceptance). */
 export async function fetchAuthenticatedPublic<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = await getToken();
-  if (!token) throw new Error('Unauthorized');
+  if (!token) throw new ApiError('UNAUTHENTICATED', 401);
   const headers = new Headers(options.headers);
   headers.set('Authorization', `Bearer ${token}`);
   if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   const response = await fetch(`${API_BASE.replace(/\/api\/admin$/, '')}${endpoint}`, { ...options, headers });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(body.error || body.message || response.statusText, response.status);
+  if (!response.ok || body.error) throw new ApiError(body, response.status);
   return body as T;
 }
 
 /** Authenticated binary requests are used for server-generated XLSX/PDF documents. */
 export async function fetchApiBinary(endpoint: string, options: RequestInit = {}, hasRetried = false): Promise<{ blob: Blob; filename?: string }> {
   const token = await getToken(hasRetried);
-  if (!token) throw new Error('Unauthorized');
+  if (!token) throw new ApiError('UNAUTHENTICATED', 401);
   const headers = new Headers(options.headers);
   headers.set('Authorization', `Bearer ${token}`);
   const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
   if (!response.ok) {
-    let message = response.statusText;
-    try { const body = await response.json(); message = body.error || body.message || message; } catch { /* binary/error response */ }
+    let message: unknown = null;
+    try { message = await response.json(); } catch { /* binary/error response */ }
     if (response.status === 401 && !hasRetried) return fetchApiBinary(endpoint, options, true);
     if (response.status === 401) { await getFirebaseAuth().signOut(); throw new ApiError('Session expired. Please sign in again.', response.status); }
     throw new ApiError(message || 'Download failed', response.status);
@@ -406,7 +401,8 @@ export function useRemindersPreview() {
 export function useRemindersBulk() {
   return useMutation({
     mutationFn: (data: AccountTargetSelection) =>
-      fetchApi<{ success: boolean; targeted: number; sent: number; skippedVerified: number; skippedCooldown: number; skippedRestricted: number; missing: number; failed: number; results?: any }>('/email-verification/reminders/bulk', { method: 'POST', body: JSON.stringify(data) })
+      fetchApi<{ success: boolean; targeted: number; sent: number; skippedVerified: number; skippedCooldown: number; skippedRestricted: number; missing: number; failed: number; results?: any }>('/email-verification/reminders/bulk', { method: 'POST', body: JSON.stringify(data) }),
+    onSettled: () => refreshQueries(queryClient, accountRefreshKeys),
   });
 }
 
@@ -432,26 +428,30 @@ export function useDeletionPreview() {
 export function useDeletionJob() {
   return useMutation({
     mutationFn: (data: { previewToken: string; reason: string; confirmation: string }) =>
-      fetchApi<{ success: boolean; jobId: string; status: string; total: number }>('/users/deletion-jobs', { method: 'POST', body: JSON.stringify(data) })
+      fetchApi<{ success: boolean; jobId: string; status: string; total: number }>('/users/deletion-jobs', { method: 'POST', body: JSON.stringify(data) }),
+    onSettled: () => refreshQueries(queryClient, accountRefreshKeys),
   });
 }
 
 export function useDeletionJobStatus(id?: string) {
-  return useQuery({
+  const query = useQuery({
     queryKey: ['deletionJob', id],
     queryFn: () => fetchApi<{ id: string; status: 'queued' | 'processing' | 'completed' | 'partially_completed' | 'failed'; progress: number; total: number; result?: any }>(`/users/deletion-jobs/${id}`),
     enabled: Boolean(id),
-    refetchInterval: 2000,
+    refetchInterval: query => ['completed', 'partially_completed', 'failed'].includes(query.state.data?.status || '') ? false : 2000,
   });
+  const status = query.data?.status;
+  useEffect(() => {
+    if (status && ['completed', 'partially_completed', 'failed'].includes(status)) {
+      void refreshQueries(queryClient, accountRefreshKeys);
+    }
+  }, [id, status]);
+  return query;
 }
 
 export function useSendReminder() {
   return useMutation({
     mutationFn: (uid: string) => fetchApi<{ success: boolean; sent?: boolean; alreadyVerified?: boolean }>(`/email-verification/reminder`, { method: 'POST', body: JSON.stringify({ uid }) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['users'] });
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
-      queryClient.invalidateQueries({ queryKey: ['drivers'] });
-    },
+    onSettled: () => refreshQueries(queryClient, accountRefreshKeys),
   });
 }

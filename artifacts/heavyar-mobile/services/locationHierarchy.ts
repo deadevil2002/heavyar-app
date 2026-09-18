@@ -25,8 +25,21 @@ export function isMarketEnabled(countryCode: string, markets?: readonly MarketAv
 export type ListingLocation = { countryCode?: string; region?: string; city?: string; customCity?: string };
 export type LocationFilter = { countryCode?: string; region?: string; city?: string };
 
+/** Pre-GCC Saudi listings have real Saudi location IDs but no countryCode.
+ * Infer only from that known hierarchy, never from an arbitrary/missing location,
+ * and never override an explicitly stored country.
+ */
+export function listingCountryCode(listing: ListingLocation): string | undefined {
+  if (listing.countryCode) return listing.countryCode;
+  const saudi = GCC_COUNTRIES.find(country => country.code === 'SA');
+  return saudi?.regions.some(region =>
+    region.id === listing.region
+    && (!listing.city || listing.city === 'other' || region.cities.some(city => city.id === listing.city))
+  ) ? 'SA' : undefined;
+}
+
 export function listingMatchesLocation(listing: ListingLocation, filter: LocationFilter): boolean {
-  if (filter.countryCode && listing.countryCode !== filter.countryCode) return false;
+  if (filter.countryCode && listingCountryCode(listing) !== filter.countryCode) return false;
   if (filter.region && listing.region !== filter.region) return false;
   if (filter.city && listing.city !== filter.city && listing.customCity !== filter.city) return false;
   return true;

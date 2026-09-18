@@ -5,6 +5,7 @@ import { fetchApiBinary, downloadBlob } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { useAppState } from '@/lib/app-state';
 import { adminExportEndpoint } from '@/lib/operations-contract';
+import { userErrorMessage } from '@/lib/error-messages';
 
 export function ExportControls({ resource, params = {} }: { resource: string; params?: Record<string, unknown> }) {
   const [pending, setPending] = useState<'current' | 'all' | null>(null);
@@ -16,7 +17,7 @@ export function ExportControls({ resource, params = {} }: { resource: string; pa
       const result = await fetchApiBinary(adminExportEndpoint(resource, scope === 'current' ? 'current_page' : 'all_filtered', params));
       downloadBlob(result.blob, result.filename || `${resource}-${scope}-${new Date().toISOString().slice(0, 10)}.xlsx`);
     } catch (error) {
-      toast({ title: language === 'ar' ? 'تعذر التصدير' : 'Export failed', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
+      toast({ title: language === 'ar' ? 'تعذر التصدير' : 'Export failed', description: userErrorMessage(error, language), variant: 'destructive' });
     } finally { setPending(null); }
   };
   return <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={() => exportFile('current')} disabled={Boolean(pending)}>{pending === 'current' ? <Loader2 className="me-2 h-4 w-4 animate-spin" /> : <Download className="me-2 h-4 w-4" />}{language === 'ar' ? 'تصدير الصفحة' : 'Export current'}</Button><Button type="button" variant="outline" size="sm" onClick={() => exportFile('all')} disabled={Boolean(pending)}>{pending === 'all' ? <Loader2 className="me-2 h-4 w-4 animate-spin" /> : <Download className="me-2 h-4 w-4" />}{language === 'ar' ? 'تصدير الكل' : 'Export all'}</Button></div>;

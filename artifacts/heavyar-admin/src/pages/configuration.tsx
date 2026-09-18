@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { userErrorMessage } from '@/lib/error-messages';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAppState } from '@/lib/app-state';
 import { ApiError, useConfig, useActionMutation, useAdminSession, useAuthConfig, useEmailVerificationPolicy, useUpdateEmailVerificationPolicy, usePhoneVerificationPolicy, useUpdatePhoneVerificationPolicy, useAdminCountries, useUpdateAdminCountries, useFxProviderConfig, useUpdateFxProviderConfig, type AuthConfig } from '@/lib/api';
@@ -137,7 +138,7 @@ export default function Configuration() {
       setEditingEmailPolicy(false);
       queryClient.invalidateQueries({ queryKey: ['emailVerificationPolicy'] });
     } catch (error: any) {
-      toast({ title: error instanceof ApiError && error.status === 412 ? t('تغيرت السياسة', 'Policy changed') : t('فشل حفظ السياسة', 'Failed to save policy'), description: error instanceof ApiError && error.status === 412 ? t('أعد تحميل القيم ثم حاول مرة أخرى.', 'Reload the current values and try again.') : error.message, variant: 'destructive' });
+      toast({ title: error instanceof ApiError && error.status === 412 ? t('تغيرت السياسة', 'Policy changed') : t('فشل حفظ السياسة', 'Failed to save policy'), description: userErrorMessage(error, language), variant: 'destructive' });
     }
   };
   const beginPhoneEdit = () => { setDraftPhonePolicy({ ...phonePolicy }); setEditingPhonePolicy(true); };
@@ -158,7 +159,7 @@ export default function Configuration() {
       setEditingPhonePolicy(false);
       queryClient.invalidateQueries({ queryKey: ['phoneVerificationPolicy'] });
     } catch (error: any) {
-      toast({ title: error instanceof ApiError && error.status === 412 ? t('تغيرت الإعدادات', 'Settings changed') : t('فشل الحفظ', 'Failed to save'), description: error instanceof ApiError && error.status === 412 ? t('أعد تحميل القيم ثم حاول مرة أخرى.', 'Reload the current values and try again.') : error.message, variant: 'destructive' });
+      toast({ title: error instanceof ApiError && error.status === 412 ? t('تغيرت الإعدادات', 'Settings changed') : t('فشل الحفظ', 'Failed to save'), description: userErrorMessage(error, language), variant: 'destructive' });
     }
   };
   const beginCountriesEdit = () => { setDraftCountries(countries.map(country => ({ ...country }))); setEditingCountries(true); };
@@ -169,7 +170,7 @@ export default function Configuration() {
       setEditingCountries(false);
       queryClient.invalidateQueries({ queryKey: ['adminCountries'] });
     } catch (error: any) {
-      toast({ title: t('فشل حفظ الدول', 'Failed to save countries'), description: error.message, variant: 'destructive' });
+      toast({ title: t('فشل حفظ الدول', 'Failed to save countries'), description: userErrorMessage(error, language), variant: 'destructive' });
     }
   };
   const beginFxEdit = () => { setDraftFx({ ...fx }); setEditingFx(true); };
@@ -180,7 +181,7 @@ export default function Configuration() {
       setEditingFx(false);
       queryClient.invalidateQueries({ queryKey: ['fxProvider'] });
     } catch (error: any) {
-      toast({ title: t('فشل حفظ أسعار الصرف', 'Failed to save FX settings'), description: error.message, variant: 'destructive' });
+      toast({ title: t('فشل حفظ أسعار الصرف', 'Failed to save FX settings'), description: userErrorMessage(error, language), variant: 'destructive' });
     }
   };
 
@@ -204,7 +205,7 @@ export default function Configuration() {
     } catch (error: any) {
       toast({
         title: t('فشل حفظ الإعدادات', 'Failed to save configuration'),
-        description: error.message,
+        description: userErrorMessage(error, language),
         variant: 'destructive',
       });
     }
@@ -250,7 +251,7 @@ export default function Configuration() {
     } catch (error: any) {
       toast({
         title: t('فشل حفظ إعدادات المصادقة', 'Failed to save authentication settings'),
-        description: error.message,
+        description: userErrorMessage(error, language),
         variant: 'destructive',
       });
     }
@@ -263,14 +264,14 @@ export default function Configuration() {
         setEditingBusiness(false);
       },
       onError: (err: any) => {
-        toast({ title: t('فشل الحفظ', 'Failed to save'), description: err.message, variant: 'destructive' });
+        toast({ title: t('فشل الحفظ', 'Failed to save'), description: userErrorMessage(err, language), variant: 'destructive' });
       }
     });
   };
 
   const ConfigRow = ({ label, description, checked, onChange, disabled = false }: any) => (
-    <div className="flex items-center justify-between p-4 rounded-md border border-border/50 bg-card/50">
-      <div className="space-y-0.5">
+    <div className="flex min-w-0 items-center justify-between gap-4 p-4 rounded-md border border-border/50 bg-card/50">
+      <div className="min-w-0 flex-1 space-y-0.5 break-words">
         <Label className="text-base">{label}</Label>
         <p className="text-sm text-muted-foreground">{description}</p>
       </div>
@@ -379,7 +380,7 @@ export default function Configuration() {
           <div className="flex items-center gap-2"><Badge variant="outline">{t('نسخة', 'Version')} {emailPolicy.version || '—'}</Badge>{isSuperAdmin && !editingEmailPolicy && <Button variant="outline" size="sm" onClick={beginEmailEdit}><Edit className="h-4 w-4 me-2" />{t('تعديل', 'Edit')}</Button>}</div>
         </CardHeader>
         <CardContent className="space-y-3">
-          {emailPolicyLoading ? <Skeleton className="h-24 w-full" /> : emailPolicyError ? <div className="text-sm text-destructive">{emailPolicyError.message}</div> : null}
+          {emailPolicyLoading ? <Skeleton className="h-24 w-full" /> : emailPolicyError ? <div className="text-sm text-destructive">{userErrorMessage(emailPolicyError, language)}</div> : null}
           {([
             ['enabled', t('تفعيل التحقق من البريد', 'Enable email verification')],
             ['requireBeforeRentalRequest', t('يتطلب التحقق قبل طلب التأجير', 'Require verification before rental request')],
@@ -401,13 +402,13 @@ export default function Configuration() {
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex justify-end gap-2">{countriesData && !editingCountries && isSuperAdmin && <Button variant="outline" size="sm" onClick={beginCountriesEdit}><Edit className="h-4 w-4 me-2" />{t('تعديل', 'Edit')}</Button>}</div>
-          {countriesLoading ? <Skeleton className="h-24 w-full" /> : countriesError ? <div className="text-sm text-destructive">{countriesError.message}</div> : <div className="rounded-md border border-border/50 p-3 text-sm text-muted-foreground">{t('رمز الدولة ورمز الاتصال والعملة الأصلية ثابتة. يمكن تعديل أعلام الإتاحة فقط.', 'Country code, dial code, and native currency are fixed. Only availability flags can be edited.')}</div>}
+          {countriesLoading ? <Skeleton className="h-24 w-full" /> : countriesError ? <div className="text-sm text-destructive">{userErrorMessage(countriesError, language)}</div> : <div className="rounded-md border border-border/50 p-3 text-sm text-muted-foreground">{t('رمز الدولة ورمز الاتصال والعملة الأصلية ثابتة. يمكن تعديل أعلام الإتاحة فقط.', 'Country code, dial code, and native currency are fixed. Only availability flags can be edited.')}</div>}
           {GCC_COUNTRIES.map(country => {
             const index = draftCountries.findIndex(item => item.code === country.code);
             const fallback: any = { ...country, nativeCurrency: country.currency, enabled: country.code === 'SA', marketplaceAvailable: country.code === 'SA', providerOnboardingAvailable: country.code === 'SA', crossBorderAvailable: false, version: countriesData?.version || 1 };
             const source: any = (editingCountries ? draftCountries[index] : countries.find(item => item.code === country.code)) || fallback;
             const updateCountry = (key: string, value: boolean) => setDraftCountries(rows => rows.map((row, rowIndex) => rowIndex === index ? { ...row, [key]: value } : row));
-            return <div key={country.code} className="rounded-md border border-border/50 p-4 space-y-3"><div className="flex items-center justify-between"><div><p className="font-medium">{t(country.nameAr, country.nameEn)} <span className="text-muted-foreground">({country.code})</span></p><p className="text-xs text-muted-foreground" dir="ltr">{source.dialCode} · {source.nativeCurrency}</p></div><Badge variant={source.enabled ? 'secondary' : 'outline'}>{source.enabled ? t('مفعل', 'Enabled') : t('جاهز فقط', 'Ready only')}</Badge></div><div className="grid sm:grid-cols-4 gap-2">{[['enabled', t('السوق', 'Market')], ['marketplaceAvailable', t('السوق المفتوح', 'Marketplace')], ['providerOnboardingAvailable', t('ضم مقدمي الخدمة', 'Provider onboarding')], ['crossBorderAvailable', t('عابر للحدود', 'Cross-border')]].map(([key, label]) => <label key={key} className="flex items-center gap-2 text-xs"><Switch checked={Boolean(source[key as string])} onCheckedChange={value => updateCountry(key as string, value)} disabled={!editingCountries} /><span>{label}</span></label>)}</div></div>;
+            return <div key={country.code} className="min-w-0 rounded-md border border-border/50 p-4 space-y-3"><div className="flex min-w-0 items-center justify-between gap-3"><div className="min-w-0 break-words"><p className="font-medium">{t(country.nameAr, country.nameEn)} <span className="text-muted-foreground">({country.code})</span></p><p className="text-xs text-muted-foreground" dir="ltr">{source.dialCode} · {source.nativeCurrency}</p></div><Badge variant={source.enabled ? 'secondary' : 'outline'}>{source.enabled ? t('مفعل', 'Enabled') : t('جاهز فقط', 'Ready only')}</Badge></div><div className="grid min-w-0 sm:grid-cols-2 lg:grid-cols-4 gap-3">{[['enabled', t('السوق', 'Market')], ['marketplaceAvailable', t('السوق المفتوح', 'Marketplace')], ['providerOnboardingAvailable', t('ضم مقدمي الخدمة', 'Provider onboarding')], ['crossBorderAvailable', t('عابر للحدود', 'Cross-border')]].map(([key, label]) => <label key={key} className="flex min-w-0 items-center gap-3 text-xs"><Switch checked={Boolean(source[key as string])} onCheckedChange={value => updateCountry(key as string, value)} disabled={!editingCountries} /><span className="min-w-0 break-words">{label}</span></label>)}</div></div>;
           })}
         </CardContent>
         {editingCountries && <CardFooter className="flex justify-end gap-2 border-t border-border/50 pt-4"><Button variant="outline" onClick={() => setEditingCountries(false)}>{t('إلغاء', 'Cancel')}</Button><Button onClick={saveCountries} disabled={updateCountries.isPending}><Save className="h-4 w-4 me-2" />{t('حفظ الدول', 'Save countries')}</Button></CardFooter>}
@@ -416,7 +417,7 @@ export default function Configuration() {
       <Card className="border-border">
         <CardHeader className="flex flex-row items-start justify-between"><div><CardTitle className="flex items-center gap-2"><Coins className="h-5 w-5 text-primary" />{t('مزود أسعار الصرف', 'FX Provider')}</CardTitle><CardDescription>{t('التحويل للعرض فقط ومتعطل حتى تهيئة مصدر موثوق؛ لا يتم تفعيل التسوية بعملات أجنبية.', 'Display conversion only and disabled until a trusted source is configured; foreign-currency settlement stays off.')}</CardDescription></div>{fxData && !editingFx && isSuperAdmin && <Button variant="outline" size="sm" onClick={beginFxEdit}><Edit className="h-4 w-4 me-2" />{t('تعديل', 'Edit')}</Button>}</CardHeader>
         <CardContent className="grid sm:grid-cols-2 gap-4">
-          {fxLoading ? <Skeleton className="h-24 w-full sm:col-span-2" /> : fxError ? <div className="text-sm text-destructive sm:col-span-2">{fxError.message}</div> : null}
+          {fxLoading ? <Skeleton className="h-24 w-full sm:col-span-2" /> : fxError ? <div className="text-sm text-destructive sm:col-span-2">{userErrorMessage(fxError, language)}</div> : null}
           {(() => { const source: any = editingFx ? draftFx : fx; return <><div className="rounded-md border border-border/50 p-3 text-sm sm:col-span-2">{t('المزود والتفعيل ثابتان: لا يوجد مزود ولا تسوية بعملة أجنبية. يمكن تعديل سياسة التحديث والتخزين المؤقت.', 'Provider and activation are fixed: no provider and no foreign-currency settlement. Refresh and cache policy can be edited.')}</div><ConfigRow label={t('تفعيل التحويل للعرض', 'Enable display conversion')} description={t('لا يغير السعر الأصلي أو عملة التسوية.', 'Does not change native prices or settlement currency.')} checked={false} onChange={() => undefined} disabled /><div className="space-y-2"><Label>{t('المزود', 'Provider')}</Label><Input value="none" disabled /></div><div className="space-y-2"><Label>{t('فترة التحديث (ثانية)', 'Refresh interval (seconds)')}</Label><Input type="number" min={60} value={source.refreshIntervalSeconds} disabled={!editingFx} onChange={e => setDraftFx({ ...draftFx, refreshIntervalSeconds: Math.max(60, Number(e.target.value) || 60) })} /></div><div className="space-y-2"><Label>{t('عمر التخزين المؤقت (ثانية)', 'Cache age (seconds)')}</Label><Input type="number" min={60} value={source.cacheTtlSeconds} disabled={!editingFx} onChange={e => setDraftFx({ ...draftFx, cacheTtlSeconds: Math.max(60, Number(e.target.value) || 60) })} /></div><div className="text-sm text-muted-foreground sm:col-span-2">{t('الحالة:', 'Status:')} <Badge variant="outline">{source.status || 'disabled'}</Badge> <Badge variant="outline">{t('النسخة', 'Version')} {source.version}</Badge></div></>; })()}
         </CardContent>
         {editingFx && <CardFooter className="flex justify-end gap-2 border-t border-border/50 pt-4"><Button variant="outline" onClick={() => setEditingFx(false)}>{t('إلغاء', 'Cancel')}</Button><Button onClick={saveFx} disabled={updateFx.isPending}><Save className="h-4 w-4 me-2" />{t('حفظ سياسة FX', 'Save FX policy')}</Button></CardFooter>}
@@ -453,7 +454,7 @@ export default function Configuration() {
             <div className="space-y-4"><Skeleton className="h-16 w-full" /><Skeleton className="h-16 w-full" /></div>
           ) : authError ? (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300">
-              {t('تعذر تحميل إعدادات المصادقة:', 'Authentication settings are unavailable:')} {authError.message}
+              {t('تعذر تحميل إعدادات المصادقة:', 'Authentication settings are unavailable:')} {userErrorMessage(authError, language)}
             </div>
           ) : (
             <>
@@ -611,7 +612,7 @@ export default function Configuration() {
               )}
               {businessError && !businessConfigMissing && (
                 <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-                  {t('تعذر تحميل بيانات الأعمال:', 'Could not load business configuration:')} {businessError.message}
+                  {t('تعذر تحميل بيانات الأعمال:', 'Could not load business configuration:')} {userErrorMessage(businessError, language)}
                 </div>
               )}
               <div className="grid sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">

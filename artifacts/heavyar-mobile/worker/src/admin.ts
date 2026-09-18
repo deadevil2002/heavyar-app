@@ -9,7 +9,7 @@ import { ensurePublicIdentifier, formatPublicIdentifier, isPublicIdentifier, PUB
 import { legacyProviderReady } from './moderation';
 
 export type AdminRole = 'super_admin' | 'admin';
-export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; displayName?: string; authTime?: number; testInjected?: true };
+export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
 export type LegacyListingEvaluation = { eligible: boolean; needsMigration: boolean; reasons: string[]; migrationAudit: boolean };
 
 export function evaluateLegacyEquipment(
@@ -98,10 +98,17 @@ async function googleToken(env: Env, scope = 'https://www.googleapis.com/auth/da
   return (await response.json() as { access_token: string }).access_token;
 }
 
+class FirestoreConflictError extends Error {}
+
 async function fs(env: Env, path: string, init: RequestInit = {}) {
   const response = await fetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${await googleToken(env)}`, 'Content-Type': 'application/json', ...(init.headers || {}) } });
-  if (response.status === 404) return null;
+  if (response.status === 404 && path !== ':commit') return null;
   if (response.status === 403) throw new Error('Firestore permission denied');
+  if (response.status === 409 || response.status === 412) throw new FirestoreConflictError('Concurrent update');
+  if (response.status === 400) {
+    const error = await response.json().catch(() => null) as any;
+    if (error?.error?.status === 'FAILED_PRECONDITION' || error?.error?.status === 'ABORTED') throw new FirestoreConflictError('Concurrent update');
+  }
   if (!response.ok) throw new Error('Firestore unavailable');
   return response.status === 204 ? null : response.json();
 }
@@ -230,7 +237,8 @@ async function listCollection(env: Env, collection: string, query: Record<string
   const lastReturned = docs[docs.length - 1]?.document;
   const cursorDocument = lastReturned || (rows.length >= structuredQuery.limit ? rows[rows.length - 1]?.document : undefined);
   const cursorSortValue = sort && cursorDocument ? (decode(cursorDocument)[sort] ?? null) : undefined;
-  const baseItems = docs.map(item => ({ id: String(item.document.name).split('/').pop(), ...redact(decode(item.document)) }));
+  // The physical identity must not be shadowed by a historical data.id field.
+  const baseItems = docs.map(item => ({ ...redact(decode(item.document)), id: String(item.document.name).split('/').pop() }));
   const projection = (collection === 'users' || collection === 'providerProfiles' || collection === 'driverProfiles') && !queryOverride
     ? await authoritativeAccountProjection(env, baseItems)
     : baseItems;
@@ -1558,7 +1566,8 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     if (!can(u, 'moderation.manage')) return { error: 'Moderation permission required', status: 403 };
     const now = new Date().toISOString();
     if (actionName === 'approve_listing') {
-      if (await emailVerificationRequiredForSensitiveAction(env, String(current.ownerUid || ''), await rawDoc(env, 'users', String(current.ownerUid || '')).then(item => item?.data), u, 'listing')) return { error: 'EMAIL_VERIFICATION_REQUIRED', errorCode: 'EMAIL_VERIFICATION_REQUIRED', status: 403 };
+      // This is a staff moderation decision, not the owner's submission.
+      // The owner publishing gate remains on /api/listings, never here.
       // Approval is the only place legacy listings receive a visibility value.
       // Explicit operator hiding/archiving always wins over moderation approval.
       const visibility = current.visibility === 'hidden' || current.visibility === 'archived' ? current.visibility : 'visible';
@@ -1686,7 +1695,7 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     // verificationProfiles' manualReview state, while official results go
     // through the provider callback boundary.
     return { error: 'Verification case status changes are not supported', status: 400 };
-  } else return { error: 'Unsupported action', status: 400 };
+  } else if (!Object.keys(fields).length) return { error: 'Unsupported action', status: 400 };
   const now = new Date().toISOString(), notify: any[] = [];
   if (normalizedType === 'user' && actionName === 'suspend_user') notify.push(await notificationWrite(fullName.bind(null, env), targetId, 'account_suspended', now, undefined, correlationId));
   if (normalizedType === 'user' && actionName === 'unsuspend_user') notify.push(await notificationWrite(fullName.bind(null, env), targetId, 'suspension_lifted', now, undefined, correlationId));
@@ -1714,7 +1723,14 @@ export async function requireAdmin(u: AdminUser, env?: Env) {
     if (authoritative === 'admin' || authoritative === 'super_admin' || authoritative === 'owner') u.role = authoritative === 'owner' ? 'super_admin' : authoritative;
   }
   if (!normalizeStaffRole(u.permissionRole || u.role) && u.role !== 'admin' && u.role !== 'super_admin') throw new Error('ADMIN_REQUIRED');
+  requireVerifiedAdmin(u);
   return u;
+}
+
+function requireVerifiedAdmin(user: AdminUser) {
+  // Production identities always have a verified, signed Firebase claim.
+  // Older unit fixtures may omit it, but explicit false must never bypass it.
+  if (user.emailVerified !== true && !(user.testInjected && user.emailVerified === undefined)) throw new Error('EMAIL_VERIFICATION_REQUIRED');
 }
 
 const AUTHORITY_INVITATION_ORIGIN = 'https://heavyar-app.web.app';
@@ -1748,17 +1764,51 @@ async function invitationToken(token: string) {
   return b64u(await crypto.subtle.digest('SHA-256', enc.encode(token)));
 }
 
+const invitationError = (errorCode: string, status: number) => ({ success: false, error: errorCode, errorCode, status });
+function validInvitationId(id: unknown): id is string {
+  // Management receives an opaque physical Firestore ID, not a bearer token
+  // or a particular generation's naming scheme. Preserve it byte-for-byte.
+  return typeof id === 'string' && id.trim().length > 0 && enc.encode(id).length <= 1500
+    && id !== '.' && id !== '..' && !/^__.*__$/.test(id)
+    && !/[/\\\u0000-\u001f\u007f]/.test(id);
+}
+
+/**
+ * Firestore resource names in JSON are NOT URL paths. Older creation code
+ * persisted a literal "%3A" in the document ID. Preserve that identity rather
+ * than decoding list IDs into a different document or migrating live records.
+ */
+async function staffInvitation(env: Env, id: string, allowLegacyTokenId = false) {
+  let actualId = id, raw = await rawDoc(env, 'staffInvitations', actualId);
+  // Only a token-derived lookup may try the historical encoded hash shape.
+  // Management must never silently resolve a different physical document.
+  if (!raw && allowLegacyTokenId && id.startsWith('invite:')) {
+    actualId = id.replace(':', '%3A');
+    raw = await rawDoc(env, 'staffInvitations', actualId);
+  }
+  return raw ? { ...raw, id: actualId, name: fullName(env, `staffInvitations/${actualId}`) } : null;
+}
+
+function invitationStateError(data: any, status = 409) {
+  if (!data) return invitationError('INVITATION_INVALID', 404);
+  if (data.status === 'accepted') return invitationError('INVITATION_ALREADY_ACCEPTED', status);
+  if (data.status === 'cancelled' || data.status === 'revoked') return invitationError('INVITATION_ALREADY_CANCELLED', status);
+  if (data.status === 'expired' || data.status === 'pending' && !pendingAndUnexpired(data)) return invitationError('INVITATION_EXPIRED', status);
+  if (data.status !== 'pending') return invitationError('INVITATION_INVALID', status);
+  return null;
+}
+
 async function createStaffInvitation(req: Request, env: Env, user: AdminUser) {
-  if (!can(user, 'staff.manage')) return { error: 'Staff management permission required', status: 403 };
+  if (!can(user, 'staff.manage')) return invitationError('PERMISSION_DENIED', 403);
   const body: any = await req.json().catch(() => null);
   const email = normalizeAuthorityEmail(body?.email), role = invitationRole(body?.role);
-  if (!email || !role) return { error: 'Invalid invitation', status: 400 };
-  if (!env.RESEND_API_KEY) return { error: 'Invitation delivery unavailable', status: 503 };
+  if (!email || !role) return invitationError('INVITATION_INVALID', 400);
+  if (!env.RESEND_API_KEY) return invitationError('INVITATION_DELIVERY_UNAVAILABLE', 503);
   const token = crypto.randomUUID(), tokenHash = await invitationToken(token);
-  if (!tokenHash) return { error: 'Invalid invitation', status: 400 };
+  if (!tokenHash) return invitationError('INVITATION_INVALID', 400);
   const id = `invite:${tokenHash}`, now = new Date().toISOString(), expiresAt = invitationExpiry();
   await commit(env, [
-    { update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: {
+    { update: { name: fullName(env, `staffInvitations/${id}`), fields: {
       email: jsonValue(email), role: jsonValue(role), invitedBy: jsonValue(user.uid), status: jsonValue('pending'),
        expiresAt: { timestampValue: expiresAt }, createdAt: { timestampValue: now },
        deliveryStatus: jsonValue('requested'), deliveryRequestedAt: { timestampValue: now },
@@ -1767,12 +1817,12 @@ async function createStaffInvitation(req: Request, env: Env, user: AdminUser) {
   ]);
   try {
     const providerMessageId = await sendAuthorityInvitation(env, email, token, 'staff', expiresAt, 'دعوة للانضمام إلى فريق Heavyar / Heavyar staff invitation', 'دعوة للانضمام إلى فريق Heavyar. You have been invited to Heavyar staff access.');
-    await commit(env, [{ update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: { deliveryStatus: jsonValue('accepted'), providerMessageId: jsonValue(providerMessageId || null), deliveryAcceptedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['deliveryStatus', 'providerMessageId', 'deliveryAcceptedAt'] } }]);
+    await commit(env, [{ update: { name: fullName(env, `staffInvitations/${id}`), fields: { deliveryStatus: jsonValue('accepted'), providerMessageId: jsonValue(providerMessageId || null), deliveryAcceptedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['deliveryStatus', 'providerMessageId', 'deliveryAcceptedAt'] } }]);
   } catch {
     // The invitation cannot become an untracked delivery.  It remains pending
     // only for the documented expiry period and administrators can revoke it.
-     await commit(env, [{ update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: { deliveryStatus: jsonValue('failed'), deliveryFailedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['deliveryStatus', 'deliveryFailedAt'] } }, await auditWrite(env, user, 'staff_invite_delivery_failed', 'staffInvitation', id, crypto.randomUUID(), 'invitation delivery failed')]);
-    return { error: 'Invitation delivery unavailable', status: 503 };
+     await commit(env, [{ update: { name: fullName(env, `staffInvitations/${id}`), fields: { deliveryStatus: jsonValue('failed'), deliveryFailedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['deliveryStatus', 'deliveryFailedAt'] } }, await auditWrite(env, user, 'staff_invite_delivery_failed', 'staffInvitation', id, crypto.randomUUID(), 'invitation delivery failed')]);
+    return invitationError('INVITATION_DELIVERY_UNAVAILABLE', 503);
   }
   return { success: true, invitationId: id, expiresAt, status: 'pending' };
 }
@@ -1798,68 +1848,100 @@ async function revokeStaffAuthority(req: Request, env: Env, user: AdminUser) {
 }
 
 async function cancelStaffInvitation(req: Request, env: Env, user: AdminUser) {
-  if (!can(user, 'staff.manage')) return { error: 'Staff management permission required', status: 403 };
-  const body: any = await req.json().catch(() => null), id = String(body?.id || body?.invitationId || ''), reason = String(body?.reason || '').trim();
-  if (!/^invite:[A-Za-z0-9_-]{20,}$/.test(id) || reason.length < 3) return { error: 'Invalid invitation cancellation', status: 400 };
-  const invitation = await rawDoc(env, 'staffInvitations', id);
-  if (!invitation?.data || invitation.data.status !== 'pending') return { error: 'Pending invitation not found', status: 404 };
-  await commit(env, [
-     { update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: { status: jsonValue('cancelled'), cancelledBy: jsonValue(user.uid), cancelledAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'cancelledBy', 'cancelledAt'] }, currentDocument: { updateTime: invitation.updateTime } },
-    await auditWrite(env, user, 'staff_invitation_revoked', 'staffInvitation', id, crypto.randomUUID(), reason),
-  ]);
-   return { success: true, invitationId: id, status: 'cancelled' };
+  if (!can(user, 'staff.manage')) return invitationError('PERMISSION_DENIED', 403);
+  const body: any = await req.json().catch(() => null), id = body?.id ?? body?.invitationId;
+  const reason = typeof body?.reason === 'string' ? body.reason.trim() : '';
+  if (!validInvitationId(id) || body?.id && body?.invitationId && body.id !== body.invitationId) return invitationError('INVITATION_INVALID', 400);
+  if (reason.length < 3 || reason.length > 1000) return invitationError('INVITATION_REASON_REQUIRED', 400);
+  // A delivery webhook may change updateTime while leaving business state
+  // pending. Retry boundedly against a fresh snapshot, never drop the CAS.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const invitation = await staffInvitation(env, id);
+    if (invitation?.data.status === 'cancelled') return { success: true, invitationId: invitation.id, status: 'cancelled', idempotent: true, code: 'INVITATION_ALREADY_CANCELLED' };
+    const stateError = invitationStateError(invitation?.data);
+    if (stateError) return stateError;
+    if (!invitation?.updateTime) return invitationError('INVITATION_CONFLICT', 409);
+    const fields = { status: jsonValue('cancelled'), cancelledBy: jsonValue(user.uid), cancelledAt: { timestampValue: new Date().toISOString() }, cancellationReason: jsonValue(reason) };
+    try {
+      await commit(env, [
+        { update: { name: invitation.name, fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: invitation.updateTime } },
+        await auditWrite(env, user, 'staff_invitation_revoked', 'staffInvitation', invitation.id, crypto.randomUUID(), reason, { status: 'pending' }, { status: 'cancelled', cancelledBy: user.uid, cancellationReason: reason }),
+      ]);
+      return { success: true, invitationId: invitation.id, status: 'cancelled' };
+    } catch (error) {
+      if (!(error instanceof FirestoreConflictError)) throw error;
+    }
+  }
+  return invitationError('INVITATION_CONFLICT', 409);
 }
 
 async function resendStaffInvitation(req: Request, env: Env, user: AdminUser) {
-  if (!can(user, 'staff.manage')) return { error: 'Staff management permission required', status: 403 };
-  const body: any = await req.json().catch(() => null), id = String(body?.id || body?.invitationId || '');
-  if (!/^invite:[A-Za-z0-9_-]{20,}$/.test(id)) return { error: 'Invalid invitation', status: 400 };
-  const invitation = await rawDoc(env, 'staffInvitations', id);
-  if (!invitation?.data || invitation.data.status !== 'pending' || !pendingAndUnexpired(invitation.data)) return { error: 'Pending invitation not found or expired', status: 409 };
+  if (!can(user, 'staff.manage')) return invitationError('PERMISSION_DENIED', 403);
+  const body: any = await req.json().catch(() => null), id = body?.id ?? body?.invitationId;
+  if (!validInvitationId(id)) return invitationError('INVITATION_INVALID', 400);
+  const invitation = await staffInvitation(env, id);
+  const stateError = invitationStateError(invitation?.data);
+  if (stateError) return stateError;
+  if (!invitation?.updateTime) return invitationError('INVITATION_CONFLICT', 409);
   const last = Date.parse(String(invitation.data.lastResentAt || invitation.data.createdAt || 0));
-  if (Number.isFinite(last) && Date.now() - last < 300000) return { error: 'Invitation resend cooldown active', status: 429 };
+  if (Number.isFinite(last) && Date.now() - last < 300000) return invitationError('INVITATION_RESEND_COOLDOWN', 429);
   const token = crypto.randomUUID(), hash = await invitationToken(token);
-  if (!hash) return { error: 'Invitation token unavailable', status: 409 };
+  if (!hash) return invitationError('INVITATION_CONFLICT', 409);
   const nextId = `invite:${hash}`;
   const now = new Date().toISOString();
   try {
     const providerMessageId = await sendAuthorityInvitation(env, String(invitation.data.email), token, 'staff', String(invitation.data.expiresAt), 'دعوة للانضمام إلى فريق Heavyar / Heavyar staff invitation', 'دعوة للانضمام إلى فريق Heavyar. You have been invited to Heavyar staff access.');
     await commit(env, [
-      { update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: { status: jsonValue('cancelled'), supersededBy: jsonValue(nextId), cancelledAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['status', 'supersededBy', 'cancelledAt'] }, currentDocument: { updateTime: invitation.updateTime } },
-      { update: { name: fullName(env, `staffInvitations/${encodeURIComponent(nextId)}`), fields: { ...Object.fromEntries(Object.entries(invitation.data).map(([key, value]) => [key, jsonValue(value)])), tokenHash: jsonValue(hash), status: jsonValue('pending'), createdAt: { timestampValue: now }, deliveryStatus: jsonValue('accepted'), providerMessageId: jsonValue(providerMessageId || null), resendCount: { integerValue: String(Number(invitation.data.resendCount || 0) + 1) } } }, currentDocument: { exists: false } },
-      await auditWrite(env, user, 'staff_invite_resent', 'staffInvitation', nextId, crypto.randomUUID(), 'staff invitation resent'),
+      { update: { name: invitation.name, fields: { status: jsonValue('cancelled'), supersededBy: jsonValue(nextId), cancelledAt: { timestampValue: now }, cancelledBy: jsonValue(user.uid), cancellationReason: jsonValue('Superseded by a new invitation') } }, updateMask: { fieldPaths: ['status', 'supersededBy', 'cancelledAt', 'cancelledBy', 'cancellationReason'] }, currentDocument: { updateTime: invitation.updateTime } },
+      { update: { name: fullName(env, `staffInvitations/${nextId}`), fields: {
+        email: jsonValue(invitation.data.email), role: jsonValue(invitation.data.role), invitedBy: jsonValue(user.uid),
+        expiresAt: { timestampValue: invitation.data.expiresAt }, status: jsonValue('pending'), createdAt: { timestampValue: now },
+        deliveryStatus: jsonValue('accepted'), deliveryAcceptedAt: { timestampValue: now }, providerMessageId: jsonValue(providerMessageId || null),
+        resendCount: { integerValue: String(Number(invitation.data.resendCount || 0) + 1) },
+      } }, currentDocument: { exists: false } },
+      await auditWrite(env, user, 'staff_invite_resent', 'staffInvitation', nextId, crypto.randomUUID(), 'staff invitation resent',
+        { invitationId: invitation.id, status: 'pending' }, { invitationId: nextId, status: 'pending', supersedes: invitation.id }),
     ]);
     return { success: true, invitationId: nextId, deliveryStatus: 'accepted' };
-  } catch {
+  } catch (error) {
+    if (error instanceof FirestoreConflictError) return invitationError('INVITATION_CONFLICT', 409);
     await commit(env, [await auditWrite(env, user, 'staff_invite_delivery_failed', 'staffInvitation', id, crypto.randomUUID(), 'invitation resend failed')]);
-    return { error: 'Invitation delivery unavailable', status: 503 };
+    return invitationError('INVITATION_DELIVERY_UNAVAILABLE', 503);
   }
 }
 
 /** Exported for the non-admin route dispatcher: acceptance is deliberately public-to-authenticated. */
 export async function acceptStaffInvitation(req: Request, env: Env, user: AdminUser) {
   const body: any = await req.json().catch(() => null), hash = await invitationToken(String(body?.token || ''));
-  if (!hash) return { error: 'Invalid invitation', status: 400 };
-  const raw = await rawDoc(env, 'staffInvitations', `invite:${hash}`);
+  if (!hash) return invitationError('INVITATION_INVALID', 400);
+  const raw = await staffInvitation(env, `invite:${hash}`, true);
   const email = await verifiedIdentityEmail(env, user);
+  if (!email) return invitationError('EMAIL_VERIFICATION_REQUIRED', 403);
+  if (!raw?.data || raw.data.email !== email) return invitationError('INVITATION_INVALID', 403);
   if (raw?.data?.status === 'accepted' && raw.data.acceptedBy === user.uid) return { success: true, role: invitationRole(raw.data.role), status: 'accepted', idempotent: true, claimsStatus: 'synchronized' };
-  if (!email || !pendingAndUnexpired(raw?.data) || raw!.data.email !== email) return { error: 'Invitation is invalid or expired', status: 403 };
+  const stateError = invitationStateError(raw.data, 403);
+  if (stateError) return stateError;
   const role = invitationRole(raw!.data.role);
-  if (!role) return { error: 'Invitation is invalid', status: 403 };
+  if (!role) return invitationError('INVITATION_INVALID', 403);
+  if (!raw.updateTime) return invitationError('INVITATION_CONFLICT', 409);
   const current = await rawDoc(env, 'staffMembers', user.uid), roleVersion = Number(current?.data?.roleVersion || 0) + 1, now = new Date().toISOString();
   try {
     await commit(env, [
       { update: { name: fullName(env, `staffMembers/${encodeURIComponent(user.uid)}`), fields: {
         uid: jsonValue(user.uid), email: jsonValue(email), role: jsonValue(role), active: { booleanValue: true },
-        roleVersion: { integerValue: String(roleVersion) }, invitationId: jsonValue(`invite:${hash}`), joinedAt: { timestampValue: now },
+        roleVersion: { integerValue: String(roleVersion) }, invitationId: jsonValue(raw.id), joinedAt: { timestampValue: now },
       } }, currentDocument: current?.updateTime ? { updateTime: current.updateTime } : { exists: false } },
       claimSyncWrite(env, user.uid, role, true, roleVersion),
-      { update: { name: fullName(env, `staffInvitations/${encodeURIComponent(`invite:${hash}`)}`), fields: {
+      { update: { name: raw.name, fields: {
         status: jsonValue('accepted'), acceptedBy: jsonValue(user.uid), acceptedAt: { timestampValue: now },
       } }, updateMask: { fieldPaths: ['status', 'acceptedBy', 'acceptedAt'] }, currentDocument: { updateTime: raw!.updateTime } },
-      await auditWrite(env, user, 'staff_invitation_accepted', 'staffInvitation', `invite:${hash}`, crypto.randomUUID(), 'invitation accepted'),
+      await auditWrite(env, user, 'staff_invitation_accepted', 'staffInvitation', raw.id, crypto.randomUUID(), 'invitation accepted'),
     ]);
-  } catch { return { error: 'Invitation has already been accepted', status: 409 }; }
+  } catch (error) {
+    if (!(error instanceof FirestoreConflictError)) throw error;
+    const latest = await staffInvitation(env, raw.id);
+    return invitationStateError(latest?.data) || invitationError('INVITATION_CONFLICT', 409);
+  }
    try {
      await setRole(env, user, user.uid, role);
      return { success: true, role, status: 'accepted', claimsStatus: 'synchronized' };
@@ -1872,11 +1954,11 @@ export async function acceptStaffInvitation(req: Request, env: Env, user: AdminU
 /** Safe pre-auth invitation inspection; never returns the bearer token. */
 export async function staffInvitationDetails(req: Request, env: Env) {
   const url = new URL(req.url), token = String(url.searchParams.get('token') || '');
-  const hash = await invitationToken(token), invitation = hash ? await rawDoc(env, 'staffInvitations', `invite:${hash}`) : null;
-  if (!hash || !invitation?.data) return { error: 'Invitation not found', status: 404 };
+  const hash = await invitationToken(token), invitation = hash ? await staffInvitation(env, `invite:${hash}`, true) : null;
+  if (!hash || !invitation?.data) return invitationError('INVITATION_INVALID', 404);
   const data = invitation.data, status = data.status === 'pending' && !pendingAndUnexpired(data) ? 'expired' : String(data.status || 'unknown');
   const email = normalizeAuthorityEmail(data.email) || '';
-  return { success: true, invitation: { id: `invite:${hash}`, status, email: email.replace(/^(.{2}).*(@.*)$/, '$1•••$2'), role: invitationRole(data.role), createdAt: data.createdAt, expiresAt: data.expiresAt, invitedBy: data.invitedBy, deliveryStatus: data.deliveryStatus || 'requested', acceptedAt: data.acceptedAt, acceptedBy: data.acceptedBy, cancelledAt: data.cancelledAt, claimsStatus: status === 'accepted' ? 'synchronized' : 'not_ready' } };
+  return { success: true, invitation: { id: invitation.id, status, email: email.replace(/^(.{2}).*(@.*)$/, '$1•••$2'), role: invitationRole(data.role), createdAt: data.createdAt, expiresAt: data.expiresAt, invitedBy: data.invitedBy, deliveryStatus: data.deliveryStatus || 'requested', acceptedAt: data.acceptedAt, acceptedBy: data.acceptedBy, cancelledAt: data.cancelledAt, claimsStatus: status === 'accepted' ? 'synchronized' : 'not_ready' } };
 }
 
 async function ownership(req: Request, env: Env, user: AdminUser, operation: 'initiate' | 'accept' | 'cancel' | 'read') {
@@ -1971,6 +2053,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
     ((url.pathname === '/api/admin/session' && (user.role === 'super_admin' || user.permissionRole === 'super_admin')) ||
       (url.pathname === '/api/admin/owner-bootstrap' && (user.role === 'super_admin' || user.permissionRole === 'super_admin')));
   if (!bootstrapException) await requireAdmin(user, env);
+  else requireVerifiedAdmin(user);
   if (url.pathname === '/api/admin/session' && req.method === 'GET') return { success: true, uid: user.uid, role: user.permissionRole || user.role, bootstrapRequired: bootstrapException };
   if (url.pathname === '/api/admin/email-verification/reminder' && req.method === 'POST') return emailVerificationReminder(req, env, user);
   if (url.pathname === '/api/admin/email-verification/reminders/preview' && req.method === 'POST') return emailVerificationReminderPreview(req, env, user);
@@ -2063,7 +2146,8 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   if (url.pathname === '/api/admin/staff/invitations' && req.method === 'GET') {
     if (!can(user, 'staff.manage')) return { error: 'Staff management permission required', status: 403 };
     const result = await listCollection(env, 'staffInvitations', Object.fromEntries(url.searchParams.entries()), Math.min(50, Number(url.searchParams.get('limit') || 30)), url.searchParams.get('cursor'));
-    return { success: true, invitations: result.items, items: result.items, nextCursor: result.nextCursor };
+    const invitations = result.items.map(item => ({ ...item, status: item.status === 'pending' && !pendingAndUnexpired(item) ? 'expired' : item.status }));
+    return { success: true, invitations, items: invitations, nextCursor: result.nextCursor };
   }
   if ((url.pathname === '/api/admin/staff/invitations' || url.pathname === '/api/admin/staff/invite') && req.method === 'POST') return createStaffInvitation(req, env, user);
   if (url.pathname === '/api/admin/staff/revoke' && req.method === 'POST') return revokeStaffAuthority(req, env, user);

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { userErrorMessage } from '@/lib/error-messages';
 import { useLocation } from 'wouter';
 import { useAppState } from '@/lib/app-state';
 import { useAuth } from '@/lib/auth';
@@ -28,21 +29,13 @@ export default function AcceptInvite() {
 
   const acceptStaff = useAcceptStaffInvitation();
   const acceptOwnership = useAcceptOwnershipTransfer();
-  const firebaseError = (code?: string) => ({
-    'auth/invalid-credential': t('البريد أو كلمة المرور غير صحيحة.', 'The email or password is incorrect.'),
-    'auth/wrong-password': t('البريد أو كلمة المرور غير صحيحة.', 'The email or password is incorrect.'),
-    'auth/user-not-found': t('لا يوجد حساب بهذا البريد. يمكنك إنشاء حساب جديد.', 'No account exists for this email. You can create one.'),
-    'auth/email-already-in-use': t('يوجد حساب بهذا البريد. سجّل الدخول بدلاً من إنشاء حساب.', 'An account already exists for this email. Sign in instead.'),
-    'auth/weak-password': t('اختر كلمة مرور أقوى من 6 أحرف.', 'Choose a password with at least 6 characters.'),
-    'auth/too-many-requests': t('محاولات كثيرة. انتظر قليلاً ثم أعد المحاولة.', 'Too many attempts. Wait a moment and try again.'),
-    'auth/network-request-failed': t('تعذر الاتصال. تحقق من الشبكة وأعد المحاولة.', 'Network error. Check your connection and try again.'),
-  }[code || ''] || t('تعذر إكمال العملية. تحقق من البيانات وأعد المحاولة.', 'Could not complete the operation. Check the details and try again.'));
+  const firebaseError = (code?: string) => userErrorMessage({ code }, language);
 
   // Parse token and type from URL
   const searchParams = new URLSearchParams(window.location.search);
   const token = searchParams.get('token');
   const type = searchParams.get('type') || 'staff';
-  const { data: invitationData, isLoading: invitationLoading } = usePublicStaffInvitationDetails(type === 'staff' ? token || undefined : undefined);
+  const { data: invitationData, isLoading: invitationLoading, error: invitationError } = usePublicStaffInvitationDetails(type === 'staff' ? token || undefined : undefined);
   const invitation = invitationData?.invitation;
 
   useEffect(() => {
@@ -94,8 +87,14 @@ export default function AcceptInvite() {
   const refreshVerification = async () => {
     const auth = getFirebaseAuth();
     if (!auth.currentUser) return;
-    await reload(auth.currentUser);
-    setVerificationSent(false);
+    try {
+      await reload(auth.currentUser);
+      await refreshClaims();
+      setVerificationSent(false);
+      toast({ title: auth.currentUser.emailVerified ? t('تم توثيق البريد الإلكتروني', 'Email verified') : t('لم يتم التوثيق بعد', 'Email is not verified yet') });
+    } catch (error) {
+      toast({ title: t('تعذر تحديث التوثيق', 'Could not refresh verification'), description: userErrorMessage(error, language), variant: 'destructive' });
+    }
   };
 
   const resetPassword = async () => {
@@ -112,7 +111,7 @@ export default function AcceptInvite() {
   };
 
   const handleAccept = async () => {
-    if (!token) return;
+    if (!token || (type === 'staff' && (!invitation || invitation.status !== 'pending'))) return;
     
     const mutation = type === 'ownership' ? acceptOwnership : acceptStaff;
     
@@ -120,12 +119,17 @@ export default function AcceptInvite() {
       onSuccess: async () => {
         setClaimsPending(false);
         let claimsReady = false;
+        try {
         for (let attempt = 0; attempt < 10; attempt += 1) {
           await refreshClaims();
           const current = getFirebaseAuth().currentUser;
           const claims = current ? (await current.getIdTokenResult(true)).claims : {};
           if (claims.adminRole || claims.role || claims.staffRole) { claimsReady = true; break; }
           await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        } catch {
+          // Acceptance succeeded; token refresh failure is not acceptance failure.
+          claimsReady = false;
         }
         if (!claimsReady) {
           setClaimsPending(true);
@@ -136,8 +140,7 @@ export default function AcceptInvite() {
         setLocation('/');
       },
       onError: (err: any) => {
-        const message = String(err?.message || '').toLowerCase();
-        toast({ title: t('تعذر قبول الدعوة', 'Could not accept invitation'), description: message.includes('expired') ? t('انتهت صلاحية هذه الدعوة. اطلب من مسؤول Heavyar إرسال دعوة جديدة.', 'This invitation has expired. Ask a Heavyar administrator to send a new invitation.') : message.includes('cancel') ? t('تم إلغاء هذه الدعوة.', 'This invitation was cancelled.') : message.includes('already') || message.includes('accepted') ? t('تم قبول هذه الدعوة مسبقًا.', 'This invitation was already accepted.') : message.includes('account') || message.includes('email') ? t('تم إرسال هذه الدعوة إلى بريد إلكتروني مختلف. يرجى تسجيل الدخول بالحساب الذي استلم الدعوة.', 'This invitation was sent to a different email address. Please sign in using the account that received the invitation.') : t('تعذر إكمال العملية. تحقق من الحساب وحاول مرة أخرى.', 'Could not complete the operation. Check the account and try again.'), variant: 'destructive' });
+        toast({ title: t('تعذر قبول الدعوة', 'Could not accept invitation'), description: userErrorMessage(err, language), variant: 'destructive' });
       }
     });
   };
@@ -155,10 +158,11 @@ export default function AcceptInvite() {
           <p className="text-muted-foreground">
             {t('يرجى التحقق من هويتك لقبول هذه الدعوة.', 'Please verify your identity to accept this invitation.')}
           </p>
+          {invitationError && <p role="alert" className="mt-4 text-sm text-destructive">{userErrorMessage(invitationError, language)}</p>}
           {invitation && <div className="mt-4 rounded-lg bg-muted/50 p-3 text-start text-sm">
             <div>{t('البريد المدعو', 'Invited email')}: <strong dir="ltr">{invitation.maskedEmail || invitation.email}</strong></div>
             <div>{t('الدور', 'Role')}: <strong>{invitation.role}</strong></div>
-            <div>{t('الحالة', 'Status')}: <strong>{invitation.status}</strong></div>
+            <div>{t('الحالة', 'Status')}: <strong>{invitation.status === 'pending' ? t('معلقة', 'Pending') : invitation.status === 'accepted' ? t('مقبولة', 'Accepted') : invitation.status === 'expired' ? t('منتهية', 'Expired') : t('ملغاة', 'Cancelled')}</strong></div>
             {invitation.expiresAt && <div>{t('تنتهي في', 'Expires')}: <strong>{new Date(invitation.expiresAt).toLocaleString()}</strong></div>}
           </div>}
         </div>
@@ -207,7 +211,7 @@ export default function AcceptInvite() {
                 <Button onClick={sendVerification} className="w-full" variant="outline">{verificationSent ? t('تم الإرسال، تحقق من بريدك', 'Sent — check your inbox') : t('إرسال رسالة التحقق', 'Send verification email')}</Button>
                 <Button onClick={refreshVerification} className="w-full" variant="secondary">{t('تحققت من البريد — تحديث', 'I verified — refresh')}</Button>
               </div>
-            ) : <Button onClick={handleAccept} className="w-full" disabled={acceptStaff.isPending || acceptOwnership.isPending}>
+            ) : <Button onClick={handleAccept} className="w-full" disabled={acceptStaff.isPending || acceptOwnership.isPending || (type === 'staff' && (!invitation || invitation.status !== 'pending'))}>
               {(acceptStaff.isPending || acceptOwnership.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {t('قبول وتفعيل الحساب', 'Accept & Activate Account')}
             </Button>}

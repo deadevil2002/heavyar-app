@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import { Loader2, MailCheck, AlertTriangle } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { useRemindersPreview, useRemindersBulk, useSendReminder, type User } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
+import { userErrorMessage } from '@/lib/error-messages';
 
 type Props = {
   open: boolean;
@@ -22,7 +22,6 @@ export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, se
   const { language } = useAppState();
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
   const { toast } = useToast();
-  const queryClient = useQueryClient();
 
   const previewMut = useRemindersPreview();
   const bulkMut = useRemindersBulk();
@@ -43,7 +42,7 @@ export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, se
         previewMut.mutateAsync(payload)
           .then(setPreview)
           .catch(err => {
-            toast({ title: t('خطأ', 'Error'), description: err.message, variant: 'destructive' });
+            toast({ title: t('تعذر معاينة التذكير', 'Could not preview reminders'), description: userErrorMessage(err, language), variant: 'destructive' });
             onOpenChange(false);
           })
           .finally(() => setLoading(false));
@@ -54,18 +53,19 @@ export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, se
       setPreview(null);
       setResult(null);
     }
-  }, [open, targetUser, selectedIds, selectAllMatching, accountScope]);
+  // Snapshot the selection on opening. Clearing the parent's selection after a
+  // successful bulk request must not erase the visible result or reload preview.
+  }, [open]);
 
   const handleConfirm = async () => {
     try {
       if (targetUser) {
         const res = await singleMut.mutateAsync(targetUser.id);
         if (res.sent) {
-          toast({ title: t('تم إرسال التذكير', 'Reminder sent') });
+          toast({ title: t('تم إرسال طلب التذكير بنجاح.', 'Reminder request submitted.') });
         } else if (res.alreadyVerified) {
           toast({ title: t('هذا الحساب موثق بالفعل', 'This account is already verified'), variant: 'destructive' });
         }
-        queryClient.invalidateQueries({ queryKey: ['users'] });
         onSuccess();
         onOpenChange(false);
       } else {
@@ -74,18 +74,18 @@ export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, se
           : { scope: accountScope, uids: Array.from(selectedIds) };
         const res = await bulkMut.mutateAsync(payload);
         setResult(res);
-        queryClient.invalidateQueries({ queryKey: ['users'] });
+        toast({ title: t('اكتملت معالجة طلبات التذكير', 'Reminder requests processed') });
         onSuccess();
       }
     } catch (err: any) {
-      toast({ title: t('خطأ', 'Error'), description: err.message, variant: 'destructive' });
+      toast({ title: t('تعذر طلب التذكير', 'Could not request reminder'), description: userErrorMessage(err, language), variant: 'destructive' });
     }
   };
 
   const isPending = singleMut.isPending || bulkMut.isPending;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={value => { if (!isPending) onOpenChange(value); }}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t('إرسال تذكير التحقق', 'Send verification reminder')}</DialogTitle>
