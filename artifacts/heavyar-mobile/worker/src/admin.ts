@@ -122,6 +122,41 @@ async function rawDoc(env: Env, collection: string, id: string): Promise<RawDoc 
   return response ? { data: decode(response), updateTime: response.updateTime, name: response.name } : null;
 }
 
+async function priorResendEvent(env: Env, providerMessageId: string) {
+  if (!providerMessageId) return null;
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'resendWebhookEvents' }],
+    where: { fieldFilter: { field: { fieldPath: 'providerMessageId' }, op: 'EQUAL', value: jsonValue(providerMessageId) } },
+    limit: 20,
+  } }) }) as any[] || [];
+  const allowed = new Set(['accepted', 'delivered', 'bounced', 'complained', 'failed']);
+  return rows.flatMap(row => row.document ? [decode(row.document)] : [])
+    .filter(event => event.providerMessageId === providerMessageId && allowed.has(String(event.status)))
+    .sort((a, b) => Date.parse(String(b.eventAt || b.processedAt || '')) - Date.parse(String(a.eventAt || a.processedAt || '')))[0] || null;
+}
+
+async function reconcileResendProjection(env: Env, collection: 'emailVerificationRateLimits' | 'staffInvitations', id: string, providerMessageId: string) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const event = await priorResendEvent(env, providerMessageId);
+    if (!event) return null;
+    const record = await rawDoc(env, collection, id);
+    if (!record?.updateTime || record.data.providerMessageId !== providerMessageId) return null;
+    const eventTime = Date.parse(String(event.eventAt || event.processedAt || ''));
+    const projectedTime = Date.parse(String(record.data.deliveryEventAt || ''));
+    const projectedFinal = ['delivered', 'bounced', 'failed', 'complained'].includes(String(record.data.deliveryStatus));
+    if (!Number.isFinite(eventTime) || Number.isFinite(projectedTime) && (eventTime < projectedTime || eventTime === projectedTime && event.status === record.data.deliveryStatus) ||
+        event.status === 'accepted' && projectedFinal) return record.data.deliveryStatus || null;
+    const fields = { deliveryStatus: jsonValue(event.status), deliveryEventAt: { timestampValue: new Date(eventTime).toISOString() }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() } };
+    try {
+      await commit(env, [{ update: { name: fullName(env, `${collection}/${id}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: record.updateTime } }]);
+      return event.status;
+    } catch (error) {
+      if (!(error instanceof FirestoreConflictError)) throw error;
+    }
+  }
+  return null;
+}
+
 async function commit(env: Env, writes: unknown[]) {
   if (commitOverride) { commitOverride.push(writes); return; }
   const safeWrites = (writes as any[]).map(write => String(write?.update?.name || '').includes('/notificationOutbox/')
@@ -554,12 +589,14 @@ async function emailVerificationReminder(req: Request, env: Env, user: AdminUser
     } catch { delivered = false; }
   }
   const nowIso = new Date(now).toISOString();
-  const communicationStatus = providerAccepted ? 'accepted' : delivered ? 'accepted' : 'failed';
+  const reconciled = providerAccepted ? await priorResendEvent(env, providerMessageId) : null;
+  const communicationStatus = reconciled?.status || (providerAccepted ? 'accepted' : delivered ? 'accepted' : 'failed');
   const writes: any[] = [await auditWrite(env, user, 'email_verification_reminder', 'user', uid, crypto.randomUUID(), providerAccepted || delivered ? 'verification reminder requested' : 'verification reminder delivery unavailable', undefined, { status: communicationStatus, delivered, deliveryOutcome, ...(providerMessageId ? { providerMessageId } : {}) })];
   writes.unshift({ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(uid)}`), fields: delivered || providerAccepted
-     ? { uid: jsonValue(uid), lastSentAt: { timestampValue: nowIso }, nextAllowedAt: { timestampValue: new Date(now + cooldownSeconds * 1000).toISOString() }, count: { integerValue: String(Number(rate?.data?.count || 0) + 1) }, deliveryStatus: jsonValue(communicationStatus), providerMessageId: jsonValue(providerMessageId || null), reservationToken: { nullValue: null }, reservationUntil: { nullValue: null } }
-     : { reservationToken: { nullValue: null }, reservationUntil: { nullValue: null } } }, updateMask: { fieldPaths: delivered || providerAccepted ? ['uid', 'lastSentAt', 'nextAllowedAt', 'count', 'deliveryStatus', 'providerMessageId', 'reservationToken', 'reservationUntil'] : ['reservationToken', 'reservationUntil'] }, currentDocument: reservedRate?.updateTime ? { updateTime: reservedRate.updateTime } : undefined });
+     ? { uid: jsonValue(uid), lastSentAt: { timestampValue: nowIso }, nextAllowedAt: { timestampValue: new Date(now + cooldownSeconds * 1000).toISOString() }, count: { integerValue: String(Number(rate?.data?.count || 0) + 1) }, deliveryStatus: jsonValue(communicationStatus), providerMessageId: jsonValue(providerMessageId || null), deliveryEventAt: reconciled?.eventAt ? { timestampValue: reconciled.eventAt } : { nullValue: null }, reservationToken: { nullValue: null }, reservationUntil: { nullValue: null } }
+     : { reservationToken: { nullValue: null }, reservationUntil: { nullValue: null } } }, updateMask: { fieldPaths: delivered || providerAccepted ? ['uid', 'lastSentAt', 'nextAllowedAt', 'count', 'deliveryStatus', 'providerMessageId', 'deliveryEventAt', 'reservationToken', 'reservationUntil'] : ['reservationToken', 'reservationUntil'] }, currentDocument: reservedRate?.updateTime ? { updateTime: reservedRate.updateTime } : undefined });
   await commit(env, writes);
+  if (providerAccepted) await reconcileResendProjection(env, 'emailVerificationRateLimits', uid, providerMessageId);
    if (!providerAccepted && !delivered) return { error: 'Verification email delivery failed', status: 502, deliveryOutcome };
    return { success: true, sent: true, requested: true, accepted: providerAccepted || delivered, delivered: false, deliveryStatus: communicationStatus, deliveryOutcome, ...(providerMessageId ? { providerMessageId } : {}) };
 }
@@ -1817,7 +1854,10 @@ async function createStaffInvitation(req: Request, env: Env, user: AdminUser) {
   ]);
   try {
     const providerMessageId = await sendAuthorityInvitation(env, email, token, 'staff', expiresAt, 'دعوة للانضمام إلى فريق Heavyar / Heavyar staff invitation', 'دعوة للانضمام إلى فريق Heavyar. You have been invited to Heavyar staff access.');
-    await commit(env, [{ update: { name: fullName(env, `staffInvitations/${id}`), fields: { deliveryStatus: jsonValue('accepted'), providerMessageId: jsonValue(providerMessageId || null), deliveryAcceptedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['deliveryStatus', 'providerMessageId', 'deliveryAcceptedAt'] } }]);
+    const reconciled = await priorResendEvent(env, providerMessageId);
+    const fields = { deliveryStatus: jsonValue(reconciled?.status || 'accepted'), providerMessageId: jsonValue(providerMessageId || null), deliveryAcceptedAt: { timestampValue: new Date().toISOString() }, deliveryEventAt: reconciled?.eventAt ? { timestampValue: reconciled.eventAt } : { nullValue: null } };
+    await commit(env, [{ update: { name: fullName(env, `staffInvitations/${id}`), fields }, updateMask: { fieldPaths: Object.keys(fields) } }]);
+    await reconcileResendProjection(env, 'staffInvitations', id, providerMessageId);
   } catch {
     // The invitation cannot become an untracked delivery.  It remains pending
     // only for the documented expiry period and administrators can revoke it.
@@ -1891,17 +1931,20 @@ async function resendStaffInvitation(req: Request, env: Env, user: AdminUser) {
   const now = new Date().toISOString();
   try {
     const providerMessageId = await sendAuthorityInvitation(env, String(invitation.data.email), token, 'staff', String(invitation.data.expiresAt), 'دعوة للانضمام إلى فريق Heavyar / Heavyar staff invitation', 'دعوة للانضمام إلى فريق Heavyar. You have been invited to Heavyar staff access.');
+    const reconciled = await priorResendEvent(env, providerMessageId);
     await commit(env, [
       { update: { name: invitation.name, fields: { status: jsonValue('cancelled'), supersededBy: jsonValue(nextId), cancelledAt: { timestampValue: now }, cancelledBy: jsonValue(user.uid), cancellationReason: jsonValue('Superseded by a new invitation') } }, updateMask: { fieldPaths: ['status', 'supersededBy', 'cancelledAt', 'cancelledBy', 'cancellationReason'] }, currentDocument: { updateTime: invitation.updateTime } },
       { update: { name: fullName(env, `staffInvitations/${nextId}`), fields: {
         email: jsonValue(invitation.data.email), role: jsonValue(invitation.data.role), invitedBy: jsonValue(user.uid),
         expiresAt: { timestampValue: invitation.data.expiresAt }, status: jsonValue('pending'), createdAt: { timestampValue: now },
-        deliveryStatus: jsonValue('accepted'), deliveryAcceptedAt: { timestampValue: now }, providerMessageId: jsonValue(providerMessageId || null),
+        deliveryStatus: jsonValue(reconciled?.status || 'accepted'), deliveryAcceptedAt: { timestampValue: now }, providerMessageId: jsonValue(providerMessageId || null),
+        deliveryEventAt: reconciled?.eventAt ? { timestampValue: reconciled.eventAt } : { nullValue: null },
         resendCount: { integerValue: String(Number(invitation.data.resendCount || 0) + 1) },
       } }, currentDocument: { exists: false } },
       await auditWrite(env, user, 'staff_invite_resent', 'staffInvitation', nextId, crypto.randomUUID(), 'staff invitation resent',
         { invitationId: invitation.id, status: 'pending' }, { invitationId: nextId, status: 'pending', supersedes: invitation.id }),
     ]);
+    await reconcileResendProjection(env, 'staffInvitations', nextId, providerMessageId);
     return { success: true, invitationId: nextId, deliveryStatus: 'accepted' };
   } catch (error) {
     if (error instanceof FirestoreConflictError) return invitationError('INVITATION_CONFLICT', 409);

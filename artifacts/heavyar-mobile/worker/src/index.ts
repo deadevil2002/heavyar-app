@@ -148,37 +148,110 @@ async function createDoc(env: Env, path: string, fields: Record<string, unknown>
   if (firestoreWrites) { firestoreWrites.push({ path: `${path}?currentDocument.exists=false`, fields }); return null; }
   return fs(env, `${path}?currentDocument.exists=false`, { method: 'PATCH', body: JSON.stringify({ fields }) });
 }
+function standardBase64Bytes(value: string): Uint8Array | null {
+  if (!value || value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return null;
+  try {
+    const decoded = Uint8Array.from(atob(value), char => char.charCodeAt(0));
+    return btoa(String.fromCharCode(...decoded)) === value ? decoded : null;
+  } catch { return null; }
+}
+function webhookSecretBytes(value: string): Uint8Array | null {
+  const raw = value.replace(/^whsec_/, '');
+  const standard = raw.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = standard + '='.repeat((4 - standard.length % 4) % 4);
+  return standardBase64Bytes(padded);
+}
+function constantTimeBytesEqual(expected: Uint8Array, supplied: Uint8Array): boolean {
+  let difference = expected.length ^ supplied.length;
+  for (let i = 0; i < expected.length; i++) difference |= expected[i] ^ (supplied[i] || 0);
+  return difference === 0;
+}
 async function resendWebhook(req: Request, env: Env) {
   if (!env.RESEND_WEBHOOK_SECRET) return out(env, req, { success: false, error: 'Webhook not configured' }, 503);
   const body = await req.text(), id = req.headers.get('svix-id') || '', timestamp = req.headers.get('svix-timestamp') || '', supplied = req.headers.get('svix-signature') || '';
-  if (!id || !timestamp || !supplied || Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return out(env, req, { success: false, error: 'Invalid webhook signature' }, 401);
-  const secret = env.RESEND_WEBHOOK_SECRET.replace(/^whsec_/, '');
-  let key: Uint8Array;
-  try { key = Uint8Array.from(atob(secret.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)); } catch { return out(env, req, { success: false, error: 'Invalid webhook configuration' }, 503); }
-  const signature = b64u(await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', new Uint8Array(key).buffer as ArrayBuffer, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), enc.encode(`${id}.${timestamp}.${body}`)));
-  if (!supplied.split(' ').some(value => value === `v1,${signature}`)) return out(env, req, { success: false, error: 'Invalid webhook signature' }, 401);
-  const event: any = JSON.parse(body);
-  const eventId = id.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 100);
-  const type = String(event?.type || '').toLowerCase();
-  const status = type.includes('delivered') ? 'delivered' : type.includes('bounce') ? 'bounced' : type.includes('failed') ? 'failed' : type.includes('complain') ? 'complained' : type.includes('sent') ? 'accepted' : 'received';
-  const providerMessageId = String(event?.data?.email_id || event?.data?.id || '');
-  if (providerMessageId) {
-    const writes: any[] = [];
-    for (const collection of ['emailVerificationRateLimits', 'staffInvitations']) {
-      const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where: { fieldFilter: { field: { fieldPath: 'providerMessageId' }, op: 'EQUAL', value: { stringValue: providerMessageId } } }, limit: 20 } }) }) as any[] || [];
-      for (const row of rows.filter((item: any) => item.document)) {
-        const prior = decode(row.document).deliveryStatus;
-        if (['delivered', 'bounced', 'failed', 'complained'].includes(String(prior)) && status === 'accepted') continue;
-        writes.push({ update: { name: row.document.name, fields: { deliveryStatus: { stringValue: status }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['deliveryStatus', 'deliveryUpdatedAt'] }, currentDocument: row.document.updateTime ? { updateTime: row.document.updateTime } : undefined });
-      }
-    }
-    if (writes.length) await commitWrites(env, writes);
+  const numericTimestamp = Number(timestamp);
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || !/^\d{1,16}$/.test(timestamp) || !Number.isFinite(numericTimestamp) ||
+      !Number.isInteger(numericTimestamp) || Math.abs(Date.now() / 1000 - numericTimestamp) > 300 || !supplied) {
+    return out(env, req, { success: false, error: 'Invalid webhook signature' }, 401);
   }
-  // Mark the event processed only after every matching communication record
-  // projection commits. A retry can therefore safely complete an interrupted
-  // projection instead of being hidden by an early event marker.
-  await fs(env, `resendWebhookEvents/${encodeURIComponent(eventId)}`, { method: 'PATCH', body: JSON.stringify({ fields: { status: { stringValue: status }, eventType: { stringValue: type }, providerMessageId: { stringValue: providerMessageId }, processed: { booleanValue: true }, processedAt: { timestampValue: new Date().toISOString() }, receivedAt: { timestampValue: new Date().toISOString() } } }) });
+  const secret = webhookSecretBytes(env.RESEND_WEBHOOK_SECRET);
+  if (!secret) return out(env, req, { success: false, error: 'Invalid webhook configuration' }, 503);
+  const expected = new Uint8Array(await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', new Uint8Array(secret).buffer as ArrayBuffer, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), enc.encode(`${id}.${timestamp}.${body}`)));
+  const signatures = supplied.trim().split(/\s+/).map(value => {
+    const match = /^v1,(.+)$/.exec(value);
+    return match ? standardBase64Bytes(match[1]) : null;
+  });
+  if (!signatures.some(signature => signature && constantTimeBytesEqual(expected, signature))) return out(env, req, { success: false, error: 'Invalid webhook signature' }, 401);
+
+  let event: any;
+  try { event = JSON.parse(body); } catch { return out(env, req, { success: false, error: 'Invalid webhook payload' }, 400); }
+  if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.type !== 'string') return out(env, req, { success: false, error: 'Invalid webhook payload' }, 400);
+  const statuses: Record<string, string> = {
+    'email.sent': 'accepted', 'email.delivered': 'delivered', 'email.bounced': 'bounced',
+    'email.complained': 'complained', 'email.failed': 'failed',
+  };
+  const type = event.type;
+  if (!Object.hasOwn(statuses, type)) return out(env, req, { success: true, ignored: true });
+  if (!event.data || typeof event.data !== 'object' || Array.isArray(event.data)) return out(env, req, { success: false, error: 'Invalid webhook payload' }, 400);
+  const rawProviderMessageId = event.data.email_id ?? event.data.id;
+  if (typeof rawProviderMessageId !== 'string' || !rawProviderMessageId || rawProviderMessageId.length > 512) return out(env, req, { success: false, error: 'Invalid webhook payload' }, 400);
+  const parsedEventTime = event.created_at === undefined ? numericTimestamp * 1000 : typeof event.created_at === 'string' ? Date.parse(event.created_at) : NaN;
+  if (!Number.isFinite(parsedEventTime)) return out(env, req, { success: false, error: 'Invalid webhook payload' }, 400);
+  const providerMessageId = rawProviderMessageId, status = statuses[type], eventAt = new Date(parsedEventTime).toISOString();
+  const markerPath = `resendWebhookEvents/${id}`, markerName = fullName(env, markerPath);
+  if (await fs(env, markerPath)) return out(env, req, { success: true, duplicate: true });
+
+  const writes: any[] = [];
+  for (const collection of ['emailVerificationRateLimits', 'staffInvitations']) {
+    const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where: { fieldFilter: { field: { fieldPath: 'providerMessageId' }, op: 'EQUAL', value: { stringValue: providerMessageId } } }, limit: 20 } }) }) as any[] || [];
+    for (const row of rows.filter((item: any) => item.document && decode(item.document).providerMessageId === providerMessageId)) {
+      const prior = decode(row.document), priorStatus = String(prior.deliveryStatus || ''), priorEventTime = Date.parse(String(prior.deliveryEventAt || ''));
+      const priorIsFinal = ['delivered', 'bounced', 'failed', 'complained'].includes(priorStatus);
+      if (status === 'accepted' && priorIsFinal || Number.isFinite(priorEventTime) && parsedEventTime < priorEventTime) continue;
+      writes.push({ update: { name: row.document.name, fields: { deliveryStatus: { stringValue: status }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() }, deliveryEventAt: { timestampValue: eventAt } } }, updateMask: { fieldPaths: ['deliveryStatus', 'deliveryUpdatedAt', 'deliveryEventAt'] }, currentDocument: row.document.updateTime ? { updateTime: row.document.updateTime } : undefined });
+    }
+  }
+  const processedAt = new Date().toISOString();
+  writes.push({ update: { name: markerName, fields: { status: { stringValue: status }, eventType: { stringValue: type }, providerMessageId: { stringValue: providerMessageId }, processed: { booleanValue: true }, processedAt: { timestampValue: processedAt }, receivedAt: { timestampValue: processedAt }, eventAt: { timestampValue: eventAt } } }, currentDocument: { exists: false } });
+  try {
+    await commitWrites(env, writes);
+  } catch (error) {
+    if (await fs(env, markerPath)) return out(env, req, { success: true, duplicate: true });
+    throw error;
+  }
   return out(env, req, { success: true });
+}
+async function priorResendWebhookEvent(env: Env, providerMessageId: string) {
+  if (!providerMessageId) return null;
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'resendWebhookEvents' }],
+    where: { fieldFilter: { field: { fieldPath: 'providerMessageId' }, op: 'EQUAL', value: { stringValue: providerMessageId } } },
+    limit: 20,
+  } }) }) as any[] || [];
+  const allowed = new Set(['accepted', 'delivered', 'bounced', 'complained', 'failed']);
+  return rows.flatMap(row => row.document ? [decode(row.document)] : [])
+    .filter(event => event.providerMessageId === providerMessageId && allowed.has(String(event.status)))
+    .sort((a, b) => Date.parse(String(b.eventAt || b.processedAt || '')) - Date.parse(String(a.eventAt || a.processedAt || '')))[0] || null;
+}
+async function reconcileResendWebhookProjection(env: Env, collection: 'emailVerificationRateLimits' | 'staffInvitations', id: string, providerMessageId: string) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const event = await priorResendWebhookEvent(env, providerMessageId);
+    if (!event) return;
+    const record = await getRawDoc(env, collection, id);
+    if (!record?.updateTime || record.data.providerMessageId !== providerMessageId) return;
+    const eventTime = Date.parse(String(event.eventAt || event.processedAt || ''));
+    const projectedTime = Date.parse(String(record.data.deliveryEventAt || ''));
+    const projectedFinal = ['delivered', 'bounced', 'failed', 'complained'].includes(String(record.data.deliveryStatus));
+    if (!Number.isFinite(eventTime) || Number.isFinite(projectedTime) && (eventTime < projectedTime || eventTime === projectedTime && event.status === record.data.deliveryStatus) ||
+        event.status === 'accepted' && projectedFinal) return;
+    const fields = { deliveryStatus: { stringValue: String(event.status) }, deliveryEventAt: { timestampValue: new Date(eventTime).toISOString() }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() } };
+    try {
+      await commitWrites(env, [{ update: { name: fullName(env, `${collection}/${encodeURIComponent(id)}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: record.updateTime } }]);
+      return;
+    } catch {
+      if (attempt === 1) throw new Error('Webhook reconciliation conflict');
+    }
+  }
 }
 async function hashedId(value: string): Promise<string> { return b64u(await crypto.subtle.digest('SHA-256', enc.encode(value))); }
 export type GccCountryCode = 'SA' | 'AE' | 'KW' | 'QA' | 'BH' | 'OM';
@@ -1503,8 +1576,10 @@ async function emailVerificationSend(req: Request, env: Env, u: User) {
   const policy = await emailVerificationPolicy(env);
   const language = account?.language === 'en' || account?.preferredLanguage === 'en' ? 'en' : 'ar';
   const delivery = await deliverEmailVerification(env, email, token, String(account?.nameEn || account?.nameAr || ''), language);
+  const reconciled = delivery.provider === 'resend' && delivery.messageId ? await priorResendWebhookEvent(env, delivery.messageId) : null;
   const cooldown = new Date(now + policy.reminderCooldownSeconds * 1000).toISOString();
-  await commitWrites(env, [{ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, lastSentAt: { timestampValue: new Date(now).toISOString() }, nextAllowedAt: { timestampValue: cooldown }, count: { integerValue: String(Number(prior?.count || 0) + 1) } } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } }, { update: { name: fullName(env, `emailVerificationEvents/${crypto.randomUUID()}`), fields: { uid: { stringValue: u.uid }, type: { stringValue: 'self_resend' }, delivery: { booleanValue: delivery.delivered }, provider: { stringValue: delivery.provider }, deliveryOutcome: { stringValue: delivery.outcome }, ...(delivery.messageId ? { providerMessageId: { stringValue: delivery.messageId } } : {}), createdAt: { timestampValue: new Date(now).toISOString() } } }, currentDocument: { exists: false } }]);
+  await commitWrites(env, [{ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, lastSentAt: { timestampValue: new Date(now).toISOString() }, nextAllowedAt: { timestampValue: cooldown }, count: { integerValue: String(Number(prior?.count || 0) + 1) }, ...(delivery.messageId ? { providerMessageId: { stringValue: delivery.messageId }, deliveryStatus: { stringValue: String(reconciled?.status || 'accepted') }, deliveryEventAt: reconciled?.eventAt ? { timestampValue: reconciled.eventAt } : { nullValue: null } } : {}) } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } }, { update: { name: fullName(env, `emailVerificationEvents/${crypto.randomUUID()}`), fields: { uid: { stringValue: u.uid }, type: { stringValue: 'self_resend' }, delivery: { booleanValue: delivery.delivered }, provider: { stringValue: delivery.provider }, deliveryOutcome: { stringValue: delivery.outcome }, ...(delivery.messageId ? { providerMessageId: { stringValue: delivery.messageId } } : {}), createdAt: { timestampValue: new Date(now).toISOString() } } }, currentDocument: { exists: false } }]);
+  if (delivery.provider === 'resend' && delivery.messageId) await reconcileResendWebhookProjection(env, 'emailVerificationRateLimits', u.uid, delivery.messageId);
   return out(env, req, { success: delivery.delivered, accepted: true, deliveryStatus: delivery.delivered ? 'sent' : 'delivery_unavailable', provider: delivery.provider }, delivery.delivered ? 202 : 503);
 }
 async function emailVerificationStatus(req: Request, env: Env, u: User) {

@@ -136,6 +136,44 @@ describe('invitation HTTP and Firestore resource contract', () => {
     }
   });
 
+  test('invitation reconciles a webhook arriving between the canonical event read and sender persistence', async () => {
+    const eventAt = new Date().toISOString();
+    beforeCommit = writes => {
+      if (writes.some(write => write.update?.fields?.providerMessageId?.stringValue === 'new-message')) {
+        beforeCommit = undefined;
+        put('resendWebhookEvents/msg-prearrival', { status: 'delivered', eventType: 'email.delivered', providerMessageId: 'new-message', eventAt, processedAt: eventAt });
+      }
+    };
+    const response = await worker.fetch(request('/api/admin/staff/invitations', { email: 'recipient@example.test', role: 'support' }), { ...env, RESEND_API_KEY: 'fixture-only' });
+    expect(response.status).toBe(200);
+    const invitationId = (await response.json() as any).invitationId;
+    const invitation = docs.get(`${prefix}staffInvitations/${invitationId}`).fields;
+    expect(invitation.providerMessageId.stringValue).toBe('new-message');
+    expect(invitation.deliveryStatus.stringValue).toBe('delivered');
+    expect(invitation.deliveryEventAt.timestampValue).toBe(eventAt);
+    expect(invitation.role.stringValue).toBe('support');
+  });
+
+  test('a new reminder clears delivery ordering from the previous provider message', async () => {
+    put('users/reminder-user', { email: 'recipient@example.test', emailVerified: false });
+    put('emailVerificationRateLimits/reminder-user', {
+      uid: 'reminder-user', providerMessageId: 'old-message', deliveryStatus: 'bounced',
+      deliveryEventAt: '2026-01-01T00:00:00.000Z', nextAllowedAt: '2025-01-01T00:00:00.000Z',
+    });
+    const fixtureFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'identitytoolkit.googleapis.com') return Response.json({ oobLink: 'https://worker.test/verify' });
+      return fixtureFetch(input, init);
+    }) as typeof fetch;
+    const response = await worker.fetch(request('/api/admin/email-verification/reminder', { uid: 'reminder-user' }), { ...env, RESEND_API_KEY: 'fixture-only' });
+    expect(response.status).toBe(200);
+    const reminder = docs.get(`${prefix}emailVerificationRateLimits/reminder-user`).fields;
+    expect(reminder.providerMessageId.stringValue).toBe('new-message');
+    expect(reminder.deliveryStatus.stringValue).toBe('accepted');
+    expect(reminder.deliveryEventAt.nullValue).toBe(null);
+  });
+
   test('production-shaped UUID list identity beats data.id and survives CAS cancellation and audit', async () => {
     put(`staffInvitations/${uuidLegacyId}`, pending({ id: 'shadowed-business-id' }));
     const list = await worker.fetch(request('/api/admin/staff/invitations'), env);
@@ -331,7 +369,7 @@ describe('invitation HTTP and Firestore resource contract', () => {
     for (const type of ['email.sent', 'email.delivered', 'email.bounced', 'email.complained', 'email.failed']) {
       const eventId = `test-${type.replace('.', '-')}`, timestamp = String(Math.floor(Date.now() / 1000));
       const body = JSON.stringify({ type, data: { email_id: 'historical-message', status: 'accepted', role: 'owner' } });
-      const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${eventId}.${timestamp}.${body}`))))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${eventId}.${timestamp}.${body}`)))));
       const response = await worker.fetch(new Request('https://worker.test/api/webhooks/resend', {
         method: 'POST', headers: { 'svix-id': eventId, 'svix-timestamp': timestamp, 'svix-signature': `v1,${signature}` }, body,
       }), { ...env, RESEND_WEBHOOK_SECRET: `whsec_${secret}` });
@@ -340,9 +378,100 @@ describe('invitation HTTP and Firestore resource contract', () => {
       expect(doc.fields.status.stringValue).toBe('cancelled');
       expect(doc.fields.role.stringValue).toBe('support');
     }
-    expect(commits.every(batch => batch.every(write =>
-      write.updateMask.fieldPaths.every((field: string) => ['deliveryStatus', 'deliveryUpdatedAt'].includes(field))))).toBe(true);
+    expect(commits.every(batch => batch.filter(write => !write.update.name.includes('/resendWebhookEvents/')).every(write =>
+      write.updateMask.fieldPaths.every((field: string) => ['deliveryStatus', 'deliveryUpdatedAt', 'deliveryEventAt'].includes(field))))).toBe(true);
+    expect(commits.every(batch => batch.at(-1).currentDocument.exists === false)).toBe(true);
     expect([...docs.keys()].some(name => name.includes('/staffMembers/'))).toBe(false);
+  });
+
+  test('Resend webhook uses standard Base64, strict validation, and atomic replay-safe projection', async () => {
+    put('emailVerificationRateLimits/reminder', { uid: 'reminder', deliveryStatus: 'accepted', providerMessageId: 'shared-message' });
+    put(`staffInvitations/${legacyId}`, pending({ status: 'cancelled', providerMessageId: 'shared-message' }));
+    const secretBytes = new TextEncoder().encode('standard-base64-webhook-key');
+    const secret = btoa(String.fromCharCode(...secretBytes));
+    const key = await crypto.subtle.importKey('raw', secretBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const body = JSON.stringify({ type: 'email.delivered', created_at: new Date(Number(timestamp) * 1000).toISOString(), data: { email_id: 'shared-message' } });
+    const sign = async (eventId: string, time = timestamp, payload = body) =>
+      btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${eventId}.${time}.${payload}`)))));
+    let eventId = '', signature = '';
+    for (let attempt = 0; attempt < 10000; attempt++) {
+      eventId = `msg_standard_${attempt}`;
+      signature = await sign(eventId);
+      if (signature.includes('+') && signature.includes('/') && signature.endsWith('=')) break;
+    }
+    expect(signature.includes('+') && signature.includes('/') && signature.endsWith('=')).toBe(true);
+    const send = (idValue = eventId, time = timestamp, payload = body, supplied = `v1,invalid== v1,${signature}`) =>
+      worker.fetch(new Request('https://worker.test/api/webhooks/resend', {
+        method: 'POST', headers: { 'svix-id': idValue, 'svix-timestamp': time, 'svix-signature': supplied }, body: payload,
+      }), { ...env, RESEND_WEBHOOK_SECRET: `whsec_${secret}` });
+
+    expect((await send()).status).toBe(200);
+    expect(commits.length).toBe(1);
+    expect(commits[0].length).toBe(3);
+    for (const path of ['emailVerificationRateLimits/reminder', `staffInvitations/${legacyId}`]) {
+      const projected = docs.get(prefix + path);
+      expect(projected.fields.deliveryStatus.stringValue).toBe('delivered');
+      expect(projected.fields.status?.stringValue).toBe(path.startsWith('staff') ? 'cancelled' : undefined);
+    }
+    const firstUpdatedAt = docs.get(`${prefix}staffInvitations/${legacyId}`).fields.deliveryUpdatedAt.timestampValue;
+    expect((await send()).status).toBe(200);
+    expect(commits.length).toBe(1);
+    expect(docs.get(`${prefix}staffInvitations/${legacyId}`).fields.deliveryUpdatedAt.timestampValue).toBe(firstUpdatedAt);
+
+    const oldBody = JSON.stringify({ type: 'email.bounced', created_at: new Date((Number(timestamp) - 60) * 1000).toISOString(), data: { email_id: 'shared-message' } });
+    const oldId = 'msg_older_terminal';
+    expect((await send(oldId, timestamp, oldBody, `v1,${await sign(oldId, timestamp, oldBody)}`)).status).toBe(200);
+    const sentBody = JSON.stringify({ type: 'email.sent', created_at: new Date((Number(timestamp) + 1) * 1000).toISOString(), data: { email_id: 'shared-message' } });
+    const sentId = 'msg_late_sent';
+    expect((await send(sentId, timestamp, sentBody, `v1,${await sign(sentId, timestamp, sentBody)}`)).status).toBe(200);
+    expect(docs.get(`${prefix}staffInvitations/${legacyId}`).fields.deliveryStatus.stringValue).toBe('delivered');
+
+    const concurrentBody = JSON.stringify({ type: 'email.complained', created_at: new Date((Number(timestamp) + 2) * 1000).toISOString(), data: { email_id: 'shared-message' } });
+    const concurrentId = 'msg_concurrent';
+    const concurrentSignature = `v1,${await sign(concurrentId, timestamp, concurrentBody)}`;
+    const concurrent = await Promise.all([
+      send(concurrentId, timestamp, concurrentBody, concurrentSignature),
+      send(concurrentId, timestamp, concurrentBody, concurrentSignature),
+    ]);
+    expect(concurrent.every(response => response.status === 200)).toBe(true);
+    expect(docs.get(`${prefix}staffInvitations/${legacyId}`).fields.deliveryStatus.stringValue).toBe('complained');
+    expect(commits.length).toBe(4);
+
+    const badCases: Array<[string, string, string, string]> = [
+      ['bad/id', timestamp, body, `v1,${await sign('bad/id')}`],
+      ['msg_nan', 'NaN', body, `v1,${await sign('msg_nan', 'NaN')}`],
+      ['msg_stale', String(Number(timestamp) - 301), body, `v1,${await sign('msg_stale', String(Number(timestamp) - 301))}`],
+      ['msg_tampered', timestamp, body, `v1,${signature.slice(0, -2)}AA`],
+    ];
+    for (const [badId, badTime, badBody, badSignature] of badCases) expect((await send(badId, badTime, badBody, badSignature)).status).toBe(401);
+    expect(commits.length).toBe(4);
+
+    const unsupportedBody = JSON.stringify({ type: 'email.opened', data: { email_id: 'shared-message' } });
+    const unsupportedId = 'msg_unsupported';
+    expect((await send(unsupportedId, timestamp, unsupportedBody, `v1,${await sign(unsupportedId, timestamp, unsupportedBody)}`)).status).toBe(200);
+    expect(commits.length).toBe(4);
+  });
+
+  test('Resend webhook commit failure is atomic and safely retryable', async () => {
+    put(`staffInvitations/${legacyId}`, pending({ status: 'cancelled' }));
+    const secretBytes = new TextEncoder().encode('retryable-webhook-key');
+    const secret = btoa(String.fromCharCode(...secretBytes));
+    const key = await crypto.subtle.importKey('raw', secretBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const eventId = 'msg_retryable', timestamp = String(Math.floor(Date.now() / 1000));
+    const body = JSON.stringify({ type: 'email.bounced', data: { email_id: 'historical-message' } });
+    const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${eventId}.${timestamp}.${body}`)))));
+    const send = () => worker.fetch(new Request('https://worker.test/api/webhooks/resend', {
+      method: 'POST', headers: { 'svix-id': eventId, 'svix-timestamp': timestamp, 'svix-signature': `v1,${signature}` }, body,
+    }), { ...env, RESEND_WEBHOOK_SECRET: `whsec_${secret}` });
+    beforeCommit = () => Response.json({ error: { status: 'UNAVAILABLE' } }, { status: 503 });
+    expect((await send()).status).toBe(500);
+    expect(docs.get(`${prefix}staffInvitations/${legacyId}`).fields.deliveryStatus.stringValue).toBe('delivered');
+    expect(docs.has(`${prefix}resendWebhookEvents/${eventId}`)).toBe(false);
+    beforeCommit = undefined;
+    expect((await send()).status).toBe(200);
+    expect(docs.get(`${prefix}staffInvitations/${legacyId}`).fields.deliveryStatus.stringValue).toBe('bounced');
+    expect(commits.length).toBe(1);
   });
 
   test('token acceptance resolves legacy identity and cannot accept cancelled or expired invites', async () => {

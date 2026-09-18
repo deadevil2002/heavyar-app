@@ -9,8 +9,8 @@ As of 2026-09-18, the app-scoped production Worker authenticates successfully wi
 
 **How to apply:** Keep Resend as the branded primary delivery path, restrict senders to the verified `mail.heavyar.com` domain, and retain Firebase delivery fallback without introducing custom verification or reset tokens.
 
-The signed delivery-feedback endpoint is deployed, but as of 2026-09-18 production does not bind `RESEND_WEBHOOK_SECRET`.
+As of 2026-09-18, the existing production webhook has a signing-secret binding and has processed real Resend sent and delivered events. A single delivery-simulator reminder updated Admin through normal polling without changing email verification or provider approval.
 
 **Why:** Provider acceptance is not proof of delivery; delivered, bounced, complained, and failed states require verified Resend webhook events.
 
-**How to apply:** Configure the Resend webhook against the deployed endpoint and add the signing secret through the Worker secret store, never through chat or source control.
+**How to apply:** Preserve the owner's existing webhook URL, event subscriptions, DNS, and sender settings. Do not create another webhook. Verify delivery using canonical signed receipts, not only the send API response; use Resend's documented delivery simulator for safe QA.
