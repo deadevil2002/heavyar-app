@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAppState } from '@/lib/app-state';
 import { Checkbox } from '@/components/ui/checkbox';
+import { candidatePageEmptyLabel } from '@/lib/operations-contract';
 
 export type OperationsColumn<T> = {
   key: string;
@@ -65,7 +66,7 @@ export function OperationsTable<T extends { id: string }>({
   const rtl = language === 'ar';
   const t = (ar: string, en: string) => rtl ? ar : en;
   const resolvedSearchPlaceholder = searchPlaceholder || t('بحث…', 'Search…');
-  const resolvedEmptyLabel = emptyLabel || t('لم يتم العثور على نتائج', 'No results found');
+   const resolvedEmptyLabel = candidatePageEmptyLabel(Boolean(nextCursor), language) || emptyLabel || t('لم يتم العثور على نتائج', 'No results found');
   const resolvedActionLabel = actionLabel || t('عرض التفاصيل', 'View details');
 
   const pageIds = items.map(i => i.id);

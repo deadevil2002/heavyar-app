@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchApi, fetchApiBinary, downloadBlob, API_BASE, fetchAuthenticatedPublic } from './api';
+import { fetchApi, fetchApiBinary, downloadBlob, API_BASE, fetchAuthenticatedPublic, guardedFetch } from './api';
 import { adminActionPayload, adminDetailEndpoint, adminExportEndpoint, normalizeGatewayRows } from './operations-contract';
 import { SafeApiError } from './error-messages';
 import { cancellationPayload, invitationId } from './invitation-contract';
@@ -44,7 +44,7 @@ export type PublicInvitationDetails = StaffInvitation & {
 };
 
 async function fetchPublic<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE.replace(/\/api\/admin$/, '')}${path}`, {
+  const response = await guardedFetch(`${API_BASE.replace(/\/api\/admin$/, '')}${path}`, {
     ...options,
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
   });
@@ -66,7 +66,7 @@ export function useStaff(params: Record<string, any> = {}) {
       })) as StaffMember[];
       return { ...response, staff };
     },
-    refetchInterval: 15_000,
+    refetchInterval: false,
     refetchOnWindowFocus: true,
   });
 }
@@ -85,7 +85,7 @@ export function useStaffInvitations(params: Record<string, any> = {}) {
       })) as StaffInvitation[];
       return { ...response, invitations };
     },
-    refetchInterval: 15_000,
+    refetchInterval: query => query.state.data?.invitations.some(item => item.status === 'pending') ? 30_000 : false,
     refetchOnWindowFocus: true,
   });
 }

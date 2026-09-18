@@ -1,0 +1,36 @@
+import { expect, test } from 'bun:test';
+import { ConfigCache, commercialExpiry, commercialReadCache } from './config-cache';
+import { handleCommercialAdmin } from './commercial-admin';
+import { buildLegacyCatalog } from './commercial';
+test('singleflight, TTL and invalidation prevent stale in-flight repopulation', async () => {
+  let now = 0, loads = 0;
+  const cache = new ConfigCache<number>(30, () => now);
+  const load = async () => ++loads;
+  expect(JSON.stringify(await Promise.all([cache.get('v', load), cache.get('v', load)]))).toBe('[1,1]');
+  now = 29; expect(await cache.get('v', load)).toBe(1);
+  now = 30; expect(await cache.get('v', load)).toBe(2);
+  cache.invalidate('v'); expect(await cache.get('v', load)).toBe(3);
+  let finish!: (n: number) => void;
+  const pending = cache.get('race', () => new Promise<number>(resolve => { finish = resolve; }));
+  cache.invalidate();
+  finish(99); await pending;
+  expect(await cache.get('race', load)).toBe(4);
+});
+test('commercial informational reads cache; initialize invalidates; scheduled boundaries expire', async () => {
+  commercialReadCache.invalidate();
+  let calls = 0, record: any = null;
+  const store = { async read() { calls++; return record; }, async save(_p: any, change: any) { record = { data: change.catalog }; } };
+  const env = { FIREBASE_PROJECT_ID: 'cache-test' }, actor = { uid: 'owner', canRead: true, canManage: true };
+  const req = () => new Request('https://worker.test/api/admin/commercial');
+  await handleCommercialAdmin(req(), store, actor, env);
+  await handleCommercialAdmin(req(), store, actor, env);
+  expect(calls).toBe(1);
+  const revision = buildLegacyCatalog(0.1).revision;
+  await handleCommercialAdmin(new Request(req(), { method: 'POST', body: JSON.stringify({ action: 'initialize', reason: 'local test', expectedRevision: revision }) }), store, actor, env);
+  expect(calls).toBe(2);
+  await handleCommercialAdmin(req(), store, actor, env);
+  expect(calls).toBe(3);
+  const activation = Date.now() + 5000;
+  expect(commercialExpiry({ data: { rules: [{ effectiveFrom: new Date(activation).toISOString() }] } })).toBe(activation);
+  commercialReadCache.invalidate();
+});

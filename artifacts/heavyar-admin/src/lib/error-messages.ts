@@ -1,5 +1,6 @@
 /** Allowlisted UX only. Never interpolate a server/Firebase message into the UI. */
 const messages = {
+  SERVICE_TEMPORARILY_BUSY: ['الخدمة مشغولة مؤقتًا. حاول مرة أخرى بعد قليل.', 'The service is temporarily busy. Please try again shortly.'],
   UNKNOWN: ['تعذر إكمال العملية. حاول مرة أخرى.', 'Could not complete the action. Please try again.'],
   EMAIL_VERIFICATION_REQUIRED: ['يجب توثيق البريد الإلكتروني قبل تنفيذ هذا الإجراء.', 'Email verification is required before performing this action.'],
   ADMIN_EMAIL_VERIFICATION_REQUIRED: ['يجب توثيق بريد حسابك الإداري قبل تنفيذ هذا الإجراء.', 'Verify your admin account email before performing this action.'],

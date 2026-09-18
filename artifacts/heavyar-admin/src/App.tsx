@@ -1,4 +1,5 @@
-import { type ReactNode } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
+import { quotaCircuit } from '@/lib/query-policy';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -113,7 +114,15 @@ function AdminRouter() {
   const { logout } = useAuth();
   const { language } = useAppState();
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
-  const { data: session, isLoading: isSessionLoading, error } = useAdminSession();
+  const { data: session, isLoading: isSessionLoading, error, refetch, isFetching } = useAdminSession();
+  const [cooldown, setCooldown] = useState(0);
+  useEffect(() => {
+    if (!error) return;
+    const update = () => setCooldown(Math.ceil(quotaCircuit.remaining() / 1000));
+    update();
+    const timer = window.setInterval(update, 1000); // UI countdown only; never retries.
+    return () => window.clearInterval(timer);
+  }, [error]);
   if (isSessionLoading) {
     return <div className="flex h-screen items-center justify-center bg-background"><Loader2 className="h-8 w-8 animate-spin" /></div>;
   }
@@ -132,6 +141,11 @@ function AdminRouter() {
         <h1 className="text-2xl font-bold mb-2">{t('تعذر فتح لوحة الإدارة', 'Could not open Admin')}</h1>
         <p className="text-muted-foreground mb-8">{userErrorMessage(error, language)}</p>
         <div className="flex gap-4">
+          <Button data-testid="button-retry-admin" disabled={isFetching || cooldown > 0} onClick={() => {
+            if (!quotaCircuit.remaining()) void refetch();
+          }}>
+            {t('حاول مرة أخرى', 'Retry')}{cooldown > 0 ? ` (${cooldown})` : ''}
+          </Button>
           <Button variant="outline" onClick={logout} className="gap-2">
             <LogOut className="w-4 h-4" /> {t('تسجيل الخروج', 'Sign out')}
           </Button>

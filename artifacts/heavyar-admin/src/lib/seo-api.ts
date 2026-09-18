@@ -13,7 +13,7 @@ export function useSeoAdminView() {
   return useQuery({
     queryKey: ['seoAdminView'],
     queryFn: () => fetchApi<SeoAdminView>('/seo'),
-    refetchInterval: 15_000, // Poll every 15s to detect conflicts
+    refetchInterval: false, // Load/focus/mutation driven; server revision guards conflicts.
   });
 }
 

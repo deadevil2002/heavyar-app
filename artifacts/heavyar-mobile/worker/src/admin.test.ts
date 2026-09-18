@@ -200,7 +200,7 @@ describe('admin authorization and operational boundary', () => {
     expect(reused.status).toBe(409);
   });
 
-  test('users list exposes exact filtered total and deletion preview accepts more than 100 filtered users', async () => {
+  test('users list omits scan-derived total and explicit bulk preview traverses bounded pages', async () => {
     const rows = Array.from({ length: 125 }, (_, i) => ({ name: `projects/undefined/databases/(default)/documents/users/u-${i}`, data: { email: `u${i}@example.test`, accountStatus: 'active', emailVerified: false } }));
     __adminTest.setQuery((collection, before, limit) => {
       if (collection !== 'users') return [];
@@ -210,7 +210,9 @@ describe('admin authorization and operational boundary', () => {
     __adminTest.setFirestore((collection, id) => collection === 'users' && /^u-\d+$/.test(id) ? { email: `${id}@example.test`, accountStatus: 'active', emailVerified: false } : null);
     const admin = { uid: 'support-1', admin: true, role: 'admin' as const, permissionRole: 'support', testInjected: true as const };
     const listed = await handleAdmin(new Request('https://worker.test/api/admin/users?accountStatus=active&emailVerified=false&limit=50'), env, admin) as any;
-    expect(listed.total).toBe(125);
+    expect(listed.total).toBe(undefined);
+    expect(listed.items.length).toBe(50);
+    expect(typeof listed.nextCursor).toBe('string');
     const preview = await handleAdmin(request('/api/admin/email-verification/reminders/preview', { filters: { accountStatus: 'active', emailVerified: false } }), env, admin) as any;
     expect(preview.targeted).toBe(125);
   });
@@ -1081,7 +1083,7 @@ describe('admin authorization and operational boundary', () => {
     expect(result.status).toBe(400);
   });
 
-  test('driver detail carries backing account Firebase verification projection', async () => {
+  test('driver detail never copies stale backing profile verification over Auth authority', async () => {
     __adminTest.setFirestore((collection, id) => {
       if (collection === 'driverProfiles' && id === 'driver-auth') return { uid: 'driver-auth', displayName: 'Driver' };
       if (collection === 'users' && id === 'driver-auth') return { role: 'driver', email: 'driver@example.test', emailVerified: true };
@@ -1089,6 +1091,6 @@ describe('admin authorization and operational boundary', () => {
     });
     const result: any = await handleAdmin(new Request('https://worker.test/api/admin/detail/driver/driver-auth'), env, { uid: 'support', admin: true, role: 'super_admin', permissionRole: 'super_admin', testInjected: true });
     expect(result.success).toBe(true);
-    expect(result.item.emailVerified).toBe(true);
+    expect(result.item.emailVerified).toBe(undefined);
   });
 });

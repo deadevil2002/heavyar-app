@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAppState } from '@/lib/app-state';
 import { userErrorMessage } from '@/lib/error-messages';
-import { adminActionPolicy, actionSuccessMessage } from '@/lib/admin-feedback';
+import { adminActionPolicy, actionSuccessMessage, actionRefreshKeys, refreshQueries } from '@/lib/admin-feedback';
 
 export { adminActionPolicy } from '@/lib/admin-feedback';
 export type { AdminActionPolicy } from '@/lib/admin-feedback';
@@ -79,7 +79,7 @@ export function useAdminAction() {
         });
       }
       
-      await queryClient.invalidateQueries();
+      await refreshQueries(queryClient, actionRefreshKeys(actionData.targetType));
       toast({ title: actionSuccessMessage(actionData.action, language) });
       setIsOpen(false);
     } catch (err: any) {

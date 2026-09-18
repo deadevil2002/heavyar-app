@@ -1,8 +1,11 @@
 import { applySeoChange, checkSeoConfig, defaultSeoConfig, emptySeoState, resolveSeo, SEO_REGISTRY, validateSeoConfig } from './seo';
 import type { SeoAdminView, SeoChange, SeoCommand, SeoPermissions, SeoState, SeoVersion } from './seo-types';
+import { isQuotaError } from './quota-policy';
+import { seoPayloadCache } from './config-cache';
 
 export interface SeoRecord<T = unknown> { data: T; updateTime?: string }
 export interface SeoStore {
+  cacheKey?: string;
   read(collection: 'seoSettings' | 'seoVersions', id: string): Promise<SeoRecord | null>;
   save(prior: SeoRecord<SeoState> | null, versions: Map<string, SeoRecord<SeoVersion>>, change: SeoChange): Promise<void>;
 }
@@ -92,9 +95,11 @@ export async function handleSeoAdmin(req: Request, store: SeoStore, actor: SeoPe
     // Firestore's 1MB document limit is not a reason to discard history or audit.
     if (new TextEncoder().encode(JSON.stringify(change.audit)).byteLength > 650_000) throw new Error('SEO audit payload capacity exceeded.');
     await store.save(prior, versions, change);
+    if (publish) seoPayloadCache.invalidate(store.cacheKey);
     for (const version of change.writes) versions.set(version.id, { data: version });
     return await view(change.state);
   } catch (error) {
+    if (isQuotaError(error)) throw error;
     if (error instanceof SeoPersistenceError) return { status: error.status, error: error.message, errorCode: error.status === 409 ? 'VERSION_PRECONDITION_FAILED' : 'SEO_UNAVAILABLE' };
     return { status: 400, error: error instanceof Error ? error.message : 'Invalid SEO configuration.', errorCode: 'SEO_INVALID' };
   }

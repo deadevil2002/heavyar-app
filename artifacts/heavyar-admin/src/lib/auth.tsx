@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { User, onAuthStateChanged, onIdTokenChanged } from 'firebase/auth';
+import { User, onIdTokenChanged } from 'firebase/auth';
+import { authorizationFingerprint } from './query-policy';
+import { accountRefreshKeys, refreshQueries } from './admin-feedback';
 import { getFirebaseAuth } from './firebase';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -24,13 +26,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const auth = getFirebaseAuth();
-    const unsubscribe = onIdTokenChanged(auth, (u) => {
+    let previousUid: string | null | undefined;
+    let previousClaims: string | undefined;
+    let generation = 0;
+    const unsubscribe = onIdTokenChanged(auth, async (u) => {
+      const current = ++generation;
+      const identityChanged = previousUid !== u?.uid;
+      if (identityChanged) {
+        queryClient.clear();
+        previousClaims = undefined;
+      }
+      previousUid = u?.uid;
       setUser(u);
       setLoading(false);
-      // Invalidate queries when auth state changes
-      queryClient.invalidateQueries();
+      if (!u) return;
+      try {
+        const token = await u.getIdTokenResult();
+        if (current !== generation) return;
+        const claims = authorizationFingerprint(token.claims);
+        if (previousClaims !== undefined && previousClaims !== claims) {
+          await queryClient.invalidateQueries({ queryKey: ['adminSession'] });
+        }
+        previousClaims = claims;
+      } catch {
+        // Token refresh failures do not revoke an authenticated session.
+      }
     });
-    return () => unsubscribe();
+    return () => { generation++; unsubscribe(); };
   }, [queryClient]);
 
   const logout = async () => {
@@ -42,7 +64,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refreshClaims = async () => {
     if (!getFirebaseAuth().currentUser) return;
     await getFirebaseAuth().currentUser!.getIdToken(true);
-    await queryClient.invalidateQueries();
+    await queryClient.invalidateQueries({ queryKey: ['adminSession'] });
+    await refreshQueries(queryClient, accountRefreshKeys);
   };
 
   return (

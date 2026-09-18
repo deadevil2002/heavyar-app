@@ -1,6 +1,13 @@
 import type { Permission, StaffRole } from './permissions';
 import { hasPermission } from './permissions';
 
+export function candidatePageEmptyLabel(hasNext: boolean, language: string) {
+  if (!hasNext) return '';
+  return language === 'ar'
+    ? 'لا توجد نتائج مطابقة في هذه الصفحة. تابع البحث في الصفحة التالية.'
+    : 'No matches on this page. Continue searching on the next page.';
+}
+
 /** Normalizes table search/filter state before it reaches a list endpoint. */
 export function adminListParams(params: Record<string, unknown>) {
   const output: Record<string, string> = {};

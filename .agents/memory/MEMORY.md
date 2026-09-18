@@ -12,3 +12,5 @@
 - [Firebase custom-token QA](firebase-custom-token-qa.md) — verify custom-token identity from the returned ID token subject; the REST response may omit localId.
 - [Heavyar Resend production status](heavyar-resend-production.md) — branded sending is verified; delivery feedback requires separate signed-webhook configuration.
 - [Worker deletion preview budgets](worker-deletion-preview-budgets.md) — destructive previews must use set-based reads and reject unsafe target sizes before any partial result.
+- [Heavyar commercial locking](heavyar-commercial-locking.md) — lock commission and tax at rental creation; open-ended completion changes usage, not selected policy.
+- [Firestore search compatibility](firestore-search-compatibility.md) — indexed substring search must account for installed clients that still write profiles directly.

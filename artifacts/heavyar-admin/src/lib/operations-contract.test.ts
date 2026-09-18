@@ -1,9 +1,19 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
-import { adminActionPayload, adminDetailEndpoint, adminExportEndpoint, adminListParams, normalizeGatewayRows, roleCanRenderAction } from './operations-contract';
+import { adminActionPayload, adminDetailEndpoint, adminExportEndpoint, adminListParams, candidatePageEmptyLabel, normalizeGatewayRows, roleCanRenderAction } from './operations-contract';
 
 describe('admin operations table contract', () => {
+  it('does not claim there are no matches when bounded candidates have a continuation', () => {
+    assert.match(candidatePageEmptyLabel(true, 'en'), /next page/);
+    assert.match(candidatePageEmptyLabel(true, 'ar'), /الصفحة التالية/);
+    assert.equal(candidatePageEmptyLabel(false, 'en'), '');
+    for (const page of ['users', 'providers']) {
+      const source = readFileSync(`artifacts/heavyar-admin/src/pages/${page}.tsx`, 'utf8');
+      assert.match(source, /Select all matching results/);
+      assert.equal(source.includes('data.total > selectedIds.size'), false);
+    }
+  });
   it('maps UI search to the backend q filter and drops empty filters', () => {
     assert.deepEqual(adminListParams({ search: 'person@example.com', status: '', cursor: undefined }), { q: 'person@example.com' });
   });
@@ -60,7 +70,7 @@ describe('admin operations table contract', () => {
     }
     const providers = readFileSync('artifacts/heavyar-admin/src/pages/providers.tsx', 'utf8');
     assert.equal(providers.includes('setSelectAllMatching(true)'), true);
-    assert.equal(providers.includes('data.total > selectedIds.size'), true);
+    assert.equal(providers.includes('data?.nextCursor || (data?.items?.length || 0) > selectedIds.size'), true);
   });
   it('keeps invitation acceptance authenticated but outside the admin namespace', () => {
     const operations = readFileSync('artifacts/heavyar-admin/src/lib/operations.ts', 'utf8');

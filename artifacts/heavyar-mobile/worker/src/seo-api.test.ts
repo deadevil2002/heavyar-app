@@ -5,6 +5,34 @@ import { defaultSeoConfig, emptySeoState } from './seo';
 import { handleSeoAdmin, type SeoRecord, type SeoStore } from './seo-admin';
 import { handleSeoPublic } from './seo-public';
 import type { SeoChange, SeoConfig, SeoState, SeoVersion } from './seo-types';
+import { seoPayloadCache } from './config-cache';
+
+test('current published cache avoids reads for conditional GET/HEAD and publish invalidates locally', async () => {
+  seoPayloadCache.invalidate();
+  const { store } = memoryStore([version('published-cache', 'published'), version('draft-cache', 'draft', defaultSeoConfig(), 2)]);
+  store.cacheKey = 'seo-cache-test';
+  let reads = 0;
+  const read = store.read.bind(store);
+  store.read = async (...args) => { reads++; return read(...args); };
+  const request = () => new Request('https://worker.test/api/seo/published');
+  const first = await handleSeoPublic(request(), store);
+  expect(first.status).toBe(200);
+  expect(reads).toBe(2);
+  const etag = first.headers.get('ETag')!;
+  const conditional = await handleSeoPublic(new Request(request(), { headers: { 'If-None-Match': etag } }), store);
+  expect(conditional.status).toBe(304);
+  const head = await handleSeoPublic(new Request(request(), { method: 'HEAD' }), store);
+  expect(await head.text()).toBe('');
+  expect(reads).toBe(2);
+  const published = await handleSeoAdmin(adminRequest({ action: 'publish', expectedRevision: 2, versionId: 'draft-cache', reason: 'Local cache regression' }), store, permissions);
+  expect((published as any).success).toBe(true);
+  const before = reads;
+  const next = await handleSeoPublic(request(), store);
+  expect(reads).toBe(before + 2);
+  expect(next.headers.get('ETag') !== etag).toBe(true);
+  expect((await next.json() as any).version.id).toBe('draft-cache');
+  seoPayloadCache.invalidate();
+});
 
 const env = { FIREBASE_PROJECT_ID: 'seo-test-project' } as Env;
 const adminRequest = (body?: unknown, path = '/api/admin/seo', method = body === undefined ? 'GET' : 'POST') =>

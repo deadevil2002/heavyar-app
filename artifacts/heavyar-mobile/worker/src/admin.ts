@@ -11,6 +11,7 @@ import { handleCommercialAdmin, CommercialPersistenceError } from './commercial-
 import { handleSeoAdmin, SeoPersistenceError, type SeoStore } from './seo-admin';
 import { handleSeoPublic } from './seo-public';
 import { minorToMajor, type CommercialSnapshot } from './commercial';
+import { quotaFetch, isQuotaError } from './quota-policy';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
@@ -64,13 +65,13 @@ let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let commitOverride: unknown[][] | undefined;
 let identityOverride: ((uid: string, role: StaffRole | null) => Promise<{ role: StaffRole | null; previousRole: unknown }>) | undefined;
 let verifiedEmailOverride: ((uid: string) => Promise<string | null>) | undefined;
-let queryOverride: ((collection: string, before: string, limit: number) => RawDoc[]) | undefined;
+let queryOverride: ((collection: string, before: string, limit: number, query?: any) => RawDoc[]) | undefined;
 export const __adminTest = {
   setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; },
   captureCommits(target?: unknown[][]) { commitOverride = target; },
   setIdentity(fn?: (uid: string, role: StaffRole | null) => Promise<{ role: StaffRole | null; previousRole: unknown }>) { identityOverride = fn; },
   setVerifiedEmail(fn?: (uid: string) => Promise<string | null>) { verifiedEmailOverride = fn; },
-  setQuery(fn?: (collection: string, before: string, limit: number) => RawDoc[]) { queryOverride = fn; },
+  setQuery(fn?: (collection: string, before: string, limit: number, query?: any) => RawDoc[]) { queryOverride = fn; },
 };
 
 const enc = new TextEncoder();
@@ -105,7 +106,7 @@ async function googleToken(env: Env, scope = 'https://www.googleapis.com/auth/da
 class FirestoreConflictError extends Error {}
 
 async function fs(env: Env, path: string, init: RequestInit = {}) {
-  const response = await fetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${await googleToken(env)}`, 'Content-Type': 'application/json', ...(init.headers || {}) } });
+  const response = await quotaFetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${await googleToken(env)}`, 'Content-Type': 'application/json', ...(init.headers || {}) } });
   if (response.status === 404 && path !== ':commit') return null;
   if (response.status === 403) throw new Error('Firestore permission denied');
   if (response.status === 409 || response.status === 412) throw new FirestoreConflictError('Concurrent update');
@@ -162,13 +163,14 @@ async function reconcileResendProjection(env: Env, collection: 'emailVerificatio
 }
 
 async function commit(env: Env, writes: unknown[]) {
+  secondaryStats.clear();
   if (commitOverride) { commitOverride.push(writes); return; }
   const safeWrites = (writes as any[]).map(write => String(write?.update?.name || '').includes('/notificationOutbox/')
     ? { ...write, currentDocument: undefined } : write);
   await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes: safeWrites }) });
 }
 
-type AdminCursor = { name: string; sortValue?: string | number | boolean | null };
+type AdminCursor = { name: string; sortValue?: string | number | boolean | null; timestamp?: boolean };
 function cursorValue(env: Env, collection: string, cursor: string | null, sort?: string) {
   if (!cursor) return undefined;
   try {
@@ -176,15 +178,15 @@ function cursorValue(env: Env, collection: string, cursor: string | null, sort?:
     const parsed = decoded.startsWith('{') ? JSON.parse(decoded) as AdminCursor : { name: decoded };
     const name = parsed.name;
     if (sort && name.startsWith(fullName(env, `${collection}/`)) && Object.prototype.hasOwnProperty.call(parsed, 'sortValue')) {
-      return { values: [jsonValue(parsed.sortValue), { referenceValue: name }] };
+      return { before: false, values: [parsed.timestamp ? { timestampValue: parsed.sortValue } : jsonValue(parsed.sortValue), { referenceValue: name }] };
     }
-    if (!sort && name.startsWith(fullName(env, `${collection}/`))) return { values: [{ referenceValue: name }] };
+    if (!sort && name.startsWith(fullName(env, `${collection}/`))) return { before: false, values: [{ referenceValue: name }] };
   } catch { /* malformed cursors are treated as absent */ }
   throw new Error('Invalid cursor');
 }
 
-function nextCursor(name?: string, sortValue?: string | number | boolean | null) {
-  return name ? b64u(enc.encode(sortValue === undefined ? name : JSON.stringify({ name, sortValue }))) : undefined;
+function nextCursor(name?: string, sortValue?: string | number | boolean | null, timestamp = false) {
+  return name ? b64u(enc.encode(sortValue === undefined ? name : JSON.stringify({ name, sortValue, timestamp }))) : undefined;
 }
 
 const FILTERS: Record<string, string[]> = {
@@ -209,6 +211,7 @@ const FILTERS: Record<string, string[]> = {
   notifications: ['uid', 'category', 'read'],
   deviceTokens: ['uid', 'active', 'platform'],
   deletionRequests: ['uid', 'status', 'refreshTokenRevocationStatus'],
+  deletionJobs: ['status', 'actorUid'],
   driverProfiles: ['active', 'availabilityStatus', 'region', 'city', 'moderationStatus', 'trustStatus'],
   driverRequests: ['driverUid', 'requesterUid', 'status'],
   campaigns: ['status', 'createdBy'],
@@ -232,15 +235,17 @@ async function listCollection(env: Env, collection: string, query: Record<string
     orderBy: sort
       ? [{ field: { fieldPath: sort }, direction: sortDirection === 'desc' ? 'DESCENDING' : 'ASCENDING' }, { field: { fieldPath: '__name__' }, direction: sortDirection === 'desc' ? 'DESCENDING' : 'ASCENDING' }]
       : [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
-    // Filter locally after a bounded server scan.  This supports intersecting
-    // operational filters without silently dropping all but the first one or
-    // requiring a combinatorial set of Firestore composite indexes.
-    limit: collection === 'users' ? 5001 : Math.min(250, safeLimit * 5 + 1),
+    limit: safeLimit + 1,
   };
+  const booleanFields = new Set(['isActive', 'active', 'enabled', 'read', 'automated']);
+  const filters = FILTERS[collection]
+    .filter(field => query[field] !== undefined && !(collection === 'users' && field === 'emailVerified'))
+    .map(field => ({ fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: jsonValue(booleanFields.has(field) ? query[field] === 'true' : query[field]) } }));
+  if (filters.length) structuredQuery.where = filters.length === 1 ? filters[0] : { compositeFilter: { op: 'AND', filters } };
   const startAt = cursorValue(env, collection, cursor, sort);
   if (startAt) structuredQuery.startAt = startAt;
   const response = queryOverride
-    ? queryOverride(collection, String(startAt?.values?.[startAt.values.length - 1]?.referenceValue || ''), structuredQuery.limit).map((item) => ({ document: {
+    ? queryOverride(collection, String(startAt?.values?.[startAt.values.length - 1]?.referenceValue || ''), structuredQuery.limit, structuredQuery).map((item) => ({ document: {
       name: item.name || fullName(env, `${collection}/${crypto.randomUUID()}`), updateTime: item.updateTime,
       fields: Object.fromEntries(Object.entries(item.data || {}).map(([key, value]) => [key, jsonValue(value)])),
     } }))
@@ -269,12 +274,13 @@ async function listCollection(env: Env, collection: string, query: Record<string
     return String(actual ?? '') === rawValue;
   }) && (!search || [name.split('/').pop(), ...(searchFields[collection] || []).map(field => valueAt(record, field))]
     .some(value => String(value || '').toLowerCase().includes(search)));
-  const matching = rows.filter(item => matches(decode(item.document), String(item.document.name)));
-  if (collection === 'users' && rows.length >= 5001) throw Object.assign(new Error('Too many users; narrow the selection'), { status: 413, code: 'too_many_results' });
+  // Search and Auth verification have no trustworthy indexed representation in
+  // the current schema. Consume one bounded candidate page, never refill it by
+  // scanning. A continuation can therefore accompany an empty result page.
+  const candidates = rows.slice(0, safeLimit);
+  const matching = candidates.filter(item => matches(decode(item.document), String(item.document.name)));
   const docs = matching.slice(0, safeLimit);
-  const scanLast = rows[rows.length - 1]?.document?.name;
-  const lastReturned = docs[docs.length - 1]?.document;
-  const cursorDocument = lastReturned || (rows.length >= structuredQuery.limit ? rows[rows.length - 1]?.document : undefined);
+  const cursorDocument = candidates[candidates.length - 1]?.document;
   const cursorSortValue = sort && cursorDocument ? (decode(cursorDocument)[sort] ?? null) : undefined;
   // The physical identity must not be shadowed by a historical data.id field.
   const baseItems = docs.map(item => ({ ...redact(decode(item.document)), id: String(item.document.name).split('/').pop() }));
@@ -287,19 +293,17 @@ async function listCollection(env: Env, collection: string, query: Record<string
     : projection.filter(item => item.emailVerified === verifiedFilter);
   return {
     items: filteredProjection,
-    ...(collection === 'users' && !cursor ? { total: queryOverride && verifiedFilter !== undefined ? matching.filter(item => decode(item.document).emailVerified === verifiedFilter).length : filteredProjection.length, maxSelectable: 5000 } : {}),
-    // If a page filled, continue after the last delivered row—not after the
-    // scan window—so sparse filters cannot drop matching documents. If no page
-    // filled, advancing after the scan is safe because every matching row in it
-    // was delivered.
-    nextCursor: docs.length === safeLimit || rows.length >= structuredQuery.limit
-      ? nextCursor(cursorDocument?.name || scanLast, cursorSortValue) : undefined,
+    ...(collection === 'users' ? { maxSelectable: 5000 } : {}),
+    ...(search || verifiedFilter !== undefined ? { boundedCandidatePage: true, candidatesExamined: candidates.length } : {}),
+    nextCursor: rows.length > safeLimit
+      ? nextCursor(cursorDocument?.name, cursorSortValue, !!(sort && cursorDocument?.fields?.[sort]?.timestampValue)) : undefined,
   };
 }
 
 /** One bounded Auth lookup per page; Firebase remains the verification source. */
 async function authoritativeAccountProjection(env: Env, items: any[]) {
-  if (!items.length || !env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) return items;
+  if (!items.length) return items;
+  if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) throw new Error('Account verification temporarily unavailable');
   const projectId = env.FIREBASE_PROJECT_ID;
   const chunks: any[][] = [];
   for (let i = 0; i < items.length; i += 100) chunks.push(items.slice(i, i + 100));
@@ -308,18 +312,33 @@ async function authoritativeAccountProjection(env: Env, items: any[]) {
     const responses = await Promise.all(chunks.map(chunk => fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/accounts:lookup`, {
       method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: chunk.map(item => String(item.uid || item.id)).filter(Boolean) }),
     })));
-    if (responses.some(response => !response.ok)) return items;
+    if (responses.some(response => !response.ok)) throw new Error('Account verification temporarily unavailable');
     const records = (await Promise.all(responses.map(response => response.json() as Promise<any>))).flatMap(body => body.users || []);
     const verified = new Map(records.map((record: any) => [String(record.localId), record.emailVerified === true]));
     return items.map(item => ({ ...item, emailVerified: verified.get(String(item.uid || item.id)) === true }));
-  } catch { return items; }
+  } catch { throw new Error('Account verification temporarily unavailable'); }
 }
 
 async function countCollection(env: Env, collection: string, filter?: { field: string; value: unknown }) {
   return aggregateCollection(env, collection, filter);
 }
 
+const secondaryStats = new Map<string, { expires: number; value: Promise<number | null> }>();
 async function aggregateCollection(env: Env, collection: string, filter?: { field: string; value: unknown }, sumField?: string) {
+  const key = JSON.stringify([env.FIREBASE_PROJECT_ID, collection, filter, sumField]);
+  const cached = secondaryStats.get(key);
+  if (cached && cached.expires > Date.now()) return cached.value;
+  const value = loadAggregateCollection(env, collection, filter, sumField);
+  const entry = { expires: Date.now() + 60_000, value };
+  secondaryStats.set(key, entry);
+  if (secondaryStats.size > 128) secondaryStats.delete(secondaryStats.keys().next().value!);
+  void value.then(result => {
+    if (result === null && secondaryStats.get(key) === entry) secondaryStats.delete(key);
+  });
+  return value;
+}
+
+async function loadAggregateCollection(env: Env, collection: string, filter?: { field: string; value: unknown }, sumField?: string) {
   try {
     const structuredQuery: any = { from: [{ collectionId: collection }] };
     if (filter) structuredQuery.where = { fieldFilter: { field: { fieldPath: filter.field }, op: 'EQUAL', value: jsonValue(filter.value) } };
@@ -1098,18 +1117,31 @@ async function enrichAdminItems(env: Env, collection: string, items: any[]) {
   }
   const people = new Map<string, any>();
   const reminders = new Map<string, any>();
-  await Promise.all([...needed].slice(0, 50).map(async (uid) => {
-    const user = await rawDoc(env, 'users', uid);
-    if (user?.data) people.set(uid, redact(user.data));
-    const rate = await rawDoc(env, 'emailVerificationRateLimits', uid);
-    if (rate?.data) reminders.set(uid, redact(rate.data));
-  }));
+  if (collection === 'users') for (const item of items) people.set(String(item.id), item);
+  const accounts = ['users', 'providerProfiles', 'driverProfiles'].includes(collection);
   const equipment = new Map<string, any>();
   const equipmentIds = [...new Set(items.map((item) => item.equipmentId).filter((id): id is string => typeof id === 'string' && id.length > 0))].slice(0, 50);
-  await Promise.all(equipmentIds.map(async (id) => {
-    const listing = await rawDoc(env, 'equipment', id);
-    if (listing?.data) equipment.set(id, redact(listing.data));
-  }));
+  const reads = [
+    ...[...needed].filter(uid => !people.has(uid)).map(id => ({ collection: 'users', id, target: people })),
+    ...(accounts ? items.map(item => ({ collection: 'emailVerificationRateLimits', id: String(item.uid || item.id), target: reminders })) : []),
+    ...equipmentIds.map(id => ({ collection: 'equipment', id, target: equipment })),
+  ];
+  for (let offset = 0; offset < reads.length; offset += 100) {
+    const chunk = reads.slice(offset, offset + 100);
+    if (firestoreOverride) {
+      for (const read of chunk) {
+        const doc = await rawDoc(env, read.collection, read.id);
+        if (doc) read.target.set(read.id, redact(doc.data));
+      }
+    } else if (chunk.length) {
+      const byName = new Map(chunk.map(read => [fullName(env, `${read.collection}/${read.id}`), read]));
+      const result = await fs(env, ':batchGet', { method: 'POST', body: JSON.stringify({ documents: [...byName.keys()] }) }) as any[] || [];
+      for (const row of result) {
+        const read = byName.get(row.found?.name);
+        if (read) read.target.set(read.id, redact(decode(row.found)));
+      }
+    }
+  }
   return items.map((item) => {
     const record = { ...item };
     const accountUid = String(record.uid || record.id || '');
@@ -1127,7 +1159,7 @@ async function enrichAdminItems(env: Env, collection: string, items: any[]) {
       const person = people.get(record.uid || record.id);
       record.displayName = displayName(record, displayName(person));
       if (person?.email) record.email = person.email;
-      if (typeof person?.emailVerified === 'boolean') record.emailVerified = person.emailVerified;
+      // Do not overwrite the authoritative Auth value with the profile mirror.
     }
     if (collection === 'equipment') {
       const owner = people.get(record.ownerUid);
@@ -1790,8 +1822,13 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
 }
 
 export async function requireAdmin(u: AdminUser, env?: Env) {
-  if (env && !u.testInjected) {
-    const staff = await rawDoc(env, 'staffMembers', u.uid);
+  return authorizeResolvedAdmin(u, env && !u.testInjected ? await rawDoc(env, 'staffMembers', u.uid) : undefined);
+}
+
+// Private, request-local context: never accept a browser-supplied authorization
+// marker or cache staff privileges across requests.
+function authorizeResolvedAdmin(u: AdminUser, staff: RawDoc | null | undefined) {
+  if (staff !== undefined && !u.testInjected) {
     if (!staff?.data || staff.data.active === false || staff.data.status === 'suspended') throw new Error('ADMIN_REQUIRED');
     const authoritative = normalizeStaffRole(staff.data.role);
     if (!authoritative || (staff.data.roleVersion !== undefined && Number(staff.data.roleVersion) < 1)) throw new Error('ADMIN_REQUIRED');
@@ -2121,9 +2158,10 @@ async function ownership(req: Request, env: Env, user: AdminUser, operation: 'in
 
 function seoStore(env: Env, user?: AdminUser): SeoStore {
   return {
+    cacheKey: String(env.FIREBASE_PROJECT_ID),
     read: async (collection, id) => {
       try { return await rawDoc(env, collection, id); }
-      catch { throw new SeoPersistenceError('SEO storage is temporarily unavailable.'); }
+      catch (error) { if (isQuotaError(error)) throw error; throw new SeoPersistenceError('SEO storage is temporarily unavailable.'); }
     },
     save: async (prior, versions, change) => {
       if (!user) throw new SeoPersistenceError('Read-only SEO storage.');
@@ -2146,6 +2184,7 @@ function seoStore(env: Env, user?: AdminUser): SeoStore {
           { state: change.audit.after, scopes: change.audit.changes.map(item => ({ scope: item.scope, value: item.after })) }));
         await commit(env, writes);
       } catch (error) {
+        if (isQuotaError(error)) throw error;
         if (error instanceof FirestoreConflictError) throw new SeoPersistenceError('SEO configuration changed. Reload before confirming.', 409);
         throw new SeoPersistenceError('SEO configuration could not be saved. No changes were committed.');
       }
@@ -2166,12 +2205,13 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   if ((url.pathname === '/api/admin/ownership/accept' || url.pathname === '/api/ownership/accept') && req.method === 'POST') {
     return ownership(req, env, user, 'accept');
   }
-  const bootstrapConfig = user.testInjected ? null : await rawDoc(env, 'heavyarConfig', 'owner');
   const staff = user.testInjected ? null : await rawDoc(env, 'staffMembers', user.uid);
-  const bootstrapException = (!bootstrapConfig?.data?.ownerUid && !staff?.data) &&
-    ((url.pathname === '/api/admin/session' && (user.role === 'super_admin' || user.permissionRole === 'super_admin')) ||
-      (url.pathname === '/api/admin/owner-bootstrap' && (user.role === 'super_admin' || user.permissionRole === 'super_admin')));
-  if (!bootstrapException) await requireAdmin(user, env);
+  const bootstrapCandidate = !staff?.data
+    && ['/api/admin/session', '/api/admin/owner-bootstrap'].includes(url.pathname)
+    && (user.role === 'super_admin' || user.permissionRole === 'super_admin');
+  const bootstrapConfig = !user.testInjected && bootstrapCandidate ? await rawDoc(env, 'heavyarConfig', 'owner') : null;
+  const bootstrapException = bootstrapCandidate && !bootstrapConfig?.data?.ownerUid;
+  if (!bootstrapException) authorizeResolvedAdmin(user, user.testInjected ? undefined : staff);
   else requireVerifiedAdmin(user);
   if (url.pathname === '/api/admin/seo' || url.pathname.startsWith('/api/admin/seo/')) {
     return handleSeoAdmin(req, seoStore(env, user), {
@@ -2182,7 +2222,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
     return handleCommercialAdmin(req, {
       read: async (collection, id) => {
         try { return await rawDoc(env, collection, id); }
-        catch { throw new CommercialPersistenceError('Commercial configuration is temporarily unavailable.', 503); }
+        catch (error) { if (isQuotaError(error)) throw error; throw new CommercialPersistenceError('Commercial configuration is temporarily unavailable.', 503); }
       },
       save: async (prior, change, before) => {
         try {
@@ -2193,6 +2233,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
           }, await auditWrite(env, user, `commission_${change.audit.action}`, 'commercialSettings', change.audit.version,
             crypto.randomUUID(), change.audit.reason, before, change.catalog)]);
         } catch (error) {
+          if (isQuotaError(error)) throw error;
           if (error instanceof FirestoreConflictError) throw new CommercialPersistenceError('Commercial configuration changed. Reload before confirming.', 409);
           throw new CommercialPersistenceError('Commercial configuration could not be saved. No changes were committed.', 503);
         }
@@ -2205,6 +2246,14 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   if (url.pathname === '/api/admin/email-verification/reminders/bulk' && req.method === 'POST') return bulkEmailVerificationReminder(req, env, user);
   if ((url.pathname === '/api/admin/users/deletion-preview' || url.pathname === '/api/admin/deletion/preview') && req.method === 'POST') return deletionPreview(req, env, user);
   if (url.pathname === '/api/admin/users/deletion-jobs' && req.method === 'POST') return enqueueDeletion(req, env, user);
+  if (url.pathname === '/api/admin/users/deletion-jobs' && req.method === 'GET') {
+    if (!(await mayDeleteUsers(env, user))) return { error: 'Owner or super-admin governance permission required', status: 403 };
+    const page = await listCollection(env, 'deletionJobs', Object.fromEntries(url.searchParams.entries()), Number(url.searchParams.get('limit') || 20), url.searchParams.get('cursor'));
+    return { success: true, nextCursor: page.nextCursor, items: page.items.map(job => ({
+      id: job.id, status: job.status, progress: Number(job.completed || 0), total: Number(job.total || 0),
+      result: redact(job.result || null), createdAt: job.createdAt, updatedAt: job.updatedAt,
+    })) };
+  }
   const deletionStatus = url.pathname.match(/^\/api\/admin\/users\/deletion-jobs\/([^/]+)$/);
   if (deletionStatus && req.method === 'GET') {
     if (!(await mayDeleteUsers(env, user))) return { error: 'Owner or super-admin governance permission required', status: 403 };
@@ -2405,7 +2454,10 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
       return { error: 'Not found', status: 404 };
     }
     if (collection === 'heavyarConfig' && lookupId === 'auth') return { success: true, item: { id: requestedId, ...authConfigProjection(env, raw.data) } };
-    const [item] = await enrichAdminItems(env, collection, [{ id: requestedId, ...redact(raw.data) }]);
+    const base = [{ ...redact(raw.data), id: requestedId }];
+    const verified = ['users', 'providerProfiles', 'driverProfiles'].includes(collection) && !user.testInjected
+      ? await authoritativeAccountProjection(env, base) : base;
+    const [item] = await enrichAdminItems(env, collection, verified);
     return { success: true, item: { ...item, technicalIds: { firestoreDocumentId: requestedId } } };
   }
   const collection = pathMap[url.pathname];

@@ -181,12 +181,12 @@ export default function Users() {
         <div className="flex flex-col sm:flex-row items-center justify-between p-3 bg-muted/50 rounded-md border gap-4 transition-all">
           <div className="text-sm font-medium">
             {selectAllMatching
-              ? t(`تم تحديد جميع النتائج (${data?.total || 0})`, `All ${data?.total || 0} matching results selected`)
+              ? t('تم تحديد جميع النتائج المطابقة؛ سيتم تأكيد العدد في المعاينة.', 'All matching results selected; the preview will confirm the count.')
               : t(`تم تحديد ${selectedIds.size} عنصر في هذه الصفحة`, `${selectedIds.size} items selected on this page`)
             }
-            {!selectAllMatching && data?.total && data.total > selectedIds.size && (
+            {!selectAllMatching && (data?.nextCursor || (data?.items?.length || 0) > selectedIds.size) && (
               <button onClick={selectAllFiltered} className="ms-2 text-primary hover:underline font-semibold">
-                {t(`تحديد كل النتائج (${data.total})`, `Select all ${data.total} results`)}
+                {t('تحديد كل النتائج المطابقة', 'Select all matching results')}
               </button>
             )}
           </div>

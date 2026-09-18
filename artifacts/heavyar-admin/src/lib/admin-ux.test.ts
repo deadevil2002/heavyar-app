@@ -114,7 +114,7 @@ describe('live sync and reason policy regressions', () => {
   });
   it('refreshes verification and terminal deletion results, not just the queued request', () => {
     assert.match(source('lib/auth.tsx'), /getIdToken\(true\)/);
-    assert.match(source('lib/auth.tsx'), /await queryClient\.invalidateQueries\(\)/);
+    assert.match(source('lib/auth.tsx'), /await queryClient\.invalidateQueries\(\{ queryKey: \['adminSession'\] \}\)/);
     const api = source('lib/api.ts');
     assert.match(api, /onSettled: \(\) => refreshQueries\(queryClient, accountRefreshKeys\)/);
     assert.match(api, /\[id, status\]/);

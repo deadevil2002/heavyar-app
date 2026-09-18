@@ -1,4 +1,5 @@
-import { QueryClient, useQuery, useMutation } from '@tanstack/react-query';
+import { QueryClient, useQuery, useMutation, focusManager } from '@tanstack/react-query';
+import { quotaCircuit, isQuotaResponse, liveLists, detailInterval, deletionInterval } from './query-policy';
 import { getFirebaseAuth } from './firebase';
 import { adminListParams } from './operations-contract';
 import { SafeApiError } from './error-messages';
@@ -13,10 +14,37 @@ export const queryClient = new QueryClient({
     queries: {
       retry: false,
       refetchOnWindowFocus: true,
-      staleTime: 5_000,
+      refetchIntervalInBackground: false,
+      staleTime: 30_000,
     },
   },
 });
+
+// One visibility listener, no page-specific timers and no hidden-tab catch-up.
+focusManager.setEventListener(handleFocus => {
+  if (typeof document === 'undefined') return () => {};
+  const changed = () => handleFocus(document.visibilityState === 'visible');
+  document.addEventListener('visibilitychange', changed);
+  changed();
+  return () => document.removeEventListener('visibilitychange', changed);
+});
+
+export async function guardedFetch(url: string, options: RequestInit): Promise<Response> {
+  if (!quotaCircuit.acquire()) throw new ApiError('SERVICE_TEMPORARILY_BUSY', 503);
+  try {
+    const response = await fetch(url, options);
+    const body = response.ok ? null : await response.clone().json().catch(() => null);
+    if (isQuotaResponse(response.status, body)) {
+      quotaCircuit.busy(response.headers.get('Retry-After') ?? (typeof body?.retryAfter === 'number' ? String(body.retryAfter) : null));
+      throw new ApiError('SERVICE_TEMPORARILY_BUSY', 503);
+    }
+    quotaCircuit.release(response.ok);
+    return response;
+  } catch (error) {
+    quotaCircuit.release(false);
+    throw error;
+  }
+}
 
 async function getToken(forceRefresh = false) {
   const auth = getFirebaseAuth();
@@ -41,7 +69,7 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, h
     headers.delete('Content-Type');
   }
 
-  const response = await fetch(url, { ...options, headers });
+  const response = await guardedFetch(url, { ...options, headers });
 
   if (!response.ok) {
     let message: unknown = null;
@@ -73,7 +101,7 @@ export async function fetchAuthenticatedPublic<T>(endpoint: string, options: Req
   const headers = new Headers(options.headers);
   headers.set('Authorization', `Bearer ${token}`);
   if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
-  const response = await fetch(`${API_BASE.replace(/\/api\/admin$/, '')}${endpoint}`, { ...options, headers });
+  const response = await guardedFetch(`${API_BASE.replace(/\/api\/admin$/, '')}${endpoint}`, { ...options, headers });
   const body = await response.json().catch(() => ({}));
   if (!response.ok || body.error) throw new ApiError(body, response.status);
   return body as T;
@@ -85,7 +113,7 @@ export async function fetchApiBinary(endpoint: string, options: RequestInit = {}
   if (!token) throw new ApiError('UNAUTHENTICATED', 401);
   const headers = new Headers(options.headers);
   headers.set('Authorization', `Bearer ${token}`);
-  const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+  const response = await guardedFetch(`${API_BASE}${endpoint}`, { ...options, headers });
   if (!response.ok) {
     let message: unknown = null;
     try { message = await response.json(); } catch { /* binary/error response */ }
@@ -272,8 +300,7 @@ export function useListQuery<T>(key: string, endpoint: string, params: Record<st
       const qs = searchParams.toString();
       return fetchApi<PaginatedResponse<T>>(`${endpoint}${qs ? '?' + qs : ''}`);
     },
-    refetchInterval: 15_000,
-    refetchIntervalInBackground: true,
+    refetchInterval: liveLists.has(key) ? 15_000 : false,
   });
 }
 
@@ -423,8 +450,7 @@ export function useCommercialRules() {
   return useQuery({
     queryKey: ['commercialRules'],
     queryFn: () => fetchApi<CommercialRulesResponse>('/commercial'),
-    refetchInterval: 15_000,
-    refetchIntervalInBackground: true,
+    refetchInterval: false,
   });
 }
 
@@ -447,7 +473,7 @@ export function useCommercialPreview() {
 
 export function useAudit(params: Record<string, any> = {}) { return useListQuery<AuditEntry>('audit', '/audit', params); }
 export function useDetail<T = Record<string, unknown>>(resource: string, id?: string) {
-  return useQuery({ queryKey: ['detail', resource, id], queryFn: () => fetchApi<{ success?: boolean; item: T }>(`/detail/${resource}/${encodeURIComponent(id!)}`), enabled: Boolean(id), retry: false, refetchInterval: 5000, refetchOnWindowFocus: true });
+  return useQuery({ queryKey: ['detail', resource, id], queryFn: () => fetchApi<{ success?: boolean; item: T }>(`/detail/${resource}/${encodeURIComponent(id!)}`), enabled: Boolean(id), retry: false, refetchInterval: query => id ? detailInterval(resource, query.state.data?.item) : false, refetchOnWindowFocus: true });
 }
 
 export function useActionMutation() {
@@ -518,7 +544,7 @@ export function useDeletionJobStatus(id?: string) {
     queryKey: ['deletionJob', id],
     queryFn: () => fetchApi<{ id: string; status: 'queued' | 'processing' | 'completed' | 'partially_completed' | 'failed'; progress: number; total: number; result?: any }>(`/users/deletion-jobs/${id}`),
     enabled: Boolean(id),
-    refetchInterval: query => ['completed', 'partially_completed', 'failed'].includes(query.state.data?.status || '') ? false : 2000,
+    refetchInterval: query => deletionInterval(id, query.state.data?.status, query.state.dataUpdateCount),
   });
   const status = query.data?.status;
   useEffect(() => {

@@ -7,6 +7,7 @@ import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDri
 import { PUBLIC_IDENTIFIER_COUNTER_IDS, PUBLIC_IDENTIFIER_FIELDS, formatPublicIdentifier, type PublicIdentifierKind } from './public-identifiers';
 import { isPublicRentableListing, legacyProviderReady, listingVisibilityForOwnerActive, requiresListingRereview } from './moderation';
 import { createInvoicePdfService, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
+import { quotaFetch, isQuotaError, quotaResponse, quotaBlocked } from './quota-policy';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -139,7 +140,7 @@ async function commitWrites(env: Env, writes: unknown[], transaction?: string) {
   }
 }
 async function fs(env: Env, path: string, init?: RequestInit): Promise<any> {
-  const r = await fetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${await googleToken(env)}`, 'Content-Type': 'application/json', ...(init?.headers || {}) } });
+  const r = await quotaFetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${await googleToken(env)}`, 'Content-Type': 'application/json', ...(init?.headers || {}) } });
   if (r.status === 404) return null; if (!r.ok) err('Firestore unavailable'); return r.status === 204 ? null : r.json();
 }
 async function beginTransaction(env: Env): Promise<string | undefined> {
@@ -1076,7 +1077,8 @@ async function createRequest(req: Request, env: Env, u: User) {
   let commercialSnapshot: CommercialSnapshot;
   try {
     commercialSnapshot = await authoritativeCommercialSnapshot(env, { providerUid: equipment.ownerUid }, equipment, amount, now);
-  } catch {
+  } catch (error) {
+    if (isQuotaError(error)) throw error;
     return out(env, req, { success: false, error: 'Commercial configuration unavailable' }, 503);
   }
   const initialQuote = quoteFromCommercial(commercialSnapshot, id, Date.parse(now));
@@ -2698,6 +2700,12 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (path === '/cloudinary/upload' && req.method === 'POST') return await cloudinaryUpload(req, env, await authenticatedUser(req, env));
     return out(env, req, { success: false, error: 'Not found' }, 404);
   } catch (e) {
+    if (isQuotaError(e)) {
+      const response = quotaResponse(req, e);
+      for (const [name, value] of Object.entries(cors(env, req.headers.get('Origin')))) response.headers.set(name, value);
+      response.headers.set('Access-Control-Expose-Headers', 'Retry-After');
+      return response;
+    }
     if (e instanceof AdminDocumentUnavailableError) {
       return out(env, req, { success: false, error: e.message, code: e.code }, e.status);
     }
@@ -2709,10 +2717,16 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : message === 'ADMIN_REQUIRED' ? 'Admin authorization required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : message === 'ACCOUNT_DELETION_REQUESTED' ? 'Account deletion requested' : message === 'LISTING_UNAVAILABLE' ? 'Listing unavailable' : message.startsWith('TRUST_') ? 'Identity verification required' : 'Internal service error' }, message === 'AUTH_REQUIRED' ? 401 : forbidden ? 403 : 500);
 } }, async scheduled(_event: unknown, env: Env, executionCtx: { waitUntil(promise: Promise<unknown>): void }) {
   const requestEnv = { ...env, __executionCtx: executionCtx };
-  executionCtx.waitUntil(processPendingNotificationOutbox(requestEnv));
-   executionCtx.waitUntil(processScheduledCampaigns(requestEnv));
-   executionCtx.waitUntil(processStaffClaimSync(requestEnv));
-  executionCtx.waitUntil(processDeletionJobs(requestEnv));
-  executionCtx.waitUntil(retryDueNotificationDeliveries(requestEnv));
-  executionCtx.waitUntil(pollNotificationReceipts(requestEnv));
+  executionCtx.waitUntil((async () => {
+    let processorFailed = false;
+    // Sequence processors so exhaustion in one prevents the next scan. Existing
+    // per-record leases/idempotency remain unchanged; future ticks can recover.
+    for (const processor of [processPendingNotificationOutbox, processScheduledCampaigns,
+      processStaffClaimSync, processDeletionJobs, retryDueNotificationDeliveries, pollNotificationReceipts]) {
+      if (quotaBlocked()) break;
+      try { await processor(requestEnv); }
+      catch (error) { if (isQuotaError(error)) break; processorFailed = true; }
+    }
+    if (processorFailed) throw new Error('Scheduled maintenance temporarily unavailable.');
+  })());
 } };

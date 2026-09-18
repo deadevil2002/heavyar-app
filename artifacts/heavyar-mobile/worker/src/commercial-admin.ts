@@ -4,13 +4,15 @@ import {
 } from './commercial';
 import { GCC_COUNTRIES } from '../../constants/gcc';
 import { mockCategories } from '../../mocks/categories';
+import { isQuotaError } from './quota-policy';
+import { commercialReadCache, commercialExpiry } from './config-cache';
 
 export interface CommercialAdminStore {
   read(collection: string, id: string): Promise<{ data: any; updateTime?: string } | null>;
   save(prior: { data: any; updateTime?: string } | null, change: CommercialChangeResult, before: CommercialCatalog): Promise<void>;
 }
 export interface CommercialAdminActor { uid: string; canRead: boolean; canManage: boolean }
-export interface CommercialEnvironment { PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string }
+export interface CommercialEnvironment { PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string; FIREBASE_PROJECT_ID?: string }
 
 const precedence = ['provider', 'country_category', 'country', 'category', 'global'];
 const jsonBody = async (req: Request) => {
@@ -53,7 +55,11 @@ export async function handleCommercialAdmin(
   if (!preview && req.method !== 'GET' && !actor.canManage) return { error: 'Commercial management permission required', status: 403 };
   if (preview && req.method !== 'POST' || !preview && !['GET', 'POST'].includes(req.method)) return { error: 'Method not allowed', status: 405 };
   // A storage outage never masquerades as a missing configuration.
-  const prior = await store.read('commercialSettings', 'catalog');
+  // Only informational reads may use this cache. Mutations and financial
+  // snapshot creation always read authority (snapshot path lives in index.ts).
+  const load = () => store.read('commercialSettings', 'catalog');
+  const prior = env.FIREBASE_PROJECT_ID && (req.method === 'GET' || preview)
+    ? await commercialReadCache.get(env.FIREBASE_PROJECT_ID, load, commercialExpiry) : await load();
   const catalog = prior ? validCatalog(prior.data) : buildLegacyCatalog(
     env.PAYMENT_PLATFORM_FEE_RATE === undefined ? 0.10 : Number(env.PAYMENT_PLATFORM_FEE_RATE));
   const now = new Date().toISOString();
@@ -107,6 +113,7 @@ export async function handleCommercialAdmin(
           changes: seeded.rules.map(after => ({ before: null, after })),
         },
       }, catalog);
+      commercialReadCache.invalidate(env.FIREBASE_PROJECT_ID);
       return { ...commercialView(seeded, actor, false, now), initialized: true };
     }
     await validProvider(store, body.rule?.scope?.providerUid);
@@ -114,8 +121,10 @@ export async function handleCommercialAdmin(
     const change = applyCommercialChange(catalog, body as any, actor.uid, now);
     if (new TextEncoder().encode(JSON.stringify(change.catalog)).byteLength > 600_000) throw new Error('Commercial history capacity reached; no history has been removed');
     await store.save(prior, change, catalog);
+    commercialReadCache.invalidate(env.FIREBASE_PROJECT_ID);
     return { ...commercialView(change.catalog, actor, false, now), changedVersion: change.audit.version };
   } catch (error) {
+    if (isQuotaError(error)) throw error;
     // Only validation errors are returned as 400; storage/CAS failures are handled
     // by the adapter, preserving its retryable conflict/outage semantics.
     if (error instanceof CommercialPersistenceError) return { error: error.message, errorCode: error.status === 409 ? 'VERSION_PRECONDITION_FAILED' : 'COMMERCIAL_UNAVAILABLE', status: error.status };
