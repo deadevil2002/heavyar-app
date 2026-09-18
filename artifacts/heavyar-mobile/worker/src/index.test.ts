@@ -52,6 +52,26 @@ describe('worker security boundary', () => {
     expect(denied.headers.get('Access-Control-Allow-Origin')).toBe('null');
   });
 
+  test('CORS preflights allow the canonical website for early access and account deletion only by exact origin', async () => {
+    const routes = [
+      ['/api/early-access/config', 'GET'],
+      ['/api/early-access/register', 'POST'],
+      ['/api/account/deletion-request', 'POST'],
+    ] as const;
+    for (const [path, method] of routes) {
+      const preflight = (origin: string) => worker.fetch(new Request(`https://worker.test${path}`, {
+        method: 'OPTIONS',
+        headers: { Origin: origin, 'Access-Control-Request-Method': method },
+      }), env);
+      const allowed = await preflight('https://heavyar.com');
+      expect(allowed.status).toBe(204);
+      expect(allowed.headers.get('Access-Control-Allow-Origin')).toBe('https://heavyar.com');
+      expect((await preflight('https://evil.example')).headers.get('Access-Control-Allow-Origin')).toBe('null');
+      expect((await preflight('https://heavyar.com.evil')).headers.get('Access-Control-Allow-Origin')).toBe('null');
+      expect((await preflight('https://www.heavyar.com')).headers.get('Access-Control-Allow-Origin')).toBe('null');
+    }
+  });
+
   test('unauthenticated payment and deletion endpoints return 401', async () => {
     expect((await worker.fetch(request('/api/create-payment', { requestId: 'r', amount: 1 }), env)).status).toBe(401);
     expect((await worker.fetch(request('/api/verify-payment', { chargeId: 'c' }), env)).status).toBe(401);

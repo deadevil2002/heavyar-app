@@ -3,8 +3,9 @@ import type { SeoConfig, SeoRegistryEntry, SeoLocale } from '../../../../heavyar
 import { useSeoPreviewMutation } from '@/lib/seo-api';
 import { useAppState } from '@/lib/app-state';
 import { userErrorMessage } from '@/lib/error-messages';
+import { localizeSeoIssue } from '@/lib/seo-quality-labels';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, Eye, AlertTriangle, Info, CheckCircle2, Image as ImageIcon } from 'lucide-react';
+import { Loader2, Eye, AlertCircle, AlertTriangle, Info, CheckCircle2, Image as ImageIcon } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -44,12 +45,6 @@ export function SeoPreview({ config, registry }: Props) {
 
   const resolvedPage = data?.pages.find(p => p.key === selectedPage && p.locale === selectedLocale);
   
-  const getPageName = (key: string) => {
-    const reg = registry.find(r => r.key === key);
-    if (!reg) return key;
-    return language === 'ar' ? reg.nameAr : reg.nameEn;
-  };
-
   return (
     <Card className="sticky top-6 flex flex-col h-[calc(100vh-120px)] border-primary/20 bg-primary/5">
       <CardHeader className="pb-3 border-b border-primary/10">
@@ -110,8 +105,10 @@ export function SeoPreview({ config, registry }: Props) {
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {data.issues.map((issue, i) => (
-                      <div key={i} className={`p-3 rounded-md border text-sm flex gap-2 items-start ${
+                    {data.issues.map((issue, i) => {
+                      const localizedIssue = localizeSeoIssue(issue, config, registry, language);
+                      return (
+                      <div key={`${issue.code}-${issue.path}-${i}`} className={`p-3 rounded-md border text-sm flex gap-2 items-start ${
                         issue.severity === 'error' ? 'bg-destructive/10 border-destructive/20 text-destructive' :
                         issue.severity === 'warning' ? 'bg-amber-500/10 border-amber-500/20 text-amber-700 dark:text-amber-500' :
                         'bg-blue-500/10 border-blue-500/20 text-blue-700 dark:text-blue-500'
@@ -120,11 +117,22 @@ export function SeoPreview({ config, registry }: Props) {
                          issue.severity === 'warning' ? <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" /> : 
                          <Info className="w-4 h-4 shrink-0 mt-0.5" />}
                         <div className="min-w-0 flex-1">
-                          <div className="font-semibold truncate">{getPageName(issue.path) || issue.path}</div>
-                          <div className="text-xs break-words">{language === 'ar' ? issue.messageAr : issue.messageEn}</div>
+                          <div className="font-semibold break-words">{localizedIssue.context}</div>
+                          {localizedIssue.field && (
+                            <div className="text-xs font-medium opacity-80 break-words">{localizedIssue.field}</div>
+                          )}
+                          <div className="text-xs mt-1 break-words">{localizedIssue.message}</div>
+                          <details className="mt-2 text-[11px] opacity-75">
+                            <summary className="cursor-pointer select-none">
+                              {t('تفاصيل فنية', 'Developer details')}
+                            </summary>
+                            <div className="mt-1 font-mono break-all" dir="ltr">
+                              {localizedIssue.technicalPath} · {localizedIssue.code}
+                            </div>
+                          </details>
                         </div>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 )}
               </div>
@@ -239,6 +247,3 @@ export function SeoPreview({ config, registry }: Props) {
     </Card>
   );
 }
-
-// Ensure AlertCircle is imported correctly
-import { AlertCircle } from 'lucide-react';
