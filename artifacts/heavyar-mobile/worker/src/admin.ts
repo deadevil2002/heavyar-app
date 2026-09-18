@@ -6,9 +6,54 @@ import { gatewayRegistry, campaignRecipients, invitationExpiry, normalizeStaffRo
 import { invitationRole, isFreshReauthentication, normalizeAuthorityEmail, pendingAndUnexpired } from './authority';
 import { createAdminExportService, createInvoicePdfService, type DocumentBinaryResponse, type DocumentActor, type ExportEntity, type ExportFilters, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
 import { ensurePublicIdentifier, formatPublicIdentifier, isPublicIdentifier, PUBLIC_IDENTIFIER_COUNTER_IDS, PUBLIC_IDENTIFIER_FIELDS, type PublicIdentifierKind } from './public-identifiers';
+import { legacyProviderReady } from './moderation';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; authTime?: number; testInjected?: true };
+export type LegacyListingEvaluation = { eligible: boolean; needsMigration: boolean; reasons: string[]; migrationAudit: boolean };
+
+export function evaluateLegacyEquipment(
+  listing: Record<string, any>,
+  owner: Record<string, any> | null,
+  country: Record<string, any> | null,
+  auditRows: Array<Record<string, any>> = [],
+): LegacyListingEvaluation {
+  const countryCode = String(listing.countryCode || owner?.countryCode || 'SA').toUpperCase();
+  const countryData = country || {};
+  const defaultCountryEnabled = countryCode === 'SA';
+  const countryEnabled = (countryData.enabled === undefined ? defaultCountryEnabled : countryData.enabled === true)
+    && (countryData.marketplaceAvailable === undefined ? defaultCountryEnabled : countryData.marketplaceAvailable === true)
+    && (countryData.providerOnboardingAvailable === undefined ? defaultCountryEnabled : countryData.providerOnboardingAvailable === true);
+  const migrationAudit = auditRows.some(row => row.action === 'legacy_migration_publish' && row.automated === true);
+  const moderationActions = ['approve_listing', 'reject_listing', 'suspend_listing', 'hide_listing', 'hide_equipment', 'show_listing', 'unhide_equipment', 'rereview_listing', 'flag_equipment', 'suspend_equipment'];
+  const adminEvidence = auditRows.some(row => moderationActions.includes(String(row.action)) && row.automated !== true);
+  const onboarding = legacyProviderReady(owner) || owner?.providerOnboardingCompleted === true || owner?.providerOnboardingComplete === true
+    || owner?.onboardingCompleted === true || owner?.providerOnboardingStatus === 'completed'
+    || owner?.onboardingStatus === 'completed';
+  const reasons: string[] = [];
+  if (!owner) reasons.push('owner_missing');
+  if (owner?.role !== 'provider') reasons.push('owner_not_provider');
+  if (listing.countryCode && owner?.countryCode && String(listing.countryCode).toUpperCase() !== String(owner.countryCode).toUpperCase()) reasons.push('country_mismatch');
+  if (['temporarily_suspended', 'permanently_suspended'].includes(String(owner?.suspensionStatus))
+    || owner?.accountStatus === 'deletion_requested' || owner?.accountStatus === 'restricted') reasons.push('owner_restricted');
+  if (!onboarding) reasons.push('provider_onboarding_incomplete');
+  if (!countryEnabled) reasons.push('country_unavailable');
+  if (!['titleEn', 'titleAr', 'pricePerDay'].every(field => listing[field] !== undefined && listing[field] !== null && String(listing[field]).trim() !== '')
+    || !Number.isFinite(Number(listing.pricePerDay))) reasons.push('required_listing_fields_missing');
+  if (['rejected', 'suspended'].includes(String(listing.moderationStatus))
+    || listing.moderationStatus === 'pending_review'
+    || listing.visibility !== undefined && listing.visibility !== null
+    || listing.isActive !== undefined && listing.isActive !== null
+    || listing.adminHidden === true || listing.restricted === true || listing.visibility === 'archived'
+    || Boolean(listing.reviewedBy || listing.moderatedBy || listing.rejectionReason || listing.suspensionReason)
+    || adminEvidence) reasons.push('moderation_restriction');
+  if (migrationAudit && listing.moderationStatus === 'approved') reasons.push('already_migrated');
+  const legacyState = (listing.moderationStatus === undefined || listing.moderationStatus === null)
+    && (listing.visibility === undefined || listing.visibility === null);
+  const needsMigration = legacyState && !migrationAudit;
+  if (!needsMigration && !migrationAudit && reasons.length === 0) reasons.push('not_pre_schema');
+  return { eligible: reasons.length === 0 && needsMigration, needsMigration, reasons, migrationAudit };
+}
 
 type RawDoc = { data: any; updateTime?: string; name?: string };
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
@@ -113,6 +158,7 @@ const FILTERS: Record<string, string[]> = {
   providerConfigs: ['enabled', 'environment'],
   heavyarConfig: ['key'],
   adminAudit: ['actorUid', 'action', 'targetType'],
+  listingAudit: ['listingId', 'action', 'automated'],
   notificationDeliveries: ['status', 'uid'],
   notifications: ['uid', 'category', 'read'],
   deviceTokens: ['uid', 'active', 'platform'],
@@ -278,6 +324,47 @@ async function listingRentalState(env: Env, equipmentId: string) {
     ] } }, limit: 1,
   } }) }) as any[] || [];
   return rows.some((row) => row.document);
+}
+/**
+ * Converts only unambiguous, unrestricted legacy listings.  This is
+ * deliberately POST-only: a read of the admin list must never publish data.
+ */
+async function migrateLegacyEquipment(req: Request, env: Env, user: AdminUser) {
+  const body: any = await req.json().catch(() => ({}));
+  const apply = body.apply === true;
+  const limit = Math.min(50, Math.max(1, Number(body.limit || 25)));
+  const page = await listCollection(env, 'equipment', {}, limit, typeof body.cursor === 'string' ? body.cursor : null);
+  const results: any[] = [];
+  const writes: any[] = [];
+  for (const item of page.items) {
+    const id = String(item.id), raw = await rawDoc(env, 'equipment', id), listing = raw?.data || item;
+    let history: { items: any[] };
+    try {
+      history = await listCollection(env, 'listingAudit', { listingId: id }, 50, null);
+    } catch {
+      results.push({ id, eligible: false, action: 'skipped', reasons: ['moderation_history_unavailable'] });
+      continue;
+    }
+    const ownerUid = String(listing.ownerUid || listing.providerUid || '');
+    const owner = ownerUid ? await rawDoc(env, 'users', ownerUid) : null;
+    const countryCode = String(listing.countryCode || owner?.data?.countryCode || 'SA').toUpperCase();
+    const country = await rawDoc(env, 'countryConfigs', countryCode);
+    const evaluation = evaluateLegacyEquipment(listing, owner?.data || null, country?.data || null, history.items || []);
+    const { eligible, needsMigration, reasons } = evaluation;
+    results.push({ id, eligible, action: eligible && apply && raw?.updateTime ? 'pending_publish' : eligible ? 'would_publish' : 'skipped', reasons });
+    if (eligible && needsMigration && apply && raw?.updateTime) {
+      const now = new Date().toISOString(), reason = 'legacy_migration_post_moderation_eligible';
+      writes.push({ update: { name: fullName(env, `equipment/${encodeURIComponent(id)}`), fields: { isActive: { booleanValue: true }, visibility: { stringValue: 'visible' }, moderationStatus: { stringValue: 'approved' }, moderationReason: { stringValue: reason }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['isActive', 'visibility', 'moderationStatus', 'moderationReason', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } });
+      writes.push({ update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:legacy-migration`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: ownerUid }, action: { stringValue: 'legacy_migration_publish' }, reason: { stringValue: reason }, automated: { booleanValue: true }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } });
+    }
+  }
+  let published = 0;
+  if (apply && writes.length) {
+    await commit(env, [...writes, await auditWrite(env, user, 'legacy_equipment_migration', 'equipment', 'batch', crypto.randomUUID(), 'legacy equipment migration apply', undefined, { published: writes.filter(write => String(write.update?.name).includes('/equipment/')).length })]);
+    published = writes.filter(write => String(write.update?.name).includes('/equipment/')).length;
+    for (const result of results) if (result.action === 'pending_publish') result.action = 'published';
+  }
+  return { success: true, dryRun: !apply, items: results, nextCursor: page.nextCursor, published };
 }
 function auditId(correlationId: string) { return `audit:${correlationId}`; }
 export function claimSyncWrite(env: Env, uid: string, role: StaffRole | null, active: boolean, version = 1) {
@@ -1462,6 +1549,10 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
     return retryNotificationDeliveries(req, env, user);
   }
   if (url.pathname === '/api/admin/public-identifiers/backfill' && req.method === 'POST') return backfillPublicIdentifiers(req, env, user);
+  if (url.pathname === '/api/admin/equipment/legacy-migration' && req.method === 'POST') {
+    if (!can(user, 'moderation.manage')) return { error: 'Moderation permission required', status: 403 };
+    return migrateLegacyEquipment(req, env, user);
+  }
   if (url.pathname === '/api/admin/action' && req.method === 'POST') return action(req, env, user);
   if (url.pathname === '/api/admin/roles' && req.method === 'POST') return { error: 'Staff roles may only be assigned through invitation acceptance', status: 403 };
   if (req.method !== 'GET') return { error: 'Method not allowed', status: 405 };

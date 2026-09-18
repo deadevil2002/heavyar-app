@@ -5,7 +5,9 @@ import { Search as SearchIcon, SlidersHorizontal, X, Grid2X2, List } from 'lucid
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { mockCategories } from '@/mocks/categories';
-import { saudiRegions } from '@/mocks/saudiRegions';
+import { GCC_COUNTRIES } from '@/constants/gcc';
+import { citiesForLocation, filterListingsByLocation, regionsForCountry } from '@/services/locationHierarchy';
+import { fetchMarketConfig, type MarketConfig } from '@/services/authService';
 import { fetchEquipmentList } from '@/services/firestoreService';
 import EquipmentCard from '@/components/EquipmentCard';
 import EmptyState from '@/components/EmptyState';
@@ -16,7 +18,10 @@ export default function SearchScreen() {
   const { isRTL, t, localizedText } = useLanguage();
   const [query, setQuery] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
+  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
+  const [markets, setMarkets] = useState<MarketConfig[]>([]);
   const [showFilters, setShowFilters] = useState<boolean>(false);
   const [allEquipment, setAllEquipment] = useState<Equipment[]>([]);
   const [view, setView] = useState<EquipmentView>('list');
@@ -33,23 +38,24 @@ export default function SearchScreen() {
     void load();
     return () => { mounted = false; };
   }, []);
+  useEffect(() => { void fetchMarketConfig().then(setMarkets); }, []);
 
   useEffect(() => {
     void loadEquipmentView().then(setView);
   }, []);
 
   const filteredEquipment = useMemo(() => {
-    return allEquipment.filter(eq => {
+    const locationFiltered = filterListingsByLocation(allEquipment, { countryCode: selectedCountry || undefined, region: selectedRegion || undefined, city: selectedCity || undefined });
+    return locationFiltered.filter(eq => {
       if (!eq.isActive) return false;
       if (query) {
         const searchText = `${eq.titleAr} ${eq.titleEn} ${eq.descriptionAr} ${eq.descriptionEn}`.toLowerCase();
         if (!searchText.includes(query.toLowerCase())) return false;
       }
       if (selectedCategory && eq.category !== selectedCategory) return false;
-      if (selectedCity && eq.region !== selectedCity && eq.city !== selectedCity) return false;
       return true;
     });
-  }, [query, selectedCategory, selectedCity, allEquipment]);
+  }, [query, selectedCategory, selectedCountry, selectedRegion, selectedCity, allEquipment]);
 
   const toggleFilters = useCallback(() => {
     setShowFilters(prev => !prev);
@@ -57,6 +63,8 @@ export default function SearchScreen() {
 
   const clearFilters = useCallback(() => {
     setSelectedCategory(null);
+    setSelectedCountry(null);
+    setSelectedRegion(null);
     setSelectedCity(null);
     setQuery('');
   }, []);
@@ -99,6 +107,16 @@ export default function SearchScreen() {
         {showFilters && (
           <View style={styles.filtersContainer}>
             <View style={[styles.filterSection, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <Text style={styles.filterLabel}>{t('country')}</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}><View style={styles.chipRow}>{GCC_COUNTRIES.map(country => {
+                const enabled = markets.find(m => m.code === country.code)?.enabled === true;
+                const chosen = selectedCountry === country.code;
+                return <Pressable key={country.code} disabled={!enabled} accessibilityState={{ disabled: !enabled }} style={[styles.chip, chosen && styles.chipSelected, !enabled && styles.chipDisabled]} onPress={() => { setSelectedCountry(chosen ? null : country.code); setSelectedRegion(null); setSelectedCity(null); }}>
+                  <Text style={[styles.chipText, chosen && styles.chipTextSelected, !enabled && styles.chipTextDisabled]}>{localizedText(country.nameAr, country.nameEn)}{!enabled ? ` (${t('inactive')})` : ''}</Text>
+                </Pressable>;
+              })}</View></ScrollView>
+            </View>
+            <View style={[styles.filterSection, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
               <Text style={styles.filterLabel}>{t('category')}</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <View style={[styles.chipRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -120,13 +138,13 @@ export default function SearchScreen() {
               <Text style={styles.filterLabel}>{t('region')}</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <View style={[styles.chipRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                  {saudiRegions.map(r => (
+                  {regionsForCountry(selectedCountry || undefined, markets).map(r => (
                     <Pressable
                       key={r.id}
-                      style={[styles.chip, selectedCity === r.id && styles.chipSelected]}
-                      onPress={() => setSelectedCity(prev => prev === r.id ? null : r.id)}
+                      style={[styles.chip, selectedRegion === r.id && styles.chipSelected]}
+                      onPress={() => { setSelectedRegion(prev => prev === r.id ? null : r.id); setSelectedCity(null); }}
                     >
-                      <Text style={[styles.chipText, selectedCity === r.id && styles.chipTextSelected]}>
+                      <Text style={[styles.chipText, selectedRegion === r.id && styles.chipTextSelected]}>
                         {localizedText(r.nameAr, r.nameEn)}
                       </Text>
                     </Pressable>
@@ -134,7 +152,8 @@ export default function SearchScreen() {
                 </View>
               </ScrollView>
             </View>
-            {(selectedCategory || selectedCity) && (
+            {selectedRegion && <View style={[styles.filterSection, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}><Text style={styles.filterLabel}>{t('city')}</Text><ScrollView horizontal showsHorizontalScrollIndicator={false}><View style={styles.chipRow}>{citiesForLocation(selectedCountry || undefined, selectedRegion, markets).map(city => <Pressable key={city.id} style={[styles.chip, selectedCity === city.id && styles.chipSelected]} onPress={() => setSelectedCity(prev => prev === city.id ? null : city.id)}><Text style={[styles.chipText, selectedCity === city.id && styles.chipTextSelected]}>{localizedText(city.nameAr, city.nameEn)}</Text></Pressable>)}</View></ScrollView></View>}
+            {(selectedCategory || selectedCountry || selectedRegion || selectedCity) && (
               <Pressable style={styles.clearButton} onPress={clearFilters}>
                 <Text style={styles.clearText}>{t('reset_filters')}</Text>
               </Pressable>
@@ -260,6 +279,8 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     fontWeight: '700' as const,
   },
+  chipDisabled: { opacity: 0.5 },
+  chipTextDisabled: { color: Colors.textMuted },
   clearButton: {
     alignSelf: 'center',
     paddingVertical: 6,

@@ -9,6 +9,8 @@ import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { useAuth } from '@/contexts/AuthContext';
 import { GCC_COUNTRIES, countryFor, type GccCountryCode } from '@/constants/gcc';
+import { citiesForLocation, regionsForCountry } from '@/services/locationHierarchy';
+import { fetchMarketConfig, type MarketConfig } from '@/services/authService';
 
 export default function DriverProfileScreen() {
   const { isRTL, t } = useLanguage();
@@ -19,20 +21,25 @@ export default function DriverProfileScreen() {
   const [countryCode, setCountryCode] = useState<GccCountryCode>('SA');
   const [region, setRegion] = useState('');
   const [city, setCity] = useState('');
+  const [customCity, setCustomCity] = useState('');
   const [description, setDescription] = useState('');
   const [years, setYears] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [profileActive, setProfileActive] = useState<boolean | null>(null);
+  const [markets, setMarkets] = useState<MarketConfig[]>(GCC_COUNTRIES.map(item => ({ code: item.code, enabled: item.code === 'SA', marketplaceAvailable: item.code === 'SA' })));
   useEffect(() => {
     void getDriverProfile().then(({ profile }) => {
       if (profile) {
         setProfileActive(profile.active === true);
         setCountryCode(profile.countryCode || 'SA');
         setDisplayName(profile.displayName || ''); setRegion(profile.region || ''); setCity(profile.city || '');
-        setDescription(profile.description || ''); setYears(profile.yearsExperience ? String(profile.yearsExperience) : '');
+        setDescription(profile.description || ''); setYears(profile.yearsExperience ? String(profile.yearsExperience) : ''); setCustomCity(profile.customCity || '');
       }
     }).catch(() => undefined).finally(() => setLoading(false));
+  }, []);
+  useEffect(() => {
+    void fetchMarketConfig().then(setMarkets);
   }, []);
   const save = async () => {
     if (requiresEmailVerification('driver')) {
@@ -40,8 +47,17 @@ export default function DriverProfileScreen() {
       return;
     }
     if (displayName.trim().length < 2) { showDialog(t('error_title'), t('validation_name_required'), [{ text: t('ok'), style: 'default' }]); return; }
+    const market = markets.find(item => item.code === countryCode);
+    if (market && (!market.enabled || market.marketplaceAvailable === false)) {
+      showDialog(t('error_title'), isRTL
+        ? 'هذا السوق غير نشط حالياً. يرجى اختيار سوق نشط / لا يمكن حفظ الملف الشخصي.'
+        : 'This market is currently inactive. Please choose an active market before saving.',
+        [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
     setSaving(true);
-    try { const result = await saveDriverProfile({ displayName: displayName.trim(), countryCode, nativeCurrency: countryFor(countryCode).currency, region: region.trim(), city: city.trim(), description: description.trim(), yearsExperience: Number(years) || 0, availabilityStatus: 'available' }); setProfileActive(result.profile.active === true); showDialog(t('success'), result.profile.active === true ? t('profile_updated') : t('driver_pending_review'), [{ text: t('ok'), style: 'default' }]); }
+    if (!region || (!city && !customCity.trim())) { showDialog(t('error_title'), t('error_generic_message'), [{ text: t('ok'), style: 'default' }]); return; }
+    try { const result = await saveDriverProfile({ displayName: displayName.trim(), countryCode, nativeCurrency: countryFor(countryCode).currency, region: region.trim(), city: city.trim(), customCity: customCity.trim(), description: description.trim(), yearsExperience: Number(years) || 0, availabilityStatus: 'available' }); setProfileActive(result.profile.active === true); showDialog(t('success'), result.profile.active === true ? t('profile_updated') : t('driver_pending_review'), [{ text: t('ok'), style: 'default' }]); }
     catch (e) { showDialog(t('error_title'), e instanceof WorkerError ? e.message : t('error_generic_message'), [{ text: t('ok'), style: 'default' }]); }
     finally { setSaving(false); }
   };
@@ -49,11 +65,13 @@ export default function DriverProfileScreen() {
     <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>{t('driver_profile')}</Text>
     {profileActive !== true && <View style={styles.pending}><Text style={styles.pendingText}>{t('driver_pending_review')}</Text></View>}
     {loading ? <ActivityIndicator color={Colors.gold} /> : <>
-      <View style={styles.group}><Text style={styles.label}>{t('country')}</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.countryRow}>{GCC_COUNTRIES.map(item => <Pressable key={item.code} onPress={() => { setCountryCode(item.code); setRegion(''); setCity(''); }} style={[styles.countryChip, countryCode === item.code && styles.countryChipActive]}><Text style={countryCode === item.code ? styles.countryChipTextActive : styles.countryChipText}>{isRTL ? item.nameAr : item.nameEn}</Text></Pressable>)}</ScrollView></View>
-      {([{ label: t('name'), value: displayName, setter: setDisplayName }, { label: t('region'), value: region, setter: setRegion }, { label: t('city'), value: city, setter: setCity }, { label: t('years_experience'), value: years, setter: setYears }]).map(field => <View style={styles.group} key={field.label}><Text style={styles.label}>{field.label}</Text><TextInput style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]} value={field.value} onChangeText={field.setter} keyboardType={field.label === t('years_experience') ? 'numeric' : 'default'} /></View>)}
+       <View style={styles.group}><Text style={styles.label}>{t('country')}</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.countryRow}>{GCC_COUNTRIES.map(item => { const market = markets.find(entry => entry.code === item.code); const enabled = market?.enabled === true && market.marketplaceAvailable !== false; const selected = countryCode === item.code; return <Pressable key={item.code} disabled={!enabled} accessibilityState={{ disabled: !enabled, selected }} onPress={() => { setCountryCode(item.code); setRegion(''); setCity(''); setCustomCity(''); }} style={[styles.countryChip, selected && styles.countryChipActive, !enabled && styles.countryChipDisabled]}><Text style={selected ? styles.countryChipTextActive : [styles.countryChipText, !enabled && styles.countryChipTextDisabled]}>{isRTL ? item.nameAr : item.nameEn}{!enabled ? ` (${t('inactive')})` : ''}</Text></Pressable>; })}</ScrollView></View>
+       {([{ label: t('name'), value: displayName, setter: setDisplayName }, { label: t('years_experience'), value: years, setter: setYears }]).map(field => <View style={styles.group} key={field.label}><Text style={styles.label}>{field.label}</Text><TextInput style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]} value={field.value} onChangeText={field.setter} keyboardType={field.label === t('years_experience') ? 'numeric' : 'default'} /></View>)}
+       <View style={styles.group}><Text style={styles.label}>{t('region')}</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.countryRow}>{regionsForCountry(countryCode, markets).map(item => <Pressable key={item.id} onPress={() => { setRegion(item.id); setCity(''); setCustomCity(''); }} style={[styles.countryChip, region === item.id && styles.countryChipActive]}><Text style={region === item.id ? styles.countryChipTextActive : styles.countryChipText}>{isRTL ? item.nameAr : item.nameEn}</Text></Pressable>)}</ScrollView></View>
+       <View style={styles.group}><Text style={styles.label}>{t('city')}</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.countryRow}>{citiesForLocation(countryCode, region, markets).map(item => <Pressable key={item.id} onPress={() => { setCity(item.id); setCustomCity(''); }} style={[styles.countryChip, city === item.id && styles.countryChipActive]}><Text style={city === item.id ? styles.countryChipTextActive : styles.countryChipText}>{isRTL ? item.nameAr : item.nameEn}</Text></Pressable>)}<Pressable onPress={() => setCity('custom')} style={[styles.countryChip, city === 'custom' && styles.countryChipActive]}><Text style={city === 'custom' ? styles.countryChipTextActive : styles.countryChipText}>{t('city')}</Text></Pressable></ScrollView>{city === 'custom' && <TextInput style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]} value={customCity} onChangeText={setCustomCity} placeholder={t('city')} />}</View>
       <View style={styles.group}><Text style={styles.label}>{t('description')}</Text><TextInput style={[styles.input, styles.area, { textAlign: isRTL ? 'right' : 'left' }]} value={description} onChangeText={setDescription} multiline /></View>
       <Pressable style={styles.button} onPress={() => void save()} disabled={saving}><Text style={styles.buttonText}>{saving ? t('saving') : t('save')}</Text></Pressable>
     </>}
   </ScrollView></SafeAreaView><AppDialog visible={dialog.visible} title={dialog.title} message={dialog.message} buttons={dialog.buttons} onClose={hideDialog} /></View>;
 }
-const styles = StyleSheet.create({ container: { flex: 1, backgroundColor: Colors.primary }, safe: { flex: 1 }, content: { padding: 20, gap: 16 }, title: { color: Colors.textPrimary, fontSize: 24, fontWeight: '700' }, pending: { backgroundColor: 'rgba(243,156,18,0.14)', borderColor: Colors.warning, borderWidth: 1, borderRadius: 12, padding: 12 }, pendingText: { color: Colors.warning, textAlign: 'right' }, group: { gap: 7 }, label: { color: Colors.textSecondary, fontWeight: '600' }, input: { backgroundColor: Colors.inputBg, color: Colors.textPrimary, borderColor: Colors.border, borderWidth: 1, borderRadius: 12, padding: 13 }, area: { minHeight: 100, textAlignVertical: 'top' }, countryRow: { gap: 8 }, countryChip: { borderWidth: 1, borderColor: Colors.border, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 }, countryChipActive: { backgroundColor: Colors.gold, borderColor: Colors.gold }, countryChipText: { color: Colors.textSecondary, fontSize: 12 }, countryChipTextActive: { color: Colors.primary, fontSize: 12, fontWeight: '700' }, button: { backgroundColor: Colors.gold, borderRadius: 12, padding: 15, alignItems: 'center' }, buttonText: { color: Colors.primary, fontWeight: '700' } });
+ const styles = StyleSheet.create({ container: { flex: 1, backgroundColor: Colors.primary }, safe: { flex: 1 }, content: { padding: 20, gap: 16 }, title: { color: Colors.textPrimary, fontSize: 24, fontWeight: '700' }, pending: { backgroundColor: 'rgba(243,156,18,0.14)', borderColor: Colors.warning, borderWidth: 1, borderRadius: 12, padding: 12 }, pendingText: { color: Colors.warning, textAlign: 'right' }, group: { gap: 7 }, label: { color: Colors.textSecondary, fontWeight: '600' }, input: { backgroundColor: Colors.inputBg, color: Colors.textPrimary, borderColor: Colors.border, borderWidth: 1, borderRadius: 12, padding: 13 }, area: { minHeight: 100, textAlignVertical: 'top' }, countryRow: { gap: 8 }, countryChip: { borderWidth: 1, borderColor: Colors.border, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 }, countryChipActive: { backgroundColor: Colors.gold, borderColor: Colors.gold }, countryChipDisabled: { opacity: 0.5 }, countryChipText: { color: Colors.textSecondary, fontSize: 12 }, countryChipTextDisabled: { color: Colors.textMuted }, countryChipTextActive: { color: Colors.primary, fontSize: 12, fontWeight: '700' }, button: { backgroundColor: Colors.gold, borderRadius: 12, padding: 15, alignItems: 'center' }, buttonText: { color: Colors.primary, fontWeight: '700' } });

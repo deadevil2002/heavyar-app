@@ -28,7 +28,7 @@ describe('trusted notification foundation', () => {
   test('provider listing creation derives owner and rejects privileged client fields', async () => {
     __test.setAuth({ uid: 'provider-1', admin: false });
     __test.setFirestore((collection) => collection === 'users' ? {
-      uid: 'provider-1', role: 'provider', isVerified: true, nameAr: 'مزود', nameEn: 'Provider', avatar: '',
+      uid: 'provider-1', role: 'provider', isVerified: true, nameAr: 'مزود', nameEn: 'Provider', avatar: '', termsAccepted: true, countryCode: 'SA', region: 'Riyadh', city: 'Riyadh',
     } : null);
     const writes: any[] = []; __test.captureCommits(writes);
     const response = await worker.fetch(request('/api/listings', { method: 'POST', body: JSON.stringify({
@@ -46,7 +46,7 @@ describe('trusted notification foundation', () => {
     expect(valid.status).toBe(201);
     expect((writes[0] as any)[0].update.fields.ownerUid.stringValue).toBe('provider-1');
     expect((writes[0] as any)[0].update.fields.visibility.stringValue).toBe('visible');
-    expect((writes[0] as any)[0].update.fields.moderationStatus.stringValue).toBe('pending_review');
+    expect((writes[0] as any)[0].update.fields.moderationStatus.stringValue).toBe('approved');
   });
   test('device registration is UID-bound and stores no client-controlled UID', async () => {
     __test.setAuth({ uid: 'u1', admin: false });

@@ -18,6 +18,7 @@ export type DriverPublicProfile = {
   photoUrl?: string;
   region?: string;
   city?: string;
+  customCity?: string;
   equipmentTypes?: string[];
   yearsExperience?: number;
   description?: string;

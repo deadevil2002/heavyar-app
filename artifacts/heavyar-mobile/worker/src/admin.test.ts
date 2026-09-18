@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import worker, { __test, type Env } from './index';
-import { __adminTest, handleAdmin, handleAdminDocument, AdminDocumentUnavailableError } from './admin';
+import { __adminTest, handleAdmin, handleAdminDocument, AdminDocumentUnavailableError, evaluateLegacyEquipment } from './admin';
 import { claimSyncWrite, processStaffClaimSync } from './admin';
 
 const env = { CORS_ORIGINS: 'http://localhost' } as Env;
@@ -33,6 +33,67 @@ describe('admin authorization and operational boundary', () => {
     __adminTest.setIdentity(undefined);
     __adminTest.setVerifiedEmail(undefined);
     __adminTest.setQuery(undefined);
+  });
+
+  const legacyListing = (moderationStatus?: string) => ({
+    ownerUid: 'legacy-provider', titleAr: 'حفار', titleEn: 'Excavator', pricePerDay: 100,
+    ...(moderationStatus === undefined ? {} : { moderationStatus }),
+  });
+  const legacyOwner = { role: 'provider', nameEn: 'Legacy Provider', termsAccepted: true, countryCode: 'SA', region: 'Riyadh', city: 'Riyadh' };
+
+  test('legacy migration evaluator accepts old pending listings without Admin evidence', () => {
+    expect(evaluateLegacyEquipment(legacyListing(), legacyOwner, null).eligible).toBe(true);
+    expect(evaluateLegacyEquipment(legacyListing('pending_review'), legacyOwner, null).eligible).toBe(false);
+  });
+
+  test('legacy migration evaluator fails closed for moderation evidence and rejected/suspended state', () => {
+    expect(evaluateLegacyEquipment(legacyListing(), legacyOwner, null, [{ action: 'rereview_listing', automated: false }]).eligible).toBe(false);
+    expect(evaluateLegacyEquipment(legacyListing('rejected'), legacyOwner, null).eligible).toBe(false);
+    expect(evaluateLegacyEquipment(legacyListing('suspended'), legacyOwner, null).eligible).toBe(false);
+    expect(evaluateLegacyEquipment(legacyListing(), { ...legacyOwner, termsAccepted: false }, null).eligible).toBe(false);
+    expect(evaluateLegacyEquipment({ ...legacyListing(), countryCode: 'AE' }, legacyOwner, null).eligible).toBe(false);
+  });
+
+  test('legacy migration evaluator is idempotent after automated migration audit', () => {
+    const result = evaluateLegacyEquipment({ ...legacyListing('approved') }, legacyOwner, null, [{ action: 'legacy_migration_publish', automated: true }]);
+    expect(result.eligible).toBe(false);
+    expect(result.reasons.includes('already_migrated')).toBe(true);
+  });
+
+  test('legacy migration endpoint dry-run emits no writes and apply emits CAS plus automated audit', async () => {
+    __adminTest.setFirestore((collection) => collection === 'equipment' ? legacyListing()
+      : collection === 'users' ? legacyOwner : null);
+    __adminTest.setQuery((collection) => collection === 'equipment'
+      ? [{ name: 'projects/p/databases/(default)/documents/equipment/legacy-1', data: legacyListing() }]
+      : []);
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    const admin = { uid: 'admin-1', admin: true, role: 'admin' as const, permissionRole: 'admin', testInjected: true as const };
+    const dry = await handleAdmin(request('/api/admin/equipment/legacy-migration', { apply: false }), env, admin);
+    expect((dry as any).dryRun).toBe(true);
+    expect(commits.length).toBe(0);
+    const applied = await handleAdmin(request('/api/admin/equipment/legacy-migration', { apply: true }), env, admin);
+    expect((applied as any).published).toBe(1);
+    const writes = commits.flat() as any[];
+    expect(writes.some(write => String(write.update?.name).includes('/equipment/legacy-1') && write.currentDocument?.updateTime)).toBe(true);
+    expect(writes.some(write => String(write.update?.name).includes('/listingAudit/') && write.update.fields?.automated?.booleanValue === true)).toBe(true);
+  });
+
+  test('legacy migration fails closed when listing audit history cannot be queried', async () => {
+    __adminTest.setFirestore((collection) => collection === 'equipment' ? legacyListing()
+      : collection === 'users' ? legacyOwner : null);
+    __adminTest.setQuery((collection) => {
+      if (collection === 'equipment') return [{ name: 'projects/p/databases/(default)/documents/equipment/legacy-fail', data: legacyListing() }];
+      if (collection === 'listingAudit') throw new Error('history unavailable');
+      return [];
+    });
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    const admin = { uid: 'admin-1', admin: true, role: 'admin' as const, permissionRole: 'admin', testInjected: true as const };
+    const result = await handleAdmin(request('/api/admin/equipment/legacy-migration', { apply: true }), env, admin) as any;
+    expect(result.published).toBe(0);
+    expect(result.items[0].reasons.includes('moderation_history_unavailable')).toBe(true);
+    expect(commits.length).toBe(0);
   });
 
   test('admin endpoints reject unauthenticated requests', async () => {

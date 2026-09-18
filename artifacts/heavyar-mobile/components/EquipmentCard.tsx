@@ -9,6 +9,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { mockUsers } from '@/mocks/users';
 import { findCityById } from '@/mocks/saudiRegions';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
+import { formatNativeAmount } from '@/services/currency';
 
 interface EquipmentCardProps {
   equipment: Equipment;
@@ -39,7 +40,7 @@ export default React.memo(function EquipmentCard({ equipment, compact }: Equipme
             <Text style={styles.locationText}>{cityName}</Text>
           </View>
           <Text style={[styles.compactPrice, { textAlign: isRTL ? 'right' : 'left' }]}>
-            {equipment.pricePerDay.toLocaleString()} {t('per_day')}
+            {formatNativeAmount(equipment.pricePerDay, equipment.nativeCurrency, equipment.countryCode)} {t('per_day')}
           </Text>
         </View>
       </Pressable>
@@ -56,7 +57,7 @@ export default React.memo(function EquipmentCard({ equipment, compact }: Equipme
           </View>
         )}
         <View style={styles.priceBadge}>
-          <Text style={styles.priceText}>{equipment.pricePerDay.toLocaleString()} {t('per_day')}</Text>
+            <Text style={styles.priceText}>{formatNativeAmount(equipment.pricePerDay, equipment.nativeCurrency, equipment.countryCode)} {t('per_day')}</Text>
         </View>
       </View>
       <View style={styles.info}>

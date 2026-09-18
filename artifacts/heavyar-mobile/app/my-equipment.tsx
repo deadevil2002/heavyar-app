@@ -14,6 +14,7 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 import { Equipment } from '@/types';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 import { setListingControls, archiveListing, deleteListing, WorkerError } from '@/services/workerClient';
+import { formatNativeAmount } from '@/services/currency';
 
 export default function MyEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -128,13 +129,18 @@ export default function MyEquipmentScreen() {
           <Image source={{ uri: getFirstImageUrl(item.images) }} style={styles.image} contentFit="cover" />
           <View style={[styles.info, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
             <Text style={[styles.itemTitle, { textAlign: isRTL ? 'right' : 'left' }]} numberOfLines={1}>{title}</Text>
-            <Text style={styles.price}>{item.pricePerDay.toLocaleString()} {t('per_day')}</Text>
+            <Text style={styles.price}>{formatNativeAmount(item.pricePerDay, item.nativeCurrency, item.countryCode)} {t('per_day')}</Text>
             <View style={[styles.statusRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               {item.isActive ? <Eye size={14} color={Colors.success} /> : <EyeOff size={14} color={Colors.textMuted} />}
               <Text style={[styles.statusText, { color: item.isActive ? Colors.success : Colors.textMuted }]}>
                 {item.isActive ? t('active') : t('inactive')}
               </Text>
             </View>
+            {(item.moderationReason || item.rejectionReason) && (
+              <Text style={styles.moderationReason} numberOfLines={2}>
+                {item.rejectionReason || item.moderationReason}
+              </Text>
+            )}
           </View>
         </View>
         <View style={[styles.actions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -237,6 +243,7 @@ const styles = StyleSheet.create({
   price: { fontSize: 14, fontWeight: '700' as const, color: Colors.gold },
   statusRow: { alignItems: 'center', gap: 4 },
   statusText: { fontSize: 12, fontWeight: '500' as const },
+  moderationReason: { color: Colors.error, fontSize: 11, marginTop: 4, maxWidth: 190 },
   actions: { gap: 10, borderTopWidth: 1, borderTopColor: Colors.divider, paddingTop: 10 },
   editButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8, borderRadius: 10, backgroundColor: 'rgba(212, 168, 67, 0.1)' },
   editText: { color: Colors.gold, fontSize: 13, fontWeight: '600' as const },

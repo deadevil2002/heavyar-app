@@ -15,6 +15,9 @@ import CategoryCard from '@/components/CategoryCard';
 import EmptyState from '@/components/EmptyState';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { GCC_COUNTRIES } from '@/constants/gcc';
+import { citiesForLocation, filterListingsByLocation, regionsForCountry } from '@/services/locationHierarchy';
+import { fetchMarketConfig, type MarketConfig } from '@/services/authService';
 
 export default function HomeScreen() {
   const { isRTL, t, localizedText, setLanguage } = useLanguage();
@@ -22,6 +25,10 @@ export default function HomeScreen() {
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
+  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
+  const [selectedCity, setSelectedCity] = useState<string | null>(null);
+  const [markets, setMarkets] = useState<MarketConfig[]>([]);
   const [equipmentList, setEquipmentList] = useState<Equipment[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const scrollAnim = useRef(new Animated.Value(0)).current;
@@ -40,9 +47,11 @@ export default function HomeScreen() {
   useEffect(() => {
     void loadEquipment();
   }, [loadEquipment]);
+  useEffect(() => { void fetchMarketConfig().then(setMarkets); }, []);
 
-  const featuredEquipment = equipmentList.filter(e => e.availability).slice(0, 5);
-  const recentEquipment = equipmentList.slice(0, 10);
+  const filteredEquipment = filterListingsByLocation(equipmentList, { countryCode: selectedCountry || undefined, region: selectedRegion || undefined, city: selectedCity || undefined }).filter(e => !selectedCategory || e.category === selectedCategory);
+  const featuredEquipment = filteredEquipment.filter(e => e.availability).slice(0, 5);
+  const recentEquipment = filteredEquipment.slice(0, 10);
 
   const handleCategoryPress = useCallback((categoryId: string) => {
     setSelectedCategory(prev => prev === categoryId ? null : categoryId);
@@ -116,6 +125,15 @@ export default function HomeScreen() {
                 <CategoryCard key={cat.id} category={cat} onPress={handleCategoryPress} isSelected={selectedCategory === cat.id} />
               ))}
             </ScrollView>
+          </View>
+          <View style={styles.locationFilters}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}><View style={styles.filterRow}>{GCC_COUNTRIES.map(country => {
+              const enabled = markets.find(m => m.code === country.code)?.enabled === true;
+              const chosen = selectedCountry === country.code;
+              return <Pressable key={country.code} disabled={!enabled} accessibilityState={{ disabled: !enabled }} style={[styles.filterChip, chosen && styles.filterChipSelected, !enabled && styles.filterChipDisabled]} onPress={() => { setSelectedCountry(chosen ? null : country.code); setSelectedRegion(null); setSelectedCity(null); }}><Text style={[styles.filterChipText, chosen && styles.filterChipTextSelected, !enabled && styles.filterChipTextDisabled]}>{localizedText(country.nameAr, country.nameEn)}{!enabled ? ` (${t('inactive')})` : ''}</Text></Pressable>;
+            })}</View></ScrollView>
+            {selectedCountry && <ScrollView horizontal showsHorizontalScrollIndicator={false}><View style={styles.filterRow}>{regionsForCountry(selectedCountry, markets).map(region => <Pressable key={region.id} style={[styles.filterChip, selectedRegion === region.id && styles.filterChipSelected]} onPress={() => { setSelectedRegion(selectedRegion === region.id ? null : region.id); setSelectedCity(null); }}><Text style={[styles.filterChipText, selectedRegion === region.id && styles.filterChipTextSelected]}>{localizedText(region.nameAr, region.nameEn)}</Text></Pressable>)}</View></ScrollView>}
+            {selectedRegion && <ScrollView horizontal showsHorizontalScrollIndicator={false}><View style={styles.filterRow}>{citiesForLocation(selectedCountry || undefined, selectedRegion, markets).map(city => <Pressable key={city.id} style={[styles.filterChip, selectedCity === city.id && styles.filterChipSelected]} onPress={() => setSelectedCity(selectedCity === city.id ? null : city.id)}><Text style={[styles.filterChipText, selectedCity === city.id && styles.filterChipTextSelected]}>{localizedText(city.nameAr, city.nameEn)}</Text></Pressable>)}</View></ScrollView>}
           </View>
 
           {loading ? (
@@ -276,6 +294,14 @@ const styles = StyleSheet.create({
   categoriesScroll: {
     paddingHorizontal: 20,
   },
+  locationFilters: { marginTop: 12, gap: 8 },
+  filterRow: { paddingHorizontal: 20, gap: 8, flexDirection: 'row' },
+  filterChip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
+  filterChipSelected: { backgroundColor: Colors.gold, borderColor: Colors.gold },
+  filterChipDisabled: { opacity: 0.5 },
+  filterChipText: { color: Colors.textSecondary, fontSize: 12 },
+  filterChipTextSelected: { color: Colors.primary, fontWeight: '700' as const },
+  filterChipTextDisabled: { color: Colors.textMuted },
   featuredScroll: {
     paddingHorizontal: 20,
   },

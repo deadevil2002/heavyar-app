@@ -85,6 +85,9 @@ export interface Equipment {
   isActive: boolean;
   visibility?: 'visible' | 'hidden' | 'archived';
   moderationStatus?: 'pending_review' | 'approved' | 'rejected' | 'suspended';
+  /** Worker/Admin explanation shown to the owner; never implies identity verification. */
+  moderationReason?: string;
+  rejectionReason?: string;
   createdAt: string;
   updatedAt: string;
   countryCode?: GccCountryCode;

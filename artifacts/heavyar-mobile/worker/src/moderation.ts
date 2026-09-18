@@ -42,3 +42,13 @@ export function canModerateListing(
 ): boolean {
   return next !== 'rejected' || (typeof reason === 'string' && reason.trim().length > 0);
 }
+
+/** Compatibility gate for profiles created before explicit onboarding flags. */
+export function legacyProviderReady(profile: Record<string, unknown> | null | undefined): boolean {
+  return profile?.role === 'provider'
+    && profile.termsAccepted === true
+    && (String(profile.nameAr || '').trim().length >= 2 || String(profile.nameEn || '').trim().length >= 2)
+    && String(profile.countryCode || '').trim().length > 0
+    && String(profile.region || '').trim().length > 0
+    && (String(profile.city || '').trim().length > 0 || String(profile.customCity || '').trim().length > 0);
+}

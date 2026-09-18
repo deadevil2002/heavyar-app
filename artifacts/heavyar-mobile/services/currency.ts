@@ -33,3 +33,17 @@ export function approximateDisplayPrice(
 export function preferredDisplayCurrency(countryCode: string | undefined, requested?: string) {
   return requested || defaultDisplayCurrency(countryCode);
 }
+
+/** Listing prices are always rendered in their own currency; this does not perform FX. */
+export function listingCurrency(nativeCurrency: string | undefined, countryCode?: string): string {
+  return (nativeCurrency || defaultDisplayCurrency(countryCode)).toUpperCase();
+}
+
+export function formatNativeAmount(amount: number, nativeCurrency?: string, countryCode?: string): string {
+  return `${amount.toLocaleString()} ${listingCurrency(nativeCurrency, countryCode)}`;
+}
+
+/** Canonical label used by listing/detail price surfaces (no conversion). */
+export function formatListingDailyPrice(amount: number, listing: { nativeCurrency?: string; countryCode?: string }): string {
+  return formatNativeAmount(amount, listing.nativeCurrency, listing.countryCode);
+}

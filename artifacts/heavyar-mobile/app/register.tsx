@@ -15,6 +15,14 @@ import { saudiRegions, getCitiesByRegion } from '@/mocks/saudiRegions';
 import { GCC_COUNTRIES, countryFor, normalizePhoneForCountry, type GccCountryCode } from '@/constants/gcc';
 
 type RegistrationStep = 'email' | 'info' | 'role';
+const crRules: Record<GccCountryCode, { maxLength: number; placeholder: string }> = {
+  SA: { maxLength: 10, placeholder: 'CR number (10 digits) / رقم السجل (10 أرقام)' },
+  AE: { maxLength: 10, placeholder: 'Trade licence / رقم الرخصة التجارية' },
+  KW: { maxLength: 8, placeholder: 'Commercial licence / رقم الرخصة التجارية' },
+  QA: { maxLength: 10, placeholder: 'CR number / رقم السجل التجاري' },
+  BH: { maxLength: 10, placeholder: 'CR number / رقم السجل التجاري' },
+  OM: { maxLength: 10, placeholder: 'CR number / رقم السجل التجاري' },
+};
 
 export default function RegisterScreen() {
   const { isRTL, t, localizedText, language } = useLanguage();
@@ -37,6 +45,7 @@ export default function RegisterScreen() {
   const [showPassword, setShowPassword] = useState<boolean>(false);
 
   const [role, setRole] = useState<UserRole>('customer');
+  const [providerType, setProviderType] = useState<'individual' | 'company'>('individual');
   const [crNumber, setCrNumber] = useState<string>('');
   const [region, setRegion] = useState<string>('');
   const [city, setCity] = useState<string>('');
@@ -119,7 +128,7 @@ export default function RegisterScreen() {
       showDialog(t('validation_error'), t('city_required_message'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
-    if (role === 'provider' && crNumber.trim() && !/^\d{10}$/.test(crNumber.trim())) {
+    if (role === 'provider' && providerType === 'company' && countryCode === 'SA' && !/^\d{10}$/.test(crNumber.trim())) {
       showDialog(t('validation_error'), t('cr_validation_error'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
@@ -136,6 +145,7 @@ export default function RegisterScreen() {
         city,
         customCity,
         countryCode,
+        role === 'provider' ? providerType : undefined,
       );
        router.replace(role === 'driver' ? '/driver-profile' : '/');
     } catch (e) {
@@ -144,7 +154,7 @@ export default function RegisterScreen() {
     } finally {
       setLoading(false);
     }
-  }, [emailVerified, name, email, phone, password, role, crNumber, region, city, customCity, countryCode, termsAccepted, register, router, t, showDialog]);
+  }, [emailVerified, name, email, phone, password, role, providerType, crNumber, region, city, customCity, countryCode, termsAccepted, register, router, t, showDialog]);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
@@ -322,18 +332,28 @@ export default function RegisterScreen() {
       </View>
 
       {role === 'provider' && (
-        <View style={[styles.inputRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+        <View>
+        <View style={styles.roleRow}>
+          <Pressable accessibilityRole="radio" accessibilityState={{ selected: providerType === 'individual' }} testID="provider-type-individual" style={[styles.roleCard, providerType === 'individual' && styles.roleCardActive]} onPress={() => { setProviderType('individual'); setCrNumber(''); }}>
+            <Text style={[styles.roleCardTitle, providerType === 'individual' && styles.roleCardTitleActive]}>{isRTL ? 'فرد' : 'Individual'}</Text>
+          </Pressable>
+          <Pressable accessibilityRole="radio" accessibilityState={{ selected: providerType === 'company' }} testID="provider-type-company" style={[styles.roleCard, providerType === 'company' && styles.roleCardActive]} onPress={() => setProviderType('company')}>
+            <Text style={[styles.roleCardTitle, providerType === 'company' && styles.roleCardTitleActive]}>{isRTL ? 'شركة / مؤسسة' : 'Company / Establishment'}</Text>
+          </Pressable>
+        </View>
+        {providerType === 'company' && <View style={[styles.inputRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
           <FileText size={20} color={Colors.textMuted} />
           <TextInput
             style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]}
-            placeholder={t('cr_number_placeholder')}
+             placeholder={crRules[countryCode].placeholder}
             placeholderTextColor={Colors.textMuted}
             value={crNumber}
             onChangeText={setCrNumber}
-            keyboardType="numeric"
-            maxLength={10}
+             keyboardType={countryCode === 'AE' ? 'default' : 'numeric'}
+             maxLength={crRules[countryCode].maxLength}
           />
-        </View>
+         </View>}
+         </View>
       )}
 
       <Pressable style={[styles.termsRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => setTermsAccepted(value => !value)} testID="terms-acceptance">

@@ -195,29 +195,50 @@ export async function registerWithEmail(
     customCity: string;
     role: 'customer' | 'provider' | 'driver';
     crNumber?: string;
+    providerType?: 'individual' | 'company';
   }
 ): Promise<FirebaseUser> {
   const auth = getFirebaseAuth();
   const normalizedEmail = email.trim().toLowerCase();
-  const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
-  const uid = credential.user.uid;
+  let credential;
+  let createdIdentity = true;
+  try {
+    credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code !== 'auth/email-already-in-use') throw error;
+    // A previous ambiguous provisioning response may have left Auth created
+    // without a profile. Authenticate and let the Worker decide whether this
+    // is a safe resume or a role conflict.
+    credential = await signInWithEmailAndPassword(auth, normalizedEmail, password);
+    createdIdentity = false;
+  }
 
   let shouldDelete = false;
   try {
     const token = await credential.user.getIdToken();
-    const response = await fetch(`${WORKER_BASE_URL}/api/register-profile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify(buildRegistrationProfilePayload(profileData)),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${WORKER_BASE_URL}/api/register-profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(buildRegistrationProfilePayload(profileData)),
+      });
+    } catch {
+      const networkError = new Error('NETWORK_UNAVAILABLE');
+      (networkError as Error & { errorCode?: string }).errorCode = 'NETWORK_UNAVAILABLE';
+      throw networkError;
+    }
     if (!response.ok) {
-      const failure = await response.json().catch(() => ({})) as { safeToDeleteIdentity?: boolean; error?: string };
+      const failure = await response.json().catch(() => ({})) as { safeToDeleteIdentity?: boolean; error?: string; errorCode?: string };
       shouldDelete = failure.safeToDeleteIdentity === true;
-      throw new Error(response.status >= 500 ? 'Profile setup is temporarily unavailable. Please retry.' : 'Unable to create profile');
+      const error = new Error(failure.errorCode || (response.status >= 500 ? 'REGISTRATION_RETRY_REQUIRED' : 'INVALID_REGISTRATION_DETAILS'));
+      (error as Error & { errorCode?: string }).errorCode = failure.errorCode;
+      throw error;
     }
     return credential.user;
   } catch (error) {
-    if (shouldDelete) await credential.user.delete().catch(() => undefined);
+    if (shouldDelete && createdIdentity) await credential.user.delete().catch(() => undefined);
     await signOut(auth).catch(() => undefined);
     throw error;
   }

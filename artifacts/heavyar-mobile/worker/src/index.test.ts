@@ -496,11 +496,18 @@ describe('worker security boundary', () => {
     const writes: any[] = commits[0] as any[];
     const user = writes.find((write) => String(write.update?.name).includes('/users/'));
     expect(user.update.fields.role.stringValue).toBe('provider'); expect(user.update.fields.isVerified).toBe(undefined);
+    expect(user.update.fields.providerType.stringValue).toBe('individual');
+    const invalidCompany = await worker.fetch(request('/api/register-profile', { role: 'provider', providerType: 'company', crNumber: '123', termsAccepted: true, nameEn: 'Provider', region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    expect((await invalidCompany.json()).errorCode).toBe('INVALID_REGISTRATION_DETAILS');
+    __test.setFirestore((collection) => collection === 'users' ? null : collection === 'countryConfigs' ? { enabled: false } : null);
+    const disabled = await worker.fetch(request('/api/register-profile', { role: 'customer', termsAccepted: true, nameEn: 'Customer', region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    expect((await disabled.json()).errorCode).toBe('COUNTRY_DISABLED');
     __test.setFirestore((collection) => collection === 'users' ? null : collection === 'heavyarConfig' ? { phoneIndexReady: true } : null);
-    const driver = await worker.fetch(request('/api/register-profile', { role: 'driver', termsAccepted: true, nameEn: 'Driver', phone: '512345678', region: 'R', city: 'C' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    const driver = await worker.fetch(request('/api/register-profile', { role: 'driver', termsAccepted: true, nameEn: 'Driver', phone: '512345678', region: 'R', city: 'C', customCity: 'Custom C' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect(driver.status).toBe(200);
     const driverWrites: any[] = [...commits].reverse().find((item: any) => Array.isArray(item) && item.some((write: any) => String(write.update?.name).includes('/driverProfiles/'))) as any[]; const profile = driverWrites.find((write) => String(write.update?.name).includes('/driverProfiles/'));
     expect(profile.update.fields.active.booleanValue).toBe(false); expect(profile.update.fields.moderationStatus.stringValue).toBe('pending_review'); expect(profile.update.fields.trustStatus.stringValue).toBe('unverified');
+    expect(profile.update.fields.customCity.stringValue).toBe('Custom C');
     const noTerms = await worker.fetch(request('/api/register-profile', { role: 'customer' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect(noTerms.status).toBe(400);
     __test.setFirestore((collection) => collection === 'users' ? null : collection === 'phoneOwners' ? { uid: 'other' } : collection === 'heavyarConfig' ? { phoneIndexReady: true } : null);
@@ -808,11 +815,11 @@ describe('worker security boundary', () => {
     expect(writes.find(write => String(write.update?.name).includes('/equipmentRequests/')).update.fields.publicRequestNumber.stringValue).toBe('HV-REQ-000042');
   });
 
-  test('pending-review equipment is not rentable and new listings start pending with a public number', async () => {
+  test('pending-review equipment is not rentable and eligible new listings publish with a public number', async () => {
     __test.setAuth({ uid: 'provider-1', admin: false });
     __test.setFirestore((collection) => {
       if (collection === 'users') return {
-        role: 'provider', isVerified: true, nameAr: 'مزود', nameEn: 'Provider', avatar: '',
+        role: 'provider', isVerified: true, nameAr: 'مزود', nameEn: 'Provider', avatar: '', termsAccepted: true, countryCode: 'SA', region: 'Riyadh', city: 'Riyadh',
       };
       if (collection === 'publicIdentifierCounters') return { nextSequence: 7 };
       return null;
@@ -825,10 +832,10 @@ describe('worker security boundary', () => {
     }, { Authorization: 'Bearer test' }), env);
     const createdBody: any = await created.json();
     expect(created.status).toBe(201);
-    expect(createdBody.listing.moderationStatus).toBe('pending_review');
+      expect(createdBody.listing.moderationStatus).toBe('approved');
     expect(createdBody.listing.publicEquipmentNumber).toBe('HV-EQP-000007');
     const listingWrite = (commits[0] as any[]).find(write => String(write.update?.name).includes('/equipment/'));
-    expect(listingWrite.update.fields.moderationStatus.stringValue).toBe('pending_review');
+    expect(listingWrite.update.fields.moderationStatus.stringValue).toBe('approved');
     expect(listingWrite.update.fields.visibility.stringValue).toBe('visible');
 
     __test.setAuth({ uid: 'customer-1', admin: false });

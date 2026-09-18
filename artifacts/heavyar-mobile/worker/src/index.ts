@@ -4,7 +4,7 @@ import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationP
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
 import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry } from './completion';
 import { PUBLIC_IDENTIFIER_COUNTER_IDS, PUBLIC_IDENTIFIER_FIELDS, formatPublicIdentifier, type PublicIdentifierKind } from './public-identifiers';
-import { isPublicRentableListing, listingVisibilityForOwnerActive, requiresListingRereview } from './moderation';
+import { isPublicRentableListing, legacyProviderReady, listingVisibilityForOwnerActive, requiresListingRereview } from './moderation';
 import { createInvoicePdfService, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
@@ -1649,28 +1649,46 @@ async function passwordReset(req: Request, env: Env) {
 }
 async function registerProfile(req: Request, env: Env, u: User) {
   if (!env.FIREBASE_PROJECT_ID || !u.email) return out(env, req, { success: false, error: 'Registration unavailable' }, 503);
-  const email = u.email.trim().toLowerCase(), existing = await getDoc(env, 'users', u.uid);
-  if (existing && String(existing.email || existing.emailLower || '').trim().toLowerCase() === email) return out(env, req, { success: true, uid: u.uid });
-  const body = await req.json() as any;
+   const email = u.email.trim().toLowerCase(), body = await req.json().catch(() => null) as any;
+   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
   const role = String(body.role || body.requestedRole || 'customer');
+   const existing = await getDoc(env, 'users', u.uid);
+   if (existing) {
+     const existingEmail = String(existing.email || existing.emailLower || '').trim().toLowerCase();
+     if (existingEmail === email && String(existing.role || '') === role) {
+       return out(env, req, { success: true, alreadyProvisioned: true, existingRole: String(existing.role) });
+     }
+     if (existingEmail === email) {
+       return out(env, req, { success: false, error: 'Profile already exists for a different role', errorCode: 'ROLE_MISMATCH', existingRole: String(existing.role || '') }, 409);
+     }
+     return out(env, req, { success: false, error: 'Profile already exists', errorCode: 'PROFILE_ALREADY_EXISTS' }, 409);
+   }
   const config = effectiveAuthConfig(await getDoc(env, 'heavyarConfig', 'auth'));
   if (!['customer', 'provider', 'driver'].includes(role) || body.termsAccepted !== true && body.acceptedTerms !== true) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
   const allowed = new Set(['role', 'requestedRole', 'termsAccepted', 'acceptedTerms', 'nameAr', 'nameEn', 'phone', 'countryCode', 'region', 'city', 'customCity', 'crNumber', 'providerType']);
   if (Object.keys(body).some(key => !allowed.has(key))) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
   const nameAr = String(body.nameAr || '').trim(), nameEn = String(body.nameEn || '').trim(), country = await countrySettings(env, String(body.countryCode || 'SA')), normalizedPhone = normalizeGccPhone(body.phone, country.code), phone = normalizedPhone && normalizedPhone.countryCode === country.code ? normalizedPhone.phone : null, region = String(body.region || '').trim(), city = String(body.city || '').trim(), customCity = String(body.customCity || '').trim();
   if ((!nameAr && !nameEn) || nameAr.length > 120 || nameEn.length > 120 || (nameAr && nameAr.length < 2) || (nameEn && nameEn.length < 2) || !region || region.length > 120 || (!city && !customCity) || city.length > 120 || customCity.length > 120) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
-  if (!country.enabled || (role === 'provider' && !country.providerOnboardingAvailable) || config.requirePhoneOnSignup && !phone || body.phone && !phone || phone && !config.phoneIndexReady) return out(env, req, { success: false, error: 'Country or phone registration unavailable', errorCode: 'REGISTRATION_UNAVAILABLE', safeToDeleteIdentity: true }, 400);
+   if (!country.enabled) return out(env, req, { success: false, error: 'Country unavailable', errorCode: 'COUNTRY_DISABLED', safeToDeleteIdentity: true }, 400);
+   if (role === 'provider' && !country.providerOnboardingAvailable) return out(env, req, { success: false, error: 'Provider onboarding unavailable', errorCode: 'PROVIDER_ONBOARDING_UNAVAILABLE', safeToDeleteIdentity: true }, 400);
+   if (config.requirePhoneOnSignup && !phone || body.phone && !phone) return out(env, req, { success: false, error: 'Invalid phone', errorCode: 'INVALID_PHONE', safeToDeleteIdentity: true }, 400);
+   if (phone && !config.phoneIndexReady) return out(env, req, { success: false, error: 'Phone reservation unavailable', errorCode: 'PHONE_RESERVATION_UNAVAILABLE', safeToDeleteIdentity: true }, 503);
   const crNumber = String(body.crNumber || '').trim();
+   const providerType = body.providerType === undefined ? (role === 'provider' ? 'individual' : undefined) : String(body.providerType);
+   if (role === 'provider' && !['individual', 'company'].includes(providerType!)) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
+   if (role !== 'provider' && (body.providerType !== undefined || crNumber)) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
+   if (role === 'provider' && providerType === 'individual' && crNumber) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
   const registrationPattern = country.code === 'SA' ? /^\d{10}$/ : /^[A-Za-z0-9-]{3,32}$/;
-  if (crNumber && (role !== 'provider' || !registrationPattern.test(crNumber))) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
-  const now = new Date().toISOString(), idToken = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, ''), fields: Record<string, any> = { uid: { stringValue: u.uid }, email: { stringValue: email }, emailLower: { stringValue: email }, emailVerified: { booleanValue: u.emailVerified === true }, emailVerificationVersion: { integerValue: '1' }, nameAr: { stringValue: nameAr }, nameEn: { stringValue: nameEn }, ...(phone ? { phone: { stringValue: phone } } : {}), countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, region: { stringValue: region }, city: { stringValue: city }, customCity: { stringValue: customCity }, ...(crNumber ? { crNumber: { stringValue: crNumber } } : {}), ...(body.providerType ? { providerType: { stringValue: String(body.providerType) } } : {}), role: { stringValue: role }, requestedRole: { stringValue: role }, termsAccepted: { booleanValue: true }, termsAcceptedAt: { timestampValue: now }, createdAt: { timestampValue: now } };
+   if (role === 'provider' && providerType === 'company' && country.code === 'SA' && !registrationPattern.test(crNumber) || crNumber && !registrationPattern.test(crNumber)) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
+   const providerOnboardingCompleted = role === 'provider' && Boolean(nameAr || nameEn) && Boolean(region) && Boolean(city || customCity) && Boolean(country.enabled && country.providerOnboardingAvailable);
+   const now = new Date().toISOString(), idToken = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, ''), fields: Record<string, any> = { uid: { stringValue: u.uid }, email: { stringValue: email }, emailLower: { stringValue: email }, emailVerified: { booleanValue: u.emailVerified === true }, emailVerificationVersion: { integerValue: '1' }, nameAr: { stringValue: nameAr }, nameEn: { stringValue: nameEn }, ...(phone ? { phone: { stringValue: phone } } : {}), countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, region: { stringValue: region }, city: { stringValue: city }, customCity: { stringValue: customCity }, ...(crNumber ? { crNumber: { stringValue: crNumber } } : {}), ...(role === 'provider' ? { providerType: { stringValue: providerType! }, providerOnboardingCompleted: { booleanValue: providerOnboardingCompleted } } : {}), role: { stringValue: role }, requestedRole: { stringValue: role }, termsAccepted: { booleanValue: true }, termsAcceptedAt: { timestampValue: now }, createdAt: { timestampValue: now } };
   const writes: any[] = [{ update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields }, currentDocument: { exists: false } }];
   if (phone) {
     const ownerId = await hashedId(`phone:${phone}`), owner = await getRawDoc(env, 'phoneOwners', ownerId);
     if (owner && owner.data.uid !== u.uid) return out(env, req, { success: false, error: 'Registration unavailable', errorCode: 'PHONE_ALREADY_IN_USE', safeToDeleteIdentity: true }, 409);
     writes.push({ update: { name: fullName(env, `phoneOwners/${ownerId}`), fields: { uid: { stringValue: u.uid }, phoneHash: { stringValue: ownerId }, createdAt: { timestampValue: now } } }, currentDocument: owner?.updateTime ? { updateTime: owner.updateTime } : { exists: false } });
   }
-  if (role === 'driver') writes.push({ update: { name: fullName(env, `driverProfiles/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, displayName: { stringValue: String(body.nameEn || body.nameAr || '') }, ...(phone ? { phone: { stringValue: phone } } : {}), region: { stringValue: String(body.region || '') }, city: { stringValue: String(body.city || '') }, equipmentCategories: { arrayValue: { values: [] } }, experience: { integerValue: '0' }, active: { booleanValue: false }, verified: { booleanValue: false }, moderationStatus: { stringValue: 'pending_review' }, availabilityStatus: { stringValue: 'offline' }, trustStatus: { stringValue: 'unverified' }, createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, currentDocument: { exists: false } });
+   if (role === 'driver') writes.push({ update: { name: fullName(env, `driverProfiles/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, displayName: { stringValue: String(body.nameEn || body.nameAr || '') }, ...(phone ? { phone: { stringValue: phone } } : {}), region: { stringValue: String(body.region || '') }, city: { stringValue: String(body.city || '') }, customCity: { stringValue: customCity }, equipmentCategories: { arrayValue: { values: [] } }, experience: { integerValue: '0' }, active: { booleanValue: false }, verified: { booleanValue: false }, moderationStatus: { stringValue: 'pending_review' }, availabilityStatus: { stringValue: 'offline' }, trustStatus: { stringValue: 'unverified' }, createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, currentDocument: { exists: false } });
   try { await commitWrites(env, writes); } catch {
     try {
       const after = await getDoc(env, 'users', u.uid);
@@ -1756,7 +1774,20 @@ async function listingAvailability(req: Request, env: Env, u: User, id: string) 
 async function listingCreate(req: Request, env: Env, u: User) {
   try { await enforceEmailVerified(env, u, 'listing'); } catch (error) { if (error instanceof Error && error.message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403); throw error; }
   const profile = await getDoc(env, 'users', u.uid);
-  if (!profile || profile.role !== 'provider' || (profile.isVerified !== true && profile.crVerified !== true)) return out(env, req, { success: false, error: 'Provider verification required' }, 403);
+  // Publication eligibility is account/onboarding policy, not identity
+  // verification.  Keep aliases here for providers created by older
+  // registration versions, while never consulting isVerified/crVerified.
+  const legacyProviderProfileComplete = legacyProviderReady(profile);
+  const onboardingComplete = profile?.providerOnboardingCompleted === true
+    || profile?.providerOnboardingComplete === true
+    || profile?.onboardingCompleted === true
+    || profile?.providerOnboardingStatus === 'completed'
+    || profile?.onboardingStatus === 'completed'
+    || legacyProviderProfileComplete;
+  if (!profile || profile.role !== 'provider' || profile.accountStatus === 'deletion_requested'
+      || profile.accountStatus === 'restricted'
+      || ['temporarily_suspended', 'permanently_suspended'].includes(String(profile.suspensionStatus))
+      || !onboardingComplete) return out(env, req, { success: false, error: 'Provider onboarding required' }, 403);
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing' }, 400);
   const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'images', 'dailyPrice', 'pricePerDay', 'category', 'countryCode', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'availability'];
@@ -1771,13 +1802,16 @@ async function listingCreate(req: Request, env: Env, u: User) {
   const availability = body.availability || { from: new Date().toISOString().slice(0, 10) }, availabilityCheck = validateDateRange(availability);
   if (!availabilityCheck.ok) return out(env, req, { success: false, error: availabilityCheck.error }, 400);
   if (Array.isArray(availability.blocked) && availability.blocked.some((range: any) => !validateDateRange(range).ok)) return out(env, req, { success: false, error: 'Invalid blocked dates' }, 400);
-  const country = await countrySettings(env, String(body.countryCode || profile.countryCode || 'SA'));
-  if (!country.enabled || !country.marketplaceAvailable) return out(env, req, { success: false, error: 'Country marketplace unavailable' }, 400);
+  const requestedCountry = String(body.countryCode || profile.countryCode || 'SA').toUpperCase();
+  if (profile.countryCode && requestedCountry !== String(profile.countryCode).toUpperCase()) return out(env, req, { success: false, error: 'Listing country must match provider country' }, 400);
+  const country = await countrySettings(env, requestedCountry);
+  if (!country.enabled || !country.providerOnboardingAvailable || !country.marketplaceAvailable) return out(env, req, { success: false, error: 'Country marketplace unavailable' }, 400);
   const id = `eq_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
   const ownerPublic = { uid: u.uid, nameAr: String(profile.nameAr || ''), nameEn: String(profile.nameEn || ''), avatar: String(profile.avatar || '') };
-  const value: any = { ownerUid: u.uid, countryCode: country.code, nativeCurrency: country.currency, nativePricePerDay: dailyPrice, titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), pricePerDay: dailyPrice, images, availability, ownerPublic, isActive: true, visibility: 'visible', moderationStatus: 'pending_review', createdAt: now, updatedAt: now };
+  const publicationReason = 'automated_post_moderation_eligible_provider';
+  const value: any = { ownerUid: u.uid, countryCode: country.code, nativeCurrency: country.currency, nativePricePerDay: dailyPrice, titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), pricePerDay: dailyPrice, images, availability, ownerPublic, isActive: true, visibility: 'visible', moderationStatus: 'approved', moderationReason: publicationReason, createdAt: now, updatedAt: now };
   const writes: any[] = [
-    { update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:create`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: 'create' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
+    { update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:create`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: 'create' }, reason: { stringValue: publicationReason }, automated: { booleanValue: true }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
   ];
   const publicEquipmentNumber = await createWithPublicIdentifier(env, 'equipment', `equipment/${id}`, value, writes);
   return out(env, req, { success: true, id, listing: { id, ...value, publicEquipmentNumber, dailyPrice } }, 201);
@@ -1807,9 +1841,14 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
     if (overlaps) return out(env, req, { success: false, error: 'AVAILABILITY_CONFLICT' }, 409);
   }
   if (patch.isActive !== undefined) patch.visibility = listingVisibilityForOwnerActive(patch.isActive === true);
+  // Owners may hide an approved listing, but can never undo an Admin
+  // restriction (or self-approve a listing awaiting review).
+  if (patch.isActive === true && raw.data.moderationStatus !== 'approved') return out(env, req, { success: false, error: 'LISTING_MODERATION_LOCKED' }, 403);
   if (requiresListingRereview(raw.data, patch)) {
     patch.moderationStatus = 'pending_review';
     patch.moderationReason = '';
+    patch.isActive = false;
+    patch.visibility = 'hidden';
     patch.reviewedBy = '';
     patch.reviewedAt = null;
   }

@@ -8,13 +8,14 @@ export type GccCountry = {
   nameEn: string;
   regions: { id: string; nameAr: string; nameEn: string; cities: { id: string; nameAr: string; nameEn: string }[] }[];
 };
+import { saudiRegions } from '../mocks/saudiRegions';
 
 const simpleRegions = (country: GccCountryCode, entries: [string, string, string][]) => [
   { id: `${country.toLowerCase()}_main`, nameAr: entries[0]?.[1] || 'المنطقة الرئيسية', nameEn: entries[0]?.[2] || 'Main region', cities: entries.map(([id, ar, en]) => ({ id: `${country.toLowerCase()}_${id}`, nameAr: ar, nameEn: en })) },
 ];
 
 export const GCC_COUNTRIES: GccCountry[] = [
-  { code: 'SA', dialCode: '+966', currency: 'SAR', nameAr: 'السعودية', nameEn: 'Saudi Arabia', regions: [] },
+  { code: 'SA', dialCode: '+966', currency: 'SAR', nameAr: 'السعودية', nameEn: 'Saudi Arabia', regions: saudiRegions },
   { code: 'AE', dialCode: '+971', currency: 'AED', nameAr: 'الإمارات', nameEn: 'United Arab Emirates', regions: simpleRegions('AE', [['dubai', 'دبي', 'Dubai'], ['abudhabi', 'أبوظبي', 'Abu Dhabi'], ['sharjah', 'الشارقة', 'Sharjah']]) },
   { code: 'KW', dialCode: '+965', currency: 'KWD', nameAr: 'الكويت', nameEn: 'Kuwait', regions: simpleRegions('KW', [['kuwait', 'مدينة الكويت', 'Kuwait City'], ['hawalli', 'حولي', 'Hawalli'], ['ahmadi', 'الأحمدي', 'Ahmadi']]) },
   { code: 'QA', dialCode: '+974', currency: 'QAR', nameAr: 'قطر', nameEn: 'Qatar', regions: simpleRegions('QA', [['doha', 'الدوحة', 'Doha'], ['rayyan', 'الريان', 'Al Rayyan'], ['wakrah', 'الوكرة', 'Al Wakrah']]) },

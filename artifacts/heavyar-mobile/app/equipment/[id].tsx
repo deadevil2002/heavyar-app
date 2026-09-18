@@ -15,7 +15,7 @@ import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import RentalRequestModal, { RentalRequestDraft } from '@/components/RentalRequestModal';
 import { checkListingAvailability, WorkerError } from '@/services/workerClient';
-import { approximateDisplayPrice } from '@/services/currency';
+import { nativePrice, formatListingDailyPrice, listingCurrency } from '@/services/currency';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -91,19 +91,9 @@ export default function EquipmentDetailScreen() {
   } : undefined);
   const ownerLive = currentUser?.uid === equipment.ownerUid ? currentUser : null;
   const ownerName = ownerPublic ? localizedText(ownerPublic.nameAr, ownerPublic.nameEn) : '';
-  const displayPrice = approximateDisplayPrice(
+  const displayPrice = nativePrice(
     equipment.nativePricePerDay ?? equipment.pricePerDay,
-    equipment.nativeCurrency || 'SAR',
-        equipment.displayCurrency || equipment.nativeCurrency || 'SAR',
-    equipment.displayRate && equipment.displayRateTimestamp
-      ? {
-        sourceCurrency: equipment.nativeCurrency || 'SAR',
-        displayCurrency: equipment.displayCurrency || equipment.nativeCurrency || 'SAR',
-        rate: equipment.displayRate,
-        timestamp: equipment.displayRateTimestamp,
-        source: 'backend',
-      }
-      : undefined,
+    listingCurrency(equipment.nativeCurrency, equipment.countryCode),
   );
   const canShowOwner = Boolean(ownerPublic && (ownerPublic.nameAr || ownerPublic.nameEn || ownerPublic.avatar));
   const isEligibleRequester = Boolean(
@@ -207,7 +197,7 @@ export default function EquipmentDetailScreen() {
         paymentStatus: 'unpaid' as const,
         paymentId: '',
         paidAt: null,
-        currency: 'SAR',
+        currency: listingCurrency(equipment.nativeCurrency, equipment.countryCode),
         allowChat: false,
         ...(draft.requestMode === 'fixed_days' ? { numberOfDays: draft.numberOfDays } : {}),
       };
@@ -302,7 +292,7 @@ export default function EquipmentDetailScreen() {
               <Text style={[styles.categoryText, { textAlign: isRTL ? 'right' : 'left' }]}>{categoryName}</Text>
             </View>
             <View style={styles.priceTag}>
-              <Text style={styles.priceValue}>{equipment.pricePerDay.toLocaleString()}</Text>
+              <Text style={styles.priceValue}>{formatListingDailyPrice(equipment.pricePerDay, equipment)}</Text>
               <Text style={styles.priceUnit}>{t('per_day')}</Text>
             </View>
           </View>
@@ -356,7 +346,7 @@ export default function EquipmentDetailScreen() {
           <SafeAreaView edges={['bottom']}>
             <View style={[styles.bottomContent, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               <View>
-                <Text style={styles.bottomPrice}>{displayPrice.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {displayPrice.currency}</Text>
+                <Text style={styles.bottomPrice}>{formatListingDailyPrice(displayPrice.amount, { nativeCurrency: displayPrice.currency, countryCode: equipment.countryCode })}</Text>
                 {displayPrice.isApproximate && <Text style={styles.bottomPerDay}>{t('approximate_display_price')}</Text>}
                 <Text style={styles.bottomPerDay}>{t('per_day')}</Text>
               </View>

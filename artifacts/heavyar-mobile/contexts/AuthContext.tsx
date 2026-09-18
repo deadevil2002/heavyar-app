@@ -17,6 +17,8 @@ import {
   AuthPolicy,
 } from '@/services/authService';
 import { isGccPhone } from '@/constants/gcc';
+import { useLanguage } from './LanguageContext';
+import { registrationErrorMessage } from '@/services/registrationErrors';
 import {
   registerCurrentDevice,
   revokeCurrentDevice,
@@ -25,6 +27,7 @@ import {
 const AUTH_PROFILE_KEY = 'heavyar_user_profile';
 
 export const [AuthProvider, useAuth] = createContextHook(() => {
+  const { language } = useLanguage();
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -133,7 +136,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         await loginWithEmail(email, password);
       }
     } catch (e: unknown) {
-      const error = e as { code?: string; message?: string };
+      const error = e as { code?: string; message?: string; errorCode?: string };
       let errorMsg = 'فشل تسجيل الدخول';
       if (error.message === 'PHONE_LOGIN_INVALID' || error.message === 'PHONE_LOGIN_RATE_LIMITED' ||
           error.message === 'PHONE_LOGIN_UNAVAILABLE' || error.message === 'EMAIL_LOGIN_UNAVAILABLE') {
@@ -156,6 +159,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     name: string, email: string, phone: string, password: string,
     role: 'customer' | 'provider' | 'driver' = 'customer', crNumber?: string,
     region?: string, city?: string, customCity?: string, countryCode?: User['countryCode'],
+    providerType?: 'individual' | 'company',
   ) => {
     setAuthError(null);
     try {
@@ -169,17 +173,11 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         customCity: customCity || '',
         role,
         crNumber,
+        providerType,
       });
     } catch (e: unknown) {
-      const error = e as { code?: string; message?: string };
-      let errorMsg = 'فشل إنشاء الحساب';
-      if (error.code === 'auth/email-already-in-use') {
-        errorMsg = 'البريد الإلكتروني مستخدم بالفعل';
-      } else if (error.code === 'auth/weak-password') {
-        errorMsg = 'كلمة المرور ضعيفة';
-      } else if (error.code === 'auth/invalid-email') {
-        errorMsg = 'البريد الإلكتروني غير صالح';
-      }
+      const error = e as { code?: string; message?: string; errorCode?: string };
+      const errorMsg = registrationErrorMessage(error, language);
       setAuthError(errorMsg);
       throw new Error(errorMsg);
     }
