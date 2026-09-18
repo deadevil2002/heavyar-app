@@ -5,9 +5,10 @@ import { Mail, MessageCircle } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { PUBLIC_LINKS } from '@/constants/publicLinks';
+import SettingsHeader from '@/components/SettingsHeader';
 
 export default function HelpScreen() {
-  const { isRTL } = useLanguage();
+  const { isRTL, t } = useLanguage();
 
   const handleEmail = useCallback(async () => {
     const subject = encodeURIComponent('Heavyar Support');
@@ -34,6 +35,7 @@ export default function HelpScreen() {
   return (
     <View style={styles.container}>
       <SafeAreaView edges={['top']} />
+      <SettingsHeader title={t('help')} />
       <View style={styles.content}>
         <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>المساعدة والدعم</Text>
         <Text style={[styles.paragraph, { textAlign: isRTL ? 'right' : 'left' }]}>

@@ -1,12 +1,13 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, ArrowRight, Globe, Bell, Info, FileText, HelpCircle, ChevronLeft, ChevronRight } from 'lucide-react-native';
+import { Globe, Bell, Info, FileText, HelpCircle, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import SettingsHeader from '@/components/SettingsHeader';
 
 export default function SettingsScreen() {
   const { isRTL, t, language, setLanguage } = useLanguage();
@@ -14,7 +15,6 @@ export default function SettingsScreen() {
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(true);
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
-  const BackIcon = isRTL ? ArrowRight : ArrowLeft;
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
 
   const handleLanguageSwitch = useCallback(async () => {
@@ -30,13 +30,7 @@ export default function SettingsScreen() {
   return (
     <View style={styles.container}>
       <SafeAreaView edges={['top']} style={{ flex: 1 }}>
-        <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-          <Pressable style={styles.backBtn} onPress={() => router.back()}>
-            <BackIcon size={22} color={Colors.textPrimary} />
-          </Pressable>
-          <Text style={styles.headerTitle}>{t('settings')}</Text>
-          <View style={{ width: 42 }} />
-        </View>
+        <SettingsHeader title={t('settings')} fallback="/(tabs)/profile" />
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <View style={styles.section}>
@@ -70,7 +64,7 @@ export default function SettingsScreen() {
           </View>
 
           <View style={styles.section}>
-            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.push({ pathname: '/privacy' } as any)}>
+            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.navigate('/privacy')}>
               <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <View style={styles.menuIcon}>
                   <FileText size={20} color={Colors.gold} />
@@ -80,7 +74,7 @@ export default function SettingsScreen() {
               <ChevronIcon size={20} color={Colors.textMuted} />
             </Pressable>
 
-            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.push({ pathname: '/terms' } as any)}>
+            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.navigate('/terms')}>
               <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <View style={styles.menuIcon}>
                   <FileText size={20} color={Colors.gold} />
@@ -90,7 +84,7 @@ export default function SettingsScreen() {
               <ChevronIcon size={20} color={Colors.textMuted} />
             </Pressable>
 
-            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.push({ pathname: '/help' } as any)}>
+            <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.navigate('/help')}>
               <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <View style={styles.menuIcon}>
                   <HelpCircle size={20} color={Colors.gold} />
@@ -126,9 +120,6 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
-  header: { paddingHorizontal: 16, paddingVertical: 12, alignItems: 'center', justifyContent: 'space-between' },
-  backBtn: { width: 42, height: 42, borderRadius: 14, backgroundColor: Colors.surface, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.border },
-  headerTitle: { fontSize: 18, fontWeight: '700' as const, color: Colors.textPrimary },
   scrollContent: { paddingHorizontal: 20, gap: 20, paddingBottom: 40 },
   section: {
     backgroundColor: Colors.card,

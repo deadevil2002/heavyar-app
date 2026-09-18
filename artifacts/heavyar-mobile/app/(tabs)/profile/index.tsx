@@ -369,7 +369,7 @@ export default function ProfileScreen() {
             <View style={styles.crCard}>
               <View style={[styles.crRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <FileText size={18} color={Colors.gold} />
-                <View style={{ flex: 1, alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
+                <View style={[styles.crInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
                   <Text style={styles.crLabel}>{t('provider_verification_status')}</Text>
                   <Text style={styles.crValue}>{user.crNumber ? `${t('cr_number')}: ${user.crNumber}` : t('cr_required')}</Text>
                 </View>
@@ -541,7 +541,9 @@ export default function ProfileScreen() {
                 accessibilityRole="button"
                 accessibilityLabel={item.label}
                 style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
-                onPress={() => router.push(item.route as any)}
+                onPress={() => item.route === '/settings'
+                  ? router.navigate(item.route)
+                  : router.push(item.route as any)}
               >
                 <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                   <View style={styles.menuIcon}>
@@ -662,6 +664,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 16,
     marginBottom: 20,
+    minWidth: 0,
   },
   avatar: {
     width: 72,
@@ -672,6 +675,7 @@ const styles = StyleSheet.create({
   },
   avatarWrap: {
     position: 'relative',
+    flexShrink: 0,
   },
   avatarAction: {
     position: 'absolute',
@@ -688,33 +692,44 @@ const styles = StyleSheet.create({
   },
   profileInfo: {
     flex: 1,
+    minWidth: 0,
     gap: 3,
   },
   nameRow: {
     alignItems: 'center',
     gap: 6,
+    minWidth: 0,
+    width: '100%',
   },
   name: {
     fontSize: 20,
     fontWeight: '700' as const,
     color: Colors.textPrimary,
+    flexShrink: 1,
   },
   email: {
     fontSize: 14,
     color: Colors.textSecondary,
+    flexShrink: 1,
+    width: '100%',
   },
   roleBadge: {
     alignItems: 'center',
     gap: 4,
     marginTop: 2,
+    maxWidth: '100%',
+    flexWrap: 'wrap',
   },
   roleText: {
     fontSize: 12,
     fontWeight: '600' as const,
+    flexShrink: 1,
   },
   memberSince: {
     fontSize: 12,
     color: Colors.textMuted,
+    flexShrink: 1,
+    width: '100%',
   },
   statsRow: {
     justifyContent: 'space-around',
@@ -724,17 +739,24 @@ const styles = StyleSheet.create({
     borderTopColor: Colors.divider,
   },
   stat: {
+    flex: 1,
+    minWidth: 0,
     alignItems: 'center',
     gap: 4,
+    paddingHorizontal: 4,
   },
   statValue: {
     fontSize: 18,
     fontWeight: '700' as const,
     color: Colors.textPrimary,
+    textAlign: 'center',
+    width: '100%',
   },
   statLabel: {
     fontSize: 12,
     color: Colors.textMuted,
+    textAlign: 'center',
+    width: '100%',
   },
   statDivider: {
     width: 1,
@@ -757,30 +779,45 @@ const styles = StyleSheet.create({
   crRow: {
     alignItems: 'center',
     gap: 12,
+    minWidth: 0,
+    flexWrap: 'wrap',
+  },
+  crInfo: {
+    flex: 1,
+    minWidth: 0,
   },
   crLabel: {
     fontSize: 12,
     color: Colors.textMuted,
+    flexShrink: 1,
+    width: '100%',
   },
   crValue: {
     fontSize: 15,
     fontWeight: '600' as const,
     color: Colors.textPrimary,
     marginTop: 2,
+    flexShrink: 1,
+    width: '100%',
   },
   crStatusBadge: {
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 8,
+    flexShrink: 1,
+    maxWidth: '46%',
   },
   crStatusText: {
     fontSize: 12,
     fontWeight: '600' as const,
+    flexShrink: 1,
+    textAlign: 'center',
   },
   editProfileButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    flexWrap: 'wrap',
     gap: 8,
     marginHorizontal: 20,
     marginTop: 12,
@@ -793,6 +830,8 @@ const styles = StyleSheet.create({
     color: Colors.gold,
     fontSize: 15,
     fontWeight: '600' as const,
+    flexShrink: 1,
+    textAlign: 'center',
   },
   editSection: {
     marginHorizontal: 20,
@@ -807,11 +846,14 @@ const styles = StyleSheet.create({
   editHeader: {
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 12,
+    minWidth: 0,
   },
   editTitle: {
     fontSize: 17,
     fontWeight: '700' as const,
     color: Colors.textPrimary,
+    flexShrink: 1,
   },
   editField: {
     gap: 6,
@@ -838,6 +880,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    flexWrap: 'wrap',
     gap: 8,
     marginTop: 4,
   },
@@ -848,6 +891,8 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     fontSize: 16,
     fontWeight: '700' as const,
+    flexShrink: 1,
+    textAlign: 'center',
   },
   menuSection: {
     marginTop: 24,
@@ -863,10 +908,14 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 12,
+    minWidth: 0,
     borderBottomWidth: 1,
     borderBottomColor: Colors.divider,
   },
   menuLeft: {
+    flex: 1,
+    minWidth: 0,
     alignItems: 'center',
     gap: 12,
   },
@@ -882,6 +931,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: Colors.textPrimary,
     fontWeight: '500' as const,
+    flexShrink: 1,
   },
   logoutButton: {
     marginHorizontal: 20,
@@ -892,12 +942,15 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    flexWrap: 'wrap',
     gap: 8,
   },
   logoutText: {
     color: Colors.error,
     fontSize: 16,
     fontWeight: '600' as const,
+    flexShrink: 1,
+    textAlign: 'center',
   },
   deleteAccountButton: {
     marginHorizontal: 20,
@@ -911,6 +964,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600' as const,
     textDecorationLine: 'underline',
+    flexShrink: 1,
+    textAlign: 'center',
   },
   bottomPadding: {
     height: 40,
@@ -922,12 +977,17 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 8,
+    minWidth: 0,
     borderWidth: 1,
     borderColor: Colors.border,
   },
   editPickerText: {
     color: Colors.textPrimary,
     fontSize: 15,
+    flex: 1,
+    minWidth: 0,
+    flexShrink: 1,
   },
   editPickerDropdown: {
     backgroundColor: Colors.card,

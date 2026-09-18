@@ -3,11 +3,15 @@ import { View, Text, StyleSheet, ScrollView, Linking, Pressable } from 'react-na
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
 import { PUBLIC_LINKS } from '@/constants/publicLinks';
+import SettingsHeader from '@/components/SettingsHeader';
+import { useLanguage } from '@/contexts/LanguageContext';
 
 export default function PrivacyScreen() {
+  const { t } = useLanguage();
   return (
     <View style={styles.container}>
       <SafeAreaView edges={['top']} />
+      <SettingsHeader title={t('privacy_policy')} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={[styles.title, styles.rtlText]}>سياسة الخصوصية – Heavyar</Text>
         <Text style={[styles.paragraph, styles.rtlText]}>
