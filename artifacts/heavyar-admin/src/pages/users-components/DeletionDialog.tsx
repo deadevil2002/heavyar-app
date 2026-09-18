@@ -16,9 +16,10 @@ type Props = {
   selectAllMatching: boolean;
   filters: any;
   onJobStarted: (jobId: string) => void;
+  accountScope?: 'user' | 'provider' | 'driver';
 };
 
-export function DeletionDialog({ open, onOpenChange, targetUser, selectedIds, selectAllMatching, filters, onJobStarted }: Props) {
+export function DeletionDialog({ open, onOpenChange, targetUser, selectedIds, selectAllMatching, filters, onJobStarted, accountScope = 'user' }: Props) {
   const { language } = useAppState();
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
   const { toast } = useToast();
@@ -49,8 +50,10 @@ export function DeletionDialog({ open, onOpenChange, targetUser, selectedIds, se
     setLoading(true);
 
     const payload = targetUser
-      ? { uids: [targetUser.id] }
-      : (selectAllMatching ? { filters } : { uids: Array.from(selectedIds) });
+      ? { scope: accountScope, uids: [targetUser.id] }
+      : (selectAllMatching
+        ? { scope: accountScope, filters }
+        : { scope: accountScope, uids: Array.from(selectedIds) });
 
     previewMut.mutateAsync(payload)
       .then(setPreview)
@@ -69,7 +72,7 @@ export function DeletionDialog({ open, onOpenChange, targetUser, selectedIds, se
       setReason('');
       setConfirmation('');
     }
-  }, [open, targetUser, selectedIds, selectAllMatching]);
+  }, [open, targetUser, selectedIds, selectAllMatching, accountScope]);
 
   const handleConfirm = async () => {
     if (reason.length < 3) {

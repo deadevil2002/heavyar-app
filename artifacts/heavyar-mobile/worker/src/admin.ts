@@ -9,7 +9,7 @@ import { ensurePublicIdentifier, formatPublicIdentifier, isPublicIdentifier, PUB
 import { legacyProviderReady } from './moderation';
 
 export type AdminRole = 'super_admin' | 'admin';
-export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; authTime?: number; testInjected?: true };
+export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; displayName?: string; authTime?: number; testInjected?: true };
 export type LegacyListingEvaluation = { eligible: boolean; needsMigration: boolean; reasons: string[]; migrationAudit: boolean };
 
 export function evaluateLegacyEquipment(
@@ -201,7 +201,9 @@ async function listCollection(env: Env, collection: string, query: Record<string
     : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [];
   const rows = response.filter(item => item.document);
   const valueAt = (record: any, path: string): any => path.split('.').reduce((value, key) => value && typeof value === 'object' ? value[key] : undefined, record);
-  const activeFilters = FILTERS[collection].filter(field => query[field] !== undefined).map(field => [field, query[field]] as const);
+  // emailVerified is authoritative in Firebase Auth; never discard rows using
+  // the stale Firestore projection before Auth enrichment.
+  const activeFilters = FILTERS[collection].filter(field => query[field] !== undefined && !(collection === 'users' && field === 'emailVerified')).map(field => [field, query[field]] as const);
   const search = query.q?.trim().toLowerCase();
   if (search !== undefined && (!search || search.length > 200)) throw new Error('Invalid search query');
   const searchFields: Record<string, string[]> = {
@@ -228,9 +230,17 @@ async function listCollection(env: Env, collection: string, query: Record<string
   const lastReturned = docs[docs.length - 1]?.document;
   const cursorDocument = lastReturned || (rows.length >= structuredQuery.limit ? rows[rows.length - 1]?.document : undefined);
   const cursorSortValue = sort && cursorDocument ? (decode(cursorDocument)[sort] ?? null) : undefined;
+  const baseItems = docs.map(item => ({ id: String(item.document.name).split('/').pop(), ...redact(decode(item.document)) }));
+  const projection = (collection === 'users' || collection === 'providerProfiles' || collection === 'driverProfiles') && !queryOverride
+    ? await authoritativeAccountProjection(env, baseItems)
+    : baseItems;
+  const verifiedFilter = collection === 'users' && query.emailVerified !== undefined ? query.emailVerified === 'true' : undefined;
+  const filteredProjection = verifiedFilter === undefined ? projection : queryOverride
+    ? matching.filter(item => decode(item.document).emailVerified === verifiedFilter).slice(0, safeLimit).map(item => ({ id: String(item.document.name).split('/').pop(), ...redact(decode(item.document)) }))
+    : projection.filter(item => item.emailVerified === verifiedFilter);
   return {
-    items: docs.map(item => ({ id: String(item.document.name).split('/').pop(), ...redact(decode(item.document)) })),
-    ...(collection === 'users' && !cursor ? { total: matching.length, maxSelectable: 5000 } : {}),
+    items: filteredProjection,
+    ...(collection === 'users' && !cursor ? { total: queryOverride && verifiedFilter !== undefined ? matching.filter(item => decode(item.document).emailVerified === verifiedFilter).length : filteredProjection.length, maxSelectable: 5000 } : {}),
     // If a page filled, continue after the last delivered row—not after the
     // scan window—so sparse filters cannot drop matching documents. If no page
     // filled, advancing after the scan is safe because every matching row in it
@@ -238,6 +248,24 @@ async function listCollection(env: Env, collection: string, query: Record<string
     nextCursor: docs.length === safeLimit || rows.length >= structuredQuery.limit
       ? nextCursor(cursorDocument?.name || scanLast, cursorSortValue) : undefined,
   };
+}
+
+/** One bounded Auth lookup per page; Firebase remains the verification source. */
+async function authoritativeAccountProjection(env: Env, items: any[]) {
+  if (!items.length || !env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) return items;
+  const projectId = env.FIREBASE_PROJECT_ID;
+  const chunks: any[][] = [];
+  for (let i = 0; i < items.length; i += 100) chunks.push(items.slice(i, i + 100));
+  try {
+    const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+    const responses = await Promise.all(chunks.map(chunk => fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/accounts:lookup`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: chunk.map(item => String(item.uid || item.id)).filter(Boolean) }),
+    })));
+    if (responses.some(response => !response.ok)) return items;
+    const records = (await Promise.all(responses.map(response => response.json() as Promise<any>))).flatMap(body => body.users || []);
+    const verified = new Map(records.map((record: any) => [String(record.localId), record.emailVerified === true]));
+    return items.map(item => ({ ...item, emailVerified: verified.get(String(item.uid || item.id)) === true }));
+  } catch { return items; }
 }
 
 async function countCollection(env: Env, collection: string, filter?: { field: string; value: unknown }) {
@@ -433,8 +461,21 @@ export async function processStaffClaimSync(env: Env) {
 }
 
 async function auditWrite(env: Env, u: AdminUser, action: string, targetType: string, targetId: string, correlationId: string, reason: string, before?: any, after?: any) {
+  // Actor identity is enriched from server-side records.  Browser supplied
+  // email/name is only a fallback for test-injected actors and is never used
+  // to authorize or identify a different UID.
+  // Unit/integration callers may inject an authenticated actor with no
+  // Firestore bindings. Production requests always carry project bindings;
+  // preserving the injected actor here keeps audit-required operations
+  // testable without turning a missing test backend into a false audit loss.
+  const canResolveActor = !u.testInjected && Boolean(env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY);
+  const staff = canResolveActor && u.uid && u.uid !== 'system' ? await rawDoc(env, 'staffMembers', u.uid) : null;
+  const person = canResolveActor && u.uid && u.uid !== 'system' ? await rawDoc(env, 'users', u.uid) : null;
+  const actorEmail = normalizeAuthorityEmail(staff?.data?.email) || normalizeAuthorityEmail(person?.data?.email) || normalizeAuthorityEmail(u.email) || (u.uid === 'system' ? 'system' : 'unknown');
+  const actorName = String(staff?.data?.displayName || person?.data?.displayName || person?.data?.nameEn || person?.data?.nameAr || u.displayName || (u.uid === 'system' ? 'System' : 'Unknown actor'));
+  const actorRole = normalizeStaffRole(staff?.data?.role) || u.permissionRole || u.role || (u.uid === 'system' ? 'system' : 'admin');
   return { update: { name: fullName(env, `adminAudit/${encodeURIComponent(auditId(correlationId))}`), fields: {
-    actorUid: jsonValue(u.uid), actorRole: jsonValue(u.role || 'admin'), action: jsonValue(action), targetType: jsonValue(targetType), targetId: jsonValue(targetId),
+    actorUid: jsonValue(u.uid), initiatingActorUid: jsonValue(u.uid), actorEmail: jsonValue(actorEmail), actorName: jsonValue(actorName), actorRole: jsonValue(actorRole), action: jsonValue(action), targetType: jsonValue(targetType), targetId: jsonValue(targetId),
     reason: jsonValue(reason.slice(0, 1000)), correlationId: jsonValue(correlationId), timestamp: { timestampValue: new Date().toISOString() },
     before: jsonValue(before ? redact(before) : null), after: jsonValue(after ? redact(after) : null),
   } }, currentDocument: { exists: false } };
@@ -477,7 +518,7 @@ async function emailVerificationReminder(req: Request, env: Env, user: AdminUser
     return { error: 'Verification email cooldown active', status: 429, errorCode: 'cooldown_reservation_lost' };
   }
   const reservedRate = await rawDoc(env, 'emailVerificationRateLimits', uid);
-  let delivered = false, providerMessageId = '', deliveryOutcome: 'accepted' | 'firebase_accepted' | 'auth_failed' | 'sender_rejected' | 'rate_limited' | 'provider_error' | 'not_configured' = env.RESEND_API_KEY ? 'provider_error' : 'not_configured';
+  let delivered = false, providerAccepted = false, providerMessageId = '', deliveryOutcome: 'accepted' | 'firebase_accepted' | 'auth_failed' | 'sender_rejected' | 'rate_limited' | 'provider_error' | 'not_configured' = env.RESEND_API_KEY ? 'provider_error' : 'not_configured';
   const resendFrom = env.RESEND_FROM_EMAIL || 'Heavyar <noreply@mail.heavyar.com>';
   const resendSenderValid = /@mail\.heavyar\.com>?\s*$/i.test(resendFrom);
   if (env.RESEND_API_KEY && !resendSenderValid) deliveryOutcome = 'sender_rejected';
@@ -489,13 +530,14 @@ async function emailVerificationReminder(req: Request, env: Env, user: AdminUser
       if (response.ok && typeof result.oobLink === 'string') {
         const language: 'ar' | 'en' = person.data.language === 'en' || person.data.preferredLanguage === 'en' ? 'en' : 'ar';
         const sent = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: resendFrom, to: [email], subject: language === 'ar' ? 'وثّق بريدك الإلكتروني في Heavyar / Verify your Heavyar email' : 'Verify your Heavyar email / وثّق بريدك الإلكتروني في Heavyar', html: emailVerificationTemplate(result.oobLink, String(person.data.nameEn || person.data.nameAr || ''), env.RESEND_SUPPORT_EMAIL || 'support@mail.heavyar.com', language) }) });
-        delivered = sent.ok;
-        if (sent.ok) providerMessageId = String((await sent.json().catch(() => ({})) as any)?.id || '');
+         providerAccepted = sent.ok;
+         if (sent.ok) providerMessageId = String((await sent.json().catch(() => ({})) as any)?.id || '');
+         delivered = false; // provider acceptance is not delivery
         deliveryOutcome = sent.ok ? 'accepted' : sent.status === 401 || sent.status === 403 ? 'auth_failed' : sent.status === 429 ? 'rate_limited' : sent.status === 400 ? 'sender_rejected' : 'provider_error';
       }
     } catch { delivered = false; }
   }
-  if (!delivered && env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
+  if (!providerAccepted && env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
     try {
       const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
       const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:sendOobCode`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', email }) });
@@ -504,21 +546,41 @@ async function emailVerificationReminder(req: Request, env: Env, user: AdminUser
     } catch { delivered = false; }
   }
   const nowIso = new Date(now).toISOString();
-  const writes: any[] = [await auditWrite(env, user, 'email_verification_reminder', 'user', uid, crypto.randomUUID(), delivered ? 'verification reminder sent' : 'verification reminder delivery unavailable', undefined, { delivered, deliveryOutcome, ...(providerMessageId ? { providerMessageId } : {}) })];
-  writes.unshift({ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(uid)}`), fields: delivered
-    ? { uid: jsonValue(uid), lastSentAt: { timestampValue: nowIso }, nextAllowedAt: { timestampValue: new Date(now + cooldownSeconds * 1000).toISOString() }, count: { integerValue: String(Number(rate?.data?.count || 0) + 1) }, reservationToken: { nullValue: null }, reservationUntil: { nullValue: null } }
-    : { reservationToken: { nullValue: null }, reservationUntil: { nullValue: null } } }, updateMask: { fieldPaths: delivered ? ['uid', 'lastSentAt', 'nextAllowedAt', 'count', 'reservationToken', 'reservationUntil'] : ['reservationToken', 'reservationUntil'] }, currentDocument: reservedRate?.updateTime ? { updateTime: reservedRate.updateTime } : undefined });
+  const communicationStatus = providerAccepted ? 'accepted' : delivered ? 'accepted' : 'failed';
+  const writes: any[] = [await auditWrite(env, user, 'email_verification_reminder', 'user', uid, crypto.randomUUID(), providerAccepted || delivered ? 'verification reminder requested' : 'verification reminder delivery unavailable', undefined, { status: communicationStatus, delivered, deliveryOutcome, ...(providerMessageId ? { providerMessageId } : {}) })];
+  writes.unshift({ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(uid)}`), fields: delivered || providerAccepted
+     ? { uid: jsonValue(uid), lastSentAt: { timestampValue: nowIso }, nextAllowedAt: { timestampValue: new Date(now + cooldownSeconds * 1000).toISOString() }, count: { integerValue: String(Number(rate?.data?.count || 0) + 1) }, deliveryStatus: jsonValue(communicationStatus), providerMessageId: jsonValue(providerMessageId || null), reservationToken: { nullValue: null }, reservationUntil: { nullValue: null } }
+     : { reservationToken: { nullValue: null }, reservationUntil: { nullValue: null } } }, updateMask: { fieldPaths: delivered || providerAccepted ? ['uid', 'lastSentAt', 'nextAllowedAt', 'count', 'deliveryStatus', 'providerMessageId', 'reservationToken', 'reservationUntil'] : ['reservationToken', 'reservationUntil'] }, currentDocument: reservedRate?.updateTime ? { updateTime: reservedRate.updateTime } : undefined });
   await commit(env, writes);
-  if (!delivered) return { error: 'Verification email delivery failed', status: 502, deliveryOutcome };
-  return { success: true, sent: true, accepted: true, delivered: true, deliveryOutcome };
+   if (!providerAccepted && !delivered) return { error: 'Verification email delivery failed', status: 502, deliveryOutcome };
+   return { success: true, sent: true, requested: true, accepted: providerAccepted || delivered, delivered: false, deliveryStatus: communicationStatus, deliveryOutcome, ...(providerMessageId ? { providerMessageId } : {}) };
 }
 
+/**
+ * Resolve one targeting mode only:
+ * {scope|resource: 'user'|'provider'|'driver', uids: [...]}
+ * or {scope|resource: 'user'|'provider'|'driver', filters: {...}}.
+ */
 async function reminderTargets(env: Env, body: any) {
   const ids = new Set<string>();
+  const scope = body?.scope ?? body?.resource ?? 'user';
+  if (!['user', 'provider', 'driver'].includes(scope)) throw new Error('Invalid account scope');
+  if (Array.isArray(body.uids) && body.filters !== undefined) throw new Error('Choose either explicit IDs or filters');
+  const scoped = new Set<string>();
+  if (scope !== 'user') {
+    let cursor: string | null = null;
+    do {
+      const rolePage = await listCollection(env, 'users', { role: scope }, 50, cursor);
+      rolePage.items.forEach(item => scoped.add(String(item.id)));
+      cursor = rolePage.nextCursor || null;
+    } while (cursor && scoped.size <= 5000);
+    // An empty scoped role must never fall back to all users.
+    if (!scoped.size && (Array.isArray(body.uids) || body.filters !== undefined)) throw new Error(`No ${scope} accounts matched the requested scope`);
+  }
   if (Array.isArray(body.uids)) {
     if (body.uids.length > 5000) throw Object.assign(new Error('Too many targets; narrow the selection'), { status: 413, code: 'too_many_targets' });
     if (body.uids.some((id: any) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id))) throw new Error('Invalid user IDs');
-    body.uids.forEach((id: string) => ids.add(id));
+    body.uids.forEach((id: string) => { if (scope === 'user' || scoped.has(id)) ids.add(id); });
   }
   if (body.filters !== undefined) {
     if (!body.filters || typeof body.filters !== 'object' || Array.isArray(body.filters) ||
@@ -527,17 +589,18 @@ async function reminderTargets(env: Env, body: any) {
         if (key === 'emailVerified') return typeof value !== 'boolean' && (typeof value !== 'string' || !['true', 'false'].includes(value));
         return true;
       })) throw new Error('Invalid filters');
-    const filters = Object.fromEntries(Object.entries(body.filters).map(([key, value]) => [key, key === 'emailVerified' ? String(value) : String(value)]));
+     const filters = Object.fromEntries(Object.entries(body.filters).map(([key, value]) => [key, key === 'emailVerified' ? String(value) : String(value)]));
+     if (scope !== 'user') filters.role = scope;
     let cursor: string | null = null;
     for (;;) {
       const result = await listCollection(env, 'users', filters, 50, cursor);
-      result.items.forEach(item => ids.add(String(item.id)));
+       result.items.forEach(item => { const id = String(item.id); if (scope === 'user' || scoped.has(id)) ids.add(id); });
       if (ids.size > 5000) throw Object.assign(new Error('Too many targets; narrow the selection'), { status: 413, code: 'too_many_targets' });
       cursor = result.nextCursor || null;
       if (!cursor) break;
     }
   }
-  if (!ids.size) throw new Error('At least one user ID or filter is required');
+   if (!ids.size) throw new Error(scope === 'user' ? 'At least one user ID or filter is required' : `No ${scope} accounts matched the requested scope`);
   return [...ids];
 }
 async function reminderSummary(env: Env, ids: string[]) {
@@ -589,7 +652,7 @@ async function bulkEmailVerificationReminder(req: Request, env: Env, user: Admin
     }
     try {
       const result = await emailVerificationReminder(new Request(req.url, { method: 'POST', body: JSON.stringify({ uid }), headers: { 'Content-Type': 'application/json' } }), env, user);
-      if ((result as any).delivered) { counts.sent++; results.push({ uid, status: 'sent' }); }
+       if ((result as any).delivered || (result as any).accepted) { counts.sent++; results.push({ uid, status: (result as any).delivered ? 'sent' : 'accepted' }); }
       else if ((result as any).status === 429) { counts.skippedCooldown++; results.push({ uid, status: 'cooldown' }); }
       else { counts.failed++; results.push({ uid, status: (result as any).error || 'failed' }); }
     } catch (error) {
@@ -727,9 +790,9 @@ async function enqueueDeletion(req: Request, env: Env, actor: AdminUser) {
     if (prior?.data?.status === 'completed') continue;
     eligible.push(uid);
     jobs.push(id);
-    writes.push({ update: { name: fullName(env, `deletionRequests/${encodeURIComponent(id)}`), fields: Object.fromEntries(Object.entries({ uid, parentJobId: jobId, status: 'queued', stage: 'auth', completedStages: [], errors: [], actorUid: actor.uid, reason, createdAt: now, updatedAt: now }).map(([k, v]) => [k, jsonValue(v)])) }, currentDocument: prior?.updateTime ? { updateTime: prior.updateTime } : { exists: false } });
+     writes.push({ update: { name: fullName(env, `deletionRequests/${encodeURIComponent(id)}`), fields: Object.fromEntries(Object.entries({ uid, parentJobId: jobId, status: 'queued', stage: 'auth', completedStages: [], errors: [], actorUid: actor.uid, initiatingActorUid: actor.uid, reason, createdAt: now, updatedAt: now }).map(([k, v]) => [k, jsonValue(v)])) }, currentDocument: prior?.updateTime ? { updateTime: prior.updateTime } : { exists: false } });
   }
-  writes.push({ update: { name: fullName(env, `deletionJobs/${encodeURIComponent(jobId)}`), fields: Object.fromEntries(Object.entries({ status: eligible.length ? 'queued' : 'completed', total: eligible.length, completed: eligible.length ? 0 : 0, jobIds: jobs, actorUid: actor.uid, reason, result: { completed: 0, skipped: uids.length - eligible.length }, createdAt: now, updatedAt: now }).map(([k, v]) => [k, jsonValue(v)])) }, currentDocument: { exists: false } });
+   writes.push({ update: { name: fullName(env, `deletionJobs/${encodeURIComponent(jobId)}`), fields: Object.fromEntries(Object.entries({ status: eligible.length ? 'queued' : 'completed', total: eligible.length, completed: eligible.length ? 0 : 0, jobIds: jobs, actorUid: actor.uid, initiatingActorUid: actor.uid, reason, result: { completed: 0, skipped: uids.length - eligible.length }, createdAt: now, updatedAt: now }).map(([k, v]) => [k, jsonValue(v)])) }, currentDocument: { exists: false } });
   if (writes.length) {
     const targetAudits = await Promise.all(eligible.map(uid => auditWrite(env, actor, 'user_deletion_target_queued', 'user', uid, `${jobId}:${uid}`, reason, undefined, { status: 'queued' })));
     await commit(env, [...writes, ...targetAudits, await auditWrite(env, actor, 'user_deletion_queued', 'deletionJob', jobId, crypto.randomUUID(), reason, undefined, { total: eligible.length })]);
@@ -757,7 +820,7 @@ async function processDeletionJob(env: Env, row: any) {
         const currentTarget = await rawDoc(env, 'users', uid);
         if (!currentTarget?.data || await protectedDeletionTarget(env, { uid: String(job.actorUid || ''), admin: true, role: 'super_admin', permissionRole: 'owner' }, uid, currentTarget.data)) {
           const summary = { status: 'skipped_protected', stage: 'auth', deleted: 0, anonymized: 0, retained: 0, media: 0 };
-          await commit(env, [{ update: { name, fields: { status: jsonValue('skipped_protected'), result: jsonValue(summary), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'result', 'leaseOwner', 'leaseUntil', 'updatedAt'] } }, await auditWrite(env, { uid: String(job.actorUid || 'system'), admin: true, role: 'super_admin' }, 'user_deletion_target_terminal', 'user', uid, `deletion-skipped-protected:${uid}`, 'deletion target became protected', undefined, summary)]);
+           await commit(env, [{ update: { name, fields: { status: jsonValue('skipped_protected'), result: jsonValue(summary), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), initiatingActorUid: jsonValue(job.initiatingActorUid || job.actorUid || null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'result', 'leaseOwner', 'leaseUntil', 'initiatingActorUid', 'updatedAt'] } }, await auditWrite(env, { uid: 'system', admin: true, role: 'super_admin' }, 'user_deletion_target_terminal', 'user', uid, `deletion-skipped-protected:${uid}`, 'deletion target became protected', { initiatingActorUid: job.initiatingActorUid || job.actorUid }, summary)]);
           return;
         }
         if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) throw new Error('auth_config_missing');
@@ -867,7 +930,7 @@ async function processDeletionJob(env: Env, row: any) {
       errors.push(`${stage}:${error instanceof Error ? error.message : 'failed'}`);
       const attempts = Number(job.attempts || 0) + 1;
       const status = attempts >= 5 ? 'failed' : 'partially_completed';
-      await commit(env, [{ update: { name, fields: { status: jsonValue(status), attempts: { integerValue: String(attempts) }, errors: jsonValue(errors), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'attempts', 'errors', 'leaseOwner', 'leaseUntil', 'updatedAt'] } }, await auditWrite(env, { uid: String(job.actorUid || 'system'), admin: true, role: 'super_admin' }, 'user_deletion_target_terminal', 'user', uid, crypto.randomUUID(), 'deletion stage failed', undefined, { status, stage, errors: errors.slice(-1) })]);
+       await commit(env, [{ update: { name, fields: { status: jsonValue(status), attempts: { integerValue: String(attempts) }, errors: jsonValue(errors), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), initiatingActorUid: jsonValue(job.initiatingActorUid || job.actorUid || null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'attempts', 'errors', 'leaseOwner', 'leaseUntil', 'initiatingActorUid', 'updatedAt'] } }, await auditWrite(env, { uid: 'system', admin: true, role: 'super_admin' }, 'user_deletion_target_terminal', 'user', uid, crypto.randomUUID(), 'deletion stage failed', { initiatingActorUid: job.initiatingActorUid || job.actorUid }, { status, stage, errors: errors.slice(-1) })]);
       return;
     }
   }
@@ -886,7 +949,7 @@ export async function processDeletionJobs(env: Env) {
     const summaries = decoded.map((x: any) => x.result || {});
     const result = { completed, failed, total, deleted: summaries.reduce((n: number, x: any) => n + Number(x.deleted || 0), 0), anonymized: summaries.reduce((n: number, x: any) => n + Number(x.anonymized || 0), 0), retained: summaries.reduce((n: number, x: any) => n + Number(x.retained || 0), 0), media: summaries.reduce((n: number, x: any) => n + Number(x.media || 0), 0), errors: summaries.flatMap((x: any) => x.errors || []) };
     const writes: any[] = [{ update: { name: fullName(env, `deletionJobs/${encodeURIComponent(parent)}`), fields: { status: jsonValue(status), completed: { integerValue: String(completed) }, result: jsonValue(result), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'completed', 'result', 'updatedAt'] } }];
-    if (job.data.status !== status && ['completed', 'partially_completed'].includes(status)) writes.push(await auditWrite(env, { uid: String(job.data.actorUid || 'system'), admin: true, role: 'super_admin' }, 'user_deletion_job_terminal', 'deletionJob', parent, `deletion-terminal:${parent}:${status}`, 'deletion job terminal result', undefined, { status, ...result }));
+     if (job.data.status !== status && ['completed', 'partially_completed'].includes(status)) writes.push(await auditWrite(env, { uid: 'system', admin: true, role: 'super_admin' }, 'user_deletion_job_terminal', 'deletionJob', parent, `deletion-terminal:${parent}:${status}`, 'deletion job terminal result', { initiatingActorUid: job.data.initiatingActorUid || job.data.actorUid }, { status, initiatingActorUid: job.data.initiatingActorUid || job.data.actorUid, ...result }));
     await commit(env, writes);
   }
 }
@@ -980,14 +1043,17 @@ async function enrichAdminItems(env: Env, collection: string, items: any[]) {
   if (!items.length) return items;
   const needed = new Set<string>();
   for (const item of items) {
-    for (const key of ['ownerUid', 'customerUid', 'providerUid', 'uid', 'customerId', 'providerId']) {
+    for (const key of ['ownerUid', 'customerUid', 'providerUid', 'uid', ...(collection === 'users' || collection === 'providerProfiles' || collection === 'driverProfiles' ? ['id'] : []), 'customerId', 'providerId']) {
       if (typeof item[key] === 'string' && item[key]) needed.add(item[key]);
     }
   }
   const people = new Map<string, any>();
+  const reminders = new Map<string, any>();
   await Promise.all([...needed].slice(0, 50).map(async (uid) => {
     const user = await rawDoc(env, 'users', uid);
     if (user?.data) people.set(uid, redact(user.data));
+    const rate = await rawDoc(env, 'emailVerificationRateLimits', uid);
+    if (rate?.data) reminders.set(uid, redact(rate.data));
   }));
   const equipment = new Map<string, any>();
   const equipmentIds = [...new Set(items.map((item) => item.equipmentId).filter((id): id is string => typeof id === 'string' && id.length > 0))].slice(0, 50);
@@ -997,11 +1063,22 @@ async function enrichAdminItems(env: Env, collection: string, items: any[]) {
   }));
   return items.map((item) => {
     const record = { ...item };
+    const accountUid = String(record.uid || record.id || '');
+    const reminder = reminders.get(accountUid);
+    if (reminder) {
+      record.verificationReminder = { lastSentAt: reminder.lastSentAt, count: Number(reminder.count || 0), nextAllowedAt: reminder.nextAllowedAt, deliveryStatus: reminder.deliveryStatus, providerMessageId: reminder.providerMessageId };
+      record.lastVerificationReminderAt = reminder.lastSentAt;
+      record.verificationReminderCount = Number(reminder.count || 0);
+      record.verificationReminderNextAllowedAt = reminder.nextAllowedAt;
+      record.verificationReminderDeliveryStatus = reminder.deliveryStatus;
+      record.verificationReminderProviderMessageId = reminder.providerMessageId;
+    }
     if (collection === 'users') record.displayName = displayName(record);
     if (collection === 'driverProfiles') {
       const person = people.get(record.uid || record.id);
       record.displayName = displayName(record, displayName(person));
       if (person?.email) record.email = person.email;
+      if (typeof person?.emailVerified === 'boolean') record.emailVerified = person.emailVerified;
     }
     if (collection === 'equipment') {
       const owner = people.get(record.ownerUid);
@@ -1407,12 +1484,17 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
   const rawTargetType = String(payload.targetType || targetType);
   const authConfigTarget = rawTargetType === 'authConfig' && targetId === 'default';
   if (authConfigTarget) targetId = 'auth';
-  const collection = TARGET_COLLECTIONS[rawTargetType];
+   let collection = TARGET_COLLECTIONS[rawTargetType];
+   // Provider actions are account lifecycle operations, not configuration
+   // toggles. The provider page supplies the canonical Firebase UID.
+   const providerLifecycleActions = ['approve_provider', 'reject_provider', 'suspend_provider', 'restore_provider', 'reactivate_provider'];
+   if ((rawTargetType === 'provider' || rawTargetType === 'providerConfig' || rawTargetType === 'provider-config' || rawTargetType === 'provider-configs') && providerLifecycleActions.includes(actionName)) collection = 'users';
   const normalizedType = collection === 'users' ? 'user' : collection === 'payments' ? 'payment' : collection === 'complaints' ? 'complaint' : collection === 'equipmentRequests' ? 'request' : collection === 'providerConfigs' ? 'providerConfig' : collection === 'heavyarConfig' ? 'config' : collection === 'verificationCases' ? 'verification' : collection;
   const reason = String(payload.reason || payload.note || '').trim();
   const correlationId = String(req.headers.get('X-Correlation-ID') || crypto.randomUUID());
-  if (!validCorrelationId(correlationId)) return { error: 'Invalid correlation ID', status: 400 };
-  if (!actionName || !rawTargetType || !collection || !targetId || reason.length < 3 || reason.length > 1000) return { error: 'Invalid action target or reason', status: 400 };
+   if (!validCorrelationId(correlationId)) return { error: 'Invalid correlation ID', status: 400 };
+   const reasonRequired = ['reject_listing', 'suspend_listing', 'reject_driver', 'suspend_driver', 'reject_provider', 'suspend_provider', 'suspend_user', 'permanent_remove_user', 'permanent_remove_provider', 'permanent_remove_driver', 'delete_account', 'permanent_policy_removal'].includes(actionName);
+   if (!actionName || !rawTargetType || !collection || !targetId || reason.length > 1000 || reasonRequired && reason.length < 1) return { error: 'Invalid action target or reason', status: 400 };
   if (actionName === 'grant_role' || actionName === 'revoke_role') {
     // Staff authority is intentionally never granted by a generic user action.
     // An invitation must be accepted by the verified Firebase identity instead.
@@ -1420,12 +1502,25 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
   }
   let targetCollection = collection;
   let auditTarget = normalizedType;
-  const raw = await rawDoc(env, collection, targetId);
+   const raw = await rawDoc(env, collection, targetId);
   const isDefaultVerificationPolicy = targetCollection === 'verificationPolicies' && targetId === 'default' && actionName === 'update_verification_policy';
   if ((!raw?.data || !raw.updateTime) && !isDefaultVerificationPolicy && !(normalizedType === 'paymentGateway' && targetId === String(targetId)) && !(normalizedType === 'identityIntegrations' && targetId === 'nafath_rabet') && !(normalizedType === 'config' && (can(u, 'staff.manage') || can(u, 'config.manage')))) return { error: 'Target not found', status: 404 };
   const current = raw?.data || {};
   let fields: Record<string, any> = {};
-  if (normalizedType === 'equipment' && ['archive_listing', 'delete_listing', 'hide_listing', 'show_listing'].includes(actionName)) {
+   if (normalizedType === 'user' && providerLifecycleActions.includes(actionName)) {
+     if (!can(u, 'moderation.manage') && !can(u, 'operations.manage')) return { error: 'Provider operations permission required', status: 403 };
+     const uid = targetId;
+     const profile = await rawDoc(env, 'providerProfiles', uid);
+     if (!profile?.data && current.role !== 'provider') return { error: 'Provider account not found', status: 404 };
+     if (actionName === 'approve_provider' && await emailVerificationRequiredForSensitiveAction(env, uid, current, u, 'driver')) return { error: 'EMAIL_VERIFICATION_REQUIRED', errorCode: 'EMAIL_VERIFICATION_REQUIRED', status: 403 };
+     const approved = actionName === 'approve_provider' || actionName === 'restore_provider' || actionName === 'reactivate_provider';
+     fields = {
+       accountStatus: jsonValue(approved ? 'active' : actionName === 'reject_provider' ? 'rejected' : 'suspended'),
+       suspensionStatus: jsonValue(approved ? 'active' : 'temporarily_suspended'),
+       providerStatus: jsonValue(approved ? 'approved' : actionName === 'reject_provider' ? 'rejected' : 'suspended'),
+       moderationReason: jsonValue(reason), moderatedBy: jsonValue(u.uid), moderatedAt: { timestampValue: new Date().toISOString() },
+     };
+   } else if (normalizedType === 'equipment' && ['archive_listing', 'delete_listing', 'hide_listing', 'show_listing'].includes(actionName)) {
     if (!can(u, 'moderation.manage') && !can(u, 'operations.manage')) return { error: 'Listing operations permission required', status: 403 };
     if (await listingRentalState(env, targetId)) return { error: 'Listing has an active rental', status: 409 };
     if (actionName === 'delete_listing') {
@@ -1436,10 +1531,11 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     fields = actionName === 'archive_listing'
       ? { isActive: jsonValue(false), visibility: jsonValue('archived'), archivedAt: { timestampValue: new Date().toISOString() }, archivedBy: jsonValue(u.uid) }
       : { isActive: jsonValue(actionName === 'show_listing' && current.moderationStatus === 'approved'), visibility: jsonValue(actionName === 'show_listing' ? 'visible' : 'hidden'), visibilityUpdatedBy: jsonValue(u.uid), visibilityUpdatedAt: { timestampValue: new Date().toISOString() } };
-  } else if (normalizedType === 'driverProfile' && ['approve_driver', 'reject_driver', 'suspend_driver'].includes(actionName)) {
+   } else if (normalizedType === 'driverProfile' && ['approve_driver', 'reject_driver', 'suspend_driver', 'restore_driver', 'reactivate_driver'].includes(actionName)) {
     if (!can(u, 'moderation.manage') && !can(u, 'operations.manage')) return { error: 'Driver operations permission required', status: 403 };
-    if (actionName === 'approve_driver' && await emailVerificationRequiredForSensitiveAction(env, String(current.uid || targetId), await rawDoc(env, 'users', String(current.uid || targetId)).then(item => item?.data), u, 'driver')) return { error: 'EMAIL_VERIFICATION_REQUIRED', errorCode: 'EMAIL_VERIFICATION_REQUIRED', status: 403 };
-    fields = { active: jsonValue(actionName === 'approve_driver'), moderationStatus: jsonValue(actionName === 'approve_driver' ? 'approved' : actionName === 'reject_driver' ? 'rejected' : 'suspended'), moderationReason: jsonValue(reason), moderatedBy: jsonValue(u.uid), moderatedAt: { timestampValue: new Date().toISOString() } };
+     if ((actionName === 'approve_driver' || actionName === 'restore_driver' || actionName === 'reactivate_driver') && await emailVerificationRequiredForSensitiveAction(env, String(current.uid || targetId), await rawDoc(env, 'users', String(current.uid || targetId)).then(item => item?.data), u, 'driver')) return { error: 'EMAIL_VERIFICATION_REQUIRED', errorCode: 'EMAIL_VERIFICATION_REQUIRED', status: 403 };
+     const driverActive = ['approve_driver', 'restore_driver', 'reactivate_driver'].includes(actionName);
+     fields = { active: jsonValue(driverActive), moderationStatus: jsonValue(driverActive ? 'approved' : actionName === 'reject_driver' ? 'rejected' : 'suspended'), moderationReason: jsonValue(reason), moderatedBy: jsonValue(u.uid), moderatedAt: { timestampValue: new Date().toISOString() } };
   } else if (normalizedType === 'paymentGateway' && actionName === 'update_gateway') {
     if (!can(u, 'config.manage')) return { error: 'Configuration permission required', status: 403 };
     const registry = gatewayRegistry(env), gateway = String(targetId) as keyof typeof registry;
@@ -1631,6 +1727,7 @@ async function sendAuthorityInvitation(
   // The route is fixed to the trusted production admin UI. Request Host and
   // forwarded headers must never influence a bearer-style invitation link.
   const acceptanceUrl = `${AUTHORITY_INVITATION_ORIGIN}/accept-invite?type=${type}&token=${encodeURIComponent(token)}`;
+  const expiry = new Date(expiresAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' });
   const sent = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
@@ -1638,10 +1735,12 @@ async function sendAuthorityInvitation(
       from: env.RESEND_FROM_EMAIL || 'Heavyar <noreply@mail.heavyar.com>',
       to: [email],
       subject,
-      html: `<p>${escapeHtml(label)}</p><p>This ${type === 'ownership' ? 'ownership transfer' : 'staff access'} invitation expires at <strong>${escapeHtml(expiresAt)}</strong>.</p><p><a href="${acceptanceUrl}">Accept ${type === 'ownership' ? 'ownership transfer' : 'staff invitation'}</a></p><p>Accepting this link requires signing in with the invited, email-verified account.</p>`,
+       html: `<div dir="rtl" lang="ar"><h1>HEAVYAR</h1><h2>دعوة للانضمام إلى فريق Heavyar</h2><p>${escapeHtml(label)}</p><p>تنتهي الدعوة في <strong>${escapeHtml(expiry)} UTC</strong>.</p><p><a href="${acceptanceUrl}">قبول الدعوة</a></p><p>هذه الدعوة مخصصة للمستلم فقط وتتطلب حساباً موثق البريد.</p><hr dir="ltr"><div dir="ltr"><h2>Heavyar team invitation</h2><p>This invitation expires <strong>${escapeHtml(expiry)} UTC</strong>.</p><p><a href="${acceptanceUrl}">Accept invitation</a></p><p>For the intended recipient only. Sign in with the invited, email-verified account.</p></div></div>`,
     }),
   });
   if (!sent.ok) throw new Error('Invitation delivery unavailable');
+  const result: any = await sent.json().catch(() => ({}));
+  return typeof result?.id === 'string' ? result.id : undefined;
 }
 
 async function invitationToken(token: string) {
@@ -1661,16 +1760,18 @@ async function createStaffInvitation(req: Request, env: Env, user: AdminUser) {
   await commit(env, [
     { update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: {
       email: jsonValue(email), role: jsonValue(role), invitedBy: jsonValue(user.uid), status: jsonValue('pending'),
-      expiresAt: { timestampValue: expiresAt }, createdAt: { timestampValue: now },
+       expiresAt: { timestampValue: expiresAt }, createdAt: { timestampValue: now },
+       deliveryStatus: jsonValue('requested'), deliveryRequestedAt: { timestampValue: now },
     } }, currentDocument: { exists: false } },
     await auditWrite(env, user, 'staff_invite_created', 'staffInvitation', id, crypto.randomUUID(), 'staff invitation created'),
   ]);
   try {
-    await sendAuthorityInvitation(env, email, token, 'staff', expiresAt, 'Heavyar staff invitation', 'You have been invited to Heavyar staff access.');
+    const providerMessageId = await sendAuthorityInvitation(env, email, token, 'staff', expiresAt, 'دعوة للانضمام إلى فريق Heavyar / Heavyar staff invitation', 'دعوة للانضمام إلى فريق Heavyar. You have been invited to Heavyar staff access.');
+    await commit(env, [{ update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: { deliveryStatus: jsonValue('accepted'), providerMessageId: jsonValue(providerMessageId || null), deliveryAcceptedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['deliveryStatus', 'providerMessageId', 'deliveryAcceptedAt'] } }]);
   } catch {
     // The invitation cannot become an untracked delivery.  It remains pending
     // only for the documented expiry period and administrators can revoke it.
-    await commit(env, [await auditWrite(env, user, 'staff_invite_delivery_failed', 'staffInvitation', id, crypto.randomUUID(), 'invitation delivery failed')]);
+     await commit(env, [{ update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: { deliveryStatus: jsonValue('failed'), deliveryFailedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['deliveryStatus', 'deliveryFailedAt'] } }, await auditWrite(env, user, 'staff_invite_delivery_failed', 'staffInvitation', id, crypto.randomUUID(), 'invitation delivery failed')]);
     return { error: 'Invitation delivery unavailable', status: 503 };
   }
   return { success: true, invitationId: id, expiresAt, status: 'pending' };
@@ -1703,10 +1804,36 @@ async function cancelStaffInvitation(req: Request, env: Env, user: AdminUser) {
   const invitation = await rawDoc(env, 'staffInvitations', id);
   if (!invitation?.data || invitation.data.status !== 'pending') return { error: 'Pending invitation not found', status: 404 };
   await commit(env, [
-    { update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: { status: jsonValue('revoked'), revokedBy: jsonValue(user.uid), revokedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'revokedBy', 'revokedAt'] }, currentDocument: { updateTime: invitation.updateTime } },
+     { update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: { status: jsonValue('cancelled'), cancelledBy: jsonValue(user.uid), cancelledAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'cancelledBy', 'cancelledAt'] }, currentDocument: { updateTime: invitation.updateTime } },
     await auditWrite(env, user, 'staff_invitation_revoked', 'staffInvitation', id, crypto.randomUUID(), reason),
   ]);
-  return { success: true, invitationId: id, status: 'revoked' };
+   return { success: true, invitationId: id, status: 'cancelled' };
+}
+
+async function resendStaffInvitation(req: Request, env: Env, user: AdminUser) {
+  if (!can(user, 'staff.manage')) return { error: 'Staff management permission required', status: 403 };
+  const body: any = await req.json().catch(() => null), id = String(body?.id || body?.invitationId || '');
+  if (!/^invite:[A-Za-z0-9_-]{20,}$/.test(id)) return { error: 'Invalid invitation', status: 400 };
+  const invitation = await rawDoc(env, 'staffInvitations', id);
+  if (!invitation?.data || invitation.data.status !== 'pending' || !pendingAndUnexpired(invitation.data)) return { error: 'Pending invitation not found or expired', status: 409 };
+  const last = Date.parse(String(invitation.data.lastResentAt || invitation.data.createdAt || 0));
+  if (Number.isFinite(last) && Date.now() - last < 300000) return { error: 'Invitation resend cooldown active', status: 429 };
+  const token = crypto.randomUUID(), hash = await invitationToken(token);
+  if (!hash) return { error: 'Invitation token unavailable', status: 409 };
+  const nextId = `invite:${hash}`;
+  const now = new Date().toISOString();
+  try {
+    const providerMessageId = await sendAuthorityInvitation(env, String(invitation.data.email), token, 'staff', String(invitation.data.expiresAt), 'دعوة للانضمام إلى فريق Heavyar / Heavyar staff invitation', 'دعوة للانضمام إلى فريق Heavyar. You have been invited to Heavyar staff access.');
+    await commit(env, [
+      { update: { name: fullName(env, `staffInvitations/${encodeURIComponent(id)}`), fields: { status: jsonValue('cancelled'), supersededBy: jsonValue(nextId), cancelledAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['status', 'supersededBy', 'cancelledAt'] }, currentDocument: { updateTime: invitation.updateTime } },
+      { update: { name: fullName(env, `staffInvitations/${encodeURIComponent(nextId)}`), fields: { ...Object.fromEntries(Object.entries(invitation.data).map(([key, value]) => [key, jsonValue(value)])), tokenHash: jsonValue(hash), status: jsonValue('pending'), createdAt: { timestampValue: now }, deliveryStatus: jsonValue('accepted'), providerMessageId: jsonValue(providerMessageId || null), resendCount: { integerValue: String(Number(invitation.data.resendCount || 0) + 1) } } }, currentDocument: { exists: false } },
+      await auditWrite(env, user, 'staff_invite_resent', 'staffInvitation', nextId, crypto.randomUUID(), 'staff invitation resent'),
+    ]);
+    return { success: true, invitationId: nextId, deliveryStatus: 'accepted' };
+  } catch {
+    await commit(env, [await auditWrite(env, user, 'staff_invite_delivery_failed', 'staffInvitation', id, crypto.randomUUID(), 'invitation resend failed')]);
+    return { error: 'Invitation delivery unavailable', status: 503 };
+  }
 }
 
 /** Exported for the non-admin route dispatcher: acceptance is deliberately public-to-authenticated. */
@@ -1715,6 +1842,7 @@ export async function acceptStaffInvitation(req: Request, env: Env, user: AdminU
   if (!hash) return { error: 'Invalid invitation', status: 400 };
   const raw = await rawDoc(env, 'staffInvitations', `invite:${hash}`);
   const email = await verifiedIdentityEmail(env, user);
+  if (raw?.data?.status === 'accepted' && raw.data.acceptedBy === user.uid) return { success: true, role: invitationRole(raw.data.role), status: 'accepted', idempotent: true, claimsStatus: 'synchronized' };
   if (!email || !pendingAndUnexpired(raw?.data) || raw!.data.email !== email) return { error: 'Invitation is invalid or expired', status: 403 };
   const role = invitationRole(raw!.data.role);
   if (!role) return { error: 'Invitation is invalid', status: 403 };
@@ -1732,8 +1860,23 @@ export async function acceptStaffInvitation(req: Request, env: Env, user: AdminU
       await auditWrite(env, user, 'staff_invitation_accepted', 'staffInvitation', `invite:${hash}`, crypto.randomUUID(), 'invitation accepted'),
     ]);
   } catch { return { error: 'Invitation has already been accepted', status: 409 }; }
-  env.__executionCtx?.waitUntil(processStaffClaimSync(env));
-  return { success: true, role, status: 'accepted' };
+   try {
+     await setRole(env, user, user.uid, role);
+     return { success: true, role, status: 'accepted', claimsStatus: 'synchronized' };
+   } catch {
+     env.__executionCtx?.waitUntil(processStaffClaimSync(env));
+     return { success: true, role, status: 'accepted', claimsStatus: 'pending', claimsPoll: `/api/staff/invitations/details?token=${encodeURIComponent(String(body?.token || ''))}` };
+   }
+}
+
+/** Safe pre-auth invitation inspection; never returns the bearer token. */
+export async function staffInvitationDetails(req: Request, env: Env) {
+  const url = new URL(req.url), token = String(url.searchParams.get('token') || '');
+  const hash = await invitationToken(token), invitation = hash ? await rawDoc(env, 'staffInvitations', `invite:${hash}`) : null;
+  if (!hash || !invitation?.data) return { error: 'Invitation not found', status: 404 };
+  const data = invitation.data, status = data.status === 'pending' && !pendingAndUnexpired(data) ? 'expired' : String(data.status || 'unknown');
+  const email = normalizeAuthorityEmail(data.email) || '';
+  return { success: true, invitation: { id: `invite:${hash}`, status, email: email.replace(/^(.{2}).*(@.*)$/, '$1•••$2'), role: invitationRole(data.role), createdAt: data.createdAt, expiresAt: data.expiresAt, invitedBy: data.invitedBy, deliveryStatus: data.deliveryStatus || 'requested', acceptedAt: data.acceptedAt, acceptedBy: data.acceptedBy, cancelledAt: data.cancelledAt, claimsStatus: status === 'accepted' ? 'synchronized' : 'not_ready' } };
 }
 
 async function ownership(req: Request, env: Env, user: AdminUser, operation: 'initiate' | 'accept' | 'cancel' | 'read') {
@@ -1925,6 +2068,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   if ((url.pathname === '/api/admin/staff/invitations' || url.pathname === '/api/admin/staff/invite') && req.method === 'POST') return createStaffInvitation(req, env, user);
   if (url.pathname === '/api/admin/staff/revoke' && req.method === 'POST') return revokeStaffAuthority(req, env, user);
   if (url.pathname === '/api/admin/staff/invitations/cancel' && req.method === 'POST') return cancelStaffInvitation(req, env, user);
+  if (url.pathname === '/api/admin/staff/invitations/resend' && req.method === 'POST') return resendStaffInvitation(req, env, user);
   if (url.pathname === '/api/admin/ownership' && req.method === 'GET') return ownership(req, env, user, 'read');
   if (url.pathname === '/api/admin/ownership' && req.method === 'POST') return ownership(req, env, user, 'initiate');
   if (url.pathname === '/api/admin/ownership/cancel' && req.method === 'POST') return ownership(req, env, user, 'cancel');
@@ -2011,7 +2155,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   }
   const detailMatch = url.pathname.match(/^\/api\/admin\/detail\/([^/]+)\/([^/]+)$/);
   if (detailMatch) {
-    const aliases: Record<string, string> = { request: 'equipmentRequests', provider: 'users', driver: 'driverProfiles', listing: 'equipment', authConfig: 'heavyarConfig' };
+    const aliases: Record<string, string> = { request: 'equipmentRequests', provider: 'users', providers: 'users', providerProfile: 'users', providerProfiles: 'users', driver: 'driverProfiles', drivers: 'driverProfiles', listing: 'equipment', authConfig: 'heavyarConfig' };
     const collection = aliases[detailMatch[1]] || detailMatch[1];
     const requestedId = decodeURIComponent(detailMatch[2]);
     const lookupId = detailMatch[1] === 'authConfig' && requestedId === 'default' ? 'auth' : requestedId;

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchApi, fetchApiBinary, downloadBlob } from './api';
+import { fetchApi, fetchApiBinary, downloadBlob, API_BASE, fetchAuthenticatedPublic } from './api';
 import { adminActionPayload, adminDetailEndpoint, adminExportEndpoint, normalizeGatewayRows } from './operations-contract';
 
 // --- Staff & Permissions ---
@@ -22,7 +22,33 @@ export type StaffInvitation = {
   status: 'pending' | 'expired' | 'accepted' | 'cancelled' | 'revoked';
   createdAt: string;
   expiresAt?: string;
+  deliveryStatus?: 'queued' | 'accepted' | 'delivered' | 'failed' | 'bounced' | 'not_configured';
+  lastDeliveryError?: string;
+  invitedBy?: { uid?: string; email?: string; name?: string } | string;
+  inviterUid?: string;
+  inviterEmail?: string;
+  acceptedAt?: string;
+  cancelledAt?: string;
+  acceptedByUid?: string;
+  accountUid?: string;
+  accountStatus?: string;
+  maskedEmail?: string;
 };
+
+export type PublicInvitationDetails = StaffInvitation & {
+  claimsStatus?: 'ready' | 'pending' | 'failed';
+  canAccept?: boolean;
+};
+
+async function fetchPublic<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${API_BASE.replace(/\/api\/admin$/, '')}${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || body.message || response.statusText);
+  return body;
+}
 
 export function useStaff(params: Record<string, any> = {}) {
   const searchParams = new URLSearchParams(params as Record<string, string>);
@@ -37,6 +63,8 @@ export function useStaff(params: Record<string, any> = {}) {
       })) as StaffMember[];
       return { ...response, staff };
     },
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -54,6 +82,8 @@ export function useStaffInvitations(params: Record<string, any> = {}) {
       })) as StaffInvitation[];
       return { ...response, invitations };
     },
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -87,9 +117,34 @@ export function useCancelStaffInvitation() {
   });
 }
 
+export function useResendStaffInvitation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { id: string }) => fetchApi('/staff/invitations/resend', { method: 'POST', body: JSON.stringify(data) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['staff-invitations'] }),
+  });
+}
+
+export function useStaffInvitationDetails(id?: string) {
+  return useQuery({
+    queryKey: ['staff-invitation-details', id],
+    queryFn: () => fetchApi<{ success: boolean; invitation: StaffInvitation }>(`/staff/invitations/details?id=${encodeURIComponent(id!)}`),
+    enabled: Boolean(id),
+  });
+}
+
+export function usePublicStaffInvitationDetails(token?: string) {
+  return useQuery({
+    queryKey: ['public-staff-invitation-details', token],
+    queryFn: () => fetchPublic<{ success: boolean; invitation: PublicInvitationDetails }>(`/api/staff/invitations/details?token=${encodeURIComponent(token!)}`),
+    enabled: Boolean(token),
+    retry: false,
+  });
+}
+
 export function useAcceptStaffInvitation() {
   return useMutation({
-    mutationFn: (data: { token: string }) => fetchApi('/staff/invitations/accept', { method: 'POST', body: JSON.stringify(data) }),
+    mutationFn: (data: { token: string }) => fetchAuthenticatedPublic('/api/staff/invitations/accept', { method: 'POST', body: JSON.stringify(data) }),
   });
 }
 

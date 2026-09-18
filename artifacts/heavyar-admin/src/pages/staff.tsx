@@ -29,6 +29,7 @@ import {
   useInviteStaff,
   useRevokeStaff,
   useCancelStaffInvitation,
+  useResendStaffInvitation,
   useExportUrl
 } from '@/lib/operations';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -58,12 +59,15 @@ export default function Staff() {
   const inviteStaff = useInviteStaff();
   const revokeStaff = useRevokeStaff();
   const cancelInvite = useCancelStaffInvitation();
+  const resendInvite = useResendStaffInvitation();
   const exportXlsx = useExportUrl();
 
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('admin');
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [inviteFilter, setInviteFilter] = useState('pending');
+  const [reasonTarget, setReasonTarget] = useState<{ kind: 'revoke' | 'cancel'; id: string } | null>(null);
+  const [reason, setReason] = useState('');
 
   const handleInvite = () => {
     inviteStaff.mutate({ email: inviteEmail, role: inviteRole }, {
@@ -79,23 +83,31 @@ export default function Staff() {
   };
 
   const handleRevoke = (uid: string) => {
-    if (!confirm(t('تأكيد سحب الصلاحيات؟', 'Confirm revoke?'))) return;
-    const reason = window.prompt(t('سبب سحب الصلاحيات (مطلوب)', 'Reason for revocation (required)'))?.trim();
-    if (!reason) return;
-    revokeStaff.mutate({ uid, reason }, {
-      onSuccess: () => toast({ title: t('تم السحب', 'Revoked') }),
-      onError: (err: any) => toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' })
-    });
+    setReason('');
+    setReasonTarget({ kind: 'revoke', id: uid });
   };
 
   const handleCancelInvite = (id: string) => {
-    if (!confirm(t('تأكيد إلغاء الدعوة؟', 'Confirm cancel invite?'))) return;
-    const reason = window.prompt(t('سبب إلغاء الدعوة (مطلوب)', 'Reason for cancellation (required)'))?.trim();
-    if (!reason) return;
-    cancelInvite.mutate({ id, reason }, {
-      onSuccess: () => toast({ title: t('تم الإلغاء', 'Cancelled') }),
-      onError: (err: any) => toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' })
+    setReason('');
+    setReasonTarget({ kind: 'cancel', id });
+  };
+  const handleResendInvite = (id: string) => {
+    resendInvite.mutate({ id }, {
+      onSuccess: () => toast({ title: t('تمت إعادة إرسال الدعوة', 'Invitation resent') }),
+      onError: (err: any) => toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' }),
     });
+  };
+  const submitReason = () => {
+    if (!reasonTarget || reason.trim().length < 3) return;
+    const callbacks = {
+      onSuccess: () => {
+        toast({ title: reasonTarget.kind === 'revoke' ? t('تم سحب الصلاحيات', 'Roles revoked') : t('تم إلغاء الدعوة', 'Invitation cancelled') });
+        setReasonTarget(null);
+      },
+      onError: (err: any) => toast({ title: t('فشل', 'Failed'), description: err.message, variant: 'destructive' }),
+    };
+    if (reasonTarget.kind === 'revoke') revokeStaff.mutate({ uid: reasonTarget.id, reason: reason.trim() }, callbacks);
+    else cancelInvite.mutate({ id: reasonTarget.id, reason: reason.trim() }, callbacks);
   };
 
   const getRoleLabel = (r: string) => {
@@ -103,12 +115,40 @@ export default function Staff() {
     const role = ROLES.find(x => x.value === r);
     return role ? (language === 'ar' ? role.labelAr : role.label) : r;
   };
+  const getInviteStatusLabel = (status: string) => ({
+    pending: t('معلقة', 'Pending'),
+    expired: t('منتهية', 'Expired'),
+    accepted: t('مقبولة', 'Accepted'),
+    cancelled: t('ملغاة', 'Cancelled'),
+    revoked: t('مسحوبة', 'Revoked'),
+  }[status] || t('غير محددة', 'Not specified'));
+  const getDeliveryLabel = (status?: string) => ({
+    queued: t('قيد الإرسال', 'Queued'),
+    accepted: t('مقبولة من المزود', 'Accepted by provider'),
+    delivered: t('تم التسليم', 'Delivered'),
+    failed: t('فشل التسليم', 'Delivery failed'),
+    bounced: t('ارتدت الرسالة', 'Bounced'),
+    not_configured: t('التسليم غير مهيأ', 'Delivery not configured'),
+  }[status || ''] || t('غير معروف', 'Unknown'));
 
   const activeStaff = staffData?.staff?.filter(s => s.status === 'active') || [];
   const revokedStaff = staffData?.staff?.filter(s => s.status === 'revoked') || [];
 
   return (
     <div className="space-y-6">
+      <Dialog open={Boolean(reasonTarget)} onOpenChange={open => !open && setReasonTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{reasonTarget?.kind === 'revoke' ? t('سحب صلاحيات الموظف', 'Revoke staff roles') : t('إلغاء الدعوة', 'Cancel invitation')}</DialogTitle>
+            <DialogDescription>{t('أدخل سبباً واضحاً ليتم تسجيله في سجل التدقيق.', 'Enter a clear reason; it will be recorded in the audit log.')}</DialogDescription>
+          </DialogHeader>
+          <Input autoFocus value={reason} onChange={e => setReason(e.target.value)} placeholder={t('السبب (مطلوب)', 'Reason (required)')} />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReasonTarget(null)}>{t('إلغاء', 'Cancel')}</Button>
+            <Button variant="destructive" onClick={submitReason} disabled={reason.trim().length < 3 || revokeStaff.isPending || cancelInvite.isPending}>{t('تأكيد', 'Confirm')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">{t('فريق العمل والصلاحيات', 'Staff & Permissions')}</h1>
@@ -128,7 +168,7 @@ export default function Staff() {
                 {t('دعوة موظف', 'Invite Staff')}
               </Button>
             </DialogTrigger>
-            <DialogContent>
+               <DialogContent className="sm:max-w-lg">
               <DialogHeader>
                 <DialogTitle>{t('دعوة فريق عمل', 'Invite Staff')}</DialogTitle>
                 <DialogDescription>{t('لن يتم منح الصلاحية حتى يقبل المستخدم الدعوة.', 'Role will not be granted until the user accepts the invitation.')}</DialogDescription>
@@ -136,7 +176,7 @@ export default function Staff() {
               <div className="space-y-4 py-4">
                 <div className="space-y-2">
                   <label className="text-sm font-medium">{t('البريد الإلكتروني', 'Email')}</label>
-                  <Input type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} dir="ltr" placeholder="staff@heavyar.com" />
+                   <Input autoFocus type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} dir="ltr" placeholder="staff@heavyar.com" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">{t('الصلاحية', 'Role')}</label>
@@ -225,7 +265,7 @@ export default function Staff() {
                   <TableHead>{t('البريد الإلكتروني', 'Email')}</TableHead>
                   <TableHead>{t('الدور', 'Role')}</TableHead>
                   <TableHead>{t('الحالة', 'Status')}</TableHead>
-                  <TableHead>{t('التاريخ', 'Date')}</TableHead>
+                  <TableHead>{t('التواريخ والمرسل', 'Dates & inviter')}</TableHead>
                   <TableHead className="text-end"></TableHead>
                 </TableRow>
               </TableHeader>
@@ -244,16 +284,16 @@ export default function Staff() {
                           invite.status === 'pending' ? 'bg-amber-500/20 text-amber-600' :
                           invite.status === 'expired' ? 'bg-muted text-muted-foreground' : 'bg-green-500/20 text-green-600'
                         }`}>
-                          {invite.status}
+                           {getInviteStatusLabel(invite.status)}
                         </span>
                       </TableCell>
-                      <TableCell>{new Date(invite.createdAt).toLocaleDateString()}</TableCell>
+                       <TableCell><div>{new Date(invite.createdAt).toLocaleDateString()} → {invite.expiresAt ? new Date(invite.expiresAt).toLocaleDateString() : '—'}</div><div className="text-xs text-muted-foreground">{getDeliveryLabel(invite.deliveryStatus)} · {invite.inviterEmail || (typeof invite.invitedBy === 'object' ? invite.invitedBy.email : invite.invitedBy) || t('مرسل غير معروف', 'Inviter unavailable')}</div>{(invite.acceptedAt || invite.cancelledAt) && <div className="text-xs text-muted-foreground">{invite.acceptedAt ? `${t('قُبل', 'Accepted')} ${new Date(invite.acceptedAt).toLocaleDateString()}` : `${t('أُلغي', 'Cancelled')} ${new Date(invite.cancelledAt!).toLocaleDateString()}`}</div>}</TableCell>
                       <TableCell className="text-end">
                         {invite.status === 'pending' && (
-                          <Button variant="ghost" size="sm" onClick={() => handleCancelInvite(invite.id)} className="text-destructive hover:bg-destructive/10">
+                           <><Button variant="ghost" size="sm" onClick={() => handleResendInvite(invite.id)} disabled={resendInvite.isPending}><RefreshCw className="w-4 h-4 me-2" />{t('إعادة الإرسال', 'Resend')}</Button><Button variant="ghost" size="sm" onClick={() => handleCancelInvite(invite.id)} className="text-destructive hover:bg-destructive/10">
                             <XCircle className="w-4 h-4 me-2" />
                             {t('إلغاء', 'Cancel')}
-                          </Button>
+                           </Button></>
                         )}
                       </TableCell>
                     </TableRow>
@@ -267,14 +307,14 @@ export default function Staff() {
         <TabsContent value="expired" className="m-0">
           <div className="rounded-md border border-border bg-card overflow-hidden">
             <Table>
-              <TableHeader className="bg-muted/50"><TableRow><TableHead>{t('البريد الإلكتروني', 'Email')}</TableHead><TableHead>{t('الدور', 'Role')}</TableHead><TableHead>{t('الحالة', 'Status')}</TableHead><TableHead>{t('التاريخ', 'Date')}</TableHead></TableRow></TableHeader>
+            <TableHeader className="bg-muted/50"><TableRow><TableHead>{t('البريد الإلكتروني', 'Email')}</TableHead><TableHead>{t('الدور', 'Role')}</TableHead><TableHead>{t('الحالة', 'Status')}</TableHead><TableHead>{t('التواريخ والمرسل', 'Dates & inviter')}</TableHead></TableRow></TableHeader>
               <TableBody>
                 {invitesLoading ? (
                   <TableRow><TableCell colSpan={4} className="text-center py-8"><Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" /></TableCell></TableRow>
                 ) : !invitesData?.invitations?.some(invite => invite.status === 'expired') ? (
                   <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">{t('لا يوجد', 'None')}</TableCell></TableRow>
                 ) : invitesData.invitations.filter(invite => invite.status === 'expired').map(invite => (
-                  <TableRow key={invite.id}><TableCell dir="ltr" className="text-start font-medium">{invite.email}</TableCell><TableCell>{getRoleLabel(invite.role)}</TableCell><TableCell><span className="px-2 py-1 rounded-full text-xs font-medium bg-muted text-muted-foreground">{t('منتهية', 'Expired')}</span></TableCell><TableCell>{new Date(invite.createdAt).toLocaleDateString()}</TableCell></TableRow>
+                  <TableRow key={invite.id}><TableCell dir="ltr" className="text-start font-medium">{invite.email}</TableCell><TableCell>{getRoleLabel(invite.role)}</TableCell><TableCell><span className="px-2 py-1 rounded-full text-xs font-medium bg-muted text-muted-foreground">{getInviteStatusLabel('expired')}</span></TableCell><TableCell><div>{new Date(invite.createdAt).toLocaleDateString()} → {invite.expiresAt ? new Date(invite.expiresAt).toLocaleDateString() : '—'}</div><div className="text-xs text-muted-foreground">{getDeliveryLabel(invite.deliveryStatus)} · {invite.inviterEmail || (typeof invite.invitedBy === 'object' ? invite.invitedBy.email : invite.invitedBy) || t('مرسل غير معروف', 'Inviter unavailable')}</div></TableCell></TableRow>
                 ))}
               </TableBody>
             </Table>

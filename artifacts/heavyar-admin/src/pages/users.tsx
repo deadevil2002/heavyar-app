@@ -42,8 +42,9 @@ export default function Users() {
   const filters = { q: search || undefined, accountStatus: status || undefined, emailVerified: verification === 'verified' ? true : verification === 'unverified' ? false : undefined };
 
   const { data, isLoading } = useUsers({ ...filters, limit: 20, cursor });
+  const selectedLive = selected ? (data?.items?.find(item => item.id === selected.id) || selected) : null;
 
-  const { triggerAction, ActionDialog } = useAdminAction();
+  const { triggerAction, actionDialog } = useAdminAction();
   const action = (user: User, name: string) => triggerAction({ targetType: 'user', targetId: user.id, action: name, title: t('إجراء الحساب', 'Account action'), description: t('سيتم التحقق من صلاحية الإجراء في الخادم.', 'The server validates this account action.') });
 
   const clearSelection = () => {
@@ -145,7 +146,7 @@ export default function Users() {
 
   return (
     <div className="space-y-6">
-      <ActionDialog />
+      {actionDialog}
 
       <ReminderDialog
         open={bulkReminderOpen || Boolean(reminderTarget)}
@@ -236,20 +237,20 @@ export default function Users() {
         }
       />
 
-      {selected && (
+      {selectedLive && (
         <OperationDetails
-          item={selected as unknown as Record<string, unknown>}
-          open={Boolean(selected)}
+          item={selectedLive as unknown as Record<string, unknown>}
+          open={Boolean(selectedLive)}
           onOpenChange={open => !open && setSelected(null)}
-          title={selected.nameAr || selected.nameEn || selected.email || t('تفاصيل المستخدم', 'User details')}
+          title={selectedLive.nameAr || selectedLive.nameEn || selectedLive.email || t('تفاصيل المستخدم', 'User details')}
           fields={[
-            { label: t('الاسم', 'Name'), value: selected.nameAr || selected.nameEn || selected.displayName },
-            { label: 'Email', value: selected.email },
-            { label: t('حالة البريد', 'Email verification'), value: selected.emailVerified ? t('موثق', 'Verified') : t('غير موثق', 'Unverified') },
-            { label: t('آخر تذكير', 'Last reminder'), value: selected.lastEmailVerificationSentAt || '—' },
-            { label: t('عدد التذكيرات', 'Reminder count'), value: selected.verificationReminderCount ?? 0 },
-            { label: t('الحالة', 'Status'), value: selected.suspensionStatus },
-            { label: 'UID', value: selected.id, technical: true }
+            { label: t('الاسم', 'Name'), value: selectedLive.nameAr || selectedLive.nameEn || selectedLive.displayName },
+            { label: 'Email', value: selectedLive.email },
+            { label: t('حالة البريد', 'Email verification'), value: selectedLive.emailVerified ? t('موثق', 'Verified') : t('غير موثق', 'Unverified') },
+            { label: t('آخر تذكير', 'Last reminder'), value: selectedLive.lastEmailVerificationSentAt || '—' },
+            { label: t('عدد التذكيرات', 'Reminder count'), value: selectedLive.verificationReminderCount ?? 0 },
+            { label: t('الحالة', 'Status'), value: selectedLive.suspensionStatus },
+            { label: 'UID', value: selectedLive.id, technical: true }
           ]}
         />
       )}

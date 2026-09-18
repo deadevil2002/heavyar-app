@@ -1039,4 +1039,56 @@ describe('admin authorization and operational boundary', () => {
     expect((commits[0][0] as any).update.fields.version.integerValue).toBe('4');
     expect(JSON.stringify(commits).includes('adminAudit')).toBe(true);
   });
+
+  test('shared moderation policy permits reasonless approval but requires rejection reason', async () => {
+    __adminTest.setFirestore((collection) => collection === 'equipment' ? { moderationStatus: 'pending_review', ownerUid: 'owner-1' } : collection === 'users' ? { emailVerified: true } : null);
+    __adminTest.captureCommits([]);
+    const actor: any = { uid: 'moderator-1', admin: true, role: 'admin', permissionRole: 'moderator', testInjected: true };
+    const approved: any = await handleAdmin(new Request('https://worker.test/api/admin/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'approve_listing', targetType: 'equipment', targetId: 'listing-policy' }) }), env, actor);
+    expect(approved.success).toBe(true);
+    const rejected: any = await handleAdmin(new Request('https://worker.test/api/admin/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reject_listing', targetType: 'equipment', targetId: 'listing-policy' }) }), env, actor);
+    expect(rejected.status).toBe(400);
+  });
+
+  test('public invitation preflight masks recipient and reports delivery lifecycle', async () => {
+    const token = 'details-token';
+    const hash = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    __adminTest.setFirestore((collection) => collection === 'staffInvitations' ? { email: 'recipient@example.test', role: 'support', status: 'pending', expiresAt: new Date(Date.now() + 60000).toISOString(), createdAt: new Date().toISOString(), invitedBy: 'admin-1', deliveryStatus: 'accepted' } : null);
+    const details: any = await worker.fetch(new Request(`https://worker.test/api/staff/invitations/details?token=${token}`), env);
+    expect(details.status).toBe(200);
+    const body: any = await details.json();
+    expect(String(body.invitation.email).includes('•••')).toBe(true);
+    expect(body.invitation.deliveryStatus).toBe('accepted');
+  });
+
+  test('account details join verification reminder operational metadata', async () => {
+    __adminTest.setFirestore((collection, id) => {
+      if (collection === 'users' && id === 'account-meta') return { role: 'provider', email: 'provider@example.test', emailVerified: false, displayName: 'Provider' };
+      if (collection === 'emailVerificationRateLimits' && id === 'account-meta') return { lastSentAt: '2025-01-01T00:00:00.000Z', count: 3, nextAllowedAt: '2025-01-02T00:00:00.000Z', deliveryStatus: 'accepted', providerMessageId: 're_123' };
+      return null;
+    });
+    const result: any = await handleAdmin(new Request('https://worker.test/api/admin/detail/provider/account-meta'), env, { uid: 'support', admin: true, role: 'admin', permissionRole: 'support', testInjected: true });
+    expect(result.success).toBe(true);
+    expect(result.item.verificationReminder.deliveryStatus).toBe('accepted');
+    expect(result.item.verificationReminder.count).toBe(3);
+  });
+
+  test('scoped provider filters cannot fall through to all users', async () => {
+    __adminTest.setFirestore(() => null);
+    __adminTest.setQuery((collection) => collection === 'users' ? [] : []);
+    const actor: any = { uid: 'support', admin: true, role: 'admin', permissionRole: 'support', testInjected: true };
+    const result: any = await handleAdmin(new Request('https://worker.test/api/admin/email-verification/reminders/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: 'provider', filters: {} }) }), env, actor);
+    expect(result.status).toBe(400);
+  });
+
+  test('driver detail carries backing account Firebase verification projection', async () => {
+    __adminTest.setFirestore((collection, id) => {
+      if (collection === 'driverProfiles' && id === 'driver-auth') return { uid: 'driver-auth', displayName: 'Driver' };
+      if (collection === 'users' && id === 'driver-auth') return { role: 'driver', email: 'driver@example.test', emailVerified: true };
+      return null;
+    });
+    const result: any = await handleAdmin(new Request('https://worker.test/api/admin/detail/driver/driver-auth'), env, { uid: 'support', admin: true, role: 'super_admin', permissionRole: 'super_admin', testInjected: true });
+    expect(result.success).toBe(true);
+    expect(result.item.emailVerified).toBe(true);
+  });
 });

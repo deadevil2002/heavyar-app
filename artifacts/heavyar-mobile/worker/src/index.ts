@@ -1,5 +1,5 @@
 import { quoteForRequest, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
-import { acceptStaffInvitation, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
+import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
 import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry } from './completion';
@@ -12,7 +12,7 @@ export interface Env {
   CLOUDINARY_CLOUD_NAME?: string; CLOUDINARY_API_KEY?: string; CLOUDINARY_API_SECRET?: string;
   CLOUDINARY_FOLDER?: string; TAP_SECRET_KEY_TEST?: string; MOYASAR_SECRET_KEY?: string; MYFATOORAH_API_KEY?: string; RESEND_API_KEY?: string;
   FIREBASE_PROJECT_ID?: string; FIREBASE_CLIENT_EMAIL?: string; FIREBASE_PRIVATE_KEY?: string; FIREBASE_WEB_API_KEY?: string;
-  RESEND_FROM_EMAIL?: string; RESEND_SUPPORT_EMAIL?: string; RESEND_SENDER_DOMAIN_VERIFIED?: string;
+  RESEND_FROM_EMAIL?: string; RESEND_SUPPORT_EMAIL?: string; RESEND_SENDER_DOMAIN_VERIFIED?: string; RESEND_WEBHOOK_SECRET?: string;
   CORS_ORIGINS?: string; PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string; OTP_KV?: KVNamespace;
   IDENTITY_PROVIDER_MODE?: 'official';
   AUTH_RATE_LIMIT_KV?: KVNamespace;
@@ -147,6 +147,38 @@ async function beginTransaction(env: Env): Promise<string | undefined> {
 async function createDoc(env: Env, path: string, fields: Record<string, unknown>) {
   if (firestoreWrites) { firestoreWrites.push({ path: `${path}?currentDocument.exists=false`, fields }); return null; }
   return fs(env, `${path}?currentDocument.exists=false`, { method: 'PATCH', body: JSON.stringify({ fields }) });
+}
+async function resendWebhook(req: Request, env: Env) {
+  if (!env.RESEND_WEBHOOK_SECRET) return out(env, req, { success: false, error: 'Webhook not configured' }, 503);
+  const body = await req.text(), id = req.headers.get('svix-id') || '', timestamp = req.headers.get('svix-timestamp') || '', supplied = req.headers.get('svix-signature') || '';
+  if (!id || !timestamp || !supplied || Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return out(env, req, { success: false, error: 'Invalid webhook signature' }, 401);
+  const secret = env.RESEND_WEBHOOK_SECRET.replace(/^whsec_/, '');
+  let key: Uint8Array;
+  try { key = Uint8Array.from(atob(secret.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)); } catch { return out(env, req, { success: false, error: 'Invalid webhook configuration' }, 503); }
+  const signature = b64u(await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', new Uint8Array(key).buffer as ArrayBuffer, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), enc.encode(`${id}.${timestamp}.${body}`)));
+  if (!supplied.split(' ').some(value => value === `v1,${signature}`)) return out(env, req, { success: false, error: 'Invalid webhook signature' }, 401);
+  const event: any = JSON.parse(body);
+  const eventId = id.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 100);
+  const type = String(event?.type || '').toLowerCase();
+  const status = type.includes('delivered') ? 'delivered' : type.includes('bounce') ? 'bounced' : type.includes('failed') ? 'failed' : type.includes('complain') ? 'complained' : type.includes('sent') ? 'accepted' : 'received';
+  const providerMessageId = String(event?.data?.email_id || event?.data?.id || '');
+  if (providerMessageId) {
+    const writes: any[] = [];
+    for (const collection of ['emailVerificationRateLimits', 'staffInvitations']) {
+      const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where: { fieldFilter: { field: { fieldPath: 'providerMessageId' }, op: 'EQUAL', value: { stringValue: providerMessageId } } }, limit: 20 } }) }) as any[] || [];
+      for (const row of rows.filter((item: any) => item.document)) {
+        const prior = decode(row.document).deliveryStatus;
+        if (['delivered', 'bounced', 'failed', 'complained'].includes(String(prior)) && status === 'accepted') continue;
+        writes.push({ update: { name: row.document.name, fields: { deliveryStatus: { stringValue: status }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['deliveryStatus', 'deliveryUpdatedAt'] }, currentDocument: row.document.updateTime ? { updateTime: row.document.updateTime } : undefined });
+      }
+    }
+    if (writes.length) await commitWrites(env, writes);
+  }
+  // Mark the event processed only after every matching communication record
+  // projection commits. A retry can therefore safely complete an interrupted
+  // projection instead of being hidden by an early event marker.
+  await fs(env, `resendWebhookEvents/${encodeURIComponent(eventId)}`, { method: 'PATCH', body: JSON.stringify({ fields: { status: { stringValue: status }, eventType: { stringValue: type }, providerMessageId: { stringValue: providerMessageId }, processed: { booleanValue: true }, processedAt: { timestampValue: new Date().toISOString() }, receivedAt: { timestampValue: new Date().toISOString() } } }) });
+  return out(env, req, { success: true });
 }
 async function hashedId(value: string): Promise<string> { return b64u(await crypto.subtle.digest('SHA-256', enc.encode(value))); }
 export type GccCountryCode = 'SA' | 'AE' | 'KW' | 'QA' | 'BH' | 'OM';
@@ -2054,6 +2086,12 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
          if (status !== 200) { const { status: _status, ...body } = result as any; return out(env, req, body, status); }
          return out(env, req, result);
        }
+        if ((path === '/api/staff/invitations/details' || path === '/api/staff/invitations/readiness' || path === '/api/admin/staff/invitations/details') && req.method === 'GET') {
+          const result = await staffInvitationDetails(req, env);
+          const status = typeof result === 'object' && result && typeof (result as any).status === 'number' ? Number((result as any).status) : 200;
+          if (status !== 200) { const { status: _status, ...body } = result as any; return out(env, req, body, status); }
+          return out(env, req, result);
+        }
        const selfServiceInvoiceMatch = path.match(/^\/api\/invoices\/([A-Za-z0-9:_-]{3,200})\.pdf$/);
        if (selfServiceInvoiceMatch && req.method === 'GET') return await selfServiceInvoicePdf(req, env, await authenticatedUser(req, env), selfServiceInvoiceMatch[1]);
     const requestTransitionMatch = path.match(/^\/api\/requests\/([^/]+)\/transition$/);
@@ -2062,6 +2100,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (verificationAttemptMatch && req.method === 'GET') return await verificationAttempt(req, env, await authenticatedUser(req, env), verificationAttemptMatch[1]);
     const identityCallbackMatch = path.match(/^\/api\/webhooks\/identity\/([A-Za-z0-9_-]{16,128})$/);
     if (identityCallbackMatch && req.method === 'POST') return await identityCallback(req, env, identityCallbackMatch[1]);
+     if (path === '/api/webhooks/resend' && req.method === 'POST') return await resendWebhook(req, env);
       if (path === '/api/notifications' && req.method === 'GET') return await notificationList(req, env, await authenticatedUser(req, env));
       if (path === '/api/notifications/read-all' && req.method === 'POST') return await notificationReadAll(req, env, await authenticatedUser(req, env));
       if (path === '/api/notifications/preferences' && (req.method === 'GET' || req.method === 'PUT')) return await notificationPreferences(req, env, await authenticatedUser(req, env));

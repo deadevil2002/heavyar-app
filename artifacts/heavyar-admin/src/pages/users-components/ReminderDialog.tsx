@@ -15,9 +15,10 @@ type Props = {
   selectAllMatching: boolean;
   filters: any;
   onSuccess: () => void;
+  accountScope?: 'user' | 'provider' | 'driver';
 };
 
-export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, selectAllMatching, filters, onSuccess }: Props) {
+export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, selectAllMatching, filters, onSuccess, accountScope = 'user' }: Props) {
   const { language } = useAppState();
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
   const { toast } = useToast();
@@ -36,7 +37,9 @@ export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, se
       setResult(null);
       if (!targetUser && selectedIds.size > 0) {
         setLoading(true);
-        const payload = selectAllMatching ? { filters } : { uids: Array.from(selectedIds) };
+        const payload = selectAllMatching
+          ? { scope: accountScope, filters }
+          : { scope: accountScope, uids: Array.from(selectedIds) };
         previewMut.mutateAsync(payload)
           .then(setPreview)
           .catch(err => {
@@ -51,7 +54,7 @@ export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, se
       setPreview(null);
       setResult(null);
     }
-  }, [open, targetUser, selectedIds, selectAllMatching]); // React hooks lint rule will complain if filters are added without useMemo, but we will leave as is unless it's a problem. Actually, better not to put `filters` in deps since it's an object.
+  }, [open, targetUser, selectedIds, selectAllMatching, accountScope]);
 
   const handleConfirm = async () => {
     try {
@@ -66,7 +69,9 @@ export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, se
         onSuccess();
         onOpenChange(false);
       } else {
-        const payload = selectAllMatching ? { filters } : { uids: Array.from(selectedIds) };
+        const payload = selectAllMatching
+          ? { scope: accountScope, filters }
+          : { scope: accountScope, uids: Array.from(selectedIds) };
         const res = await bulkMut.mutateAsync(payload);
         setResult(res);
         queryClient.invalidateQueries({ queryKey: ['users'] });

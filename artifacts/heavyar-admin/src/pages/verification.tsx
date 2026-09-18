@@ -122,7 +122,7 @@ export default function Verification() {
   const [selectedUid, setSelectedUid] = useState<string>();
   const [selectedAttempt, setSelectedAttempt] = useState<string>();
   const [componentStates, setComponentStates] = useState<Record<string, string>>({});
-  const { triggerAction, ActionDialog } = useAdminAction();
+  const { triggerAction, actionDialog } = useAdminAction();
   const attempts = useVerificationAttempts({ status: attemptStatus === 'all' ? undefined : attemptStatus, limit: 50 });
   const profiles = useVerificationProfiles({ ...(profileStatus === 'all' ? {} : { 'overallTrust.status': profileStatus }), uid: profileUid.trim() || undefined, limit: 50 });
   const session = useAdminSession();
@@ -157,7 +157,7 @@ export default function Verification() {
 
   return (
     <div className="space-y-6">
-      <ActionDialog />
+      {actionDialog}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div><h1 className="text-3xl font-bold tracking-tight">{t('مركز التحقق', 'Verification center')}</h1><p className="mt-1 text-muted-foreground">{t('عمليات تحقق آمنة، مراجعة يدوية، وضوابط المخاطر.', 'Safe verification operations, manual review, and risk controls.')}</p></div>
         <div className="inline-flex items-center gap-2 rounded-full border bg-card px-3 py-2 text-sm text-muted-foreground"><ShieldCheck className="h-4 w-4 text-primary" />{t('لا يمكن للإدارة ادعاء تحقق موفر رسمي', 'Admins cannot claim official provider verification')}</div>

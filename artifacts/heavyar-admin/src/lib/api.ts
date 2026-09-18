@@ -9,7 +9,8 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: false,
-      refetchOnWindowFocus: false,
+      refetchOnWindowFocus: true,
+      staleTime: 5_000,
     },
   },
 });
@@ -70,6 +71,19 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}, h
   return data;
 }
 
+/** Authenticated endpoints intentionally outside the admin namespace (for invitation acceptance). */
+export async function fetchAuthenticatedPublic<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const token = await getToken();
+  if (!token) throw new Error('Unauthorized');
+  const headers = new Headers(options.headers);
+  headers.set('Authorization', `Bearer ${token}`);
+  if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
+  const response = await fetch(`${API_BASE.replace(/\/api\/admin$/, '')}${endpoint}`, { ...options, headers });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(body.error || body.message || response.statusText, response.status);
+  return body as T;
+}
+
 /** Authenticated binary requests are used for server-generated XLSX/PDF documents. */
 export async function fetchApiBinary(endpoint: string, options: RequestInit = {}, hasRetried = false): Promise<{ blob: Blob; filename?: string }> {
   const token = await getToken(hasRetried);
@@ -119,11 +133,20 @@ export type TrustFields = {
   identity?: { status?: TrustStatus };
   manualReview?: { status?: TrustStatus };
 };
+export type VerificationReminderFields = {
+  emailVerified?: boolean;
+  lastEmailVerificationSentAt?: string;
+  lastVerificationReminderAt?: string;
+  verificationReminderCount?: number;
+  deliveryStatus?: string;
+  verificationReminderDeliveryStatus?: string;
+  verificationReminder?: { lastSentAt?: string; count?: number; deliveryStatus?: string; emailVerified?: boolean };
+};
 export type PersonSummary = { id?: string; uid?: string; name?: string; nameAr?: string; nameEn?: string; email?: string; phone?: string; city?: string; region?: string };
-export type User = { id: string; email?: string; nameAr?: string; nameEn?: string; displayName?: string; publicId?: string; publicIdentifier?: string; suspensionStatus?: string; status?: string; createdAt?: string; role?: string; verification?: string; city?: string; region?: string; provider?: PersonSummary; emailVerified?: boolean; emailVerifiedAt?: string; lastEmailVerificationSentAt?: string; verificationReminderCount?: number; nextVerificationReminderAt?: string; } & TrustFields;
+export type User = { id: string; email?: string; nameAr?: string; nameEn?: string; displayName?: string; publicId?: string; publicIdentifier?: string; suspensionStatus?: string; status?: string; createdAt?: string; role?: string; verification?: string; city?: string; region?: string; provider?: PersonSummary; emailVerified?: boolean; emailVerifiedAt?: string; lastEmailVerificationSentAt?: string; verificationReminderCount?: number; nextVerificationReminderAt?: string; } & TrustFields & VerificationReminderFields;
 export type Equipment = { id: string; publicId?: string; equipmentNumber?: string; title?: string; titleAr?: string; titleEn?: string; ownerUid?: string; owner?: PersonSummary; moderationStatus?: string; visibility?: string; isActive?: boolean; rate?: number; dailyRate?: number; city?: string; reviewedBy?: PersonSummary; reviewedAt?: string; rejectionReason?: string };
 export type Provider = User & { providerId?: string };
-export type Driver = { id: string; uid?: string; publicId?: string; displayName?: string; name?: string; email?: string; phone?: string; city?: string; region?: string; active?: boolean; status?: string; availabilityStatus?: string; moderationStatus?: string; verificationStatus?: string; trustStatus?: string; equipmentTypes?: string[]; moderatedAt?: string; reviewedAt?: string };
+export type Driver = { id: string; uid?: string; publicId?: string; displayName?: string; name?: string; email?: string; phone?: string; city?: string; region?: string; active?: boolean; status?: string; availabilityStatus?: string; moderationStatus?: string; verificationStatus?: string; trustStatus?: string; equipmentTypes?: string[]; moderatedAt?: string; reviewedAt?: string; emailVerified?: boolean; lastEmailVerificationSentAt?: string; lastVerificationReminderAt?: string; verificationReminderCount?: number; deliveryStatus?: string; verificationReminderDeliveryStatus?: string; verificationReminder?: VerificationReminderFields['verificationReminder'] };
 export type Request = { id: string; requestNumber?: string; publicRequestNumber?: string; status: string; customerUid?: string; providerUid?: string; customer?: PersonSummary; provider?: PersonSummary; equipment?: { id?: string; number?: string; title?: string }; rentalFrom?: string; rentalTo?: string; startDate?: string; endDate?: string; paymentState?: string; totalAmount?: number; events?: any[] } & TrustFields;
 export type Payment = { id: string; requestNumber?: string; request?: { requestNumber?: string }; customer?: PersonSummary; provider?: PersonSummary; state: string; amount: number; vatAmount?: number; platformFee?: number; providerName?: string; providerReference?: string; invoiceId?: string; events?: any[] } & TrustFields;
 export type Invoice = { id: string; invoiceNumber?: string; requestNumber?: string; request?: { requestNumber?: string }; totalAmount?: number; status: string; customerId?: string; providerId?: string; customer?: PersonSummary; provider?: PersonSummary; issuedAt?: string; url?: string };
@@ -254,6 +277,8 @@ export function useListQuery<T>(key: string, endpoint: string, params: Record<st
       const qs = searchParams.toString();
       return fetchApi<PaginatedResponse<T>>(`${endpoint}${qs ? '?' + qs : ''}`);
     },
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -347,7 +372,7 @@ export function useUpdateFxProviderConfig() {
 }
 export function useAudit(params: Record<string, any> = {}) { return useListQuery<AuditEntry>('audit', '/audit', params); }
 export function useDetail<T = Record<string, unknown>>(resource: string, id?: string) {
-  return useQuery({ queryKey: ['detail', resource, id], queryFn: () => fetchApi<{ success?: boolean; item: T }>(`/detail/${resource}/${encodeURIComponent(id!)}`), enabled: Boolean(id), retry: false });
+  return useQuery({ queryKey: ['detail', resource, id], queryFn: () => fetchApi<{ success?: boolean; item: T }>(`/detail/${resource}/${encodeURIComponent(id!)}`), enabled: Boolean(id), retry: false, refetchInterval: 5000, refetchOnWindowFocus: true });
 }
 
 export function useActionMutation() {
@@ -365,23 +390,29 @@ export function useRolesMutation() {
 }
 
 // Bulk & Deletion Operations
+type AccountTargetSelection = {
+  scope?: 'user' | 'provider' | 'driver';
+  uids?: string[];
+  filters?: any;
+};
+
 export function useRemindersPreview() {
   return useMutation({
-    mutationFn: (data: { uids?: string[]; filters?: any }) =>
+    mutationFn: (data: AccountTargetSelection) =>
       fetchApi<{ success: boolean; targeted: number; eligible: number; alreadyVerified: number; cooldown: number; restricted: number; missing: number }>('/email-verification/reminders/preview', { method: 'POST', body: JSON.stringify(data) })
   });
 }
 
 export function useRemindersBulk() {
   return useMutation({
-    mutationFn: (data: { uids?: string[]; filters?: any }) =>
+    mutationFn: (data: AccountTargetSelection) =>
       fetchApi<{ success: boolean; targeted: number; sent: number; skippedVerified: number; skippedCooldown: number; skippedRestricted: number; missing: number; failed: number; results?: any }>('/email-verification/reminders/bulk', { method: 'POST', body: JSON.stringify(data) })
   });
 }
 
 export function useDeletionPreview() {
   return useMutation({
-    mutationFn: (data: { uids?: string[]; filters?: any }) =>
+    mutationFn: (data: AccountTargetSelection) =>
       fetchApi<{
         success: boolean;
         targeted: number;
@@ -416,6 +447,11 @@ export function useDeletionJobStatus(id?: string) {
 
 export function useSendReminder() {
   return useMutation({
-    mutationFn: (uid: string) => fetchApi<{ success: boolean; sent?: boolean; alreadyVerified?: boolean }>(`/email-verification/reminder`, { method: 'POST', body: JSON.stringify({ uid }) })
+    mutationFn: (uid: string) => fetchApi<{ success: boolean; sent?: boolean; alreadyVerified?: boolean }>(`/email-verification/reminder`, { method: 'POST', body: JSON.stringify({ uid }) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.invalidateQueries({ queryKey: ['providers'] });
+      queryClient.invalidateQueries({ queryKey: ['drivers'] });
+    },
   });
 }
