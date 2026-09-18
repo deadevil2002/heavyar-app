@@ -6,13 +6,17 @@ import {
   subscribeToAuthState,
   loginWithEmail,
   loginWithPhone,
-  normalizeSaudiPhone,
   fetchAuthPolicy,
   registerWithEmail,
   logoutUser,
   fetchUserProfile,
   updateUserProfile,
+  refreshFirebaseEmailVerification,
+  sendVerificationEmail,
+  fetchEmailVerificationStatus,
+  AuthPolicy,
 } from '@/services/authService';
+import { isGccPhone } from '@/constants/gcc';
 import {
   registerCurrentDevice,
   revokeCurrentDevice,
@@ -25,6 +29,8 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [emailVerified, setEmailVerified] = useState<boolean>(false);
+  const [authPolicy, setAuthPolicy] = useState<AuthPolicy | null>(null);
 
   useEffect(() => {
     const loadCachedProfile = async () => {
@@ -43,6 +49,19 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
     const unsubscribe = subscribeToAuthState(async (firebaseUser) => {
       if (firebaseUser) {
+        setEmailVerified(firebaseUser.emailVerified);
+        const verificationStatus = await fetchEmailVerificationStatus();
+        if (verificationStatus?.policy) {
+          setAuthPolicy(previous => previous ? {
+            ...previous,
+            emailVerificationEnabled: verificationStatus.policy?.enabled !== false,
+            requireEmailVerificationBeforeRental: verificationStatus.policy?.requireBeforeRentalRequest === true,
+            requireEmailVerificationBeforeListing: verificationStatus.policy?.requireBeforeListingSubmission === true,
+            requireEmailVerificationBeforeDriver: verificationStatus.policy?.requireBeforeDriverActivation === true,
+            allowEmailVerificationReminders: verificationStatus.policy?.allowReminders === true,
+            emailVerificationCooldownSeconds: Number(verificationStatus.policy?.reminderCooldownSeconds || previous.emailVerificationCooldownSeconds),
+          } : previous);
+        }
         try {
           const profile = await fetchUserProfile(firebaseUser.uid);
           if (profile) {
@@ -86,6 +105,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
           setAuthError('SESSION_EXPIRED');
         }
       } else {
+        setEmailVerified(false);
         setUser(null);
         setIsAuthenticated(false);
         await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
@@ -96,11 +116,15 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    void fetchAuthPolicy().then(setAuthPolicy);
+  }, []);
+
   const login = useCallback(async (email: string, password: string) => {
     setAuthError(null);
     try {
       const policy = await fetchAuthPolicy();
-      const isPhone = Boolean(normalizeSaudiPhone(email)) || /^[+\d][\d ()-]{5,}$/.test(email.trim());
+      const isPhone = isGccPhone(email) || /^[+\d][\d ()-]{5,}$/.test(email.trim());
       if (isPhone) {
         if (!policy.allowPhoneLogin) throw new Error('PHONE_LOGIN_INVALID');
         await loginWithPhone(email, password);
@@ -128,13 +152,18 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     }
   }, []);
 
-  const register = useCallback(async (name: string, email: string, phone: string, password: string, role: 'customer' | 'provider' | 'driver' = 'customer', crNumber?: string, region?: string, city?: string, customCity?: string) => {
+  const register = useCallback(async (
+    name: string, email: string, phone: string, password: string,
+    role: 'customer' | 'provider' | 'driver' = 'customer', crNumber?: string,
+    region?: string, city?: string, customCity?: string, countryCode?: User['countryCode'],
+  ) => {
     setAuthError(null);
     try {
       await registerWithEmail(email, password, {
         nameAr: name,
         nameEn: name,
         phone,
+        countryCode,
         region: region || '',
         city: city || '',
         customCity: customCity || '',
@@ -155,6 +184,28 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       throw new Error(errorMsg);
     }
   }, []);
+
+  const refreshEmailVerification = useCallback(async () => {
+    const verified = await refreshFirebaseEmailVerification();
+    setEmailVerified(verified);
+    if (verified && user) {
+      const updated = { ...user, emailVerified: true };
+      setUser(updated);
+      await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(updated));
+    }
+    return verified;
+  }, [user]);
+
+  const sendEmailVerification = useCallback(async (locale: 'ar' | 'en') => {
+    return sendVerificationEmail(locale);
+  }, []);
+
+  const requiresEmailVerification = useCallback((action: 'rental' | 'listing' | 'driver') => {
+    if (!authPolicy?.emailVerificationEnabled || emailVerified) return false;
+    if (action === 'rental') return authPolicy.requireEmailVerificationBeforeRental;
+    if (action === 'listing') return authPolicy.requireEmailVerificationBeforeListing;
+    return authPolicy.requireEmailVerificationBeforeDriver;
+  }, [authPolicy, emailVerified]);
 
   const logout = useCallback(async (options?: { clearLocalStorage?: boolean }) => {
     setAuthError(null);
@@ -231,5 +282,10 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     logout,
     refreshProfile,
     updateProfile,
-  }), [user, isLoading, isAuthenticated, authError, login, register, logout, refreshProfile, updateProfile]);
+    emailVerified,
+    authPolicy,
+    refreshEmailVerification,
+    sendEmailVerification,
+    requiresEmailVerification,
+  }), [user, isLoading, isAuthenticated, authError, login, register, logout, refreshProfile, updateProfile, emailVerified, authPolicy, refreshEmailVerification, sendEmailVerification, requiresEmailVerification]);
 });

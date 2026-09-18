@@ -15,13 +15,14 @@ import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import RentalRequestModal, { RentalRequestDraft } from '@/components/RentalRequestModal';
 import { checkListingAvailability, WorkerError } from '@/services/workerClient';
+import { approximateDisplayPrice } from '@/services/currency';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function EquipmentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { isRTL, t, localizedText } = useLanguage();
-  const { user: currentUser, isAuthenticated } = useAuth();
+  const { user: currentUser, isAuthenticated, requiresEmailVerification } = useAuth();
   const router = useRouter();
   const [currentImage, setCurrentImage] = useState<number>(0);
   const [liked, setLiked] = useState<boolean>(false);
@@ -90,6 +91,20 @@ export default function EquipmentDetailScreen() {
   } : undefined);
   const ownerLive = currentUser?.uid === equipment.ownerUid ? currentUser : null;
   const ownerName = ownerPublic ? localizedText(ownerPublic.nameAr, ownerPublic.nameEn) : '';
+  const displayPrice = approximateDisplayPrice(
+    equipment.nativePricePerDay ?? equipment.pricePerDay,
+    equipment.nativeCurrency || 'SAR',
+        equipment.displayCurrency || equipment.nativeCurrency || 'SAR',
+    equipment.displayRate && equipment.displayRateTimestamp
+      ? {
+        sourceCurrency: equipment.nativeCurrency || 'SAR',
+        displayCurrency: equipment.displayCurrency || equipment.nativeCurrency || 'SAR',
+        rate: equipment.displayRate,
+        timestamp: equipment.displayRateTimestamp,
+        source: 'backend',
+      }
+      : undefined,
+  );
   const canShowOwner = Boolean(ownerPublic && (ownerPublic.nameAr || ownerPublic.nameEn || ownerPublic.avatar));
   const isEligibleRequester = Boolean(
     isAuthenticated &&
@@ -128,6 +143,11 @@ export default function EquipmentDetailScreen() {
         t('cannot_request_own'),
         [{ text: t('ok'), style: 'default' }]
       );
+      return;
+    }
+
+    if (requiresEmailVerification('rental')) {
+      showDialog(t('email_verification_required_title'), t('email_verification_required_rental'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
 
@@ -336,7 +356,8 @@ export default function EquipmentDetailScreen() {
           <SafeAreaView edges={['bottom']}>
             <View style={[styles.bottomContent, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               <View>
-                <Text style={styles.bottomPrice}>{equipment.pricePerDay.toLocaleString()} {t('sar')}</Text>
+                <Text style={styles.bottomPrice}>{displayPrice.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {displayPrice.currency}</Text>
+                {displayPrice.isApproximate && <Text style={styles.bottomPerDay}>{t('approximate_display_price')}</Text>}
                 <Text style={styles.bottomPerDay}>{t('per_day')}</Text>
               </View>
               <Pressable style={[styles.requestButton, !isEligibleRequester && styles.requestButtonDisabled]} onPress={handleRequestRental}>

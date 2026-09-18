@@ -2,6 +2,7 @@ const ALLOWED = [
   'title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn',
   'images', 'dailyPrice', 'pricePerDay', 'category', 'region', 'city', 'customCity',
   'district', 'location', 'customCategory', 'availability', 'isActive',
+  'countryCode', 'nativeCurrency', 'nativePricePerDay', 'displayCurrency',
 ] as const;
 
 export function sanitizeListingPayload(input: Record<string, unknown>): Record<string, unknown> {

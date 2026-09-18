@@ -7,12 +7,12 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchAuthPolicy } from '@/services/authService';
+import { fetchAuthPolicy, fetchMarketConfig, type MarketConfig } from '@/services/authService';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { UserRole } from '@/types';
-import { sendEmailOtp, verifyEmailOtp } from '@/services/otpService';
 import { saudiRegions, getCitiesByRegion } from '@/mocks/saudiRegions';
+import { GCC_COUNTRIES, countryFor, normalizePhoneForCountry, type GccCountryCode } from '@/constants/gcc';
 
 type RegistrationStep = 'email' | 'info' | 'role';
 
@@ -23,16 +23,14 @@ export default function RegisterScreen() {
   const [step, setStep] = useState<RegistrationStep>('email');
 
   const [email, setEmail] = useState<string>('');
-  const [otpCode, setOtpCode] = useState<string>('');
   const [emailVerified, setEmailVerified] = useState<boolean>(false);
-  const [otpSent, setOtpSent] = useState<boolean>(false);
-  const [sendingOtp, setSendingOtp] = useState<boolean>(false);
-  const [verifyingOtp, setVerifyingOtp] = useState<boolean>(false);
 
   const [name, setName] = useState<string>('');
   const [phone, setPhone] = useState<string>('');
+  const [countryCode, setCountryCode] = useState<GccCountryCode>('SA');
   const [phoneRequired, setPhoneRequired] = useState(false);
   const [allowPhoneLogin, setAllowPhoneLogin] = useState(false);
+  const [markets, setMarkets] = useState<MarketConfig[]>(GCC_COUNTRIES.map(country => ({ code: country.code, enabled: country.code === 'SA' })));
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [password, setPassword] = useState<string>('');
   const [confirmPassword, setConfirmPassword] = useState<string>('');
@@ -51,14 +49,17 @@ export default function RegisterScreen() {
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
   React.useEffect(() => {
-    void fetchAuthPolicy().then(policy => {
+    void Promise.all([fetchAuthPolicy(), fetchMarketConfig()]).then(([policy, effectiveMarkets]) => {
       setPhoneRequired(policy.phoneRequired);
       setAllowPhoneLogin(policy.allowPhoneLogin);
+      setMarkets(effectiveMarkets);
     });
   }, []);
 
-  const selectedRegion = useMemo(() => saudiRegions.find(r => r.id === region), [region]);
-  const regionCities = useMemo(() => getCitiesByRegion(region), [region]);
+  const country = useMemo(() => countryFor(countryCode), [countryCode]);
+  const countryRegions = useMemo(() => countryCode === 'SA' ? saudiRegions : country.regions, [country, countryCode]);
+  const selectedRegion = useMemo(() => countryRegions.find(r => r.id === region), [countryRegions, region]);
+  const regionCities = useMemo(() => countryCode === 'SA' ? getCitiesByRegion(region) : (selectedRegion?.cities || []), [countryCode, region, selectedRegion]);
   const filteredCities = useMemo(() => {
     if (!citySearch.trim()) return regionCities;
     const q = citySearch.toLowerCase();
@@ -72,7 +73,7 @@ export default function RegisterScreen() {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
   }, []);
 
-  const handleSendOtp = useCallback(async () => {
+  const handleContinueEmail = useCallback(() => {
     if (!email.trim()) {
       showDialog(t('validation_error'), t('email'), [{ text: t('ok'), style: 'default' }]);
       return;
@@ -81,48 +82,9 @@ export default function RegisterScreen() {
       showDialog(t('validation_error'), t('invalid_email'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
-    setSendingOtp(true);
-    try {
-      const result = await sendEmailOtp(email.trim(), language);
-      if (result.success) {
-        setOtpSent(true);
-        showDialog(t('success'), t('otp_sent'), [{ text: t('ok'), style: 'default' }]);
-      } else {
-        showDialog(t('error_title'), result.error || t('unexpected_error'), [{ text: t('ok'), style: 'default' }]);
-      }
-    } catch {
-      showDialog(t('error_title'), t('unexpected_error'), [{ text: t('ok'), style: 'default' }]);
-    } finally {
-      setSendingOtp(false);
-    }
-  }, [email, isValidEmail, language, t, showDialog]);
-
-  const handleVerifyOtp = useCallback(async () => {
-    if (!otpCode.trim()) {
-      showDialog(t('validation_error'), t('otp_required'), [{ text: t('ok'), style: 'default' }]);
-      return;
-    }
-    setVerifyingOtp(true);
-    try {
-      const result = await verifyEmailOtp(email.trim(), otpCode.trim());
-      if (result.success && result.verified) {
-        setEmailVerified(true);
-        setStep('info');
-        showDialog(t('success'), t('email_verified'), [{ text: t('ok'), style: 'default' }]);
-      } else {
-        const errorCode = result.errorCode;
-        let msg = result.error || t('otp_invalid');
-        if (errorCode === 'OTP_EXPIRED') msg = t('otp_expired');
-        else if (errorCode === 'OTP_INVALID') msg = t('otp_invalid');
-        else if (errorCode === 'OTP_NOT_FOUND') msg = t('otp_expired');
-        showDialog(t('error_title'), msg, [{ text: t('ok'), style: 'default' }]);
-      }
-    } catch {
-      showDialog(t('error_title'), t('unexpected_error'), [{ text: t('ok'), style: 'default' }]);
-    } finally {
-      setVerifyingOtp(false);
-    }
-  }, [email, otpCode, t, showDialog]);
+    setEmailVerified(true);
+    setStep('info');
+  }, [email, isValidEmail, showDialog, t]);
 
   const handleNextToRole = useCallback(() => {
     if (!name.trim()) {
@@ -133,7 +95,7 @@ export default function RegisterScreen() {
       showDialog(t('validation_error'), t('validation_phone_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
-    if (phone.trim() && !/^[+0-9][0-9 ()-]{7,19}$/.test(phone.trim())) {
+    if (phone.trim() && !normalizePhoneForCountry(phone, countryCode)) {
       showDialog(t('validation_error'), t('invalid_phone'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
@@ -146,13 +108,9 @@ export default function RegisterScreen() {
       return;
     }
     setStep('role');
-  }, [name, phone, phoneRequired, password, confirmPassword, t, showDialog]);
+  }, [name, phone, countryCode, phoneRequired, password, confirmPassword, t, showDialog]);
 
   const handleRegister = useCallback(async () => {
-    if (!emailVerified) {
-      showDialog(t('validation_error'), t('email_not_verified'), [{ text: t('ok'), style: 'default' }]);
-      return;
-    }
     if (!termsAccepted) {
       showDialog(t('validation_error'), t('terms_required'), [{ text: t('ok'), style: 'default' }]);
       return;
@@ -176,7 +134,8 @@ export default function RegisterScreen() {
         role === 'provider' ? crNumber.trim() : undefined,
         region,
         city,
-        customCity
+        customCity,
+        countryCode,
       );
        router.replace(role === 'driver' ? '/driver-profile' : '/');
     } catch (e) {
@@ -185,7 +144,7 @@ export default function RegisterScreen() {
     } finally {
       setLoading(false);
     }
-  }, [emailVerified, name, email, phone, password, role, crNumber, region, city, customCity, termsAccepted, register, router, t, showDialog]);
+  }, [emailVerified, name, email, phone, password, role, crNumber, region, city, customCity, countryCode, termsAccepted, register, router, t, showDialog]);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
@@ -214,7 +173,7 @@ export default function RegisterScreen() {
 
   const renderEmailStep = () => (
     <View style={styles.formSection}>
-      <Text style={[styles.formTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('email_verification')}</Text>
+      <Text style={[styles.formTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('email')}</Text>
 
       <View style={[styles.inputRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
         <Mail size={20} color={Colors.textMuted} />
@@ -226,64 +185,11 @@ export default function RegisterScreen() {
           onChangeText={value => setEmail(value.trim().toLowerCase())}
           keyboardType="email-address"
           autoCapitalize="none"
-          editable={!emailVerified}
         />
-        {emailVerified && <CheckCircle size={20} color={Colors.success} />}
       </View>
-
-      {!emailVerified && !otpSent && (
-        <Pressable
-          style={[styles.primaryButton, sendingOtp && styles.buttonDisabled]}
-          onPress={handleSendOtp}
-          disabled={sendingOtp}
-        >
-          <Text style={styles.primaryButtonText}>
-            {sendingOtp ? t('sending_otp') : t('send_otp')}
-          </Text>
-        </Pressable>
-      )}
-
-      {otpSent && !emailVerified && (
-        <>
-          <Text style={[styles.otpHint, { textAlign: isRTL ? 'right' : 'left' }]}>
-            {t('otp_sent_to')} {email}
-          </Text>
-          <TextInput
-            style={[styles.otpInput, { textAlign: 'center' }]}
-            placeholder={t('enter_otp')}
-            placeholderTextColor={Colors.textMuted}
-            value={otpCode}
-            onChangeText={setOtpCode}
-            keyboardType="number-pad"
-            maxLength={6}
-          />
-          <Pressable
-            style={[styles.primaryButton, verifyingOtp && styles.buttonDisabled]}
-            onPress={handleVerifyOtp}
-            disabled={verifyingOtp}
-          >
-            {verifyingOtp ? (
-              <ActivityIndicator size="small" color={Colors.primary} />
-            ) : (
-              <Text style={styles.primaryButtonText}>{t('verify_otp')}</Text>
-            )}
-          </Pressable>
-          <Pressable
-            style={styles.resendRow}
-            onPress={handleSendOtp}
-            disabled={sendingOtp}
-          >
-            <Text style={styles.resendText}>{t('resend_otp')}</Text>
-          </Pressable>
-        </>
-      )}
-
-      {emailVerified && (
-        <View style={styles.verifiedBanner}>
-          <CheckCircle size={18} color={Colors.success} />
-          <Text style={styles.verifiedText}>{t('email_verified')}</Text>
-        </View>
-      )}
+      <Pressable style={styles.primaryButton} onPress={handleContinueEmail}>
+        <Text style={styles.primaryButtonText}>{t('next')}</Text>
+      </Pressable>
     </View>
   );
 
@@ -307,11 +213,35 @@ export default function RegisterScreen() {
         />
       </View>
 
+      <Text style={[styles.fieldLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('country')}</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.countryRow}>
+        {GCC_COUNTRIES.map(item => (
+          <Pressable
+            key={item.code}
+            style={[styles.countryChip, countryCode === item.code && styles.countryChipActive]}
+            disabled={markets.length > 0 && !markets.find(market => market.code === item.code)?.enabled}
+            onPress={() => {
+              if (markets.length > 0 && !markets.find(market => market.code === item.code)?.enabled) return;
+              setCountryCode(item.code);
+              setRegion('');
+              setCity('');
+              setCustomCity('');
+              setPhone('');
+            }}
+          >
+            <Text style={[styles.countryChipText, countryCode === item.code && styles.countryChipTextActive, markets.length > 0 && !markets.find(market => market.code === item.code)?.enabled && styles.countryChipTextDisabled]}>
+              {language === 'ar' ? item.nameAr : item.nameEn}
+            </Text>
+            <Text style={styles.countryDial}>{item.dialCode}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+
       <View style={[styles.inputRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
         <Phone size={20} color={Colors.textMuted} />
         <TextInput
           style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]}
-          placeholder={t('phone')}
+          placeholder={`${country.dialCode} 5XXXXXXXX`}
           placeholderTextColor={Colors.textMuted}
           value={phone}
           onChangeText={setPhone}
@@ -429,7 +359,7 @@ export default function RegisterScreen() {
         </Pressable>
         {showRegionPicker && (
           <ScrollView style={styles.pickerDropdown} nestedScrollEnabled>
-            {saudiRegions.map(r => (
+            {countryRegions.map(r => (
               <Pressable
                 key={r.id}
                 style={[styles.pickerItem, region === r.id && styles.pickerItemSelected]}
@@ -579,6 +509,14 @@ const styles = StyleSheet.create({
   stepLabel: { fontSize: 11, color: Colors.textMuted, fontWeight: '500' as const },
   stepLabelActive: { color: Colors.gold, fontWeight: '700' as const },
   formSection: { gap: 14 },
+  fieldLabel: { color: Colors.textSecondary, fontSize: 13, fontWeight: '700' as const, marginBottom: -5 },
+  countryRow: { gap: 8, paddingVertical: 2 },
+  countryChip: { backgroundColor: Colors.inputBg, borderWidth: 1, borderColor: Colors.border, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8, minWidth: 92 },
+  countryChipActive: { borderColor: Colors.gold, backgroundColor: Colors.gold },
+  countryChipText: { color: Colors.textSecondary, fontSize: 12, fontWeight: '700' as const, textAlign: 'center' as const },
+  countryChipTextActive: { color: Colors.primary },
+  countryChipTextDisabled: { color: Colors.textMuted },
+  countryDial: { color: Colors.textMuted, fontSize: 11, textAlign: 'center' as const, marginTop: 2 },
   formTitle: { fontSize: 20, fontWeight: '700' as const, color: Colors.textPrimary, marginBottom: 2 },
   stepBackRow: { alignItems: 'center', gap: 8, marginBottom: 4 },
   inputRow: {
@@ -595,19 +533,6 @@ const styles = StyleSheet.create({
   primaryButton: { backgroundColor: Colors.gold, borderRadius: 14, paddingVertical: 16, alignItems: 'center', marginTop: 4 },
   buttonDisabled: { opacity: 0.6 },
   primaryButtonText: { color: Colors.primary, fontSize: 17, fontWeight: '700' as const },
-  otpHint: { fontSize: 13, color: Colors.textSecondary, marginTop: -4 },
-  otpInput: {
-    backgroundColor: Colors.inputBg,
-    borderRadius: 14,
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    color: Colors.gold,
-    fontSize: 24,
-    fontWeight: '700' as const,
-    letterSpacing: 8,
-    borderWidth: 2,
-    borderColor: Colors.border,
-  },
   resendRow: { alignItems: 'center', paddingVertical: 4 },
   resendText: { color: Colors.gold, fontSize: 14, fontWeight: '600' as const },
   verifiedBanner: {

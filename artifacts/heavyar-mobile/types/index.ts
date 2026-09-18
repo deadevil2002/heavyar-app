@@ -8,6 +8,7 @@ export type PaymentLifecycleStatus = 'pending' | 'requires_action' | 'processing
 export type InvoiceStatus = 'paid' | 'pending' | 'refunded';
 
 export type UserRole = 'customer' | 'provider' | 'driver';
+export type GccCountryCode = 'SA' | 'AE' | 'KW' | 'QA' | 'BH' | 'OM';
 
 export type RequestMode = 'fixed_days' | 'open_ended';
 
@@ -37,6 +38,12 @@ export interface User {
   equipmentCount: number;
   joinedAt: string;
   isVerified: boolean;
+  countryCode?: GccCountryCode;
+  nativeCurrency?: string;
+  displayCurrency?: string;
+  emailVerified?: boolean;
+  emailVerifiedAt?: string;
+  phoneVerified?: boolean;
 }
 
 export interface CloudinaryImage {
@@ -80,6 +87,13 @@ export interface Equipment {
   moderationStatus?: 'pending_review' | 'approved' | 'rejected' | 'suspended';
   createdAt: string;
   updatedAt: string;
+  countryCode?: GccCountryCode;
+  nativeCurrency?: string;
+  nativePricePerDay?: number;
+  displayCurrency?: string;
+  displayPricePerDay?: number;
+  displayRate?: number;
+  displayRateTimestamp?: string;
 }
 
 export interface EquipmentRequest {
@@ -114,6 +128,9 @@ export interface EquipmentRequest {
   closedBy?: 'provider' | 'customer';
   createdAt: string;
   updatedAt: string;
+  quoteCurrency?: string;
+  exchangeRateSnapshot?: number;
+  exchangeRateTimestamp?: string;
 }
 
 export interface ChatMessage {

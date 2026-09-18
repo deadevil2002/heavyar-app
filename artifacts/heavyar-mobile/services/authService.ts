@@ -2,6 +2,7 @@ import {
   signInWithEmailAndPassword,
   signInWithCustomToken,
   createUserWithEmailAndPassword,
+  reload,
   signOut,
   onAuthStateChanged,
   User as FirebaseUser,
@@ -10,18 +11,42 @@ import { doc, setDoc, getDoc, serverTimestamp, deleteField } from 'firebase/fire
 import { getFirebaseAuth, getFirebaseDb } from './firebaseConfig';
 import { User } from '@/types';
 import { WORKER_BASE_URL } from '@/constants/worker';
-import { takeRegistrationGrant } from './otpService';
+import { GCC_COUNTRIES, GccCountryCode, normalizeGccPhone, normalizePhoneForCountry } from '@/constants/gcc';
+import { buildRegistrationProfilePayload } from '@/services/registrationPayload';
+export { buildRegistrationProfilePayload } from '@/services/registrationPayload';
 
 export interface AuthPolicy {
   allowPhoneLogin: boolean;
   allowEmailLogin: boolean;
   phoneRequired: boolean;
   phoneRecoveryReady: boolean;
+  emailVerificationEnabled: boolean;
+  requireEmailVerificationBeforeRental: boolean;
+  requireEmailVerificationBeforeListing: boolean;
+  requireEmailVerificationBeforeDriver: boolean;
+  allowEmailVerificationReminders: boolean;
+  emailVerificationCooldownSeconds: number;
+  phoneVerification: { enabled: false; provider: null };
 }
 export type PhoneLoginErrorCode = 'PHONE_LOGIN_INVALID' | 'PHONE_LOGIN_RATE_LIMITED' | 'PHONE_LOGIN_UNAVAILABLE';
+export type PhoneVerificationPolicy = {
+  enabled: false;
+  provider: null;
+  requireAfterSignup?: false;
+  requireBeforeRentalRequest?: false;
+  requireBeforeProviderActivation?: false;
+  requireBeforeDriverActivation?: false;
+  requireBeforeSensitiveActions?: false;
+};
 
 // A failed policy read must never silently enable an authentication method.
-const defaultAuthPolicy: AuthPolicy = { allowPhoneLogin: false, allowEmailLogin: false, phoneRequired: false, phoneRecoveryReady: false };
+const defaultAuthPolicy: AuthPolicy = {
+  allowPhoneLogin: false, allowEmailLogin: false, phoneRequired: false, phoneRecoveryReady: false,
+  emailVerificationEnabled: false, requireEmailVerificationBeforeRental: false,
+  requireEmailVerificationBeforeListing: false, requireEmailVerificationBeforeDriver: false,
+  allowEmailVerificationReminders: false, emailVerificationCooldownSeconds: 60,
+  phoneVerification: { enabled: false, provider: null },
+};
 
 export async function fetchAuthPolicy(): Promise<AuthPolicy> {
   try {
@@ -39,9 +64,32 @@ export async function fetchAuthPolicy(): Promise<AuthPolicy> {
         : requested.requirePhoneOnSignup === true,
       phoneRecoveryReady: status.phoneRecovery === 'configured' || status.phoneRecoveryReady === true ||
         status.phoneIndexReady === true || config.phoneIndexReady === true || config.phoneRecoveryReady === true,
+      emailVerificationEnabled: config.emailVerificationEnabled === true || status.emailVerification === 'configured',
+      requireEmailVerificationBeforeRental: config.requireEmailVerificationBeforeRental === true,
+      requireEmailVerificationBeforeListing: config.requireEmailVerificationBeforeListing === true,
+      requireEmailVerificationBeforeDriver: config.requireEmailVerificationBeforeDriver === true,
+      allowEmailVerificationReminders: config.allowEmailVerificationReminders === true,
+      emailVerificationCooldownSeconds: Math.max(30, Number(config.emailVerificationCooldownSeconds || 60)),
+      phoneVerification: { enabled: false, provider: null },
     };
   } catch {
     return defaultAuthPolicy;
+  }
+}
+
+export type MarketConfig = { code: GccCountryCode; enabled: boolean; marketplaceAvailable?: boolean; providerOnboardingAvailable?: boolean; currency?: string };
+
+export async function fetchMarketConfig(): Promise<MarketConfig[]> {
+  try {
+    const response = await fetch(`${WORKER_BASE_URL}/api/config/markets`);
+    if (!response.ok) throw new Error('MARKET_CONFIG_UNAVAILABLE');
+    const data = await response.json() as { countries?: MarketConfig[] };
+    if (!Array.isArray(data.countries)) throw new Error('MARKET_CONFIG_INVALID');
+    return data.countries;
+  } catch {
+    // Preserve the launch default while keeping every other GCC market closed
+    // until the Admin market configuration is available.
+    return GCC_COUNTRIES.map(country => ({ code: country.code, enabled: country.code === 'SA', marketplaceAvailable: country.code === 'SA' }));
   }
 }
 
@@ -56,9 +104,57 @@ export async function loginWithEmail(email: string, password: string): Promise<F
   return credential.user;
 }
 
+export async function refreshFirebaseEmailVerification(): Promise<boolean> {
+  const firebaseUser = getFirebaseAuth().currentUser;
+  if (!firebaseUser) return false;
+  await reload(firebaseUser);
+  const status = await fetchEmailVerificationStatus();
+  return status ? status.emailVerified : Boolean(getFirebaseAuth().currentUser?.emailVerified);
+}
+
+/**
+ * Firebase remains authoritative for the verified state. The Worker owns
+ * delivery (Resend when configured) and never receives or stores credentials.
+ */
+export async function sendVerificationEmail(locale: 'ar' | 'en' = 'ar'): Promise<'sent' | 'rate_limited' | 'unavailable'> {
+  const firebaseUser = getFirebaseAuth().currentUser;
+  if (!firebaseUser) return 'unavailable';
+  try {
+    const token = await firebaseUser.getIdToken();
+    const response = await fetch(`${WORKER_BASE_URL}/api/auth/email-verification`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ locale }),
+    });
+    if (response.status === 429) return 'rate_limited';
+    return response.ok ? 'sent' : 'unavailable';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+export async function fetchEmailVerificationStatus(): Promise<{ emailVerified: boolean; policy?: {
+  enabled?: boolean; requireBeforeRentalRequest?: boolean; requireBeforeListingSubmission?: boolean;
+  requireBeforeDriverActivation?: boolean; allowReminders?: boolean; reminderCooldownSeconds?: number;
+} } | null> {
+  const firebaseUser = getFirebaseAuth().currentUser;
+  if (!firebaseUser) return null;
+  try {
+    const token = await firebaseUser.getIdToken();
+    const response = await fetch(`${WORKER_BASE_URL}/api/auth/email-verification`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as any;
+    return { emailVerified: data.emailVerified === true, policy: data.policy };
+  } catch {
+    return null;
+  }
+}
+
 /** Keep the alias in the same Firebase account: the Worker returns only a custom token. */
 export async function loginWithPhone(phone: string, password: string): Promise<FirebaseUser> {
-  const normalizedPhone = normalizeSaudiPhone(phone);
+  const normalizedPhone = normalizeGccPhone(phone);
   if (!normalizedPhone) throw new Error('PHONE_LOGIN_INVALID');
   let response: Response;
   try {
@@ -84,14 +180,7 @@ export async function loginWithPhone(phone: string, password: string): Promise<F
   }
 }
 
-export function normalizeSaudiPhone(value: string): string | null {
-  const compact = value.trim().replace(/[ ()-]/g, '');
-  if (/^05\d{8}$/.test(compact)) return `+966${compact.slice(1)}`;
-  if (/^5\d{8}$/.test(compact)) return `+966${compact}`;
-  if (/^009665\d{8}$/.test(compact)) return `+966${compact.slice(4)}`;
-  if (/^\+9665\d{8}$/.test(compact)) return compact;
-  return null;
-}
+export const normalizeSaudiPhone = (value: string): string | null => normalizePhoneForCountry(value, 'SA');
 
 export async function registerWithEmail(
   email: string,
@@ -100,6 +189,7 @@ export async function registerWithEmail(
     nameAr: string;
     nameEn: string;
     phone: string;
+    countryCode?: GccCountryCode;
     region: string;
     city: string;
     customCity: string;
@@ -112,15 +202,13 @@ export async function registerWithEmail(
   const credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
   const uid = credential.user.uid;
 
-  const grant = takeRegistrationGrant();
   let shouldDelete = false;
   try {
     const token = await credential.user.getIdToken();
-    if (!grant) { shouldDelete = true; throw new Error('Email verification grant is missing'); }
     const response = await fetch(`${WORKER_BASE_URL}/api/register-profile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ grant, registrationGrant: grant, ...profileData, requestedRole: profileData.role, termsAccepted: true }),
+      body: JSON.stringify(buildRegistrationProfilePayload(profileData)),
     });
     if (!response.ok) {
       const failure = await response.json().catch(() => ({})) as { safeToDeleteIdentity?: boolean; error?: string };
@@ -148,7 +236,7 @@ export async function requestPasswordReset(identifier: string, locale: 'ar' | 'e
   const normalized = identifier.trim().toLowerCase();
   const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized);
   const compactPhone = normalized.replace(/[ ()-]/g, '');
-  const isPhone = /^(?:\+9665|009665|05|5)\d{8}$/.test(compactPhone);
+  const isPhone = normalizeGccPhone(compactPhone) !== null;
   if (!isEmail && !isPhone) return 'invalid';
   try {
     const response = await fetch(`${WORKER_BASE_URL}/api/auth/password-reset`, {
@@ -186,6 +274,12 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
       equipmentCount: data.equipmentCount || 0,
       joinedAt: data.joinedAt || '',
       isVerified: data.isVerified || false,
+      emailVerified: data.emailVerified === true,
+      emailVerifiedAt: typeof data.emailVerifiedAt === 'string' ? data.emailVerifiedAt : '',
+      phoneVerified: data.phoneVerified === true,
+      countryCode: data.countryCode,
+      nativeCurrency: data.nativeCurrency || data.currency || 'SAR',
+      displayCurrency: data.displayCurrency || data.nativeCurrency || data.currency || 'SAR',
     } as User;
   }
   return null;

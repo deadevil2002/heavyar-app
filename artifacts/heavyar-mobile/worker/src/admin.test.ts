@@ -10,6 +10,8 @@ const request = (path: string, body?: unknown, headers: Record<string, string> =
     headers: { 'Content-Type': 'application/json', ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+const putRequest = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+  new Request(`https://worker.test${path}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
 
 describe('admin authorization and operational boundary', () => {
   beforeEach(() => {
@@ -53,6 +55,48 @@ describe('admin authorization and operational boundary', () => {
     expect((await session.json()).role).toBe('admin');
     const overview = await worker.fetch(request('/api/admin/overview', undefined, { Authorization: 'Bearer test' }), env);
     expect(overview.status).toBe(200);
+  });
+
+  test('country contract is exact, versioned, immutable, and disables dependent availability', async () => {
+    __test.setAuth({ uid: 'admin-1', admin: true, role: 'super_admin' });
+    const commits: unknown[][] = []; __adminTest.captureCommits(commits);
+    let countryVersion = 1; __adminTest.setFirestore((collection) => collection === 'countryConfigs' ? { version: countryVersion } : null);
+    const get = await worker.fetch(request('/api/admin/countries', undefined, { Authorization: 'Bearer test' }), env);
+    expect(get.status).toBe(200);
+    const initial: any = await get.json();
+    expect(initial.version).toBe(1);
+    expect(initial.countries.length).toBe(6);
+    const updated = initial.countries.map((country: any) => country.code === 'AE' ? { ...country, enabled: false, marketplaceAvailable: true, providerOnboardingAvailable: true, crossBorderAvailable: true } : country);
+    const put = await worker.fetch(putRequest('/api/admin/countries', { expectedVersion: 1, countries: updated }, { Authorization: 'Bearer test' }), env);
+    expect(put.status).toBe(200);
+    const result: any = await put.json();
+    expect(result.version).toBe(2);
+    const writes: any[] = commits[0] as any[];
+    const ae = writes.find(write => String(write.update?.name).endsWith('/countryConfigs/AE'));
+    expect(ae.update.fields.marketplaceAvailable.booleanValue).toBe(false);
+    expect(ae.update.fields.providerOnboardingAvailable.booleanValue).toBe(false);
+    expect(ae.update.fields.crossBorderAvailable.booleanValue).toBe(false);
+    countryVersion = 2;
+    const stale = await worker.fetch(putRequest('/api/admin/countries', { expectedVersion: 1, countries: updated }, { Authorization: 'Bearer test' }), env);
+    expect(stale.status).toBe(412);
+  });
+
+  test('FX provider contract is server-only, versioned, and remains disabled with no rates', async () => {
+    __test.setAuth({ uid: 'admin-1', admin: true, role: 'super_admin' });
+    const commits: unknown[][] = []; __adminTest.captureCommits(commits);
+    __adminTest.setFirestore((collection) => collection === 'fxProviders' ? null : null);
+    const get = await worker.fetch(request('/api/admin/fx-provider', undefined, { Authorization: 'Bearer test' }), env);
+    expect(get.status).toBe(200);
+    const initial: any = await get.json();
+    expect(initial.fx.provider).toBe('none');
+    expect(initial.fx.enabled).toBe(false);
+    const put = await worker.fetch(putRequest('/api/admin/fx-provider', { expectedVersion: initial.fx.version, refreshIntervalSeconds: 7200, cacheTtlSeconds: 86400 }, { Authorization: 'Bearer test' }), env);
+    expect(put.status).toBe(200);
+    const result: any = await put.json();
+    expect(result.fx.enabled).toBe(false);
+    expect(result.fx.status).toBe('disabled');
+    expect(result.fx.refreshIntervalSeconds).toBe(7200);
+    expect(JSON.stringify(result.fx).includes('rate')).toBe(false);
   });
 
   test('admin action validation rejects missing reason before any write', async () => {
@@ -217,7 +261,7 @@ describe('admin authorization and operational boundary', () => {
 
   test('payouts cannot read generic finance documents and moderators can act only on listings', async () => {
     __adminTest.setFirestore((collection) => collection === 'payments' ? { amount: 10, state: 'paid' }
-      : collection === 'equipment' ? { moderationStatus: 'pending_review', visibility: 'visible' } : null);
+      : collection === 'equipment' ? { ownerUid: 'owner-1', moderationStatus: 'pending_review', visibility: 'visible' } : collection === 'users' ? { emailVerified: true } : null);
     __test.setAuth({ uid: 'payouts-1', admin: true, role: 'admin', permissionRole: 'payouts' });
     expect((await worker.fetch(request('/api/admin/detail/payments/payment-1', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
     expect((await worker.fetch(request('/api/admin/detail/equipment/equipment-1', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(403);
@@ -232,7 +276,7 @@ describe('admin authorization and operational boundary', () => {
   test('explicit listing approval normalizes only missing visibility and never reopens hidden or archived listings', async () => {
     let visibility: string | undefined;
     __test.setAuth({ uid: 'moderator-1', admin: true, role: 'admin', permissionRole: 'moderator' });
-    __adminTest.setFirestore((collection) => collection === 'equipment' ? { moderationStatus: 'pending_review', visibility } : null);
+    __adminTest.setFirestore((collection) => collection === 'equipment' ? { ownerUid: 'owner-1', moderationStatus: 'pending_review', visibility } : collection === 'users' ? { emailVerified: true } : null);
     const commits: unknown[][] = []; __adminTest.captureCommits(commits);
     const approve = async () => worker.fetch(request('/api/admin/action', {
       action: 'approve_listing', targetType: 'equipment', targetId: 'legacy-listing', reason: 'moderation approved',
@@ -248,6 +292,14 @@ describe('admin authorization and operational boundary', () => {
     expect((await approve()).status).toBe(200);
     expect((commits[2][0] as any).update.fields.visibility.stringValue).toBe('archived');
     expect((commits[2][0] as any).update.fields.isActive.booleanValue).toBe(false);
+  });
+
+  test('approval actions fail closed when Firebase email verification is absent', async () => {
+    __test.setAuth({ uid: 'moderator-1', admin: true, role: 'admin', permissionRole: 'moderator' });
+    __adminTest.setFirestore((collection) => collection === 'equipment' ? { ownerUid: 'owner-1', moderationStatus: 'pending_review' } : collection === 'users' ? { emailVerified: false } : null);
+    const listing = await worker.fetch(request('/api/admin/action', { action: 'approve_listing', targetType: 'equipment', targetId: 'listing-unverified', reason: 'review complete' }, { Authorization: 'Bearer test' }), env);
+    expect(listing.status).toBe(403);
+    expect((await listing.json()).errorCode).toBe('EMAIL_VERIFICATION_REQUIRED');
   });
 
   test('ownership initiation stays pending and never changes the canonical owner before acceptance', async () => {

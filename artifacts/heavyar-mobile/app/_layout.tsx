@@ -7,6 +7,7 @@ import { StatusBar } from "expo-status-bar";
 import Colors from "@/constants/colors";
 import { LanguageProvider } from "@/contexts/LanguageContext";
 import { AuthProvider } from "@/contexts/AuthContext";
+import EmailVerificationBanner from "@/components/EmailVerificationBanner";
 import { useAuth } from "@/contexts/AuthContext";
 import { notificationRouteFromPayload } from "@/services/notificationService";
 import * as Notifications from "expo-notifications";
@@ -78,6 +79,7 @@ export default function RootLayout() {
           <AuthProvider>
             <StatusBar style="light" />
             <NotificationNavigation />
+            <EmailVerificationBanner />
             <RootLayoutNav />
           </AuthProvider>
         </LanguageProvider>

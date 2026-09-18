@@ -120,7 +120,7 @@ export type TrustFields = {
   manualReview?: { status?: TrustStatus };
 };
 export type PersonSummary = { id?: string; uid?: string; name?: string; nameAr?: string; nameEn?: string; email?: string; phone?: string; city?: string; region?: string };
-export type User = { id: string; email?: string; nameAr?: string; nameEn?: string; displayName?: string; publicId?: string; publicIdentifier?: string; suspensionStatus?: string; status?: string; createdAt?: string; role?: string; verification?: string; city?: string; region?: string; provider?: PersonSummary; } & TrustFields;
+export type User = { id: string; email?: string; nameAr?: string; nameEn?: string; displayName?: string; publicId?: string; publicIdentifier?: string; suspensionStatus?: string; status?: string; createdAt?: string; role?: string; verification?: string; city?: string; region?: string; provider?: PersonSummary; emailVerified?: boolean; emailVerifiedAt?: string; lastEmailVerificationSentAt?: string; verificationReminderCount?: number; nextVerificationReminderAt?: string; } & TrustFields;
 export type Equipment = { id: string; publicId?: string; equipmentNumber?: string; title?: string; titleAr?: string; titleEn?: string; ownerUid?: string; owner?: PersonSummary; moderationStatus?: string; visibility?: string; isActive?: boolean; rate?: number; dailyRate?: number; city?: string; reviewedBy?: PersonSummary; reviewedAt?: string; rejectionReason?: string };
 export type Provider = User & { providerId?: string };
 export type Driver = { id: string; uid?: string; publicId?: string; displayName?: string; name?: string; email?: string; phone?: string; city?: string; region?: string; active?: boolean; status?: string; availabilityStatus?: string; moderationStatus?: string; verificationStatus?: string; trustStatus?: string; equipmentTypes?: string[]; moderatedAt?: string; reviewedAt?: string };
@@ -158,6 +158,32 @@ export type AuthConfig = {
     senderDomainVerified?: boolean;
   };
 };
+export type EmailVerificationPolicy = {
+  enabled: boolean;
+  requireBeforeRentalRequest: boolean;
+  requireBeforeListingSubmission: boolean;
+  requireBeforeDriverActivation: boolean;
+  allowReminders: boolean;
+  reminderCooldownSeconds: number;
+  version: number;
+  updatedAt?: string;
+};
+export type PhoneVerificationPolicy = {
+  enabled: false;
+  provider: null;
+  requireAfterSignup: boolean;
+  requireBeforeRentalRequest: boolean;
+  requireBeforeProviderActivation: boolean;
+  requireBeforeDriverActivation: boolean;
+  requireBeforeSensitiveActions: boolean;
+  resendCooldownSeconds: number;
+  maxAttempts: number;
+  expirySeconds: number;
+  version: number;
+};
+export type AdminCountry = { code: string; nameEn: string; nameAr: string; dialCode: string; nativeCurrency: string; enabled: boolean; marketplaceAvailable: boolean; providerOnboardingAvailable: boolean; crossBorderAvailable: boolean; version?: number };
+export type AdminCountriesResponse = { success: boolean; version: number; countries: AdminCountry[] };
+export type FxProviderConfig = { provider: 'none'; enabled: false; refreshIntervalSeconds: number; cacheTtlSeconds: number; status: 'disabled'; lastSuccessfulAt?: string | null; lastSuccessfulVersion?: number | null; version: number; updatedAt?: string };
 export type AuditEntry = { id: string; actorUid: string; action: string; targetType: string; targetId: string; before?: any; after?: any; reason?: string; timestamp: string };
 export type OverviewMetrics = {
   totalUsers: number;
@@ -294,6 +320,30 @@ export function useAuthConfig() {
     },
     retry: false,
   });
+}
+export function useEmailVerificationPolicy() {
+  return useQuery({ queryKey: ['emailVerificationPolicy'], queryFn: () => fetchApi<{ success: boolean; policy: EmailVerificationPolicy }>('/email-verification-policy'), retry: false });
+}
+export function useUpdateEmailVerificationPolicy() {
+  return useMutation({ mutationFn: (policy: { expectedVersion: number; enabled: boolean; requireBeforeRentalRequest: boolean; requireBeforeListingSubmission: boolean; requireBeforeDriverActivation: boolean; allowReminders: boolean; reminderCooldownSeconds: number }) => fetchApi<{ success: boolean; policy: EmailVerificationPolicy }>('/email-verification-policy', { method: 'PUT', body: JSON.stringify(policy) }) });
+}
+export function usePhoneVerificationPolicy() {
+  return useQuery({ queryKey: ['phoneVerificationPolicy'], queryFn: () => fetchApi<{ success: boolean; policy: PhoneVerificationPolicy }>('/phone-verification'), retry: false });
+}
+export function useUpdatePhoneVerificationPolicy() {
+  return useMutation({ mutationFn: (policy: { expectedVersion: number; requireAfterSignup: boolean; requireBeforeRentalRequest: boolean; requireBeforeProviderActivation: boolean; requireBeforeDriverActivation: boolean; requireBeforeSensitiveActions: boolean; resendCooldownSeconds: number; maxAttempts: number; expirySeconds: number }) => fetchApi<{ success: boolean; policy: PhoneVerificationPolicy }>('/phone-verification', { method: 'PUT', body: JSON.stringify(policy) }) });
+}
+export function useAdminCountries() {
+  return useQuery({ queryKey: ['adminCountries'], queryFn: () => fetchApi<AdminCountriesResponse>('/countries'), retry: false });
+}
+export function useUpdateAdminCountries() {
+  return useMutation({ mutationFn: (data: { expectedVersion: number; countries: AdminCountry[] }) => fetchApi<AdminCountriesResponse>('/countries', { method: 'PUT', body: JSON.stringify(data) }) });
+}
+export function useFxProviderConfig() {
+  return useQuery({ queryKey: ['fxProvider'], queryFn: () => fetchApi<{ success: boolean; fx: FxProviderConfig }>('/fx-provider'), retry: false });
+}
+export function useUpdateFxProviderConfig() {
+  return useMutation({ mutationFn: (data: { expectedVersion: number; refreshIntervalSeconds: number; cacheTtlSeconds: number }) => fetchApi<{ success: boolean; fx: FxProviderConfig }>('/fx-provider', { method: 'PUT', body: JSON.stringify(data) }) });
 }
 export function useAudit(params: Record<string, any> = {}) { return useListQuery<AuditEntry>('audit', '/audit', params); }
 export function useDetail<T = Record<string, unknown>>(resource: string, id?: string) {

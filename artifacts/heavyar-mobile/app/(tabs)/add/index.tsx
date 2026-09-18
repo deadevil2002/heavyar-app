@@ -14,10 +14,11 @@ import { uploadMultipleImages, deleteCloudinaryImage, CloudinaryImage } from '@/
 import { createListing } from '@/services/workerClient';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { preferredDisplayCurrency } from '@/services/currency';
 
 export default function AddEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, requiresEmailVerification } = useAuth();
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
   const [titleAr, setTitleAr] = useState<string>('');
@@ -73,6 +74,10 @@ export default function AddEquipmentScreen() {
 
   const handlePublish = useCallback(async () => {
     if (!user) return;
+    if (requiresEmailVerification('listing')) {
+      showDialog(t('email_verification_required_title'), t('email_verification_required_listing'), [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
 
     if (!titleAr.trim()) {
       showDialog(t('validation_error'), t('validation_title_ar_required'), [{ text: t('ok'), style: 'default' }]);
@@ -126,6 +131,10 @@ export default function AddEquipmentScreen() {
         district,
         location: { lat: 0, lng: 0 },
         pricePerDay: parsedPrice,
+        countryCode: user.countryCode || 'SA',
+        nativeCurrency: user.nativeCurrency || 'SAR',
+        nativePricePerDay: parsedPrice,
+        displayCurrency: preferredDisplayCurrency(user.countryCode, user.displayCurrency),
         images: uploadedImages,
         availability: { from: new Date().toISOString().slice(0, 10), temporarilyUnavailable: false },
       });
@@ -151,7 +160,7 @@ export default function AddEquipmentScreen() {
       setUploading(false);
       setUploadProgress('');
     }
-  }, [titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, price, images, user, t, showDialog]);
+  }, [titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, price, images, user, t, showDialog, requiresEmailVerification]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 

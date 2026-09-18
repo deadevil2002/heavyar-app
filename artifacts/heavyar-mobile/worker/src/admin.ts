@@ -97,7 +97,7 @@ function nextCursor(name?: string, sortValue?: string | number | boolean | null)
 }
 
 const FILTERS: Record<string, string[]> = {
-  users: ['role', 'accountStatus', 'suspensionStatus', 'emailLower', 'email'],
+  users: ['role', 'accountStatus', 'suspensionStatus', 'emailLower', 'email', 'emailVerified', 'countryCode'],
   equipment: ['ownerUid', 'isActive', 'visibility', 'moderationStatus', 'city', 'slug'],
   equipmentRequests: ['status', 'paymentStatus', 'paymentState', 'customerUid', 'providerUid'],
   payments: ['state', 'provider'],
@@ -359,6 +359,101 @@ function redact(value: any): any {
   return Object.fromEntries(Object.entries(value)
     .filter(([key]) => !sensitiveWords.test(key))
     .map(([key, item]) => [key, item && typeof item === 'object' ? redact(item) : item]));
+}
+function emailVerificationTemplate(url: string, name: string, support: string) {
+  const escape = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] || character));
+  return `<div style="font-family:Arial,sans-serif;color:#172033;max-width:560px;margin:auto"><h1 style="color:#0b6b61">Heavyar</h1><p>مرحباً ${escape(name || 'Heavyar user')}،</p><p>Hello ${escape(name || 'Heavyar user')},</p><p>وثّق بريدك الإلكتروني للاستفادة من جميع خدمات Heavyar.</p><p>Verify your email to unlock all Heavyar services.</p><p><a href="${escape(url)}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">توثيق البريد / Verify email</a></p><p>إذا لم تطلب هذه الرسالة، يمكنك تجاهلها. / If you did not request this, you can ignore it.</p><p>الدعم / Support: <a href="mailto:${escape(support)}">${escape(support)}</a></p></div>`;
+}
+async function emailVerificationReminder(req: Request, env: Env, user: AdminUser) {
+  if (!can(user, 'support.manage') && !can(user, 'config.manage')) return { error: 'Support permission required', status: 403 };
+  const body: any = await req.json().catch(() => ({})), uid = String(body?.uid || '').trim();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(uid)) return { error: 'Invalid user', status: 400 };
+  const person = await rawDoc(env, 'users', uid);
+  const email = String(person?.data?.email || person?.data?.emailLower || '').trim().toLowerCase();
+  if (!person?.data || !email) return { error: 'User not found', status: 404 };
+  if (person.data.emailVerified === true) return { success: true, alreadyVerified: true };
+  const rate = await rawDoc(env, 'emailVerificationRateLimits', uid), policy = await rawDoc(env, 'emailVerificationPolicies', 'default'), cooldownSeconds = Math.min(604800, Math.max(300, Number(policy?.data?.reminderCooldownSeconds) || 86400)), now = Date.now();
+  if (rate?.data?.nextAllowedAt && Date.parse(String(rate.data.nextAllowedAt)) > now) return { error: 'Verification email cooldown active', status: 429 };
+  let delivered = false, deliveryOutcome: 'accepted' | 'auth_failed' | 'sender_rejected' | 'rate_limited' | 'provider_error' | 'not_configured' = env.RESEND_API_KEY ? 'provider_error' : 'not_configured';
+  if (env.RESEND_API_KEY && env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
+    try {
+      const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+      const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:sendOobCode`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', email, returnOobLink: true }) });
+      const result: any = await response.json().catch(() => ({}));
+      if (response.ok && typeof result.oobLink === 'string') {
+        const sent = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: env.RESEND_FROM_EMAIL || 'Heavyar <noreply@heavyar.app>', to: [email], subject: 'Verify your Heavyar email / وثّق بريدك الإلكتروني', html: emailVerificationTemplate(result.oobLink, String(person.data.nameEn || person.data.nameAr || ''), env.RESEND_SUPPORT_EMAIL || 'support@heavyar.app') }) });
+        delivered = sent.ok;
+        deliveryOutcome = sent.ok ? 'accepted' : sent.status === 401 || sent.status === 403 ? 'auth_failed' : sent.status === 429 ? 'rate_limited' : sent.status === 400 ? 'sender_rejected' : 'provider_error';
+      }
+    } catch { delivered = false; }
+  }
+  if (!delivered && env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
+    try {
+      const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+      const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:sendOobCode`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', email }) });
+      delivered = response.ok;
+    } catch { delivered = false; }
+  }
+  const nowIso = new Date(now).toISOString();
+  await commit(env, [{ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(uid)}`), fields: { uid: jsonValue(uid), lastSentAt: { timestampValue: nowIso }, nextAllowedAt: { timestampValue: new Date(now + cooldownSeconds * 1000).toISOString() }, count: { integerValue: String(Number(rate?.data?.count || 0) + 1) } } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } }, await auditWrite(env, user, 'email_verification_reminder', 'user', uid, crypto.randomUUID(), delivered ? 'verification reminder sent' : 'verification reminder delivery unavailable', undefined, { delivered, deliveryOutcome })]);
+  return { success: delivered, accepted: true, delivered, deliveryOutcome };
+}
+const COUNTRY_CONTRACTS: Record<string, { nameEn: string; nameAr: string; dialCode: string; nativeCurrency: string; enabled: boolean }> = {
+  SA: { nameEn: 'Saudi Arabia', nameAr: 'المملكة العربية السعودية', dialCode: '+966', nativeCurrency: 'SAR', enabled: true },
+  AE: { nameEn: 'United Arab Emirates', nameAr: 'الإمارات العربية المتحدة', dialCode: '+971', nativeCurrency: 'AED', enabled: false },
+  KW: { nameEn: 'Kuwait', nameAr: 'الكويت', dialCode: '+965', nativeCurrency: 'KWD', enabled: false },
+  QA: { nameEn: 'Qatar', nameAr: 'قطر', dialCode: '+974', nativeCurrency: 'QAR', enabled: false },
+  BH: { nameEn: 'Bahrain', nameAr: 'البحرين', dialCode: '+973', nativeCurrency: 'BHD', enabled: false },
+  OM: { nameEn: 'Oman', nameAr: 'عُمان', dialCode: '+968', nativeCurrency: 'OMR', enabled: false },
+};
+function countryContractRows(stored: Array<RawDoc | null>) {
+  return Object.entries(COUNTRY_CONTRACTS).map(([code, base], index) => {
+    const data = stored[index]?.data || {};
+    const enabled = data.enabled === undefined ? base.enabled : data.enabled === true;
+    return { code, ...base, ...data, enabled, marketplaceAvailable: enabled && (data.marketplaceAvailable === undefined ? base.enabled : data.marketplaceAvailable === true), providerOnboardingAvailable: enabled && (data.providerOnboardingAvailable === undefined ? base.enabled : data.providerOnboardingAvailable === true), crossBorderAvailable: enabled && data.crossBorderAvailable === true, version: Number(data.version || 1) };
+  });
+}
+async function adminCountries(req: Request, env: Env, user: AdminUser) {
+  if (!can(user, 'config.manage')) return { error: 'Configuration permission required', status: 403 };
+  const stored = await Promise.all(Object.keys(COUNTRY_CONTRACTS).map(code => rawDoc(env, 'countryConfigs', code)));
+  if (req.method === 'GET') return { success: true, version: Math.max(1, ...stored.map(item => Number(item?.data?.version || 1))), countries: countryContractRows(stored) };
+  const body: any = await req.json().catch(() => null);
+  if (!body || !Array.isArray(body.countries) || Object.keys(body).some(key => !['countries', 'expectedVersion', 'version'].includes(key))) return { error: 'Invalid countries contract', status: 400 };
+  const currentVersion = Math.max(1, ...stored.map(item => Number(item?.data?.version || 1))), expected = Number(body.expectedVersion ?? body.version);
+  if (!Number.isInteger(expected) || expected !== currentVersion) return { error: 'Country configuration precondition failed', errorCode: 'VERSION_PRECONDITION_FAILED', status: 412, version: currentVersion };
+  if (body.countries.length !== 6 || new Set(body.countries.map((row: any) => row?.code)).size !== 6 || Object.keys(COUNTRY_CONTRACTS).some(code => !body.countries.some((row: any) => row.code === code))) return { error: 'Country set must be exactly SA, AE, KW, QA, BH, OM', status: 400 };
+  const rows = body.countries.map((row: any) => {
+    const base = COUNTRY_CONTRACTS[row.code];
+    if (!base || row.nameEn !== undefined && row.nameEn !== base.nameEn || row.nameAr !== undefined && row.nameAr !== base.nameAr || row.dialCode !== undefined && row.dialCode !== base.dialCode || row.nativeCurrency !== undefined && row.nativeCurrency !== base.nativeCurrency) throw new Error('IMMUTABLE_COUNTRY_MAPPING');
+    for (const key of ['enabled', 'marketplaceAvailable', 'providerOnboardingAvailable', 'crossBorderAvailable']) if (row[key] !== undefined && typeof row[key] !== 'boolean') throw new Error('INVALID_COUNTRY_FLAG');
+    const enabled = row.enabled === undefined ? base.enabled : row.enabled;
+    return { ...base, code: row.code, enabled, marketplaceAvailable: enabled && row.marketplaceAvailable === true, providerOnboardingAvailable: enabled && row.providerOnboardingAvailable === true, crossBorderAvailable: enabled && row.crossBorderAvailable === true };
+  });
+  try {
+    const nextVersion = currentVersion + 1, now = new Date().toISOString();
+    const writes = rows.map((row: any) => { const prior = stored[Object.keys(COUNTRY_CONTRACTS).indexOf(row.code)]; return { update: { name: fullName(env, `countryConfigs/${row.code}`), fields: Object.fromEntries(Object.entries({ ...row, version: nextVersion, updatedAt: now, updatedBy: user.uid }).map(([key, value]) => [key, jsonValue(value)])) }, currentDocument: prior?.updateTime ? { updateTime: prior.updateTime } : { exists: false } }; });
+    writes.push(await auditWrite(env, user, 'countries_updated', 'configuration', 'countryConfigs', crypto.randomUUID(), 'GCC country configuration updated', { version: currentVersion }, { version: nextVersion, countries: rows.map((row: any) => ({ code: row.code, enabled: row.enabled, marketplaceAvailable: row.marketplaceAvailable, providerOnboardingAvailable: row.providerOnboardingAvailable, crossBorderAvailable: row.crossBorderAvailable })) }));
+    await commit(env, writes);
+    return { success: true, version: nextVersion, countries: rows.map((row: any) => ({ ...row, version: nextVersion, updatedAt: now })) };
+  } catch (error) {
+    if (error instanceof Error && error.message === 'IMMUTABLE_COUNTRY_MAPPING') return { error: 'Country code, dial code, names, and native currency are immutable', status: 400 };
+    if (error instanceof Error && error.message === 'INVALID_COUNTRY_FLAG') return { error: 'Invalid country availability flag', status: 400 };
+    throw error;
+  }
+}
+async function adminFxProvider(req: Request, env: Env, user: AdminUser) {
+  if (!can(user, 'config.manage')) return { error: 'Configuration permission required', status: 403 };
+  const prior = await rawDoc(env, 'fxProviders', 'default'), data = prior?.data || {}, defaults = { provider: 'none', enabled: false, refreshIntervalSeconds: 3600, cacheTtlSeconds: 86400, status: 'disabled', lastSuccessfulAt: null, lastSuccessfulVersion: null, version: 1 };
+  if (req.method === 'GET') return { success: true, fx: { ...defaults, ...data, provider: 'none', enabled: false, status: 'disabled' } };
+  const body: any = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['expectedVersion', 'version', 'refreshIntervalSeconds', 'cacheTtlSeconds'].includes(key))) return { error: 'Invalid FX provider contract', status: 400 };
+  const currentVersion = Number(data.version || 1), expected = Number(body.expectedVersion ?? body.version);
+  if (!Number.isInteger(expected) || expected !== currentVersion) return { error: 'FX provider precondition failed', errorCode: 'VERSION_PRECONDITION_FAILED', status: 412, version: currentVersion };
+  const refresh = Number(body.refreshIntervalSeconds ?? data.refreshIntervalSeconds ?? defaults.refreshIntervalSeconds), ttl = Number(body.cacheTtlSeconds ?? data.cacheTtlSeconds ?? defaults.cacheTtlSeconds);
+  if (!Number.isInteger(refresh) || refresh < 60 || !Number.isInteger(ttl) || ttl < refresh) return { error: 'Invalid FX refresh/cache interval', status: 400 };
+  const nextVersion = currentVersion + 1, now = new Date().toISOString(), fields = Object.fromEntries(Object.entries({ provider: 'none', enabled: false, refreshIntervalSeconds: refresh, cacheTtlSeconds: ttl, status: 'disabled', lastSuccessfulAt: data.lastSuccessfulAt || null, lastSuccessfulVersion: data.lastSuccessfulVersion || null, version: nextVersion, updatedAt: now, updatedBy: user.uid }).map(([key, value]) => [key, jsonValue(value)]));
+  await commit(env, [{ update: { name: fullName(env, 'fxProviders/default'), fields }, currentDocument: prior?.updateTime ? { updateTime: prior.updateTime } : { exists: false } }, await auditWrite(env, user, 'fx_provider_updated', 'configuration', 'fxProviders/default', crypto.randomUUID(), 'FX provider remains disabled; no rates or settlement enabled', data, { version: nextVersion, refreshIntervalSeconds: refresh, cacheTtlSeconds: ttl })]);
+  return { success: true, fx: { ...defaults, ...data, provider: 'none', enabled: false, status: 'disabled', refreshIntervalSeconds: refresh, cacheTtlSeconds: ttl, version: nextVersion, updatedAt: now } };
 }
 function defaultAuthConfig() {
   return { requested: { requirePhoneOnSignup: false, requireMobileDuringSignup: false, allowEmailLogin: true, allowPhoneLogin: false, requirePhoneVerification: false, phoneIndexReady: false }, effective: { requirePhoneOnSignup: false, requireMobileDuringSignup: false, allowEmailLogin: true, allowPhoneLogin: false, requirePhoneVerification: false, phoneIndexReady: false }, status: { firebaseReset: 'blocked', resend: 'sender_unverified', phoneProvider: 'not_required_for_alias', phonePasswordLogin: 'blocked', phoneIndexReady: false }, version: 1 };
@@ -764,6 +859,20 @@ async function verifiedIdentityEmail(env: Env, user: AdminUser): Promise<string 
   const record = (await response.json() as any).users?.[0];
   return record?.emailVerified === true ? normalizeAuthorityEmail(record.email) : null;
 }
+async function firebaseEmailVerified(env: Env, uid: string, profile: any, actor: AdminUser): Promise<boolean> {
+  if (actor.testInjected) return profile?.emailVerified === true;
+  try {
+    const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID || '')}/accounts:lookup`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: [uid] }) });
+    if (!response.ok) return false;
+    return (await response.json() as any).users?.[0]?.emailVerified === true;
+  } catch { return false; }
+}
+async function emailVerificationRequiredForSensitiveAction(env: Env, uid: string, profile: any, actor: AdminUser, action: 'driver' | 'listing') {
+  const policy = (await rawDoc(env, 'emailVerificationPolicies', 'default'))?.data || {};
+  const required = action === 'driver' ? policy.requireBeforeDriverActivation !== false : policy.requireBeforeListingSubmission !== false;
+  return policy.enabled !== false && required && !(await firebaseEmailVerified(env, uid, profile, actor));
+}
 
 async function setRole(env: Env, actor: AdminUser, targetUid: string, role: StaffRole | null) {
   if (identityOverride) return identityOverride(targetUid, role);
@@ -835,6 +944,7 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
       : { isActive: jsonValue(actionName === 'show_listing' && current.moderationStatus === 'approved'), visibility: jsonValue(actionName === 'show_listing' ? 'visible' : 'hidden'), visibilityUpdatedBy: jsonValue(u.uid), visibilityUpdatedAt: { timestampValue: new Date().toISOString() } };
   } else if (normalizedType === 'driverProfile' && ['approve_driver', 'reject_driver', 'suspend_driver'].includes(actionName)) {
     if (!can(u, 'moderation.manage') && !can(u, 'operations.manage')) return { error: 'Driver operations permission required', status: 403 };
+    if (actionName === 'approve_driver' && await emailVerificationRequiredForSensitiveAction(env, String(current.uid || targetId), await rawDoc(env, 'users', String(current.uid || targetId)).then(item => item?.data), u, 'driver')) return { error: 'EMAIL_VERIFICATION_REQUIRED', errorCode: 'EMAIL_VERIFICATION_REQUIRED', status: 403 };
     fields = { active: jsonValue(actionName === 'approve_driver'), moderationStatus: jsonValue(actionName === 'approve_driver' ? 'approved' : actionName === 'reject_driver' ? 'rejected' : 'suspended'), moderationReason: jsonValue(reason), moderatedBy: jsonValue(u.uid), moderatedAt: { timestampValue: new Date().toISOString() } };
   } else if (normalizedType === 'paymentGateway' && actionName === 'update_gateway') {
     if (!can(u, 'config.manage')) return { error: 'Configuration permission required', status: 403 };
@@ -858,6 +968,7 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     if (!can(u, 'moderation.manage')) return { error: 'Moderation permission required', status: 403 };
     const now = new Date().toISOString();
     if (actionName === 'approve_listing') {
+      if (await emailVerificationRequiredForSensitiveAction(env, String(current.ownerUid || ''), await rawDoc(env, 'users', String(current.ownerUid || '')).then(item => item?.data), u, 'listing')) return { error: 'EMAIL_VERIFICATION_REQUIRED', errorCode: 'EMAIL_VERIFICATION_REQUIRED', status: 403 };
       // Approval is the only place legacy listings receive a visibility value.
       // Explicit operator hiding/archiving always wins over moderation approval.
       const visibility = current.visibility === 'hidden' || current.visibility === 'archived' ? current.visibility : 'visible';
@@ -1224,6 +1335,49 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
       (url.pathname === '/api/admin/owner-bootstrap' && (user.role === 'super_admin' || user.permissionRole === 'super_admin')));
   if (!bootstrapException) await requireAdmin(user, env);
   if (url.pathname === '/api/admin/session' && req.method === 'GET') return { success: true, uid: user.uid, role: user.permissionRole || user.role, bootstrapRequired: bootstrapException };
+  if (url.pathname === '/api/admin/email-verification/reminder' && req.method === 'POST') return emailVerificationReminder(req, env, user);
+  if (url.pathname === '/api/admin/email-verification-policy' && req.method === 'GET') {
+    const policy = await rawDoc(env, 'emailVerificationPolicies', 'default');
+    return { success: true, policy: policy?.data || { enabled: true, requireBeforeRentalRequest: true, requireBeforeListingSubmission: true, requireBeforeDriverActivation: true, allowReminders: true, reminderCooldownSeconds: 86400, version: 1 } };
+  }
+  if (url.pathname === '/api/admin/email-verification-policy' && req.method === 'PUT') {
+    if (!can(user, 'config.manage')) return { error: 'Configuration permission required', status: 403 };
+    const body: any = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: 'Invalid policy', status: 400 };
+    const prior = await rawDoc(env, 'emailVerificationPolicies', 'default'), currentVersion = Number(prior?.data?.version || 1), now = new Date().toISOString();
+    const allowed = ['enabled', 'requireBeforeRentalRequest', 'requireBeforeListingSubmission', 'requireBeforeDriverActivation', 'allowReminders', 'reminderCooldownSeconds'];
+    const expectedVersion = Number(body.expectedVersion);
+    if (!Number.isInteger(expectedVersion) || expectedVersion !== currentVersion) return { error: 'Email policy precondition failed', errorCode: 'VERSION_PRECONDITION_FAILED', status: 412, version: currentVersion };
+    if (Object.keys(body).some(key => !allowed.includes(key) && key !== 'expectedVersion')) return { error: 'Invalid policy field', status: 400 };
+    for (const key of allowed.filter(key => key !== 'reminderCooldownSeconds')) if (body[key] !== undefined && typeof body[key] !== 'boolean') return { error: 'Policy booleans must be boolean', status: 400 };
+    if (body.reminderCooldownSeconds !== undefined && (!Number.isInteger(body.reminderCooldownSeconds) || body.reminderCooldownSeconds < 300 || body.reminderCooldownSeconds > 604800)) return { error: 'Invalid reminder cooldown', status: 400 };
+    const version = currentVersion + 1;
+    const fields = Object.fromEntries([...allowed.filter(key => body[key] !== undefined).map(key => [key, jsonValue(body[key])]), ['version', jsonValue(version)], ['updatedAt', { timestampValue: now }], ['updatedBy', jsonValue(user.uid)]]);
+    await commit(env, [{ update: { name: fullName(env, 'emailVerificationPolicies/default'), fields }, currentDocument: prior?.updateTime ? { updateTime: prior.updateTime } : { exists: false } }, await auditWrite(env, user, 'email_verification_policy_updated', 'configuration', 'emailVerificationPolicies/default', crypto.randomUUID(), 'email verification policy updated', prior?.data, body)]);
+    return { success: true, policy: { ...(prior?.data || {}), ...body, version, updatedAt: now } };
+  }
+  if (url.pathname === '/api/admin/phone-verification' && req.method === 'GET') {
+    const stored = await rawDoc(env, 'phoneVerificationPolicies', 'default');
+    return { success: true, policy: { requireAfterSignup: false, requireBeforeRentalRequest: false, requireBeforeProviderActivation: false, requireBeforeDriverActivation: false, requireBeforeSensitiveActions: false, resendCooldownSeconds: 86400, maxAttempts: 5, expirySeconds: 600, version: 1, ...(stored?.data || {}), enabled: false, provider: null } };
+  }
+  if (url.pathname === '/api/admin/phone-verification' && req.method === 'PUT') {
+    if (!can(user, 'config.manage')) return { error: 'Configuration permission required', status: 403 };
+    const body: any = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: 'Invalid phone verification policy', status: 400 };
+    const prior = await rawDoc(env, 'phoneVerificationPolicies', 'default'), currentVersion = Number(prior?.data?.version || 1), now = new Date().toISOString();
+    const allowed = ['requireAfterSignup', 'requireBeforeRentalRequest', 'requireBeforeProviderActivation', 'requireBeforeDriverActivation', 'requireBeforeSensitiveActions', 'resendCooldownSeconds', 'maxAttempts', 'expirySeconds'];
+    const expectedVersion = Number(body.expectedVersion);
+    if (!Number.isInteger(expectedVersion) || expectedVersion !== currentVersion) return { error: 'Phone policy precondition failed', errorCode: 'VERSION_PRECONDITION_FAILED', status: 412, version: currentVersion };
+    if (Object.keys(body).some(key => !allowed.includes(key) && key !== 'expectedVersion')) return { error: 'Invalid phone verification field', status: 400 };
+    for (const key of allowed.filter(key => !['resendCooldownSeconds', 'maxAttempts', 'expirySeconds'].includes(key))) if (body[key] !== undefined && typeof body[key] !== 'boolean') return { error: 'Policy booleans must be boolean', status: 400 };
+    for (const [key, min, max] of [['resendCooldownSeconds', 300, 604800], ['maxAttempts', 1, 10], ['expirySeconds', 60, 3600]] as const) if (body[key] !== undefined && (!Number.isInteger(body[key]) || body[key] < min || body[key] > max)) return { error: `Invalid ${key}`, status: 400 };
+    const version = currentVersion + 1;
+    const fields = Object.fromEntries([...allowed.filter(key => body[key] !== undefined).map(key => [key, jsonValue(body[key])]), ['enabled', jsonValue(false)], ['provider', { nullValue: null }], ['version', jsonValue(version)], ['updatedAt', { timestampValue: now }], ['updatedBy', jsonValue(user.uid)]]);
+    await commit(env, [{ update: { name: fullName(env, 'phoneVerificationPolicies/default'), fields }, currentDocument: prior?.updateTime ? { updateTime: prior.updateTime } : { exists: false } }, await auditWrite(env, user, 'phone_verification_policy_updated', 'configuration', 'phoneVerificationPolicies/default', crypto.randomUUID(), 'phone verification remains disabled; future-only configuration')]);
+    return { success: true, policy: { ...(prior?.data || {}), ...body, enabled: false, provider: null, version, updatedAt: now } };
+  }
+  if (url.pathname === '/api/admin/countries' && (req.method === 'GET' || req.method === 'PUT')) return adminCountries(req, env, user);
+  if (url.pathname === '/api/admin/fx-provider' && (req.method === 'GET' || req.method === 'PUT')) return adminFxProvider(req, env, user);
   if (url.pathname === '/api/admin/overview' && !can(user, 'audit.read')) return { error: 'Operational read permission required', status: 403 };
   if (url.pathname === '/api/admin/payment-gateways' && req.method === 'GET') {
     if (!can(user, 'finance.read') && !can(user, 'payouts.read')) return { error: 'Finance or payouts permission required', status: 403 };

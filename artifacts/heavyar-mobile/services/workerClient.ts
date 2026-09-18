@@ -3,6 +3,7 @@ import { WORKER_BASE_URL } from '@/constants/worker';
 import { listingLifecyclePath } from './listingContracts';
 import { sanitizeCreateListingPayload, sanitizeListingPayload } from './listingPayload';
 import { driverRequestActions } from './driverRequestContract';
+import type { GccCountryCode } from '@/constants/gcc';
 export { driverRequestActions } from './driverRequestContract';
 
 export type AvailabilityRange = { from: string; until?: string };
@@ -26,6 +27,8 @@ export type DriverPublicProfile = {
   trustStatus?: string;
   active?: boolean;
   rating?: number;
+  countryCode?: GccCountryCode;
+  nativeCurrency?: string;
 };
 export type DriverSearchParams = {
   cursor?: string;

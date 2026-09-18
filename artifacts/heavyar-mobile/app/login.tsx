@@ -11,6 +11,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { fetchAuthPolicy, requestPasswordReset } from '@/services/authService';
+import { isGccPhone } from '@/constants/gcc';
 
 export default function LoginScreen() {
   const { isRTL, t, language } = useLanguage();
@@ -54,7 +55,7 @@ export default function LoginScreen() {
   const handleForgotPassword = useCallback(async () => {
     const normalized = email.trim().toLowerCase();
     const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized);
-    const isPhone = phoneRecoveryReady && /^(?:\+9665|009665|05|5)\d{8}$/.test(normalized.replace(/[ ()-]/g, ''));
+    const isPhone = phoneRecoveryReady && isGccPhone(normalized);
     if (!isEmail && !isPhone) {
       showDialog(t('error_title'), t('invalid_email'), [{ text: t('ok'), style: 'default' }]);
       return;

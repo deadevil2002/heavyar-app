@@ -12,6 +12,7 @@ export interface Env {
   CLOUDINARY_CLOUD_NAME?: string; CLOUDINARY_API_KEY?: string; CLOUDINARY_API_SECRET?: string;
   CLOUDINARY_FOLDER?: string; TAP_SECRET_KEY_TEST?: string; MOYASAR_SECRET_KEY?: string; MYFATOORAH_API_KEY?: string; RESEND_API_KEY?: string;
   FIREBASE_PROJECT_ID?: string; FIREBASE_CLIENT_EMAIL?: string; FIREBASE_PRIVATE_KEY?: string; FIREBASE_WEB_API_KEY?: string;
+  RESEND_FROM_EMAIL?: string; RESEND_SUPPORT_EMAIL?: string; RESEND_SENDER_DOMAIN_VERIFIED?: string;
   CORS_ORIGINS?: string; PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string; OTP_KV?: KVNamespace;
   IDENTITY_PROVIDER_MODE?: 'official';
   AUTH_RATE_LIMIT_KV?: KVNamespace;
@@ -19,7 +20,7 @@ export interface Env {
   FIREBASE_MESSAGING_SENDER_ID?: string;
   __executionCtx?: { waitUntil(promise: Promise<unknown>): void };
 }
-type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; authTime?: number; testInjected?: true };
+type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true };
 let authOverride: User | undefined;
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let assetOwnedOverride: boolean | undefined;
@@ -33,7 +34,7 @@ let refreshTokenRevokeOverride: ((env: Env, uid: string) => Promise<void>) | und
 let passwordVerifierOverride: ((email: string, password: string) => Promise<{ localId?: string }>) | undefined;
 let customTokenOverride: ((uid: string) => Promise<string>) | undefined;
 let phoneLoginLimiterOverride: ((phoneHash: string, ipHash: string) => Promise<boolean | null>) | undefined;
-  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, effectiveAuthConfig, runRetryDelivery: retryDueNotificationDeliveries };
+  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, runRetryDelivery: retryDueNotificationDeliveries };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -85,7 +86,7 @@ async function auth(req: Request, env: Env): Promise<User> {
     : payload.heavyarRole === 'admin' || payload.role === 'admin' || payload.admin === true
       ? 'admin'
       : undefined;
-  return { uid: payload.sub, admin: role === 'admin' || role === 'super_admin' || !!permissionRole, role, permissionRole, email: payload.email, authTime: Number(payload.auth_time) * 1000 };
+  return { uid: payload.sub, admin: role === 'admin' || role === 'super_admin' || !!permissionRole, role, permissionRole, email: payload.email, emailVerified: payload.email_verified === true, authTime: Number(payload.auth_time) * 1000 };
 }
 async function authenticatedUser(req: Request, env: Env, allowAccountManagement = false): Promise<User> {
   const user = await auth(req, env);
@@ -148,6 +149,42 @@ async function createDoc(env: Env, path: string, fields: Record<string, unknown>
   return fs(env, `${path}?currentDocument.exists=false`, { method: 'PATCH', body: JSON.stringify({ fields }) });
 }
 async function hashedId(value: string): Promise<string> { return b64u(await crypto.subtle.digest('SHA-256', enc.encode(value))); }
+export type GccCountryCode = 'SA' | 'AE' | 'KW' | 'QA' | 'BH' | 'OM';
+export const GCC_COUNTRIES: Readonly<Record<GccCountryCode, {
+  code: GccCountryCode; nameEn: string; nameAr: string; dialCode: string; currency: string; enabled: boolean;
+}>> = Object.freeze({
+  SA: { code: 'SA', nameEn: 'Saudi Arabia', nameAr: 'المملكة العربية السعودية', dialCode: '+966', currency: 'SAR', enabled: true },
+  AE: { code: 'AE', nameEn: 'United Arab Emirates', nameAr: 'الإمارات العربية المتحدة', dialCode: '+971', currency: 'AED', enabled: false },
+  KW: { code: 'KW', nameEn: 'Kuwait', nameAr: 'الكويت', dialCode: '+965', currency: 'KWD', enabled: false },
+  QA: { code: 'QA', nameEn: 'Qatar', nameAr: 'قطر', dialCode: '+974', currency: 'QAR', enabled: false },
+  BH: { code: 'BH', nameEn: 'Bahrain', nameAr: 'البحرين', dialCode: '+973', currency: 'BHD', enabled: false },
+  OM: { code: 'OM', nameEn: 'Oman', nameAr: 'عُمان', dialCode: '+968', currency: 'OMR', enabled: false },
+});
+const GCC_PHONE_PATTERNS: Record<GccCountryCode, RegExp> = {
+  SA: /^5\d{8}$/, AE: /^5\d{8}$/, KW: /^[569]\d{7}$/, QA: /^[3567]\d{7}$/, BH: /^[36]\d{7}$/, OM: /^[79]\d{7}$/,
+};
+export function normalizeGccPhone(value: unknown, country?: string): { phone: string; countryCode: GccCountryCode } | null {
+  const raw = String(value || '').trim().replace(/[()\s-]/g, '');
+  if (!raw) return null;
+  const byDial = Object.values(GCC_COUNTRIES).find(item => raw.startsWith(item.dialCode) || raw.startsWith(`00${item.dialCode.slice(1)}`));
+  const code = (String(country || '').toUpperCase() as GccCountryCode);
+  const selected = byDial?.code || (GCC_COUNTRIES[code] ? code : 'SA');
+  const config = GCC_COUNTRIES[selected];
+  let national = raw;
+  if (raw.startsWith(config.dialCode)) national = raw.slice(config.dialCode.length);
+  else if (raw.startsWith(`00${config.dialCode.slice(1)}`)) national = raw.slice(config.dialCode.length + 1);
+  else if (selected === 'SA' && national.startsWith('05')) national = national.slice(1);
+  else if (national.startsWith('0')) national = national.slice(1);
+  if (!GCC_PHONE_PATTERNS[selected].test(national)) return null;
+  return { phone: `${config.dialCode}${national}`, countryCode: selected };
+}
+async function countrySettings(env: Env, code: string) {
+  const country = String(code || 'SA').toUpperCase() as GccCountryCode, base = GCC_COUNTRIES[country] || GCC_COUNTRIES.SA;
+  if (!env.FIREBASE_PROJECT_ID && !firestoreOverride) return { ...base, marketplaceAvailable: base.enabled, providerOnboardingAvailable: base.enabled, crossBorderAvailable: false };
+  const stored = await getDoc(env, 'countryConfigs', base.code);
+  const enabled = stored?.enabled === undefined ? base.enabled : stored.enabled === true;
+  return { ...base, ...stored, enabled, marketplaceAvailable: enabled && (stored?.marketplaceAvailable === undefined ? base.enabled : stored.marketplaceAvailable === true), providerOnboardingAvailable: enabled && (stored?.providerOnboardingAvailable === undefined ? base.enabled : stored.providerOnboardingAvailable === true), crossBorderAvailable: enabled && stored?.crossBorderAvailable === true };
+}
 async function getDoc(env: Env, collection: string, id: string) {
   if (firestoreOverride) {
     const value = firestoreOverride(collection, id);
@@ -486,6 +523,10 @@ function paymentPricing(env: Env) {
 function paymentQuote(env: Env, r: any, e: any, requestId: string) {
   return quoteForRequest(r, e, requestId, Date.now(), paymentPricing(env));
 }
+function assertSarSettlement(r: any, e: any) {
+  const currency = String(e?.nativeCurrency || r?.nativeCurrency || r?.currency || 'SAR').toUpperCase();
+  if (currency !== 'SAR') err('FOREIGN_SETTLEMENT_DISABLED');
+}
 function owned(u: User, r: any) { return !!r && (u.admin || r.customerUid === u.uid || r.renterUid === u.uid); }
 async function enforceOperationalAccess(env: Env, u: User, equipment?: any) {
   if (!u.admin) {
@@ -752,6 +793,7 @@ async function createRequest(req: Request, env: Env, u: User) {
   const equipment = await getDoc(env, 'equipment', equipmentId);
   if (!equipment || equipment.ownerUid === u.uid || !isPublicRentableListing(equipment)) return out(env, req, { success: false, error: 'Listing unavailable' }, 409);
   await enforceOperationalAccess(env, u, equipment);
+  try { await enforceEmailVerified(env, u, 'rental'); } catch (error) { if (error instanceof Error && error.message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403); throw error; }
   const mode = body.requestMode === 'open_ended' ? 'open_ended' : 'fixed_days';
   const days = Number(body.numberOfDays || 0), amount = mode === 'fixed_days' ? Number(equipment.pricePerDay) * days : Number(equipment.pricePerDay);
   const fallbackStart = new Date().toISOString().slice(0, 10), fallbackEnd = new Date(Date.now() + Math.max(0, days - 1) * 86400000).toISOString().slice(0, 10);
@@ -762,7 +804,7 @@ async function createRequest(req: Request, env: Env, u: User) {
   if (!availabilityCheckResult.ok) return out(env, req, { success: false, error: availabilityCheckResult.error }, 409);
   if (!Number.isFinite(amount) || amount <= 0 || (mode === 'fixed_days' && (!Number.isInteger(days) || days < 1 || days > 365))) return out(env, req, { success: false, error: 'Invalid request amount' }, 400);
   const id = `r_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString(), fee = mode === 'fixed_days' ? Math.round(amount * paymentPricing(env).platformFeeRate * 100) / 100 : 0;
-  const value: any = { equipmentId, customerUid: u.uid, providerUid: equipment.ownerUid, status: 'pending', requestMode: mode, ...(mode === 'fixed_days' ? { numberOfDays: days } : {}), startDate: requestedRange.from, endDate: requestedRange.until, availabilitySnapshot: equipment.availability || null, amount, platformFee: fee, providerAmount: amount - fee, paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: 'SAR', allowChat: false, createdAt: now, updatedAt: now };
+  const value: any = { equipmentId, customerUid: u.uid, providerUid: equipment.ownerUid, status: 'pending', requestMode: mode, ...(mode === 'fixed_days' ? { numberOfDays: days } : {}), startDate: requestedRange.from, endDate: requestedRange.until, availabilitySnapshot: equipment.availability || null, amount, platformFee: fee, providerAmount: amount - fee, paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: String(equipment.nativeCurrency || equipment.currency || 'SAR'), nativeCurrency: String(equipment.nativeCurrency || equipment.currency || 'SAR'), nativeAmount: amount, allowChat: false, createdAt: now, updatedAt: now };
   const publicRequestNumber = await createWithPublicIdentifier(
     env, 'request', `equipmentRequests/${id}`, value,
     [await notificationWrite(fullName.bind(null, env), String(equipment.ownerUid), 'rental_request_created', now, id, `${id}:created`)],
@@ -1095,12 +1137,14 @@ async function create(req: Request, env: Env, u: User) {
     return out(env, req, { success: false, error: trust ? 'Identity verification required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : 'Listing unavailable', code: trust ? message.replace('TRUST_', '').toLowerCase() : undefined }, 403);
   }
   if (!owned(u, r) || !r?.customerUid || r.customerUid !== u.uid) return out(env, req, { success: false, error: 'Forbidden' }, 403);
+  try { assertSarSettlement(r, e); } catch { return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); }
   if (String(r.requestMode || '').toLowerCase() === 'open_ended' && !(Number.isFinite(Number(r.finalAmount)) && Number(r.finalAmount) > 0)) return out(env, req, { success: false, error: 'Final amount required' }, 409);
   let quote: PaymentQuote;
   const storedQuote = await getDoc(env, 'paymentQuotes', body.requestId);
   try {
     quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : paymentQuote(env, r, e, body.requestId);
-  } catch { return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
+  } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
+  if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
   const expected = quote.amount;
   const existingPayment = await getDoc(env, 'payments', body.requestId);
   const reservationPrefix = `reservation:${idempotencyKeyForPayment(u.uid, body.requestId)}`;
@@ -1193,7 +1237,8 @@ async function verify(req: Request, env: Env, u: User) {
   const m = d.metadata || {};
   const raw = await getRawDoc(env, 'equipmentRequests', m.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
   let quote: PaymentQuote; const storedQuote = await getDoc(env, 'paymentQuotes', String(m.requestId));
-  try { quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : paymentQuote(env, r, e, String(m.requestId)); } catch { return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
+  try { assertSarSettlement(r, e); quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : paymentQuote(env, r, e, String(m.requestId)); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
+  if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
   const expected = quote.amount;
   if (!owned(u, r) || m.customerUid !== u.uid && !u.admin) return out(env, req, { success: false, error: 'Forbidden' }, 403);
   const payment = await getDoc(env, 'payments', String(m.requestId));
@@ -1225,7 +1270,8 @@ async function tapWebhook(req: Request, env: Env) {
   if (!requestId || d.id !== chargeId) return out(env, req, { success: false, error: 'Invalid transaction' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
   const storedQuote = await getDoc(env, 'paymentQuotes', requestId);
-  let quote; try { quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : paymentQuote(env, r, e, requestId); } catch { return out(env, req, { success: false, error: 'Invalid transaction' }, 400); }
+  let quote; try { assertSarSettlement(r, e); quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : paymentQuote(env, r, e, requestId); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid transaction' }, 400); }
+  if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
   const payment = await getDoc(env, 'payments', requestId);
   const reservation = `reservation:${String(m.idempotencyKey || idempotencyKeyForPayment(String(m.customerUid), requestId))}`;
   const valid = !!r && (r.paymentId === chargeId || r.paymentId === reservation) && m.requestId === String(r.id || requestId) && m.customerUid === r.customerUid &&
@@ -1296,44 +1342,6 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
   if (!response.ok || result.cloud_name !== env.CLOUDINARY_CLOUD_NAME || typeof result.public_id !== 'string' || typeof result.secure_url !== 'string' || !result.public_id.startsWith(`${folder}/`)) return out(env, req, { success: false, error: 'Upload failed' }, 502);
   return out(env, req, { success: true, url: result.secure_url, publicId: result.public_id });
 }
-async function otpSend(req: Request, env: Env) {
-  if (!env.RESEND_API_KEY || !env.FIREBASE_PROJECT_ID) return out(env, req, { success: false, error: 'Verification unavailable' }, 503);
-  const { email } = await req.json() as { email?: string }, key = (email || '').trim().toLowerCase(), ip = req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For')?.split(',')[0].trim() || 'unknown';
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(key)) return out(env, req, { success: false, error: 'Verification unavailable' }, 400);
-  const emailId = await hashedId(`email:${key}`), ipId = await hashedId(`ip:${ip}`), prior = await getRawDoc(env, 'otpState', emailId), ipPrior = await getRawDoc(env, 'otpState', ipId), now = Date.now();
-  if ((prior?.data?.expiresAt && Date.parse(prior.data.expiresAt) > now) || (ipPrior?.data?.expiresAt && Date.parse(ipPrior.data.expiresAt) > now)) return out(env, req, { success: false, error: 'Verification unavailable' }, 429);
-  const code = String(100000 + crypto.getRandomValues(new Uint32Array(1))[0] % 900000), salt = crypto.randomUUID(), digest = await crypto.subtle.digest('SHA-256', enc.encode(`${salt}:${code}`));
-  await commitWrites(env, [
-    { update: { name: fullName(env, `otpState/${emailId}`), fields: { kind: { stringValue: 'otp' }, emailHash: { stringValue: await hashedId(key) }, salt: { stringValue: salt }, hash: { stringValue: b64u(digest) }, attempts: { integerValue: '0' }, expiresAt: { timestampValue: new Date(now + 600000).toISOString() } } }, currentDocument: prior?.updateTime ? { updateTime: prior.updateTime } : { exists: false } },
-    { update: { name: fullName(env, `otpState/${ipId}`), fields: { kind: { stringValue: 'ip' }, expiresAt: { timestampValue: new Date(now + 60000).toISOString() } } }, currentDocument: ipPrior?.updateTime ? { updateTime: ipPrior.updateTime } : { exists: false } },
-  ]);
-  const sent = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: 'Heavyar <noreply@heavyar.app>', to: [key], subject: 'Heavyar verification code', html: `<strong>${code}</strong>` }) });
-  if (!sent.ok) return out(env, req, { success: false, error: 'Verification unavailable' }, 502); return out(env, req, { success: true });
-}
-async function otpVerify(req: Request, env: Env) {
-  if (!env.FIREBASE_PROJECT_ID) return out(env, req, { success: false, error: 'Verification unavailable' }, 503);
-  const { email, code } = await req.json() as { email?: string; code?: string }, key = (email || '').trim().toLowerCase(), submittedCode = code?.trim(), id = await hashedId(`email:${key}`);
-  let raw: Awaited<ReturnType<typeof getRawDoc>> = null, item: any, claimedUpdateTime = '';
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    raw = await getRawDoc(env, 'otpState', id); item = raw?.data;
-    if (!raw || !item || !submittedCode || !raw.updateTime || Number(item.attempts) >= 5 || (item.expiresAt && Date.parse(item.expiresAt) < Date.now())) return out(env, req, { success: false, error: 'Verification unavailable' }, 400);
-    try {
-      const claimed = await compareAndSwap(env, `otpState/${id}`, raw.updateTime, { attempts: { integerValue: String(Number(item.attempts) + 1) } });
-      claimedUpdateTime = claimed?.updateTime || raw.updateTime;
-      break;
-    } catch {
-      if (attempt === 7) return out(env, req, { success: false, error: 'Verification unavailable' }, 409);
-    }
-  }
-  const digest = await crypto.subtle.digest('SHA-256', enc.encode(`${item.salt}:${submittedCode}`));
-  if (b64u(digest) !== item.hash) return out(env, req, { success: false, error: 'Verification unavailable' }, 400);
-  const grant = crypto.randomUUID(), grantDigest = await crypto.subtle.digest('SHA-256', enc.encode(grant));
-  await commitWrites(env, [
-    { delete: fullName(env, `otpState/${id}`), currentDocument: { updateTime: claimedUpdateTime } },
-    { update: { name: fullName(env, `registrationGrants/${b64u(grantDigest)}`), fields: { emailHash: { stringValue: await hashedId(key) }, expiresAt: { timestampValue: new Date(Date.now() + 300000).toISOString() } } }, currentDocument: { exists: false } },
-  ]);
-  return out(env, req, { success: true, verified: true, registrationGrant: grant });
-}
 export const DEFAULT_AUTH_CONFIG = Object.freeze({
   requirePhoneOnSignup: false,
   allowEmailLogin: true,
@@ -1349,6 +1357,114 @@ export function heavyarPasswordResetTemplate(resetUrl: string, supportEmail = 's
   const url = escapeHtml(resetUrl), support = escapeHtml(supportEmail);
   return `<div style="font-family:Arial,sans-serif;color:#172033;max-width:560px;margin:auto"><h1 style="color:#0b6b61">Heavyar</h1><p>مرحباً،</p><p>Hello,</p><p>اضغط الزر أدناه لإعادة تعيين كلمة المرور. / Use the button below to reset your password.</p><p><a href="${url}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">إعادة تعيين كلمة المرور / Reset password</a></p><p>ينتهي الرابط خلال 60 دقيقة. / This link expires in 60 minutes.</p><p>لأمانك، لا تطلب Heavyar كلمة مرورك أبداً. / For your security, Heavyar will never ask for your password.</p><p>إذا لم تطلب ذلك، يمكنك تجاهل هذه الرسالة. / If you did not request this, you can ignore this message.</p><p>الدعم / Support: <a href="mailto:${support}">${support}</a></p></div>`;
 }
+export function heavyarEmailVerificationTemplate(verificationUrl: string, name = '', supportEmail = 'support@heavyar.app'): string {
+  const url = escapeHtml(verificationUrl), support = escapeHtml(supportEmail), greeting = escapeHtml(name.trim() || 'Heavyar user');
+  return `<div style="font-family:Arial,sans-serif;color:#172033;max-width:560px;margin:auto"><h1 style="color:#0b6b61">Heavyar</h1><p>مرحباً ${greeting}،</p><p>Hello ${greeting},</p><p>وثّق بريدك الإلكتروني للاستفادة من جميع خدمات Heavyar.</p><p>Verify your email to unlock all Heavyar services.</p><p><a href="${url}" style="background:#0b6b61;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">توثيق البريد / Verify email</a></p><p>إذا لم تنشئ حساباً في Heavyar، يمكنك تجاهل هذه الرسالة. / If you did not register for Heavyar, you can ignore this email.</p><p>لن تطلب Heavyar كلمة مرورك أبداً. / Heavyar will never ask for your password.</p><p>الدعم / Support: <a href="mailto:${support}">${support}</a></p></div>`;
+}
+function resendFrom(env: Env) { return env.RESEND_FROM_EMAIL || 'Heavyar <noreply@heavyar.app>'; }
+type ResendOutcome = 'accepted' | 'auth_failed' | 'sender_rejected' | 'rate_limited' | 'provider_error' | 'not_configured';
+let resendLastDeliverySucceeded = false;
+let resendLastOutcome: ResendOutcome = 'not_configured';
+async function resendSenderReady(env: Env) {
+  if (!env.RESEND_API_KEY) { resendLastOutcome = 'not_configured'; return false; }
+  if (env.RESEND_SENDER_DOMAIN_VERIFIED === 'true') return true;
+  const match = resendFrom(env).match(/@([A-Za-z0-9.-]+)/);
+  if (!match) { resendLastOutcome = 'sender_rejected'; return false; }
+  return true;
+}
+async function sendResend(env: Env, to: string, subject: string, html: string) {
+  if (!await resendSenderReady(env)) return false;
+  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: resendFrom(env), to: [to], subject, html }) });
+  const error: any = response.ok ? null : await response.json().catch(() => null);
+  resendLastOutcome = response.ok ? 'accepted' : response.status === 401 || response.status === 403 ? 'auth_failed' : response.status === 429 ? 'rate_limited' : response.status === 400 && /sender|domain|from/i.test(String(error?.name || '')) ? 'sender_rejected' : 'provider_error';
+  resendLastDeliverySucceeded = response.ok;
+  return response.ok;
+}
+async function firebaseActionLink(env: Env, email: string, requestType: 'VERIFY_EMAIL' | 'PASSWORD_RESET'): Promise<string | null> {
+  if (!env.FIREBASE_PROJECT_ID || !email) return null;
+  try {
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(String(env.FIREBASE_PROJECT_ID))}/accounts:sendOobCode`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit')}` },
+      body: JSON.stringify({ requestType, email, returnOobLink: true }),
+    });
+    const value = await response.json().catch(() => ({})) as any;
+    return response.ok && typeof value.oobLink === 'string' ? value.oobLink : null;
+  } catch { return null; }
+}
+async function firebasePasswordResetDelivery(env: Env, email: string): Promise<boolean> {
+  if (!email || email.endsWith('@invalid.heavyar')) return true;
+  try {
+    const endpoint = env.FIREBASE_WEB_API_KEY
+      ? `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${encodeURIComponent(env.FIREBASE_WEB_API_KEY)}`
+      : `https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(String(env.FIREBASE_PROJECT_ID))}/accounts:sendOobCode`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (!env.FIREBASE_WEB_API_KEY) headers.Authorization = `Bearer ${await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit')}`;
+    const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ requestType: 'PASSWORD_RESET', email }) });
+    return response.ok;
+  } catch { return false; }
+}
+type EmailVerificationPolicy = {
+  enabled: boolean; requireBeforeRentalRequest: boolean; requireBeforeListingSubmission: boolean;
+  requireBeforeDriverActivation: boolean; allowReminders: boolean; reminderCooldownSeconds: number; version: number;
+};
+function defaultEmailVerificationPolicy(): EmailVerificationPolicy {
+  return { enabled: true, requireBeforeRentalRequest: true, requireBeforeListingSubmission: true, requireBeforeDriverActivation: true, allowReminders: true, reminderCooldownSeconds: 86400, version: 1 };
+}
+function normalizeEmailVerificationPolicy(raw: any): EmailVerificationPolicy {
+  const d = defaultEmailVerificationPolicy(), value = raw && typeof raw === 'object' ? raw : {};
+  return {
+    enabled: value.enabled !== false, requireBeforeRentalRequest: value.requireBeforeRentalRequest !== false,
+    requireBeforeListingSubmission: value.requireBeforeListingSubmission !== false, requireBeforeDriverActivation: value.requireBeforeDriverActivation !== false,
+    allowReminders: value.allowReminders !== false, reminderCooldownSeconds: Math.min(604800, Math.max(300, Number(value.reminderCooldownSeconds) || d.reminderCooldownSeconds)),
+    version: Math.max(1, Math.floor(Number(value.version) || d.version)),
+  };
+}
+async function emailVerificationPolicy(env: Env) {
+  return normalizeEmailVerificationPolicy(await getDoc(env, 'emailVerificationPolicies', 'default'));
+}
+async function enforceEmailVerified(env: Env, u: User, action: 'rental' | 'listing' | 'driver') {
+  const policy = await emailVerificationPolicy(env);
+  const required = action === 'rental' ? policy.requireBeforeRentalRequest : action === 'listing' ? policy.requireBeforeListingSubmission : policy.requireBeforeDriverActivation;
+  // Test-injected users without the field represent legacy fixtures. Explicit
+  // emailVerified=false remains enforceable in tests.
+  if (policy.enabled && required && u.emailVerified !== true && !(u.testInjected && u.emailVerified === undefined)) err('EMAIL_VERIFICATION_REQUIRED');
+}
+async function deliverEmailVerification(env: Env, email: string, idToken: string, name: string) {
+  const link = await firebaseActionLink(env, email, 'VERIFY_EMAIL');
+  if (link && await sendResend(env, email, 'Verify your Heavyar email / وثّق بريدك الإلكتروني', heavyarEmailVerificationTemplate(link, name, env.RESEND_SUPPORT_EMAIL || 'support@heavyar.app'))) return true;
+  // Firebase remains the safe delivery fallback while Resend is absent or
+  // its sender domain is not yet accepted; the account/link authority stays
+  // entirely within Firebase in either case.
+  try {
+    const endpoint = env.FIREBASE_WEB_API_KEY
+      ? `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${encodeURIComponent(env.FIREBASE_WEB_API_KEY)}`
+      : `https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(String(env.FIREBASE_PROJECT_ID))}/accounts:sendOobCode`;
+    const response = await fetch(endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(env.FIREBASE_WEB_API_KEY ? {} : { Authorization: `Bearer ${await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit')}` }) }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', idToken }),
+    });
+    return response.ok;
+  } catch { return false; }
+}
+async function emailVerificationSend(req: Request, env: Env, u: User) {
+  const raw = req.headers.get('Authorization') || '', token = raw.replace(/^Bearer\s+/, '');
+  if (u.emailVerified === true) return out(env, req, { success: true, alreadyVerified: true });
+  const rate = await getRawDoc(env, 'emailVerificationRateLimits', u.uid), now = Date.now(), prior = rate?.data;
+  if (prior?.nextAllowedAt && Date.parse(String(prior.nextAllowedAt)) > now) return out(env, req, { success: false, error: 'Verification email cooldown active' }, 429);
+  const account = await getDoc(env, 'users', u.uid), email = String(u.email || account?.email || account?.emailLower || '').trim().toLowerCase();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return out(env, req, { success: false, error: 'Verification unavailable' }, 503);
+  const delivery = await deliverEmailVerification(env, email, token, String(account?.nameEn || account?.nameAr || ''));
+  const cooldown = new Date(now + 60 * 1000).toISOString();
+  await commitWrites(env, [{ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, lastSentAt: { timestampValue: new Date(now).toISOString() }, nextAllowedAt: { timestampValue: cooldown }, count: { integerValue: String(Number(prior?.count || 0) + 1) } } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } }, { update: { name: fullName(env, `emailVerificationEvents/${crypto.randomUUID()}`), fields: { uid: { stringValue: u.uid }, type: { stringValue: 'self_resend' }, delivery: { booleanValue: delivery }, createdAt: { timestampValue: new Date(now).toISOString() } } }, currentDocument: { exists: false } }]);
+  return out(env, req, { success: delivery, accepted: true, deliveryStatus: delivery ? 'sent' : 'delivery_unavailable' }, delivery ? 202 : 503);
+}
+async function emailVerificationStatus(req: Request, env: Env, u: User) {
+  const profile = await getDoc(env, 'users', u.uid);
+  const verified = u.emailVerified === true;
+  if (profile && profile.emailVerified !== verified) {
+    await patchDoc(env, `users/${encodeURIComponent(u.uid)}`, { emailVerified: { booleanValue: verified }, ...(verified ? { emailVerifiedAt: { timestampValue: new Date().toISOString() } } : {}) }).catch(() => undefined);
+  }
+  return out(env, req, { success: true, emailVerified: verified, email: u.email || profile?.email || null, policy: await emailVerificationPolicy(env) });
+}
 function effectiveAuthConfig(config: any, passwordEndpointReady = false) {
   const value = { ...DEFAULT_AUTH_CONFIG, ...(config || {}) };
   const phoneProviderReady = value.phoneIndexReady === true;
@@ -1362,25 +1478,33 @@ function effectiveAuthConfig(config: any, passwordEndpointReady = false) {
   };
 }
 export function normalizeSaudiPhone(value: unknown): string | null {
-  const raw = String(value || '').trim().replace(/[()\s-]/g, '');
-  if (!raw) return null;
-  const normalized = raw.startsWith('+966') ? raw : raw.startsWith('00966') ? `+${raw.slice(2)}` : raw.startsWith('05') ? `+966${raw.slice(1)}` : /^5\d{8}$/.test(raw) ? `+966${raw}` : '';
-  return /^\+9665\d{8}$/.test(normalized) ? normalized : null;
+  const result = normalizeGccPhone(value, 'SA');
+  return result?.countryCode === 'SA' ? result.phone : null;
 }
 async function authConfig(req: Request, env: Env) {
   const stored = await getDoc(env, 'heavyarConfig', 'auth');
   const requested = { ...DEFAULT_AUTH_CONFIG, ...(stored || {}) };
   const effective = effectiveAuthConfig(stored, !!env.FIREBASE_WEB_API_KEY && !!env.FIREBASE_PROJECT_ID && !!env.FIREBASE_CLIENT_EMAIL && !!env.FIREBASE_PRIVATE_KEY);
+  await resendSenderReady(env);
+  const senderDomainVerified = env.RESEND_SENDER_DOMAIN_VERIFIED === 'true' || resendLastDeliverySucceeded;
+  const emailVerification = await emailVerificationPolicy(env);
   const status = {
     emailReset: env.FIREBASE_WEB_API_KEY || env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY ? 'configured' : 'blocked',
     phone: 'disabled',
     phoneRecovery: effective.phoneIndexReady ? 'configured' : 'disabled',
-    resend: env.RESEND_API_KEY ? 'binding_configured_sender_unverified' : 'not_configured',
+    resend: senderDomainVerified ? 'configured' : env.RESEND_API_KEY ? 'available_delivery_unconfirmed' : 'not_configured',
     firebaseReset: env.FIREBASE_WEB_API_KEY || env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY ? 'configured' : 'blocked',
-     phoneProvider: 'not_required_for_alias', phonePasswordLogin: effective.allowPhoneLogin ? 'configured' : 'blocked', senderDomainVerified: false,
+     phoneProvider: 'not_required_for_alias', phonePasswordLogin: effective.allowPhoneLogin ? 'configured' : 'blocked', senderDomainVerified, resendOutcome: resendLastOutcome,
   };
-  const projection = { requested: { ...requested, requireMobileDuringSignup: requested.requirePhoneOnSignup }, effective: { ...effective, requireMobileDuringSignup: effective.requirePhoneOnSignup }, status, accountRecovery: { firebaseReset: status.firebaseReset, resend: { bound: !!env.RESEND_API_KEY, delivery: false, senderDomainVerified: false }, phoneRecovery: status.phoneRecovery }, mismatch: { email: requested.allowEmailLogin !== effective.allowEmailLogin, phone: requested.allowPhoneLogin !== effective.allowPhoneLogin, verification: requested.requirePhoneVerification !== effective.requirePhoneVerification, phoneRequirement: requested.requirePhoneOnSignup !== effective.requirePhoneOnSignup }, version: effective.version };
+  const projection = { requested: { ...requested, requireMobileDuringSignup: requested.requirePhoneOnSignup }, effective: { ...effective, requireMobileDuringSignup: effective.requirePhoneOnSignup }, emailVerification, status, accountRecovery: { firebaseReset: status.firebaseReset, resend: { bound: !!env.RESEND_API_KEY, delivery: senderDomainVerified, senderDomainVerified }, phoneRecovery: status.phoneRecovery }, mismatch: { email: requested.allowEmailLogin !== effective.allowEmailLogin, phone: requested.allowPhoneLogin !== effective.allowPhoneLogin, verification: requested.requirePhoneVerification !== effective.requirePhoneVerification, phoneRequirement: requested.requirePhoneOnSignup !== effective.requirePhoneOnSignup }, version: effective.version };
   return out(env, req, { success: true, config: projection, version: effective.version, requireMobileDuringSignup: effective.requirePhoneOnSignup });
+}
+async function marketConfig(req: Request, env: Env) {
+  const countries = await Promise.all(Object.values(GCC_COUNTRIES).map(async country => {
+    const value = await countrySettings(env, country.code);
+    return { ...value, nativeCurrency: value.currency, marketplaceAvailable: value.marketplaceAvailable, providerOnboardingAvailable: value.providerOnboardingAvailable };
+  }));
+  return out(env, req, { success: true, countries, currencies: countries.map(country => ({ code: country.currency, countryCode: country.code, enabled: country.enabled })), fx: { enabled: false, provider: null, status: 'disabled', sourceCurrency: null, displayCurrencies: countries.map(country => country.currency), rateSnapshotSupported: true }, phoneVerification: { enabled: false, provider: null, requireAfterSignup: false, requireBeforeRentalRequest: false, requireBeforeProviderActivation: false, requireBeforeDriverActivation: false } });
 }
 const PHONE_LOGIN_INVALID = 'Invalid mobile number or password.';
 async function phoneLoginRateLimit(env: Env, phoneHash: string, ipHash: string): Promise<boolean | null> {
@@ -1422,7 +1546,7 @@ async function mintFirebaseCustomToken(env: Env, uid: string): Promise<string> {
 async function phonePasswordLogin(req: Request, env: Env) {
   let body: any;
   try { body = await req.json(); } catch { return out(env, req, { success: false, error: PHONE_LOGIN_INVALID }, 401); }
-  const phone = normalizeSaudiPhone(body?.phone), password = body?.password;
+  const phone = normalizeGccPhone(body?.phone)?.phone, password = body?.password;
   if (!phone || typeof password !== 'string' || password.length === 0 || password.length > 4096) return out(env, req, { success: false, error: PHONE_LOGIN_INVALID }, 401);
   if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_WEB_API_KEY || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) return out(env, req, { success: false, error: 'Authentication unavailable' }, 503);
   const ip = req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For')?.split(',')[0].trim() || 'unknown';
@@ -1479,7 +1603,7 @@ async function recoveryRateLimit(env: Env, idHash: string, ipHash: string): Prom
 async function passwordReset(req: Request, env: Env) {
   let body: any; try { body = await req.json(); } catch { body = {}; }
   const identifier = String(body?.identifier ?? body?.email ?? body?.phone ?? '').trim();
-  const email = identifier.toLowerCase(), phone = normalizeSaudiPhone(identifier), type = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? 'email' : phone ? 'phone' : 'invalid';
+  const email = identifier.toLowerCase(), phone = normalizeGccPhone(identifier)?.phone, type = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? 'email' : phone ? 'phone' : 'invalid';
   const auditId = phone || email || identifier.toLowerCase().slice(0, 256), auditType = type;
   if (!env.OTP_KV && !env.FIREBASE_PROJECT_ID && !firestoreOverride) return recoveryResponse(req, env, auditId, auditType, 'rate_limit_unavailable');
   // Never reveal account existence. This bounded KV gate is keyed by a
@@ -1512,16 +1636,13 @@ async function passwordReset(req: Request, env: Env) {
   let deliveryOutcome = 'provider_unavailable';
   if (env.FIREBASE_WEB_API_KEY || env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
     try {
-      const endpoint = env.FIREBASE_WEB_API_KEY
-        ? `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${encodeURIComponent(env.FIREBASE_WEB_API_KEY)}`
-        : `https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(String(env.FIREBASE_PROJECT_ID))}/accounts:sendOobCode`;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (!env.FIREBASE_WEB_API_KEY) headers.Authorization = `Bearer ${await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit')}`;
-      const sent = await fetch(endpoint, {
-        method: 'POST', headers,
-        body: JSON.stringify({ requestType: 'PASSWORD_RESET', email: resetEmail }),
-      });
-      deliveryOutcome = sent.ok ? 'delivery_requested' : 'provider_error';
+      if (env.RESEND_API_KEY && await resendSenderReady(env) && !resetEmail.endsWith('@invalid.heavyar')) {
+        const link = await firebaseActionLink(env, resetEmail, 'PASSWORD_RESET');
+        const branded = !!link && await sendResend(env, resetEmail, 'Reset your Heavyar password / إعادة تعيين كلمة المرور', heavyarPasswordResetTemplate(link, env.RESEND_SUPPORT_EMAIL || 'support@heavyar.app'));
+        deliveryOutcome = branded ? 'branded_delivery_requested' : await firebasePasswordResetDelivery(env, resetEmail) ? 'delivery_requested' : 'provider_error';
+      } else {
+        deliveryOutcome = await firebasePasswordResetDelivery(env, resetEmail) ? 'delivery_requested' : 'provider_error';
+      }
     } catch { /* generic 202 response is intentional */ }
   }
   return recoveryResponse(req, env, auditId, auditType, deliveryOutcome);
@@ -1530,28 +1651,26 @@ async function registerProfile(req: Request, env: Env, u: User) {
   if (!env.FIREBASE_PROJECT_ID || !u.email) return out(env, req, { success: false, error: 'Registration unavailable' }, 503);
   const email = u.email.trim().toLowerCase(), existing = await getDoc(env, 'users', u.uid);
   if (existing && String(existing.email || existing.emailLower || '').trim().toLowerCase() === email) return out(env, req, { success: true, uid: u.uid });
-  const body = await req.json() as any, grant = String(body.registrationGrant || '');
-  const digest = await crypto.subtle.digest('SHA-256', enc.encode(grant)), grantId = b64u(digest), rawGrant = await getRawDoc(env, 'registrationGrants', grantId), record = rawGrant?.data;
+  const body = await req.json() as any;
   const role = String(body.role || body.requestedRole || 'customer');
   const config = effectiveAuthConfig(await getDoc(env, 'heavyarConfig', 'auth'));
-  const phone = normalizeSaudiPhone(body.phone);
-  if (!rawGrant || !record || record.emailHash !== await hashedId(email) || Date.parse(record.expiresAt) < Date.now()) return out(env, req, { success: false, error: 'Invalid registration grant', errorCode: 'INVALID_REGISTRATION_GRANT', safeToDeleteIdentity: true }, 403);
   if (!['customer', 'provider', 'driver'].includes(role) || body.termsAccepted !== true && body.acceptedTerms !== true) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
-  const allowed = new Set(['registrationGrant', 'role', 'requestedRole', 'termsAccepted', 'acceptedTerms', 'nameAr', 'nameEn', 'phone', 'region', 'city', 'customCity', 'crNumber']);
+  const allowed = new Set(['role', 'requestedRole', 'termsAccepted', 'acceptedTerms', 'nameAr', 'nameEn', 'phone', 'countryCode', 'region', 'city', 'customCity', 'crNumber', 'providerType']);
   if (Object.keys(body).some(key => !allowed.has(key))) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
-  const nameAr = String(body.nameAr || '').trim(), nameEn = String(body.nameEn || '').trim(), region = String(body.region || '').trim(), city = String(body.city || '').trim(), customCity = String(body.customCity || '').trim();
+  const nameAr = String(body.nameAr || '').trim(), nameEn = String(body.nameEn || '').trim(), country = await countrySettings(env, String(body.countryCode || 'SA')), normalizedPhone = normalizeGccPhone(body.phone, country.code), phone = normalizedPhone && normalizedPhone.countryCode === country.code ? normalizedPhone.phone : null, region = String(body.region || '').trim(), city = String(body.city || '').trim(), customCity = String(body.customCity || '').trim();
   if ((!nameAr && !nameEn) || nameAr.length > 120 || nameEn.length > 120 || (nameAr && nameAr.length < 2) || (nameEn && nameEn.length < 2) || !region || region.length > 120 || (!city && !customCity) || city.length > 120 || customCity.length > 120) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
-  if (config.requirePhoneOnSignup && !phone || body.phone && !phone || phone && !config.phoneIndexReady) return out(env, req, { success: false, error: 'Phone registration unavailable', errorCode: 'PHONE_REGISTRATION_UNAVAILABLE', safeToDeleteIdentity: true }, 400);
+  if (!country.enabled || (role === 'provider' && !country.providerOnboardingAvailable) || config.requirePhoneOnSignup && !phone || body.phone && !phone || phone && !config.phoneIndexReady) return out(env, req, { success: false, error: 'Country or phone registration unavailable', errorCode: 'REGISTRATION_UNAVAILABLE', safeToDeleteIdentity: true }, 400);
   const crNumber = String(body.crNumber || '').trim();
-  if (crNumber && (role !== 'provider' || !/^\d{10}$/.test(crNumber))) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
-  const now = new Date().toISOString(), fields: Record<string, any> = { uid: { stringValue: u.uid }, email: { stringValue: email }, emailLower: { stringValue: email }, nameAr: { stringValue: nameAr }, nameEn: { stringValue: nameEn }, ...(phone ? { phone: { stringValue: phone } } : {}), region: { stringValue: region }, city: { stringValue: city }, customCity: { stringValue: customCity }, ...(crNumber ? { crNumber: { stringValue: crNumber } } : {}), role: { stringValue: role }, requestedRole: { stringValue: role }, termsAccepted: { booleanValue: true }, termsAcceptedAt: { timestampValue: now }, createdAt: { timestampValue: now } };
-  const writes: any[] = [{ delete: fullName(env, `registrationGrants/${grantId}`), currentDocument: { updateTime: rawGrant.updateTime } }, { update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields }, currentDocument: { exists: false } }];
+  const registrationPattern = country.code === 'SA' ? /^\d{10}$/ : /^[A-Za-z0-9-]{3,32}$/;
+  if (crNumber && (role !== 'provider' || !registrationPattern.test(crNumber))) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
+  const now = new Date().toISOString(), idToken = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, ''), fields: Record<string, any> = { uid: { stringValue: u.uid }, email: { stringValue: email }, emailLower: { stringValue: email }, emailVerified: { booleanValue: u.emailVerified === true }, emailVerificationVersion: { integerValue: '1' }, nameAr: { stringValue: nameAr }, nameEn: { stringValue: nameEn }, ...(phone ? { phone: { stringValue: phone } } : {}), countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, region: { stringValue: region }, city: { stringValue: city }, customCity: { stringValue: customCity }, ...(crNumber ? { crNumber: { stringValue: crNumber } } : {}), ...(body.providerType ? { providerType: { stringValue: String(body.providerType) } } : {}), role: { stringValue: role }, requestedRole: { stringValue: role }, termsAccepted: { booleanValue: true }, termsAcceptedAt: { timestampValue: now }, createdAt: { timestampValue: now } };
+  const writes: any[] = [{ update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields }, currentDocument: { exists: false } }];
   if (phone) {
     const ownerId = await hashedId(`phone:${phone}`), owner = await getRawDoc(env, 'phoneOwners', ownerId);
     if (owner && owner.data.uid !== u.uid) return out(env, req, { success: false, error: 'Registration unavailable', errorCode: 'PHONE_ALREADY_IN_USE', safeToDeleteIdentity: true }, 409);
     writes.push({ update: { name: fullName(env, `phoneOwners/${ownerId}`), fields: { uid: { stringValue: u.uid }, phoneHash: { stringValue: ownerId }, createdAt: { timestampValue: now } } }, currentDocument: owner?.updateTime ? { updateTime: owner.updateTime } : { exists: false } });
   }
-  if (role === 'driver') writes.push({ update: { name: fullName(env, `driverProfiles/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, displayName: { stringValue: String(body.nameEn || body.nameAr || '') }, ...(phone ? { phone: { stringValue: phone } } : {}), region: { stringValue: String(body.region || '') }, city: { stringValue: String(body.city || '') }, equipmentCategories: { arrayValue: { values: [] } }, experience: { integerValue: '0' }, active: { booleanValue: false }, verified: { booleanValue: false }, moderationStatus: { stringValue: 'pending_review' }, availabilityStatus: { stringValue: 'offline' }, trustStatus: { stringValue: 'unverified' }, createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, currentDocument: { exists: false } });
+  if (role === 'driver') writes.push({ update: { name: fullName(env, `driverProfiles/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, displayName: { stringValue: String(body.nameEn || body.nameAr || '') }, ...(phone ? { phone: { stringValue: phone } } : {}), region: { stringValue: String(body.region || '') }, city: { stringValue: String(body.city || '') }, equipmentCategories: { arrayValue: { values: [] } }, experience: { integerValue: '0' }, active: { booleanValue: false }, verified: { booleanValue: false }, moderationStatus: { stringValue: 'pending_review' }, availabilityStatus: { stringValue: 'offline' }, trustStatus: { stringValue: 'unverified' }, createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, currentDocument: { exists: false } });
   try { await commitWrites(env, writes); } catch {
     try {
       const after = await getDoc(env, 'users', u.uid);
@@ -1559,7 +1678,11 @@ async function registerProfile(req: Request, env: Env, u: User) {
     } catch { /* preserve ambiguous retry response */ }
     return out(env, req, { success: false, error: 'Registration temporarily unavailable', errorCode: 'REGISTRATION_RETRY_REQUIRED' }, 503);
   }
-  return out(env, req, { success: true, uid: u.uid });
+  if (u.emailVerified !== true && idToken) {
+    const delivered = await deliverEmailVerification(env, email, idToken, nameEn || nameAr);
+    await commitWrites(env, [{ update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields: { lastEmailVerificationSentAt: { timestampValue: new Date().toISOString() }, lastEmailVerificationDelivery: { booleanValue: delivered } } }, updateMask: { fieldPaths: ['lastEmailVerificationSentAt', 'lastEmailVerificationDelivery'] } }]).catch(() => undefined);
+  }
+  return out(env, req, { success: true, uid: u.uid, emailVerified: u.emailVerified === true });
 }
 const firestoreValue = (v: any): any => v === null ? { nullValue: null } : typeof v === 'boolean' ? { booleanValue: v } : typeof v === 'number' ? { doubleValue: v } : typeof v === 'string' ? { stringValue: v } : Array.isArray(v) ? { arrayValue: { values: v.map(firestoreValue) } } : { mapValue: { fields: Object.fromEntries(Object.entries(v || {}).map(([k, x]) => [k, firestoreValue(x)])) } };
 
@@ -1631,11 +1754,12 @@ async function listingAvailability(req: Request, env: Env, u: User, id: string) 
   return out(env, req, { success: true, listingId: id, availability: listing.availability || null, activeRentals: rentals.map((x: any) => ({ from: x.startDate, until: x.endDate, status: x.status })) });
 }
 async function listingCreate(req: Request, env: Env, u: User) {
+  try { await enforceEmailVerified(env, u, 'listing'); } catch (error) { if (error instanceof Error && error.message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403); throw error; }
   const profile = await getDoc(env, 'users', u.uid);
   if (!profile || profile.role !== 'provider' || (profile.isVerified !== true && profile.crVerified !== true)) return out(env, req, { success: false, error: 'Provider verification required' }, 403);
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing' }, 400);
-  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'images', 'dailyPrice', 'pricePerDay', 'category', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'availability'];
+  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'images', 'dailyPrice', 'pricePerDay', 'category', 'countryCode', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'availability'];
   const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'isActive', 'adminHidden', 'createdAt', 'updatedAt'];
   if (Object.keys(body).some((key) => forbidden.includes(key) || !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported listing field' }, 400);
   const titleEn = String(body.titleEn || body.title || '').trim(), titleAr = String(body.titleAr || body.title || '').trim();
@@ -1647,9 +1771,11 @@ async function listingCreate(req: Request, env: Env, u: User) {
   const availability = body.availability || { from: new Date().toISOString().slice(0, 10) }, availabilityCheck = validateDateRange(availability);
   if (!availabilityCheck.ok) return out(env, req, { success: false, error: availabilityCheck.error }, 400);
   if (Array.isArray(availability.blocked) && availability.blocked.some((range: any) => !validateDateRange(range).ok)) return out(env, req, { success: false, error: 'Invalid blocked dates' }, 400);
+  const country = await countrySettings(env, String(body.countryCode || profile.countryCode || 'SA'));
+  if (!country.enabled || !country.marketplaceAvailable) return out(env, req, { success: false, error: 'Country marketplace unavailable' }, 400);
   const id = `eq_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
   const ownerPublic = { uid: u.uid, nameAr: String(profile.nameAr || ''), nameEn: String(profile.nameEn || ''), avatar: String(profile.avatar || '') };
-  const value: any = { ownerUid: u.uid, titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), pricePerDay: dailyPrice, images, availability, ownerPublic, isActive: true, visibility: 'visible', moderationStatus: 'pending_review', createdAt: now, updatedAt: now };
+  const value: any = { ownerUid: u.uid, countryCode: country.code, nativeCurrency: country.currency, nativePricePerDay: dailyPrice, titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), pricePerDay: dailyPrice, images, availability, ownerPublic, isActive: true, visibility: 'visible', moderationStatus: 'pending_review', createdAt: now, updatedAt: now };
   const writes: any[] = [
     { update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:create`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: 'create' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
   ];
@@ -1671,7 +1797,7 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
   const patch = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k) && !['title', 'description', 'dailyPrice'].includes(k)));
   if (body.title !== undefined) { patch.titleAr = String(body.title); patch.titleEn = String(body.title); }
   if (body.description !== undefined) { patch.descriptionAr = String(body.description); patch.descriptionEn = String(body.description); }
-  if (body.dailyPrice !== undefined) patch.pricePerDay = Number(body.dailyPrice);
+  if (body.dailyPrice !== undefined) { patch.pricePerDay = Number(body.dailyPrice); patch.nativePricePerDay = Number(body.dailyPrice); }
   if (Object.keys(patch).length === 0) return out(env, req, { success: false, error: 'No editable fields' }, 400);
   if (patch.pricePerDay !== undefined && (!Number.isFinite(Number(patch.pricePerDay)) || Number(patch.pricePerDay) <= 0 || Number(patch.pricePerDay) > 100000)) return out(env, req, { success: false, error: 'Invalid daily price' }, 400);
   if (patch.availability) {
@@ -1735,9 +1861,14 @@ async function driverProfile(req: Request, env: Env, u: User) {
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid driver profile' }, 400);
   if (raw && ['suspended', 'rejected'].includes(String(raw.data.moderationStatus)) && !u.admin) return out(env, req, { success: false, error: 'DRIVER_MODERATION_LOCKED' }, 403);
-  const allowed = ['displayName', 'photoUrl', 'region', 'city', 'equipmentTypes', 'yearsExperience', 'description', 'availabilityStatus', 'availableFrom', 'availableUntil'];
+  const allowed = ['displayName', 'photoUrl', 'countryCode', 'region', 'city', 'equipmentTypes', 'yearsExperience', 'description', 'availabilityStatus', 'availableFrom', 'availableUntil'];
   if (Object.keys(body).some((key) => !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported driver profile field' }, 400);
   const account = await getDoc(env, 'users', id);
+  const country = await countrySettings(env, String(body.countryCode || account?.countryCode || raw?.data?.countryCode || 'SA'));
+  if (!country.enabled || !country.providerOnboardingAvailable) return out(env, req, { success: false, error: 'Country driver onboarding unavailable' }, 400);
+  if ((raw?.data?.moderationStatus === 'approved' || body.availabilityStatus === 'available') && !u.admin) {
+    try { await enforceEmailVerified(env, u, 'driver'); } catch (error) { if (error instanceof Error && error.message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403); throw error; }
+  }
   const fallbackName = String(account?.nameEn || account?.nameAr || '');
   const displayName = String(body.displayName || raw?.data?.displayName || fallbackName).trim();
   const patch = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k)));
@@ -1749,6 +1880,8 @@ async function driverProfile(req: Request, env: Env, u: User) {
   }
   const fields = Object.fromEntries(Object.entries({
     uid: id,
+    countryCode: country.code,
+    currency: country.currency,
     active: raw?.data?.moderationStatus === 'approved',
     moderationStatus: raw?.data?.moderationStatus || 'pending_review',
     nameAr: String(account?.nameAr || raw?.data?.nameAr || ''),
@@ -1819,9 +1952,12 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
   const path = new URL(req.url).pathname;
   try {
     if (path === '/health') return out(env, req, { success: true, service: 'heavyar-api' });
-    if (path === '/api/send-email-otp' && req.method === 'POST') return await otpSend(req, env);
-    if (path === '/api/verify-email-otp' && req.method === 'POST') return await otpVerify(req, env);
+    if ((path === '/api/send-email-otp' || path === '/api/verify-email-otp') && req.method === 'POST') return out(env, req, { success: false, error: 'Deprecated verification flow', errorCode: 'DEPRECATED_VERIFICATION_FLOW' }, 410);
      if (path === '/api/auth/config' && req.method === 'GET') return await authConfig(req, env);
+      if (path === '/api/config/markets' && req.method === 'GET') return await marketConfig(req, env);
+      if (path === '/api/auth/email-verification' && req.method === 'GET') return await emailVerificationStatus(req, env, await authenticatedUser(req, env, true));
+      if (path === '/api/auth/email-verification' && req.method === 'POST') return await emailVerificationSend(req, env, await authenticatedUser(req, env, true));
+      if (path === '/api/auth/email-verification/send' && req.method === 'POST') return await emailVerificationSend(req, env, await authenticatedUser(req, env, true));
       if ((path === '/api/auth/phone-login' || path === '/api/auth/login-phone' || path === '/api/auth/alias-login') && req.method === 'POST') return await phonePasswordLogin(req, env);
      if (path === '/api/auth/password-reset' && req.method === 'POST') return await passwordReset(req, env);
      if (path === '/api/register-profile' && req.method === 'POST') return await registerProfile(req, env, await authenticatedUser(req, env));

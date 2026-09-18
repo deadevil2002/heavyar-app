@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useToast } from '@/hooks/use-toast';
 import { useActionMutation } from '@/lib/api';
+import { fetchApi } from '@/lib/api';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Dialog,
@@ -17,7 +18,7 @@ import { useAppState } from '@/lib/app-state';
 export function useAdminAction() {
   const [isOpen, setIsOpen] = useState(false);
   const [reason, setReason] = useState('');
-  const [actionData, setActionData] = useState<{ targetId: string; targetType: string; action: string; title: string; description: string; payload?: any } | null>(null);
+  const [actionData, setActionData] = useState<{ targetId: string; targetType: string; action: string; title: string; description: string; payload?: any; endpoint?: string } | null>(null);
   
   const { language } = useAppState();
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
@@ -39,13 +40,17 @@ export function useAdminAction() {
     }
     
     try {
-      await actionMut.mutateAsync({
-        targetType: actionData.targetType,
-        targetId: actionData.targetId,
-        action: actionData.action,
-        reason,
-        payload: actionData.payload
-      });
+      if (actionData.endpoint) {
+        await fetchApi(actionData.endpoint, { method: 'POST', body: JSON.stringify({ uid: actionData.targetId, reason }) });
+      } else {
+        await actionMut.mutateAsync({
+          targetType: actionData.targetType,
+          targetId: actionData.targetId,
+          action: actionData.action,
+          reason,
+          payload: actionData.payload
+        });
+      }
       
       // Invalidate everything just to be safe, or targeted
       queryClient.invalidateQueries();

@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { createVerify, generateKeyPairSync } from 'node:crypto';
-import worker, { __test, type Env } from './index';
+import worker, { __test, GCC_COUNTRIES, heavyarEmailVerificationTemplate, heavyarPasswordResetTemplate, normalizeGccPhone, type Env } from './index';
 
 const env = { CORS_ORIGINS: 'http://localhost' } as Env;
 const request = (path: string, body: unknown, headers: Record<string, string> = {}) =>
@@ -160,8 +160,8 @@ describe('worker security boundary', () => {
   });
 
   test('OTP fails closed without KV', async () => {
-    expect((await worker.fetch(request('/api/send-email-otp', { email: 'a@example.com' }), env)).status).toBe(503);
-    expect((await worker.fetch(request('/api/verify-email-otp', { email: 'a@example.com', code: '000000' }), env)).status).toBe(503);
+    expect((await worker.fetch(request('/api/send-email-otp', { email: 'a@example.com' }), env)).status).toBe(410);
+    expect((await worker.fetch(request('/api/verify-email-otp', { email: 'a@example.com', code: '000000' }), env)).status).toBe(410);
   });
 
   test('authenticated arbitrary amount is rejected before Tap', async () => {
@@ -484,43 +484,40 @@ describe('worker security boundary', () => {
   });
 
   test('registration roles, driver bootstrap, terms and phone collision are server enforced', async () => {
-    const grant = 'role-grant', email = 'new@example.com', emailHash = '8AMFAQIzJ0N7BuXG-H33hxuOcErmCNHQt7JP3SoGxxY';
+    const email = 'new@example.com';
     __test.setAuth({ uid: 'role-user', email, admin: false });
     const commits: unknown[] = []; __test.captureCommits(commits);
-    __test.setFirestore((collection, id) => collection === 'users' ? null : collection === 'registrationGrants' ? { emailHash, expiresAt: new Date(Date.now() + 300000).toISOString() } : null);
-    const response = await worker.fetch(request('/api/register-profile', { registrationGrant: grant, role: 'provider', termsAccepted: true, nameEn: 'Provider', region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    __test.setFirestore((collection) => collection === 'users' ? null : null);
+    const response = await worker.fetch(request('/api/register-profile', { role: 'provider', termsAccepted: true, nameEn: 'Provider', region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect(response.status).toBe(200);
     const writes: any[] = commits[0] as any[];
     const user = writes.find((write) => String(write.update?.name).includes('/users/'));
     expect(user.update.fields.role.stringValue).toBe('provider'); expect(user.update.fields.isVerified).toBe(undefined);
-    __test.setFirestore((collection) => collection === 'users' ? null : collection === 'registrationGrants' ? { emailHash, expiresAt: new Date(Date.now() + 300000).toISOString() } : collection === 'heavyarConfig' ? { phoneIndexReady: true } : null);
-    const driver = await worker.fetch(request('/api/register-profile', { registrationGrant: grant, role: 'driver', termsAccepted: true, nameEn: 'Driver', phone: '512345678', region: 'R', city: 'C' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    __test.setFirestore((collection) => collection === 'users' ? null : collection === 'heavyarConfig' ? { phoneIndexReady: true } : null);
+    const driver = await worker.fetch(request('/api/register-profile', { role: 'driver', termsAccepted: true, nameEn: 'Driver', phone: '512345678', region: 'R', city: 'C' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect(driver.status).toBe(200);
-    const driverWrites: any[] = commits[1] as any[]; const profile = driverWrites.find((write) => String(write.update?.name).includes('/driverProfiles/'));
+    const driverWrites: any[] = [...commits].reverse().find((item: any) => Array.isArray(item) && item.some((write: any) => String(write.update?.name).includes('/driverProfiles/'))) as any[]; const profile = driverWrites.find((write) => String(write.update?.name).includes('/driverProfiles/'));
     expect(profile.update.fields.active.booleanValue).toBe(false); expect(profile.update.fields.moderationStatus.stringValue).toBe('pending_review'); expect(profile.update.fields.trustStatus.stringValue).toBe('unverified');
-    const noTerms = await worker.fetch(request('/api/register-profile', { registrationGrant: grant, role: 'customer' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    const noTerms = await worker.fetch(request('/api/register-profile', { role: 'customer' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect(noTerms.status).toBe(400);
-    __test.setFirestore((collection) => collection === 'users' ? null : collection === 'registrationGrants' ? { emailHash, expiresAt: new Date(Date.now() + 300000).toISOString() } : collection === 'phoneOwners' ? { uid: 'other' } : collection === 'heavyarConfig' ? { phoneIndexReady: true } : null);
-    const collision = await worker.fetch(request('/api/register-profile', { registrationGrant: grant, role: 'customer', termsAccepted: true, phone: '512345678', nameEn: 'Customer', region: 'R', city: 'C' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
-    expect(collision.status).toBe(409); expect(commits.length).toBe(2);
+    __test.setFirestore((collection) => collection === 'users' ? null : collection === 'phoneOwners' ? { uid: 'other' } : collection === 'heavyarConfig' ? { phoneIndexReady: true } : null);
+    const collision = await worker.fetch(request('/api/register-profile', { role: 'customer', termsAccepted: true, phone: '512345678', nameEn: 'Customer', region: 'R', city: 'C' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    expect(collision.status).toBe(409); expect(commits.length).toBe(4);
   });
 
   test('OTP state requires server Firestore credentials', async () => {
-    expect((await worker.fetch(request('/api/send-email-otp', { email: 'otp@example.com' }), { ...env, RESEND_API_KEY: 'test' })).status).toBe(503);
+    expect((await worker.fetch(request('/api/send-email-otp', { email: 'otp@example.com' }), { ...env, RESEND_API_KEY: 'test' })).status).toBe(410);
   });
 
-  test('registration grant is consumed only after create semantics and cannot be reused', async () => {
-    const grant = 'one-time-grant';
+  test('registration does not depend on a legacy grant and remains terms-protected', async () => {
     __test.setAuth({ uid: 'new-user', email: 'new@example.com', admin: false });
-    let grantAvailable = true;
-    __test.setFirestore((collection) => collection === 'users' ? null : collection === 'registrationGrants' && grantAvailable ? { emailHash: '8AMFAQIzJ0N7BuXG-H33hxuOcErmCNHQt7JP3SoGxxY', expiresAt: new Date(Date.now() + 300000).toISOString() } : {});
+    __test.setFirestore((collection) => collection === 'users' ? null : {});
     const writes: Array<{ path: string; fields: Record<string, unknown> }> = []; const commits: unknown[] = []; __test.captureWrites(writes); __test.captureCommits(commits);
     const profileEnv = { ...env, FIREBASE_PROJECT_ID: 'test-project' } as Env;
-    const response = await worker.fetch(request('/api/register-profile', { registrationGrant: grant, nameEn: 'New User', termsAccepted: true, region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), profileEnv);
+    const response = await worker.fetch(request('/api/register-profile', { nameEn: 'New User', termsAccepted: true, region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), profileEnv);
     expect(response.status).toBe(200);
-    expect(commits.length).toBe(1);
-    grantAvailable = false;
-    expect((await worker.fetch(request('/api/register-profile', { registrationGrant: grant }, { Authorization: 'Bearer test' }), profileEnv)).status).toBe(403);
+    expect(commits.length).toBe(2);
+    expect((await worker.fetch(request('/api/register-profile', { role: 'customer' }, { Authorization: 'Bearer test' }), profileEnv)).status).toBe(400);
     __test.captureWrites(undefined); __test.captureCommits(undefined);
   });
 
@@ -919,6 +916,64 @@ describe('worker security boundary', () => {
       headers: { Authorization: 'Bearer test' },
     }), env);
     expect(missingSettlement.status).toBe(404);
+  });
+
+});
+
+describe('GCC and email verification architecture', () => {
+  test('supports every GCC phone format and canonical E.164 output', () => {
+    expect(JSON.stringify(normalizeGccPhone('0551234567', 'SA'))).toBe(JSON.stringify({ phone: '+966551234567', countryCode: 'SA' }));
+    expect(JSON.stringify(normalizeGccPhone('+971501234567'))).toBe(JSON.stringify({ phone: '+971501234567', countryCode: 'AE' }));
+    expect(JSON.stringify(normalizeGccPhone('55123456', 'KW'))).toBe(JSON.stringify({ phone: '+96555123456', countryCode: 'KW' }));
+    expect(JSON.stringify(normalizeGccPhone('+97433123456'))).toBe(JSON.stringify({ phone: '+97433123456', countryCode: 'QA' }));
+    expect(JSON.stringify(normalizeGccPhone('36123456', 'BH'))).toBe(JSON.stringify({ phone: '+97336123456', countryCode: 'BH' }));
+    expect(JSON.stringify(normalizeGccPhone('91234567', 'OM'))).toBe(JSON.stringify({ phone: '+96891234567', countryCode: 'OM' }));
+    expect(normalizeGccPhone('123', 'AE')).toBe(null);
+  });
+
+  test('normalizes 00-prefixed GCC aliases for mobile login and password recovery paths', () => {
+    const aliases: Array<[string, string]> = [
+      ['00971501234567', '+971501234567'],
+      ['0096555123456', '+96555123456'],
+      ['0097433123456', '+97433123456'],
+      ['0097336123456', '+97336123456'],
+      ['0096891234567', '+96891234567'],
+    ];
+    for (const [input, expected] of aliases) {
+      expect(normalizeGccPhone(input)?.phone).toBe(expected);
+    }
+  });
+
+  test('keeps Saudi active while other GCC markets remain architecture-ready', () => {
+    expect(JSON.stringify(Object.keys(GCC_COUNTRIES))).toBe(JSON.stringify(['SA', 'AE', 'KW', 'QA', 'BH', 'OM']));
+    expect(GCC_COUNTRIES.SA.enabled).toBe(true);
+    expect(Object.values(GCC_COUNTRIES).filter(country => country.enabled).length).toBe(1);
+    expect(GCC_COUNTRIES.AE.currency).toBe('AED');
+    expect(GCC_COUNTRIES.KW.currency).toBe('KWD');
+    expect(GCC_COUNTRIES.QA.currency).toBe('QAR');
+    expect(GCC_COUNTRIES.BH.currency).toBe('BHD');
+    expect(GCC_COUNTRIES.OM.currency).toBe('OMR');
+  });
+
+  test('branded templates escape action links and include bilingual security copy', () => {
+    const verification = heavyarEmailVerificationTemplate('https://example.test/?a=1&b=2', 'A <User>');
+    const reset = heavyarPasswordResetTemplate('https://example.test/reset?a=1&b=2');
+    expect(verification.includes('Verify your email')).toBe(true);
+    expect(verification.includes('وثّق بريدك الإلكتروني')).toBe(true);
+    expect(verification.includes('&amp;')).toBe(true);
+    expect(verification.includes('A <User>')).toBe(false);
+    expect(reset.includes('Reset password')).toBe(true);
+    expect(reset.includes('Heavyar')).toBe(true);
+  });
+
+  test('market configuration exposes disabled FX and future phone verification without SMS activation', async () => {
+    const response = await worker.fetch(new Request('https://worker.test/api/config/markets', { headers: { Origin: 'http://localhost' } }), env);
+    expect(response.status).toBe(200);
+    const value: any = await response.json();
+    expect(value.fx.enabled).toBe(false);
+    expect(value.fx.provider).toBe(null);
+    expect(value.phoneVerification.enabled).toBe(false);
+    expect(value.phoneVerification.provider).toBe(null);
   });
 
 });
