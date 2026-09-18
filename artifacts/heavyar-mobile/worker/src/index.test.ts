@@ -32,8 +32,8 @@ const tapTransaction = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('worker security boundary', () => {
-  beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); });
-  afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setReservationConflict(false); });
+  beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.captureDriverQueries(undefined); });
+  afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.captureDriverQueries(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setReservationConflict(false); });
 
   test('Firestore RPC URLs use the documents colon endpoint form', () => {
     const firestoreEnv = { ...env, FIREBASE_PROJECT_ID: 'project-id' } as Env;
@@ -759,33 +759,273 @@ describe('worker security boundary', () => {
   });
 
   test('driver search enforces canonical filters, date bounds, trust, and privacy', async () => {
-    __test.setAuth({ uid: 'customer-1', admin: false });
-    const oldFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      if (!String(input).includes(':runQuery')) return new Response('{}');
-      return new Response(JSON.stringify([{ document: { name: 'projects/p/databases/(default)/documents/driverProfiles/d1', fields: {
-        uid: { stringValue: 'd1' }, displayName: { stringValue: 'Driver' },
-        equipmentTypes: { arrayValue: { values: [{ stringValue: 'crane' }] } }, region: { stringValue: 'Riyadh' }, city: { stringValue: 'Riyadh' },
-        availableFrom: { stringValue: '2026-01-01' }, availableUntil: { stringValue: '2026-01-31' }, trustStatus: { stringValue: 'verified' },
-        phone: { stringValue: '+966' }, privateNotes: { stringValue: 'secret' }, active: { booleanValue: true }, moderationStatus: { stringValue: 'approved' },
-      } } }]));
-    }) as typeof fetch;
-    __test.setFirestore((collection, id) => collection === 'driverProfiles' ? {
-      uid: id, displayName: 'Driver', equipmentTypes: ['crane'], region: 'Riyadh', city: 'Riyadh',
+    __test.setFirestore((collection, id) => collection === '__queries' && id === 'driverProfiles' ? [{
+      id: 'd1', uid: 'd1', displayName: 'Driver', countryCode: 'SA', equipmentTypes: ['crane'], region: 'Riyadh', city: 'Riyadh',
       availableFrom: '2026-01-01', availableUntil: '2026-01-31', trustStatus: 'verified',
       phone: '+966500000000', email: 'private@test.invalid', privateNotes: 'secret', active: true, moderationStatus: 'approved',
-    } : null);
-    const canonical = await worker.fetch(new Request('https://worker.test/api/drivers/search?equipment=crane&availableFrom=2026-01-10&availableUntil=2026-01-20&trustStatus=verified&region=Riyadh&city=Riyadh', { headers: { Authorization: 'Bearer test' } }), env);
+    }] : collection === 'users' && id === 'd1' ? { role: 'driver', accountStatus: 'active', emailVerified: true, countryCode: 'SA' } : null);
+    const canonical = await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&q=Driver&equipment=crane&availableFrom=2026-01-10&availableUntil=2026-01-20&trustStatus=verified&region=Riyadh&city=Riyadh'), env);
     expect(canonical.status).toBe(200);
     const body: any = await canonical.json(); expect(body.drivers.length).toBe(1);
+    expect(body.drivers[0].id.startsWith('drv_')).toBe(true);
+    expect(body.drivers[0].id.includes('d1')).toBe(false);
+    expect(body.drivers[0].countryCode).toBe('SA');
     expect(JSON.stringify(body).includes('privateNotes')).toBe(false);
-    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?equipment=excavator', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(200);
-    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableFrom=2026-02-01', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(200);
-    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableUntil=2025-12-01', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(200);
-    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableFrom=bad', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(400);
-    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableFrom=2026-02-01&availableUntil=2026-01-01', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(400);
-    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?equipmentType=crane', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(400);
-    globalThis.fetch = oldFetch;
+    expect(JSON.stringify(body).includes('phone')).toBe(false);
+    expect(JSON.stringify(body).includes('email')).toBe(false);
+    expect(JSON.stringify(body).includes('uid')).toBe(false);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?equipment=excavator'), env)).status).toBe(200);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableFrom=2026-02-01'), env)).status).toBe(200);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableUntil=2025-12-01'), env)).status).toBe(200);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableFrom=bad'), env)).status).toBe(400);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?availableFrom=2026-02-01&availableUntil=2026-01-01'), env)).status).toBe(400);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search?equipmentType=crane'), env)).status).toBe(400);
+  });
+
+  test('driver discovery applies account, market, safe-field filters and opaque pagination', async () => {
+    const profiles: any[] = [
+      { id: 'driver-a', displayName: 'Ahmed Operator', countryCode: 'SA', region: 'Riyadh', city: 'Riyadh', equipmentTypes: ['crane'], availabilityStatus: 'available', active: true, moderationStatus: 'approved' },
+      { id: 'driver-b', displayName: 'Bader Driver', countryCode: 'SA', region: 'Makkah', city: 'Jeddah', equipmentTypes: ['loader'], availabilityStatus: 'offline', active: true, moderationStatus: 'approved' },
+      { id: 'driver-restricted', displayName: 'Private Name Match', countryCode: 'SA', region: 'Riyadh', city: 'Riyadh', equipmentTypes: ['crane'], availabilityStatus: 'available', active: true, moderationStatus: 'approved', email: 'search-me@example.test', phone: '0555555555' },
+      { id: 'driver-ae', displayName: 'UAE Driver', countryCode: 'AE', region: 'Dubai', city: 'Dubai', equipmentTypes: ['crane'], availabilityStatus: 'available', active: true, moderationStatus: 'approved' },
+    ];
+    __test.setFirestore((collection, id) => {
+      if (collection === '__queries' && id === 'driverProfiles') return profiles;
+      if (collection === 'users') return {
+        role: 'driver', accountStatus: id === 'driver-restricted' ? 'restricted' : 'active',
+        emailVerified: true, countryCode: id === 'driver-ae' ? 'AE' : 'SA',
+      };
+      if (collection === 'countryConfigs' && id === 'AE') return { enabled: false, marketplaceAvailable: false };
+      return null;
+    });
+    const queryShapes: any[] = [];
+    __test.captureDriverQueries(queryShapes);
+    const first: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&limit=1'), env)).json();
+    expect(first.drivers.length).toBe(1);
+    expect(queryShapes[0].where.fieldFilter.field.fieldPath).toBe('active');
+    expect(queryShapes[0].where.compositeFilter).toBe(undefined);
+    expect(JSON.stringify(queryShapes[0].orderBy)).toBe(JSON.stringify([{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }]));
+    expect(first.nextCursor.startsWith('drv_')).toBe(true);
+    expect(first.nextCursor.includes('driver-a')).toBe(false);
+    const second: any = await (await worker.fetch(new Request(`https://worker.test/api/drivers/search?countryCode=SA&limit=1&cursor=${encodeURIComponent(first.nextCursor)}`), env)).json();
+    expect(second.drivers.length).toBe(1);
+    expect(second.drivers[0].displayName).toBe('Bader Driver');
+    const filtered: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&q=Ahmed&region=Riyadh&city=Riyadh&equipment=crane&availabilityStatus=available'), env)).json();
+    expect(filtered.drivers.length).toBe(1);
+    const privateEmail: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&q=search-me'), env)).json();
+    expect(privateEmail.drivers.length).toBe(0);
+    const disabled: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=AE'), env)).json();
+    expect(disabled.drivers.length).toBe(0);
+  });
+
+  test('public driver endpoints use Firestore-backed hashed-IP scopes without a KV binding and fail closed', async () => {
+    const keys: string[] = [];
+    __test.setPublicDriverLimiter(async (scope, ipHash) => { keys.push(`${scope}:${ipHash}`); return false; });
+    const response = await worker.fetch(new Request('https://worker.test/api/drivers/search', {
+      headers: { 'CF-Connecting-IP': '203.0.113.42' },
+    }), env);
+    expect(response.status).toBe(429);
+    expect(keys[0].startsWith('search:')).toBe(true);
+    expect(keys[0].includes('203.0.113.42')).toBe(false);
+    __test.setPublicDriverLimiter(async (scope, ipHash) => { keys.push(`${scope}:${ipHash}`); return false; });
+    const detail = await worker.fetch(new Request('https://worker.test/api/drivers/public/drv_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', {
+      headers: { 'CF-Connecting-IP': '203.0.113.42' },
+    }), env);
+    expect(detail.status).toBe(429);
+    expect(keys[keys.length - 1].startsWith('detail:')).toBe(true);
+    __test.setPublicDriverLimiter(async () => null);
+    expect((await worker.fetch(new Request('https://worker.test/api/drivers/search'), env)).status).toBe(503);
+  });
+
+  test('production-shaped public search uses Firestore limiter and single-index REST queries without KV', async () => {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const runtimeEnv = {
+      ...env, FIREBASE_PROJECT_ID: 'project', FIREBASE_CLIENT_EMAIL: 'service@project.iam.gserviceaccount.com',
+      FIREBASE_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+    } as Env;
+    const calls: Array<{ url: string; body: any }> = [], oldFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      let body: any;
+      try { body = init?.body ? JSON.parse(String(init.body)) : undefined; } catch { body = String(init?.body || ''); }
+      calls.push({ url, body });
+      if (url.includes('oauth2.googleapis.com/token')) return new Response(JSON.stringify({ access_token: 'token' }));
+      if (url.includes(':beginTransaction')) return new Response(JSON.stringify({ transaction: 'transaction-1' }));
+      if (url.includes(':batchGet')) return new Response(JSON.stringify([{ missing: body.documents[0] }]));
+      if (url.includes(':commit')) return new Response(JSON.stringify({}));
+      if (url.includes('/countryConfigs/SA')) return new Response('', { status: 404 });
+      if (url.includes('/users/customer')) return new Response(JSON.stringify({ fields: {
+        role: { stringValue: 'customer' }, accountStatus: { stringValue: 'active' }, emailVerified: { booleanValue: true },
+      } }));
+      if (url.includes(':runQuery')) return new Response(JSON.stringify([]));
+      return new Response('', { status: 404 });
+    }) as typeof fetch;
+    try {
+      const response = await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA', {
+        headers: { 'CF-Connecting-IP': '198.51.100.20' },
+      }), runtimeEnv);
+      expect(response.status).toBe(200);
+      const batch = calls.find(call => call.url.includes(':batchGet'));
+      expect(JSON.stringify(batch?.body).includes('/publicDriverRateLimits/')).toBe(true);
+      expect(JSON.stringify(batch?.body).includes('198.51.100.20')).toBe(false);
+      const query = calls.find(call => call.url.includes(':runQuery'))?.body.structuredQuery;
+      expect(query.where.fieldFilter.field.fieldPath).toBe('active');
+      expect(query.where.compositeFilter).toBe(undefined);
+      expect(JSON.stringify(query.orderBy)).toBe(JSON.stringify([{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }]));
+      __test.setAuth({ uid: 'customer', admin: false, emailVerified: true });
+      const list = await worker.fetch(new Request('https://worker.test/api/drivers/requests?limit=10', { headers: { Authorization: 'Bearer test' } }), runtimeEnv);
+      expect(list.status).toBe(200);
+      const requestQuery = calls.filter(call => call.url.includes(':runQuery')).map(call => call.body.structuredQuery)
+        .find(queryShape => queryShape.from?.[0]?.collectionId === 'driverRequests');
+      expect(requestQuery.where.fieldFilter.field.fieldPath).toBe('requesterUid');
+      expect(requestQuery.where.compositeFilter).toBe(undefined);
+      expect(JSON.stringify(requestQuery.orderBy)).toBe(JSON.stringify([{ field: { fieldPath: '__name__' }, direction: 'DESCENDING' }]));
+    } finally {
+      __test.setAuth(undefined);
+      globalThis.fetch = oldFetch;
+    }
+  });
+
+  test('driver scan-budget exhaustion returns an opaque resumable cursor without losing later matches', async () => {
+    const profiles = Array.from({ length: 1001 }, (_, index) => ({
+      id: `driver-${String(index).padStart(4, '0')}`,
+      displayName: index === 1000 ? 'Needle Driver' : `Other ${index}`,
+      countryCode: 'SA', active: true, moderationStatus: 'approved',
+    }));
+    __test.setFirestore((collection, id) => {
+      if (collection === '__queries' && id === 'driverProfiles') return profiles;
+      if (collection === 'users') return { role: 'driver', accountStatus: 'active', emailVerified: true, countryCode: 'SA' };
+      return null;
+    });
+    const first: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&q=Needle'), env)).json();
+    expect(first.drivers.length).toBe(0);
+    expect(first.nextCursor.startsWith('drv_')).toBe(true);
+    expect(first.nextCursor.includes('driver-0999')).toBe(false);
+    const second: any = await (await worker.fetch(new Request(`https://worker.test/api/drivers/search?countryCode=SA&q=Needle&cursor=${encodeURIComponent(first.nextCursor)}`), env)).json();
+    expect(second.drivers.length).toBe(1);
+    expect(second.drivers[0].displayName).toBe('Needle Driver');
+  });
+
+  test('public detail and driver requests resolve opaque identity and retain only canonical private UIDs', async () => {
+    const profiles: any[] = [{
+      id: 'driver-uid', displayName: 'Canonical Driver', countryCode: 'SA', region: 'Riyadh', city: 'Riyadh',
+      equipmentTypes: ['crane'], availabilityStatus: 'available', active: true, moderationStatus: 'approved',
+      email: 'private@example.test', phone: '+966500000000',
+    }];
+    let requestRecord: any = null;
+    __test.setFirestore((collection, id) => {
+      if (collection === '__queries' && id === 'driverProfiles') return profiles;
+      if (collection === '__queries' && id === 'driverRequests') return requestRecord ? [{ id: 'request-1', ...requestRecord }] : [];
+      if (collection === 'driverRequests' && id === 'request-1') return requestRecord;
+      if (collection === 'driverProfiles' && id === 'driver-uid') return profiles[0];
+      if (collection === 'users' && id === 'driver-uid') return { role: 'driver', accountStatus: 'active', emailVerified: true, nameEn: 'Canonical Driver', countryCode: 'SA' };
+      if (collection === 'users' && id === 'customer-uid') return { role: 'customer', accountStatus: 'active', emailVerified: true, nameEn: 'Customer' };
+      return null;
+    });
+    const discovery: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA'), env)).json();
+    const publicId = discovery.drivers[0].id;
+    const detail = await worker.fetch(new Request(`https://worker.test/api/drivers/public/${publicId}`), env);
+    expect(detail.status).toBe(200);
+    expect(JSON.stringify(await detail.json()).includes('driver-uid')).toBe(false);
+
+    __test.setAuth({ uid: 'customer-uid', admin: false, emailVerified: true });
+    const writes: Array<{ path: string; fields: Record<string, unknown> }> = [];
+    __test.captureWrites(writes);
+    const created = await worker.fetch(request('/api/drivers/requests', { driverId: publicId, notes: 'Crane in Riyadh on 2026-01-10' }, { Authorization: 'Bearer test' }), env);
+    expect(created.status).toBe(201);
+    const persisted = writes.find(write => write.path.startsWith('driverRequests/'));
+    expect((persisted?.fields.driverUid as any).stringValue).toBe('driver-uid');
+    expect(JSON.stringify(await created.json()).includes('driver-uid')).toBe(false);
+
+    requestRecord = { requesterUid: 'customer-uid', driverUid: 'driver-uid', status: 'open', notes: 'Need crane', createdAt: '2026-01-01', updatedAt: '2026-01-01' };
+    const listed: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/requests', { headers: { Authorization: 'Bearer test' } }), env)).json();
+    expect(listed.requests.length).toBe(1);
+    expect(listed.requests[0].isRequester).toBe(true);
+    expect(JSON.stringify(listed).includes('customer-uid')).toBe(false);
+    expect(JSON.stringify(listed).includes('driver-uid')).toBe(false);
+  });
+
+  test('driver requests enforce requester roles, live target eligibility and action authority', async () => {
+    const profile: any = { id: 'driver-uid', displayName: 'Driver', countryCode: 'SA', active: true, moderationStatus: 'approved' };
+    const accounts: Record<string, any> = {
+      'driver-uid': { role: 'driver', accountStatus: 'active', emailVerified: true, countryCode: 'SA' },
+      provider: { role: 'provider', accountStatus: 'active', emailVerified: true },
+      customer: { role: 'customer', accountStatus: 'active', emailVerified: true },
+      other: { role: 'customer', accountStatus: 'active', emailVerified: true },
+      restricted: { role: 'customer', accountStatus: 'restricted', emailVerified: true },
+      suspended: { role: 'customer', accountStatus: 'active', suspensionStatus: 'temporarily_suspended', emailVerified: true },
+      deleting: { role: 'customer', accountStatus: 'deletion_requested', emailVerified: true },
+    };
+    let requestState: any = { requesterUid: 'customer', driverUid: 'driver-uid', status: 'open', notes: 'Need driver', createdAt: '2026-01-01', updatedAt: '2026-01-01' };
+    __test.setFirestore((collection, id) => {
+      if (collection === '__queries' && id === 'driverProfiles') return [profile];
+      if (collection === 'driverProfiles' && id === 'driver-uid') return profile;
+      if (collection === 'driverRequests' && id === 'request-1') return requestState;
+      if (collection === 'users') return accounts[id];
+      return null;
+    });
+    const publicId = (await (await worker.fetch(new Request('https://worker.test/api/drivers/search'), env)).json() as any).drivers[0].id;
+    __test.captureWrites([]);
+    const createAs = async (uid: string) => {
+      __test.setAuth({ uid, admin: false, emailVerified: true });
+      return worker.fetch(request('/api/drivers/requests', { driverId: publicId, notes: 'Need operator' }, { Authorization: 'Bearer test' }), env);
+    };
+    expect((await createAs('provider')).status).toBe(201);
+    expect((await createAs('driver-uid')).status).toBe(403);
+    expect((await createAs('restricted')).status).toBe(403);
+    expect((await createAs('suspended')).status).toBe(403);
+    expect((await createAs('deleting')).status).toBe(403);
+    profile.active = false;
+    expect((await createAs('customer')).status).toBe(400);
+    profile.active = true;
+
+    __test.setAuth({ uid: 'driver-uid', admin: false, emailVerified: true });
+    expect((await worker.fetch(request('/api/drivers/requests/request-1', { action: 'bogus' }, { Authorization: 'Bearer test' }), env)).status).toBe(409);
+    expect((await worker.fetch(request('/api/drivers/requests/request-1', { action: 'accept' }, { Authorization: 'Bearer test' }), env)).status).toBe(200);
+    expect((await worker.fetch(request('/api/drivers/requests/request-1', { action: 'decline' }, { Authorization: 'Bearer test' }), env)).status).toBe(200);
+    requestState = { ...requestState, status: 'accepted' };
+    expect((await worker.fetch(request('/api/drivers/requests/request-1', { action: 'accept' }, { Authorization: 'Bearer test' }), env)).status).toBe(409);
+    expect((await worker.fetch(request('/api/drivers/requests/request-1', { action: 'close' }, { Authorization: 'Bearer test' }), env)).status).toBe(403);
+    __test.setAuth({ uid: 'customer', admin: false, emailVerified: true });
+    expect((await worker.fetch(request('/api/drivers/requests/request-1', { action: 'close' }, { Authorization: 'Bearer test' }), env)).status).toBe(200);
+    __test.setAuth({ uid: 'other', admin: false, emailVerified: true });
+    expect((await worker.fetch(request('/api/drivers/requests/request-1', { action: 'close' }, { Authorization: 'Bearer test' }), env)).status).toBe(404);
+  });
+
+  test('driver request lists are participant-scoped and cursor-paginated beyond the former cap', async () => {
+    const requests = Array.from({ length: 101 }, (_, index) => ({
+      id: `request-${String(index).padStart(3, '0')}`, requesterUid: 'customer', driverUid: 'driver-uid',
+      status: 'open', notes: String(index), createdAt: `2026-01-${String((index % 28) + 1).padStart(2, '0')}T00:00:00.000Z`, updatedAt: '2026-01-01',
+    }));
+    requests.push({ id: 'request-unrelated', requesterUid: 'other', driverUid: 'other-driver', status: 'open', notes: 'private', createdAt: '2099-01-01T00:00:00.000Z', updatedAt: '2099-01-01' });
+    __test.setAuth({ uid: 'customer', admin: false, emailVerified: true });
+    __test.setFirestore((collection, id) => {
+      if (collection === '__queries' && id === 'driverRequests') return requests;
+      if (collection === 'driverRequests') return requests.find(item => item.id === id) || null;
+      if (collection === 'driverProfiles' && id === 'driver-uid') return { displayName: 'Driver', countryCode: 'SA', active: true, moderationStatus: 'approved' };
+      if (collection === 'users' && id === 'customer') return { role: 'customer', accountStatus: 'active', emailVerified: true, nameEn: 'Customer' };
+      if (collection === 'users' && id === 'driver-uid') return { role: 'driver', accountStatus: 'active', emailVerified: true, countryCode: 'SA' };
+      return null;
+    });
+    const queryShapes: any[] = [];
+    __test.captureDriverQueries(queryShapes);
+    const first: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/requests?limit=50', { headers: { Authorization: 'Bearer test' } }), env)).json();
+    expect(first.requests.length).toBe(50);
+    expect(queryShapes[0].where.fieldFilter.field.fieldPath).toBe('requesterUid');
+    expect(JSON.stringify(queryShapes[0].orderBy)).toBe(JSON.stringify([{ field: { fieldPath: '__name__' }, direction: 'DESCENDING' }]));
+    expect(first.nextCursor.startsWith('request-')).toBe(true);
+    expect(JSON.stringify(first).includes('driverUid')).toBe(false);
+    const second: any = await (await worker.fetch(new Request(`https://worker.test/api/drivers/requests?limit=50&cursor=${first.nextCursor}`, { headers: { Authorization: 'Bearer test' } }), env)).json();
+    expect(second.requests.length).toBe(50);
+    expect(second.nextCursor.startsWith('request-')).toBe(true);
+    const third: any = await (await worker.fetch(new Request(`https://worker.test/api/drivers/requests?limit=50&cursor=${second.nextCursor}`, { headers: { Authorization: 'Bearer test' } }), env)).json();
+    expect(third.requests.length).toBe(1);
+    expect(third.nextCursor).toBe(undefined);
+    expect(JSON.stringify(first).includes('private')).toBe(false);
+    __test.setAuth({ uid: 'driver-uid', admin: false, emailVerified: true });
+    const incoming: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/requests?limit=1', { headers: { Authorization: 'Bearer test' } }), env)).json();
+    expect(incoming.requests.length).toBe(1);
+    expect(incoming.requests[0].isRequester).toBe(false);
   });
 
   test('new requests receive an immutable Worker-issued public number without changing document IDs', async () => {
@@ -849,7 +1089,7 @@ describe('worker security boundary', () => {
   test('driver registration uses the authenticated UID and begins pending review', async () => {
     __test.setAuth({ uid: 'driver-uid', admin: false });
     __test.setFirestore((collection) => collection === 'users'
-      ? { accountStatus: 'active', nameAr: 'سائق', nameEn: 'Driver Name', phone: '+966500000000' }
+      ? { role: 'driver', accountStatus: 'active', nameAr: 'سائق', nameEn: 'Driver Name', phone: '+966500000000' }
       : null);
     const writes: Array<{ path: string; fields: Record<string, unknown> }> = [];
     __test.captureWrites(writes);
@@ -863,6 +1103,32 @@ describe('worker security boundary', () => {
     expect((profile?.fields.uid as any)?.stringValue).toBe('driver-uid');
     expect((profile?.fields.moderationStatus as any)?.stringValue).toBe('pending_review');
     expect((profile?.fields.active as any)?.booleanValue).toBe(false);
+  });
+
+  test('owner profile edits preserve Admin inactivity and reject stale writes', async () => {
+    __test.setAuth({ uid: 'driver-uid', admin: false, emailVerified: true });
+    __test.setFirestore((collection) => collection === 'users'
+      ? { role: 'driver', accountStatus: 'active', emailVerified: true, countryCode: 'SA', nameEn: 'Driver' }
+      : collection === 'driverProfiles' ? {
+        publicId: 'legacy-value', displayName: 'Driver', countryCode: 'SA', region: 'Riyadh', city: 'Riyadh',
+        equipmentTypes: ['crane'], active: false, moderationStatus: 'approved',
+      } : null);
+    const writes: Array<{ path: string; fields: Record<string, unknown> }> = [];
+    __test.captureWrites(writes);
+    const updated = await worker.fetch(new Request('https://worker.test/api/drivers/profile', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
+      body: JSON.stringify({ availabilityStatus: 'available' }),
+    }), env);
+    expect(updated.status).toBe(200);
+    expect((writes[0].fields.active as any).booleanValue).toBe(false);
+    expect((writes[0].fields.moderationStatus as any).stringValue).toBe('approved');
+
+    __test.setReservationConflict(true);
+    const stale = await worker.fetch(new Request('https://worker.test/api/drivers/profile', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
+      body: JSON.stringify({ city: 'Jeddah' }),
+    }), env);
+    expect(stale.status).toBe(409);
   });
 
   test('self-service invoice PDF is available only to canonical request participants', async () => {

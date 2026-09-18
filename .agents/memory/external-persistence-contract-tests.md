@@ -26,3 +26,15 @@ Use an independent provider-protocol fixture for signature tests, not the applic
 **Why:** Tests generated signatures with the same URL-safe Base64 helper as the verifier, hiding incompatibility with standard padded Svix signatures until production verification.
 
 **How to apply:** Include official-format examples with alphabet and padding differences, then verify a real provider callback separately from locally signed fixtures.
+
+Test externally hosted features against the actual production binding and index inventory, not a more capable mock environment.
+
+**Why:** Driver endpoint tests passed with a KV-backed limiter even though production had no KV binding; new request-list ordering also implied composite indexes that were not deployed.
+
+**How to apply:** Check current Worker bindings before choosing storage-backed guards. Cover the no-optional-binding path and real Firestore query shapes, and prefer existing indexed paths when the release only authorizes Worker source changes.
+
+Seed live QA fixtures with canonical catalog IDs rather than human-readable location or capability labels.
+
+**Why:** A temporary Driver with display-name locations and a singular capability looked valid on its public card but could not pass the owner's canonical form validation, creating misleading browser failures.
+
+**How to apply:** Validate fixture fields against the same country/location/category catalogs used by the UI before testing filtering or owner saves. Diagnose invalid fixture data separately from application defects.

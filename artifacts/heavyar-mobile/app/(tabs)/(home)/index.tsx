@@ -32,7 +32,7 @@ export default function HomeScreen() {
   }, [selectedCategory, setFilter]);
 
   const handleSearch = useCallback(() => {
-    router.push('/(tabs)/search');
+    router.push('/(tabs)/search?mode=equipment');
   }, [router]);
 
   const handleNotifications = useCallback(() => {
@@ -111,6 +111,23 @@ export default function HomeScreen() {
               {hasFilters && <Pressable accessibilityRole="button" onPress={resetFilters} style={styles.filterChip}><Text style={styles.seeAll}>{t('reset_filters')}</Text></Pressable>}
             </View>
             {showFilters && <DiscoveryFilters filters={filters} markets={markets} setFilter={setFilter} />}
+          </View>
+
+          <View style={styles.driverCtaContainer}>
+            <View style={[styles.driverCtaTextContainer, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <Text style={[styles.driverCtaTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'تحتاج سائق معدات؟' : 'Need an equipment driver?'}</Text>
+              <Text style={[styles.driverCtaSubtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'ابحث عن سائق مناسب لمعدتك' : 'Find the right driver for your equipment'}</Text>
+            </View>
+            <View style={[styles.driverCtaActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <Pressable style={styles.driverCtaButton} onPress={() => router.push('/(tabs)/search?mode=drivers')}>
+                <Text style={styles.driverCtaButtonText}>{isRTL ? 'البحث عن سائق' : 'Find a Driver'}</Text>
+              </Pressable>
+              {isAuthenticated && user?.role !== 'driver' && (
+                <Pressable style={styles.driverCtaOutlineButton} onPress={() => router.push('/driver/requests')}>
+                  <Text style={styles.driverCtaOutlineButtonText}>{isRTL ? 'طلباتي' : 'My Requests'}</Text>
+                </Pressable>
+              )}
+            </View>
           </View>
 
           {loading ? (
@@ -284,6 +301,61 @@ const styles = StyleSheet.create({
   filterChipText: { color: Colors.textSecondary, fontSize: 12 },
   filterChipTextSelected: { color: Colors.primary, fontWeight: '700' as const },
   filterChipTextDisabled: { color: Colors.textMuted },
+  driverCtaContainer: {
+    marginHorizontal: 20,
+    marginTop: 24,
+    padding: 20,
+    backgroundColor: Colors.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: 16,
+  },
+  driverCtaTextContainer: {
+    gap: 4,
+  },
+  driverCtaTitle: {
+    fontSize: 18,
+    fontWeight: '700' as const,
+    color: Colors.textPrimary,
+  },
+  driverCtaSubtitle: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+  },
+  driverCtaActions: {
+    gap: 10,
+  },
+  driverCtaButton: {
+    backgroundColor: Colors.gold,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+  },
+  driverCtaButtonText: {
+    color: Colors.primary,
+    fontWeight: '700' as const,
+    fontSize: 15,
+  },
+  driverCtaOutlineButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: Colors.gold,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+  },
+  driverCtaOutlineButtonText: {
+    color: Colors.gold,
+    fontWeight: '700' as const,
+    fontSize: 15,
+  },
   featuredScroll: {
     paddingHorizontal: 20,
   },

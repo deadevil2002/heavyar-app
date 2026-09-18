@@ -25,8 +25,8 @@ describe('trusted completion primitives', () => {
   });
 
   test('driver responses omit private contact fields', () => {
-    const result = publicDriverProfile({ uid: 'd1', displayName: 'Driver', phone: '+966', email: 'private@example.test', city: 'Riyadh' });
-    expect(JSON.stringify(result)).toBe(JSON.stringify({ uid: 'd1', displayName: 'Driver', city: 'Riyadh' }));
+    const result = publicDriverProfile({ id: 'drv_opaque', uid: 'd1', displayName: 'Driver', phone: '+966', email: 'private@example.test', countryCode: 'SA', city: 'Riyadh', trustStatus: 'verified', rating: 5 });
+    expect(JSON.stringify(result)).toBe(JSON.stringify({ id: 'drv_opaque', displayName: 'Driver', countryCode: 'SA', city: 'Riyadh' }));
   });
 
   test('driver requests use a finite canonical transition graph', () => {

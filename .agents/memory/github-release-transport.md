@@ -14,3 +14,9 @@ For small release file sets, the SDK's Git tree API can accept inline content an
 **Why:** Parallel blob calls encountered a transient provider transport failure; one inline-content tree request produced the independently expected Git tree without changing authorization.
 
 **How to apply:** Use inline tree content as a bounded fallback, verify the resulting tree hash, and retain the same expected-parent and non-force branch protections.
+
+Build the expected release tree on the current remote base when local checkpoints contain unrelated attachments or screenshots.
+
+**Why:** Local checkpoint history can include workspace-only assets absent from the official branch. Comparing its entire tree or uploading every local difference would broaden a focused release.
+
+**How to apply:** Use a temporary Git index initialized from the verified remote tree, add only the reviewed release files, and compare that independently computed tree with the SDK-created tree before updating the branch.

@@ -1,5 +1,5 @@
 import { getFirebaseAuth } from './firebaseConfig';
-import { WORKER_BASE_URL } from '@/constants/worker';
+import { WORKER_BASE_URL } from '../constants/worker';
 import { listingLifecyclePath } from './listingContracts';
 import { sanitizeCreateListingPayload, sanitizeListingPayload } from './listingPayload';
 import { driverRequestActions } from './driverRequestContract';
@@ -13,7 +13,6 @@ export type ListingAvailability = AvailabilityRange & {
 };
 export type DriverPublicProfile = {
   id: string;
-  uid?: string;
   displayName?: string;
   photoUrl?: string;
   region?: string;
@@ -22,24 +21,41 @@ export type DriverPublicProfile = {
   equipmentTypes?: string[];
   yearsExperience?: number;
   description?: string;
-  availabilityStatus?: string;
+  availabilityStatus?: 'available' | 'busy' | 'offline';
   availableFrom?: string;
   availableUntil?: string;
-  trustStatus?: string;
-  active?: boolean;
-  rating?: number;
   countryCode?: GccCountryCode;
+};
+export type DriverOwnerProfile = DriverPublicProfile & {
+  active: boolean;
+  moderationStatus?: 'pending_review' | 'approved' | 'rejected' | 'suspended';
+  /** Legacy owner API field while moderationStatus is rolled out. */
+  trustStatus?: string;
   nativeCurrency?: string;
 };
 export type DriverSearchParams = {
+  q?: string;
+  countryCode?: string;
   cursor?: string;
   region?: string;
   city?: string;
   equipment?: string;
   availableFrom?: string;
   availableUntil?: string;
+  availabilityStatus?: string;
   trustStatus?: string;
   limit?: number;
+};
+
+export type DriverRequest = {
+  id: string;
+  status: 'open' | 'accepted' | 'declined' | 'closed' | string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+  driver: DriverPublicProfile | null;
+  requesterName: string;
+  isRequester: boolean;
 };
 
 export class WorkerError extends Error {
@@ -125,27 +141,45 @@ export function getCheckoutGateways() {
 }
 
 export function getDriverProfile() {
-  return request<{ success: true; profile: DriverPublicProfile | null }>('/api/drivers/profile');
+  return request<{ success: true; profile: DriverOwnerProfile | null }>('/api/drivers/profile');
 }
 
-export function saveDriverProfile(profile: Partial<DriverPublicProfile>) {
-  return request<{ success: true; profile: DriverPublicProfile }>('/api/drivers/profile', {
+export function saveDriverProfile(profile: Partial<DriverOwnerProfile>) {
+  return request<{ success: true; profile: DriverOwnerProfile }>('/api/drivers/profile', {
     method: 'PUT', body: JSON.stringify(profile),
   });
 }
 
-export function searchDrivers(params: DriverSearchParams = {}) {
+export function searchDrivers(params: DriverSearchParams = {}, signal?: AbortSignal) {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)); });
-  return request<{ success: true; drivers: DriverPublicProfile[]; nextCursor?: string }>(`/api/drivers/search?${query.toString()}`);
+  return request<{ success: true; drivers: DriverPublicProfile[]; nextCursor?: string }>(`/api/drivers/search?${query.toString()}`, { signal }, false);
 }
 
-export function createDriverRequest(payload: Record<string, unknown>) {
+export function getPublicDriverProfile(id: string, signal?: AbortSignal) {
+  return request<{ success: true; profile: DriverPublicProfile }>(`/api/drivers/public/${encodeURIComponent(id)}`, { signal }, false);
+}
+
+export function getDriverRequests(params: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) {
+  const query = new URLSearchParams();
+  if (params.cursor) query.set('cursor', params.cursor);
+  if (params.limit) query.set('limit', String(params.limit));
+  return request<{ success: true; requests: DriverRequest[]; nextCursor?: string }>(`/api/drivers/requests?${query.toString()}`, { signal });
+}
+
+export function createDriverRequest(payload: { driverId: string; notes: string }) {
   return request<{ success: true; requestId: string; request?: Record<string, unknown> }>('/api/drivers/requests', {
     method: 'POST', body: JSON.stringify(payload),
   });
 }
 
+export function transitionDriverRequestAction(id: string, action: 'accept' | 'decline' | 'close') {
+  return request<{ success: true; state: string }>(`/api/drivers/requests/${encodeURIComponent(id)}`, {
+    method: 'POST', body: JSON.stringify({ action }),
+  });
+}
+
+// Preserved for legacy if used by Worker/Admin tests
 export function transitionDriverRequest(id: string, state: 'accepted' | 'declined' | 'closed') {
   return request<{ success: true; state: string }>(`/api/drivers/requests/${encodeURIComponent(id)}`, {
     method: 'POST', body: JSON.stringify({ status: state }),
@@ -164,5 +198,6 @@ export async function transitionDriverRequestForUser(
       (state === 'closed' && !actions.canClose)) {
     throw new WorkerError('You cannot perform this request action', 403, 'REQUEST_ACTION_FORBIDDEN');
   }
-  return transitionDriverRequest(id, state);
+  const actionMap = { accepted: 'accept', declined: 'decline', closed: 'close' } as const;
+  return transitionDriverRequestAction(id, actionMap[state]);
 }

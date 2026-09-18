@@ -107,7 +107,7 @@ export function transitionDriverRequest(current: DriverRequestState, next: Drive
 }
 
 export function publicDriverProfile(profile: Record<string, unknown>): Record<string, unknown> {
-  const allowed = ['id', 'uid', 'displayName', 'photoUrl', 'region', 'city', 'equipmentTypes', 'yearsExperience', 'description', 'availabilityStatus', 'availableFrom', 'availableUntil', 'trustStatus', 'active', 'rating'];
+  const allowed = ['id', 'displayName', 'photoUrl', 'countryCode', 'region', 'city', 'equipmentTypes', 'yearsExperience', 'description', 'availabilityStatus', 'availableFrom', 'availableUntil'];
   return Object.fromEntries(allowed.filter((key) => profile[key] !== undefined).map((key) => [key, profile[key]]));
 }
 

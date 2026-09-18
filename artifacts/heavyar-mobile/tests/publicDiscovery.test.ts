@@ -124,6 +124,9 @@ describe('canonical mobile public discovery', () => {
     expect(context).toContain('useFocusEffect');
     expect(context).toContain('refetchInterval: 30_000');
     expect(context).toContain('selectPublicEquipment');
+    expect(source('../app/(tabs)/(home)/index.tsx')).toContain("router.push('/(tabs)/search?mode=equipment')");
+    expect(source('../app/(tabs)/search/index.tsx')).toContain("router.setParams({ mode: 'equipment' })");
+    expect(source('../app/(tabs)/search/index.tsx')).toContain("router.setParams({ mode: 'drivers' })");
   });
   it('keeps the Firestore query canonical without a createdAt existence restriction', () => {
     const service = source('../services/firestoreService.ts');

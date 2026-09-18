@@ -34,7 +34,9 @@ let refreshTokenRevokeOverride: ((env: Env, uid: string) => Promise<void>) | und
 let passwordVerifierOverride: ((email: string, password: string) => Promise<{ localId?: string }>) | undefined;
 let customTokenOverride: ((uid: string) => Promise<string>) | undefined;
 let phoneLoginLimiterOverride: ((phoneHash: string, ipHash: string) => Promise<boolean | null>) | undefined;
-  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries };
+let publicDriverLimiterOverride: ((scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) | undefined;
+let capturedDriverQueries: any[] | undefined;
+  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -42,7 +44,7 @@ const b64u = (v: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Ui
 const cors = (env: Env, origin: string | null) => {
   const allow = (env.CORS_ORIGINS || 'https://heavyar.app,https://www.heavyar.app,https://heavyar-app.web.app,https://heavyar-app.firebaseapp.com').split(',').map(x => x.trim());
   const trustedExpoPreview = /^https:\/\/[a-z0-9-]+(?:\.expo)?\.sisko\.replit\.dev$/i.test(origin || '');
-  return { 'Access-Control-Allow-Origin': allow.includes(origin || '') || trustedExpoPreview ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Correlation-ID', Vary: 'Origin' };
+  return { 'Access-Control-Allow-Origin': allow.includes(origin || '') || trustedExpoPreview ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Correlation-ID', Vary: 'Origin' };
 };
 const out = (env: Env, req: Request, value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', ...cors(env, req.headers.get('Origin')) } });
 const err = (message: string): never => { throw new Error(message); };
@@ -254,6 +256,36 @@ async function reconcileResendWebhookProjection(env: Env, collection: 'emailVeri
   }
 }
 async function hashedId(value: string): Promise<string> { return b64u(await crypto.subtle.digest('SHA-256', enc.encode(value))); }
+
+async function publicDriverRateLimit(req: Request, env: Env, scope: 'search' | 'detail'): Promise<boolean | null> {
+  const address = (req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For')?.split(',')[0] || 'unknown').trim().slice(0, 128);
+  const bucket = Math.floor(Date.now() / 60000), ipHash = await hashedId(`public-driver-ip:${address}`);
+  if (publicDriverLimiterOverride) return publicDriverLimiterOverride(scope, ipHash);
+  if (firestoreOverride) return true;
+  if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) return null;
+  const key = await hashedId(`${scope}:${ipHash}:${bucket}`), name = fullName(env, `publicDriverRateLimits/${key}`), limit = scope === 'search' ? 60 : 120;
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      if (!transaction) return null;
+      const result = await fs(env, ':batchGet', { method: 'POST', body: JSON.stringify({ documents: [name], transaction }) });
+      const found = (result || []).find((row: any) => row.found)?.found;
+      const count = Number(found ? decode(found).count : 0);
+      if (count >= limit) return false;
+      const write = { update: { name, fields: {
+        scope: { stringValue: scope }, bucket: { integerValue: String(bucket) }, count: { integerValue: String(count + 1) },
+        expiresAt: { timestampValue: new Date((bucket + 2) * 60000).toISOString() },
+      } }, ...(found ? { updateMask: { fieldPaths: ['scope', 'bucket', 'count', 'expiresAt'] } } : {}), currentDocument: found ? undefined : { exists: false } };
+      try {
+        await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes: [write], transaction }) });
+        return true;
+      } catch (error) {
+        if (attempt === 2) throw error;
+      }
+    }
+  } catch { return null; }
+  return null;
+}
 export type GccCountryCode = 'SA' | 'AE' | 'KW' | 'QA' | 'BH' | 'OM';
 export const GCC_COUNTRIES: Readonly<Record<GccCountryCode, {
   code: GccCountryCode; nameEn: string; nameAr: string; dialCode: string; currency: string; enabled: boolean;
@@ -1820,7 +1852,7 @@ async function registerProfile(req: Request, env: Env, u: User) {
     if (owner && owner.data.uid !== u.uid) return out(env, req, { success: false, error: 'Registration unavailable', errorCode: 'PHONE_ALREADY_IN_USE', safeToDeleteIdentity: true }, 409);
     writes.push({ update: { name: fullName(env, `phoneOwners/${ownerId}`), fields: { uid: { stringValue: u.uid }, phoneHash: { stringValue: ownerId }, createdAt: { timestampValue: now } } }, currentDocument: owner?.updateTime ? { updateTime: owner.updateTime } : { exists: false } });
   }
-   if (role === 'driver') writes.push({ update: { name: fullName(env, `driverProfiles/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, displayName: { stringValue: String(body.nameEn || body.nameAr || '') }, ...(phone ? { phone: { stringValue: phone } } : {}), region: { stringValue: String(body.region || '') }, city: { stringValue: String(body.city || '') }, customCity: { stringValue: customCity }, equipmentCategories: { arrayValue: { values: [] } }, experience: { integerValue: '0' }, active: { booleanValue: false }, verified: { booleanValue: false }, moderationStatus: { stringValue: 'pending_review' }, availabilityStatus: { stringValue: 'offline' }, trustStatus: { stringValue: 'unverified' }, createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, currentDocument: { exists: false } });
+   if (role === 'driver') writes.push({ update: { name: fullName(env, `driverProfiles/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, publicId: { stringValue: await canonicalDriverPublicId(u.uid) }, countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, displayName: { stringValue: String(body.nameEn || body.nameAr || '') }, ...(phone ? { phone: { stringValue: phone } } : {}), region: { stringValue: String(body.region || '') }, city: { stringValue: String(body.city || '') }, customCity: { stringValue: customCity }, equipmentCategories: { arrayValue: { values: [] } }, experience: { integerValue: '0' }, active: { booleanValue: false }, verified: { booleanValue: false }, moderationStatus: { stringValue: 'pending_review' }, availabilityStatus: { stringValue: 'offline' }, trustStatus: { stringValue: 'unverified' }, createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, currentDocument: { exists: false } });
   try { await commitWrites(env, writes); } catch {
     try {
       const after = await getDoc(env, 'users', u.uid);
@@ -2026,15 +2058,99 @@ async function publicGatewayDiscovery(req: Request, env: Env, u: User) {
   }
   return out(env, req, { success: true, gateways: enabled });
 }
+const DRIVER_PUBLIC_ID_PATTERN = /^drv_[A-Za-z0-9_-]{43}$/;
+
+async function canonicalDriverPublicId(uid: string): Promise<string> {
+  return `drv_${b64u(await crypto.subtle.digest('SHA-256', enc.encode(`heavyar:driver:${uid}`)))}`;
+}
+
+function driverDocument(name: string, data: any) {
+  return { name, data: data?.decoded || decode(data) };
+}
+
+async function driverQueryRows(env: Env, structuredQuery: any): Promise<Array<{ name: string; data: any }>> {
+  capturedDriverQueries?.push(structuredQuery);
+  if (firestoreOverride) {
+    const injected = firestoreOverride('__queries', 'driverProfiles');
+    const fixtures = Array.isArray(injected) ? injected : (() => {
+      const legacy = firestoreOverride!('driverProfiles', 'test');
+      return legacy ? [{ id: 'test', ...legacy }] : [];
+    })();
+    let rows = fixtures.map((item: any) => ({
+      name: item.name || fullName(env, `driverProfiles/${encodeURIComponent(String(item.id || 'test'))}`),
+      data: item.data || item,
+    })).sort((a: any, b: any) => a.name.localeCompare(b.name));
+    const filters = structuredQuery?.where?.compositeFilter?.filters || (structuredQuery?.where?.fieldFilter ? [structuredQuery.where] : []);
+    rows = rows.filter((row: any) => filters.every((filter: any) => {
+      const rule = filter.fieldFilter, field = rule?.field?.fieldPath, expected = val(rule?.value);
+      return !rule || (rule.op === 'EQUAL' && row.data[field] === expected);
+    }));
+    const start = structuredQuery?.startAt?.values?.[0]?.referenceValue;
+    if (start) rows = rows.filter((row: any) => row.name > start);
+    return rows.slice(0, Number(structuredQuery?.limit || rows.length));
+  }
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) });
+  return (result || []).filter((item: any) => item.document).map((item: any) => driverDocument(item.document.name, item.document));
+}
+
+async function ensureDriverPublicId(env: Env, uid: string, profile: any): Promise<string> {
+  const expected = await canonicalDriverPublicId(uid);
+  if (profile?.publicId === expected) return expected;
+  if (!firestoreOverride || firestoreWrites) {
+    await patchDoc(env, `driverProfiles/${encodeURIComponent(uid)}`, { publicId: { stringValue: expected } });
+  }
+  profile.publicId = expected;
+  return expected;
+}
+
+async function resolveDriverPublicId(env: Env, publicId: string): Promise<{ uid: string; profile: any } | null> {
+  if (!DRIVER_PUBLIC_ID_PATTERN.test(publicId)) return null;
+  const rows = await driverQueryRows(env, {
+    from: [{ collectionId: 'driverProfiles' }],
+    where: { fieldFilter: { field: { fieldPath: 'publicId' }, op: 'EQUAL', value: { stringValue: publicId } } },
+    limit: 2,
+  });
+  const matching = rows.filter(row => row.data.publicId === publicId);
+  if (matching.length !== 1) return null;
+  return { uid: decodeURIComponent(matching[0].name.split('/').pop() || ''), profile: matching[0].data };
+}
+
+function eligibleAccount(account: any, role: 'driver' | 'requester'): boolean {
+  if (!account || (account.accountStatus !== undefined && account.accountStatus !== 'active') || account.isActive === false ||
+      ['temporarily_suspended', 'permanently_suspended', 'suspended'].includes(String(account.suspensionStatus || '')) ||
+      ['restricted', 'deletion_requested', 'suspended'].includes(String(account.accountStatus || ''))) return false;
+  return role === 'driver' ? account.role === 'driver' : ['customer', 'provider'].includes(String(account.role));
+}
+
+async function emailEligible(env: Env, verified: unknown, action: 'rental' | 'driver'): Promise<boolean> {
+  const policy = await emailVerificationPolicy(env);
+  const required = action === 'rental' ? policy.requireBeforeRentalRequest : policy.requireBeforeDriverActivation;
+  return !policy.enabled || !required || verified === true;
+}
+
+async function eligibleDriver(env: Env, uid: string, profile: any): Promise<boolean> {
+  if (!profile || profile.active !== true || profile.moderationStatus !== 'approved') return false;
+  const account = await getDoc(env, 'users', uid);
+  if (!eligibleAccount(account, 'driver') || !await emailEligible(env, account.emailVerified, 'driver')) return false;
+  const country = await countrySettings(env, String(profile.countryCode || account.countryCode || ''));
+  return country.enabled === true && country.marketplaceAvailable === true && country.code === String(profile.countryCode || '').toUpperCase();
+}
+
+async function ownerDriverProfile(env: Env, uid: string, profile: any) {
+  const id = await ensureDriverPublicId(env, uid, profile);
+  return { ...publicDriverProfile({ ...profile, id }), active: profile.active === true, moderationStatus: String(profile.moderationStatus || 'pending_review') };
+}
+
 async function driverProfile(req: Request, env: Env, u: User) {
   const id = u.uid, raw = await getRawDoc(env, 'driverProfiles', id);
-  if (req.method === 'GET') return out(env, req, { success: true, profile: raw ? publicDriverProfile({ id, ...raw.data }) : null });
+  if (req.method === 'GET') return out(env, req, { success: true, profile: raw ? await ownerDriverProfile(env, id, raw.data) : null });
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid driver profile' }, 400);
   if (raw && ['suspended', 'rejected'].includes(String(raw.data.moderationStatus)) && !u.admin) return out(env, req, { success: false, error: 'DRIVER_MODERATION_LOCKED' }, 403);
   const allowed = ['displayName', 'photoUrl', 'countryCode', 'region', 'city', 'equipmentTypes', 'yearsExperience', 'description', 'availabilityStatus', 'availableFrom', 'availableUntil'];
   if (Object.keys(body).some((key) => !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported driver profile field' }, 400);
   const account = await getDoc(env, 'users', id);
+  if (!u.admin && !eligibleAccount(account, 'driver')) return out(env, req, { success: false, error: 'Driver profile unavailable for this account' }, 403);
   const country = await countrySettings(env, String(body.countryCode || account?.countryCode || raw?.data?.countryCode || 'SA'));
   if (!country.enabled || !country.providerOnboardingAvailable) return out(env, req, { success: false, error: 'Country driver onboarding unavailable' }, 400);
   if ((raw?.data?.moderationStatus === 'approved' || body.availabilityStatus === 'available') && !u.admin) {
@@ -2051,9 +2167,10 @@ async function driverProfile(req: Request, env: Env, u: User) {
   }
   const fields = Object.fromEntries(Object.entries({
     uid: id,
+    publicId: await canonicalDriverPublicId(id),
     countryCode: country.code,
     currency: country.currency,
-    active: raw?.data?.moderationStatus === 'approved',
+    active: raw?.data?.active === true && raw?.data?.moderationStatus === 'approved',
     moderationStatus: raw?.data?.moderationStatus || 'pending_review',
     nameAr: String(account?.nameAr || raw?.data?.nameAr || ''),
     nameEn: String(account?.nameEn || raw?.data?.nameEn || ''),
@@ -2063,58 +2180,186 @@ async function driverProfile(req: Request, env: Env, u: User) {
     ...patch,
     updatedAt: new Date().toISOString(),
   }).map(([k, v]) => [k, firestoreValue(v)]));
-  if (raw) await patchDoc(env, `driverProfiles/${encodeURIComponent(id)}`, fields); else await createDoc(env, `driverProfiles/${encodeURIComponent(id)}`, fields);
-  return out(env, req, { success: true, profile: publicDriverProfile({ id, ...raw?.data, ...patch, active: raw?.data?.moderationStatus === 'approved' }) });
+  try {
+    if (raw) await compareAndSwap(env, `driverProfiles/${encodeURIComponent(id)}`, raw.updateTime!, fields);
+    else await createDoc(env, `driverProfiles/${encodeURIComponent(id)}`, fields);
+  } catch (error) {
+    if (String(error).includes('precondition')) return out(env, req, { success: false, error: 'Driver profile changed; refresh and retry' }, 409);
+    throw error;
+  }
+  return out(env, req, { success: true, profile: await ownerDriverProfile(env, id, { ...raw?.data, ...patch, publicId: await canonicalDriverPublicId(id), active: raw?.data?.active === true && raw?.data?.moderationStatus === 'approved', moderationStatus: raw?.data?.moderationStatus || 'pending_review' }) });
 }
-async function driverSearch(req: Request, env: Env, u: User) {
-  const url = new URL(req.url), region = url.searchParams.get('region'), city = url.searchParams.get('city'), equipmentType = url.searchParams.get('equipment'), requestedFrom = url.searchParams.get('availableFrom'), requestedUntil = url.searchParams.get('availableUntil'), trustStatus = url.searchParams.get('trustStatus'), cursor = url.searchParams.get('cursor');
+async function driverSearch(req: Request, env: Env) {
+  const rate = await publicDriverRateLimit(req, env, 'search');
+  if (rate === null) return out(env, req, { success: false, error: 'Driver discovery temporarily unavailable' }, 503);
+  if (!rate) return out(env, req, { success: false, error: 'Too many requests' }, 429);
+  const url = new URL(req.url), countryCode = String(url.searchParams.get('countryCode') || 'SA').toUpperCase(), q = url.searchParams.get('q'), region = url.searchParams.get('region'), city = url.searchParams.get('city'), equipmentType = url.searchParams.get('equipment'), availabilityStatus = url.searchParams.get('availabilityStatus'), requestedFrom = url.searchParams.get('availableFrom'), requestedUntil = url.searchParams.get('availableUntil'), trustStatus = url.searchParams.get('trustStatus'), cursor = url.searchParams.get('cursor');
   const rawLimit = url.searchParams.get('limit'), limit = rawLimit === null ? 20 : Number(rawLimit);
-  const unknown = [...url.searchParams.keys()].filter((key) => !['equipment', 'availableFrom', 'availableUntil', 'trustStatus', 'region', 'city', 'cursor', 'limit'].includes(key));
+  const unknown = [...url.searchParams.keys()].filter((key) => !['countryCode', 'q', 'equipment', 'availabilityStatus', 'availableFrom', 'availableUntil', 'trustStatus', 'region', 'city', 'cursor', 'limit'].includes(key));
   if (unknown.length) return out(env, req, { success: false, error: 'Unsupported driver search filter' }, 400);
   const safeText = (value: string | null) => value === null || (value.length >= 1 && value.length <= 120 && !/[\u0000-\u001f\u007f]/.test(value) && value.trim() === value);
-  if (!safeText(region) || !safeText(city) || !safeText(equipmentType) || !Number.isInteger(limit) || limit < 1 || limit > 50) return out(env, req, { success: false, error: 'Invalid driver search filter' }, 400);
+  if (!GCC_COUNTRIES[countryCode as GccCountryCode] || !safeText(q) || !safeText(region) || !safeText(city) || !safeText(equipmentType) || !safeText(availabilityStatus) || !Number.isInteger(limit) || limit < 1 || limit > 50) return out(env, req, { success: false, error: 'Invalid driver search filter' }, 400);
   if (trustStatus !== null && !['unverified', 'pending', 'verified', 'rejected', 'expired', 'manual_review', 'restricted'].includes(trustStatus)) return out(env, req, { success: false, error: 'Invalid trust status' }, 400);
   const dateOnly = (value: string | null) => value === null || /^\d{4}-\d{2}-\d{2}$/.test(value);
   if (!dateOnly(requestedFrom) || !dateOnly(requestedUntil) || (requestedFrom && requestedUntil && requestedFrom > requestedUntil)) return out(env, req, { success: false, error: 'Invalid availability range' }, 400);
+  const market = await countrySettings(env, countryCode);
+  if (!market.enabled || !market.marketplaceAvailable) return out(env, req, { success: true, drivers: [], nextCursor: undefined });
   let cursorReference: string | undefined;
   if (cursor) {
-    try { cursorReference = new TextDecoder().decode(Uint8Array.from(atob(cursor.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - cursor.length % 4) % 4)), (c) => c.charCodeAt(0))); } catch { return out(env, req, { success: false, error: 'Invalid cursor' }, 400); }
-    if (!cursorReference.startsWith(fullName(env, 'driverProfiles/'))) return out(env, req, { success: false, error: 'Invalid cursor' }, 400);
+    const resolved = await resolveDriverPublicId(env, cursor);
+    if (!resolved) return out(env, req, { success: false, error: 'Invalid cursor' }, 400);
+    cursorReference = fullName(env, `driverProfiles/${encodeURIComponent(resolved.uid)}`);
   }
-  const query: any = { from: [{ collectionId: 'driverProfiles' }], where: { compositeFilter: { op: 'AND', filters: [
-    { fieldFilter: { field: { fieldPath: 'active' }, op: 'EQUAL', value: { booleanValue: true } } },
-    { fieldFilter: { field: { fieldPath: 'moderationStatus' }, op: 'EQUAL', value: { stringValue: 'approved' } } },
-    ...(region ? [{ fieldFilter: { field: { fieldPath: 'region' }, op: 'EQUAL', value: { stringValue: region } } }] : []),
-    ...(city ? [{ fieldFilter: { field: { fieldPath: 'city' }, op: 'EQUAL', value: { stringValue: city } } }] : []),
-    ...(trustStatus ? [{ fieldFilter: { field: { fieldPath: 'trustStatus' }, op: 'EQUAL', value: { stringValue: trustStatus } } }] : []),
-  ] } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: limit + 1 };
-  if (cursorReference) query.startAt = { before: false, values: [{ referenceValue: cursorReference }] };
-  const result = firestoreOverride ? [{ document: { name: 'driverProfiles/test', decoded: firestoreOverride('driverProfiles', 'test') } }] : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: query }) });
-  const rows = (result || []).filter((x: any) => x.document), drivers = rows.map((x: any) => {
-    const raw = x.document.decoded || decode(x.document), types = Array.isArray(raw.equipmentTypes) ? raw.equipmentTypes : [];
-    const startsInRange = !requestedFrom || (raw.availableFrom && String(raw.availableFrom) <= requestedFrom);
-    const endsInRange = !requestedUntil || (raw.availableUntil && String(raw.availableUntil) >= requestedUntil);
-    return equipmentType && !types.includes(equipmentType) || !startsInRange || !endsInRange ? null : publicDriverProfile({ id: String(x.document.name).split('/').pop(), ...raw });
-  }).filter(Boolean).slice(0, limit);
-  return out(env, req, { success: true, drivers, nextCursor: rows.length > limit ? b64u(enc.encode(rows[limit - 1].document.name)) : undefined });
+  const drivers: any[] = [];
+  let pagesScanned = 0, lastBatchFull = false, lastScanned: { uid: string; profile: any } | undefined;
+  for (let page = 0; page < 20 && drivers.length <= limit; page += 1) {
+    const query: any = { from: [{ collectionId: 'driverProfiles' }],
+      where: { fieldFilter: { field: { fieldPath: 'active' }, op: 'EQUAL', value: { booleanValue: true } } },
+      orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 50 };
+    if (cursorReference) query.startAt = { before: false, values: [{ referenceValue: cursorReference }] };
+    const rows = await driverQueryRows(env, query);
+    if (!rows.length) break;
+    pagesScanned += 1;
+    lastBatchFull = rows.length === 50;
+    for (const row of rows) {
+      const uid = decodeURIComponent(row.name.split('/').pop() || ''), raw = row.data, types = Array.isArray(raw.equipmentTypes) ? raw.equipmentTypes : [];
+      cursorReference = row.name;
+      lastScanned = { uid, profile: raw };
+      const matches = raw.countryCode === countryCode && (!region || raw.region === region) && (!city || raw.city === city) &&
+        (!q || String(raw.displayName || '').toLocaleLowerCase().includes(q.toLocaleLowerCase())) &&
+        (!equipmentType || types.includes(equipmentType)) && (!availabilityStatus || raw.availabilityStatus === availabilityStatus) &&
+        (!trustStatus || raw.trustStatus === trustStatus) &&
+        (!requestedFrom || (raw.availableFrom && String(raw.availableFrom) <= requestedFrom)) &&
+        (!requestedUntil || (raw.availableUntil && String(raw.availableUntil) >= requestedUntil));
+      if (matches && await eligibleDriver(env, uid, raw)) {
+        const id = await ensureDriverPublicId(env, uid, raw);
+        drivers.push(publicDriverProfile({ ...raw, id }));
+        if (drivers.length > limit) break;
+      }
+    }
+    if (rows.length < 50) break;
+  }
+  const hasMore = drivers.length > limit;
+  const visible = drivers.slice(0, limit);
+  const budgetExhausted = pagesScanned === 20 && lastBatchFull && !hasMore;
+  const continuation = hasMore
+    ? String(visible[visible.length - 1]?.id)
+    : budgetExhausted && lastScanned
+      ? await ensureDriverPublicId(env, lastScanned.uid, lastScanned.profile)
+      : undefined;
+  return out(env, req, { success: true, drivers: visible, nextCursor: continuation });
 }
+
+async function publicDriverDetail(req: Request, env: Env, id: string) {
+  const rate = await publicDriverRateLimit(req, env, 'detail');
+  if (rate === null) return out(env, req, { success: false, error: 'Driver discovery temporarily unavailable' }, 503);
+  if (!rate) return out(env, req, { success: false, error: 'Too many requests' }, 429);
+  const resolved = await resolveDriverPublicId(env, id);
+  if (!resolved || !await eligibleDriver(env, resolved.uid, resolved.profile)) return out(env, req, { success: false, error: 'Not found' }, 404);
+  return out(env, req, { success: true, profile: publicDriverProfile({ ...resolved.profile, id }) });
+}
+
+async function driverRequestRows(env: Env, field: 'requesterUid' | 'driverUid', uid: string, limit: number, cursor?: { id: string; createdAt: string }): Promise<Array<{ id: string; data: any; updateTime?: string }>> {
+  const query: any = {
+    from: [{ collectionId: 'driverRequests' }],
+    where: { fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: { stringValue: uid } } },
+    orderBy: [{ field: { fieldPath: '__name__' }, direction: 'DESCENDING' }],
+    limit,
+  };
+  if (cursor) query.startAt = { before: false, values: [{ referenceValue: fullName(env, `driverRequests/${encodeURIComponent(cursor.id)}`) }] };
+  capturedDriverQueries?.push(query);
+  if (firestoreOverride) {
+    const injected = firestoreOverride('__queries', 'driverRequests');
+    let rows = (Array.isArray(injected) ? injected : []).filter((item: any) => (item.data || item)[field] === uid).map((item: any) => ({
+      id: String(item.id || item.name?.split('/').pop() || ''),
+      data: item.data || item,
+      updateTime: item.updateTime || 'test-update-time',
+    })).sort((a: any, b: any) => b.id.localeCompare(a.id));
+    if (cursor) rows = rows.filter((row: any) => row.id < cursor.id);
+    return rows.slice(0, limit);
+  }
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    ...query,
+  } }) });
+  return (result || []).filter((item: any) => item.document).map((item: any) => ({
+    id: decodeURIComponent(String(item.document.name).split('/').pop() || ''),
+    data: decode(item.document),
+    updateTime: item.document.updateTime,
+  }));
+}
+
+async function driverRequestList(req: Request, env: Env, u: User) {
+  const url = new URL(req.url), rawLimit = url.searchParams.get('limit'), limit = rawLimit === null ? 20 : Number(rawLimit), cursorId = url.searchParams.get('cursor');
+  if ([...url.searchParams.keys()].some(key => !['limit', 'cursor'].includes(key)) || !Number.isInteger(limit) || limit < 1 || limit > 50 ||
+      cursorId !== null && !/^[A-Za-z0-9_-]{1,128}$/.test(cursorId)) return out(env, req, { success: false, error: 'Invalid driver request pagination' }, 400);
+  const account = await getDoc(env, 'users', u.uid);
+  const asDriver = eligibleAccount(account, 'driver');
+  if (!asDriver && !eligibleAccount(account, 'requester')) return out(env, req, { success: false, error: 'Driver requests unavailable for this account' }, 403);
+  if (!await emailEligible(env, account.emailVerified ?? u.emailVerified, asDriver ? 'driver' : 'rental')) return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403);
+  let cursor: { id: string; createdAt: string } | undefined;
+  if (cursorId) {
+    const raw = await getRawDoc(env, 'driverRequests', cursorId);
+    const field = asDriver ? 'driverUid' : 'requesterUid';
+    if (!raw?.data || raw.data[field] !== u.uid) return out(env, req, { success: false, error: 'Invalid driver request cursor' }, 400);
+    cursor = { id: cursorId, createdAt: String(raw.data.createdAt || '') };
+  }
+  const rows = await driverRequestRows(env, asDriver ? 'driverUid' : 'requesterUid', u.uid, limit + 1, cursor);
+  const requests = [];
+  for (const row of rows.slice(0, limit)) {
+    const driverRaw = await getDoc(env, 'driverProfiles', String(row.data.driverUid || ''));
+    const driverIsPublic = driverRaw && await eligibleDriver(env, String(row.data.driverUid), driverRaw);
+    const driverId = driverIsPublic ? await ensureDriverPublicId(env, String(row.data.driverUid), driverRaw) : null;
+    const requester = await getDoc(env, 'users', String(row.data.requesterUid || ''));
+    requests.push({
+      id: row.id,
+      status: String(row.data.status || ''),
+      notes: String(row.data.notes || ''),
+      createdAt: row.data.createdAt,
+      updatedAt: row.data.updatedAt,
+      driver: driverIsPublic ? publicDriverProfile({ ...driverRaw, id: driverId }) : null,
+      requesterName: String(requester?.nameEn || requester?.nameAr || requester?.displayName || ''),
+      isRequester: row.data.requesterUid === u.uid,
+    });
+  }
+  return out(env, req, { success: true, requests, nextCursor: rows.length > limit ? rows[limit - 1].id : undefined });
+}
+
 async function driverRequest(req: Request, env: Env, u: User, id?: string) {
   if (id) {
     const raw = await getRawDoc(env, 'driverRequests', id);
     if (!raw?.data || (raw.data.requesterUid !== u.uid && raw.data.driverUid !== u.uid)) return out(env, req, { success: false, error: 'Not found' }, 404);
-    const body: any = await req.json().catch(() => null), next = String(body?.status || '');
+    const account = await getDoc(env, 'users', u.uid);
+    const isDriver = raw.data.driverUid === u.uid;
+    if (!eligibleAccount(account, isDriver ? 'driver' : 'requester') ||
+        !await emailEligible(env, account.emailVerified ?? u.emailVerified, isDriver ? 'driver' : 'rental')) {
+      return out(env, req, { success: false, error: 'Driver request action unavailable for this account' }, 403);
+    }
+    const body: any = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['action', 'status'].includes(key))) return out(env, req, { success: false, error: 'Invalid driver request action' }, 400);
+    const action = String(body.action || ''), next = action === 'accept' ? 'accepted' : action === 'decline' ? 'declined' : action === 'close' ? 'closed' : String(body.status || '');
     const driverAction = ['accepted', 'declined'].includes(next);
     if (driverAction && raw.data.driverUid !== u.uid) return out(env, req, { success: false, error: 'Only assigned driver may respond' }, 403);
     if (next === 'closed' && raw.data.requesterUid !== u.uid) return out(env, req, { success: false, error: 'Only requester may close' }, 403);
     if (!transitionDriverRequest(String(raw.data.status) as any, next as any)) return out(env, req, { success: false, error: 'Invalid request transition' }, 409);
-    await compareAndSwap(env, `driverRequests/${encodeURIComponent(id)}`, raw.updateTime!, { status: { stringValue: next }, updatedAt: { timestampValue: new Date().toISOString() } });
+    try {
+      await compareAndSwap(env, `driverRequests/${encodeURIComponent(id)}`, raw.updateTime!, { status: { stringValue: next }, updatedAt: { timestampValue: new Date().toISOString() } });
+    } catch (error) {
+      if (String(error).includes('precondition')) return out(env, req, { success: false, error: 'Driver request changed' }, 409);
+      throw error;
+    }
     return out(env, req, { success: true, requestId: id, status: next });
   }
-  const body: any = await req.json().catch(() => null), driverUid = String(body?.driverUid || '');
-  const driver = driverUid && driverUid !== u.uid ? await getDoc(env, 'driverProfiles', driverUid) : null;
-  if (!driver || driver.active !== true || driver.moderationStatus !== 'approved' || ['suspended', 'temporarily_suspended', 'permanently_suspended'].includes(String(driver.suspensionStatus))) return out(env, req, { success: false, error: 'Invalid driver' }, 400);
+  const body: any = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['driverId', 'notes'].includes(key))) return out(env, req, { success: false, error: 'Invalid driver request' }, 400);
+  const requester = await getDoc(env, 'users', u.uid);
+  if (!eligibleAccount(requester, 'requester')) return out(env, req, { success: false, error: 'Driver requests require an active customer or provider account' }, 403);
+  if (!await emailEligible(env, requester.emailVerified ?? u.emailVerified, 'rental')) return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403);
+  const resolved = await resolveDriverPublicId(env, String(body.driverId || ''));
+  if (!resolved || resolved.uid === u.uid || !await eligibleDriver(env, resolved.uid, resolved.profile)) return out(env, req, { success: false, error: 'Invalid driver' }, 400);
+  const notes = String(body.notes || '');
+  if (notes.length > 1000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(notes)) return out(env, req, { success: false, error: 'Invalid driver request notes' }, 400);
   const requestId = crypto.randomUUID(), now = new Date().toISOString();
-  await createDoc(env, `driverRequests/${requestId}`, { requesterUid: { stringValue: u.uid }, driverUid: { stringValue: driverUid }, status: { stringValue: 'open' }, notes: firestoreValue(String(body?.notes || '').slice(0, 1000)), createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } });
+  await createDoc(env, `driverRequests/${requestId}`, { requesterUid: { stringValue: u.uid }, driverUid: { stringValue: resolved.uid }, status: { stringValue: 'open' }, notes: firestoreValue(notes), createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } });
   return out(env, req, { success: true, requestId, status: 'open' }, 201);
 }
 export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
@@ -2150,8 +2395,11 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       const availabilityCheckMatch = path.match(/^\/api\/listings\/([^/]+)\/availability\/check$/);
       if (availabilityCheckMatch && req.method === 'POST') return await availabilityCheck(req, env, await authenticatedUser(req, env), decodeURIComponent(availabilityCheckMatch[1]));
       if (path === '/api/checkout/gateways' && req.method === 'GET') return await publicGatewayDiscovery(req, env, await authenticatedUser(req, env));
-      if (path === '/api/drivers/profile' && (req.method === 'GET' || req.method === 'PUT')) return await driverProfile(req, env, await authenticatedUser(req, env));
-      if (path === '/api/drivers/search' && req.method === 'GET') return await driverSearch(req, env, await authenticatedUser(req, env));
+       if (path === '/api/drivers/profile' && (req.method === 'GET' || req.method === 'PUT')) return await driverProfile(req, env, await authenticatedUser(req, env));
+       if (path === '/api/drivers/search' && req.method === 'GET') return await driverSearch(req, env);
+       const publicDriverMatch = path.match(/^\/api\/drivers\/public\/([^/]+)$/);
+       if (publicDriverMatch && req.method === 'GET') return await publicDriverDetail(req, env, decodeURIComponent(publicDriverMatch[1]));
+       if (path === '/api/drivers/requests' && req.method === 'GET') return await driverRequestList(req, env, await authenticatedUser(req, env));
       if (path === '/api/drivers/requests' && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env));
       const driverRequestMatch = path.match(/^\/api\/drivers\/requests\/([^/]+)$/);
       if (driverRequestMatch && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env), decodeURIComponent(driverRequestMatch[1]));

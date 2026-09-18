@@ -63,6 +63,9 @@ export default function RequestsScreen() {
         <View style={styles.headerRow}>
           <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>{t('my_requests')}</Text>
         </View>
+        <Pressable accessibilityRole="button" testID="driver-requests-link" style={styles.driverRequestsLink} onPress={() => router.push('/driver/requests')}>
+          <Text style={styles.driverRequestsText}>{isRTL ? 'طلبات السائقين' : 'Driver Requests'}</Text>
+        </Pressable>
 
         <View style={[styles.tabBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
           <Pressable
@@ -159,6 +162,11 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 8,
   },
+  driverRequestsLink: {
+    marginHorizontal: 20, marginBottom: 12, padding: 12, borderRadius: 12,
+    borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surface, alignItems: 'center',
+  },
+  driverRequestsText: { color: Colors.gold, fontSize: 14, fontWeight: '700' },
   title: {
     fontSize: 24,
     fontWeight: '700' as const,
