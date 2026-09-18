@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAppState } from '@/lib/app-state';
+import { Checkbox } from '@/components/ui/checkbox';
 
 export type OperationsColumn<T> = {
   key: string;
@@ -30,6 +31,10 @@ type Props<T extends { id: string }> = {
   onSort?: (key: string) => void;
   toolbar?: ReactNode;
   actionLabel?: string;
+  selectable?: boolean;
+  selectedIds?: Set<string>;
+  onSelect?: (id: string, checked: boolean) => void;
+  onSelectPage?: (checked: boolean) => void;
 };
 
 export function OperationsTable<T extends { id: string }>({
@@ -49,9 +54,18 @@ export function OperationsTable<T extends { id: string }>({
   onSort,
   toolbar,
   actionLabel = 'View details',
+  selectable,
+  selectedIds = new Set(),
+  onSelect,
+  onSelectPage,
 }: Props<T>) {
   const { language } = useAppState();
   const rtl = language === 'ar';
+
+  const pageIds = items.map(i => i.id);
+  const isAllPageSelected = items.length > 0 && items.every(i => selectedIds.has(i.id));
+  const isSomePageSelected = items.some(i => selectedIds.has(i.id)) && !isAllPageSelected;
+
   return (
     <div className="space-y-3">
       {(onSearch || toolbar) && (
@@ -72,6 +86,15 @@ export function OperationsTable<T extends { id: string }>({
         <Table>
           <TableHeader className="bg-muted/50">
             <TableRow className="border-border hover:bg-transparent">
+              {selectable && (
+                <TableHead className="w-12 text-center">
+                  <Checkbox
+                    checked={isAllPageSelected ? true : (isSomePageSelected ? 'indeterminate' : false)}
+                    onCheckedChange={(checked) => onSelectPage?.(checked === true)}
+                    aria-label={rtl ? 'تحديد الصفحة' : 'Select page'}
+                  />
+                </TableHead>
+              )}
               {columns.map((column) => (
                 <TableHead key={column.key} className={`font-semibold text-foreground whitespace-nowrap ${column.className || ''}`}>
                   {column.sortable && onSort ? (
@@ -86,11 +109,20 @@ export function OperationsTable<T extends { id: string }>({
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={columns.length + (onDetails ? 1 : 0)} className="py-10 text-center text-muted-foreground"><Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" />Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={columns.length + (onDetails ? 1 : 0) + (selectable ? 1 : 0)} className="py-10 text-center text-muted-foreground"><Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" />Loading…</TableCell></TableRow>
             ) : items.length === 0 ? (
-              <TableRow><TableCell colSpan={columns.length + (onDetails ? 1 : 0)} className="py-10 text-center text-muted-foreground">{emptyLabel}</TableCell></TableRow>
+              <TableRow><TableCell colSpan={columns.length + (onDetails ? 1 : 0) + (selectable ? 1 : 0)} className="py-10 text-center text-muted-foreground">{emptyLabel}</TableCell></TableRow>
             ) : items.map((item) => (
               <TableRow key={item.id} className="border-border border-b last:border-0 hover:bg-muted/20">
+                {selectable && (
+                  <TableCell className="w-12 text-center">
+                    <Checkbox
+                      checked={selectedIds.has(item.id)}
+                      onCheckedChange={(checked) => onSelect?.(item.id, checked === true)}
+                      aria-label={rtl ? `تحديد ${item.id}` : `Select ${item.id}`}
+                    />
+                  </TableCell>
+                )}
                 {columns.map((column) => <TableCell key={column.key} className={column.className}>{column.render(item)}</TableCell>)}
                 {onDetails && <TableCell className="text-end"><Button type="button" variant="ghost" size="sm" onClick={() => onDetails(item)}><Eye className="me-2 h-4 w-4" />{rtl ? 'التفاصيل' : actionLabel}</Button></TableCell>}
               </TableRow>

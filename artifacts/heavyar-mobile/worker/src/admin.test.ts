@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import worker, { __test, type Env } from './index';
 import { __adminTest, handleAdmin, handleAdminDocument, AdminDocumentUnavailableError, evaluateLegacyEquipment } from './admin';
-import { claimSyncWrite, processStaffClaimSync } from './admin';
+import { claimSyncWrite, processStaffClaimSync, processDeletionJobs } from './admin';
 
 const env = { CORS_ORIGINS: 'http://localhost' } as Env;
 const request = (path: string, body?: unknown, headers: Record<string, string> = {}) =>
@@ -99,6 +99,207 @@ describe('admin authorization and operational boundary', () => {
   test('admin endpoints reject unauthenticated requests', async () => {
     expect((await worker.fetch(request('/api/admin/session'), env)).status).toBe(401);
     expect((await worker.fetch(request('/api/admin/overview'), env)).status).toBe(401);
+  });
+
+  test('user target resolution accepts q/accountStatus/boolean emailVerified and rejects over-cap filters explicitly', async () => {
+    __adminTest.setFirestore((collection, id) => collection === 'users' && id === 'u-1'
+      ? { email: 'a@example.test', accountStatus: 'active', emailVerified: false }
+      : null);
+    __adminTest.setQuery((collection) => collection === 'users'
+      ? [{ name: 'projects/p/databases/(default)/documents/users/u-1', data: { email: 'a@example.test', accountStatus: 'active', emailVerified: false } }]
+      : []);
+    const admin = { uid: 'support-1', admin: true, role: 'admin' as const, permissionRole: 'support', testInjected: true as const };
+    const preview = await handleAdmin(request('/api/admin/email-verification/reminders/preview', { filters: { q: 'example', accountStatus: 'active', emailVerified: false } }), env, admin) as any;
+    expect(preview.success).toBe(true);
+    expect(preview.targeted).toBe(1);
+    const tooMany = await handleAdmin(request('/api/admin/email-verification/reminders/preview', { uids: Array.from({ length: 5001 }, (_, i) => `u-${i}`) }), env, admin) as any;
+    expect(tooMany.status).toBe(413);
+    expect(tooMany.errorCode).toBe('too_many_targets');
+  });
+
+  test('canonical owner is protected while owner governance actor may preview normal targets', async () => {
+    __adminTest.setFirestore((collection, id) => {
+      if (collection === 'heavyarConfig' && id === 'owner') return { ownerUid: 'owner-1' };
+      if (collection === 'users' && id === 'owner-1') return { role: 'user' };
+      if (collection === 'users' && id === 'customer-1') return { role: 'user', email: 'customer@example.test' };
+      return null;
+    });
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    __adminTest.setQuery(() => []);
+    const owner = { uid: 'owner-1', admin: true, role: 'super_admin' as const, permissionRole: 'owner', testInjected: true as const };
+    const preview = await handleAdmin(request('/api/admin/users/deletion-preview', { uids: ['owner-1', 'customer-1'] }), env, owner) as any;
+    expect(preview.success).toBe(true);
+    expect(preview.protected).toBe(1);
+    expect(preview.eligible).toBe(1);
+    __adminTest.setFirestore((collection, id) => {
+      if (collection === 'deletionPreviewSnapshots' && id === preview.previewToken) return { actorUid: owner.uid, uids: ['owner-1', 'customer-1'], expiresAt: new Date(Date.now() + 60_000).toISOString(), consumed: false };
+      if (collection === 'heavyarConfig' && id === 'owner') return { ownerUid: 'owner-1' };
+      if (collection === 'users' && id === 'owner-1') return { role: 'user' };
+      if (collection === 'users' && id === 'customer-1') return { role: 'user', email: 'customer@example.test' };
+      return null;
+    });
+    const enqueue = await handleAdmin(request('/api/admin/users/deletion-jobs', { previewToken: preview.previewToken, confirmation: 'DELETE 2 USERS', reason: 'qa cleanup' }), env, owner) as any;
+    expect(enqueue.success).toBe(true);
+    expect(enqueue.total).toBe(1);
+    expect(JSON.stringify(commits).includes('user:owner-1')).toBe(false);
+  });
+
+  test('active staff and low-privilege actors are protected and confirmation is exact', async () => {
+    __adminTest.setFirestore((collection, id) => {
+      if (collection === 'heavyarConfig' && id === 'owner') return { ownerUid: 'owner-1' };
+      if (collection === 'users' && id === 'staff-1') return { role: 'user' };
+      if (collection === 'users' && id === 'customer-1') return { role: 'user' };
+      if (collection === 'staffMembers' && id === 'staff-1') return { status: 'active', role: 'support' };
+      return null;
+    });
+    __adminTest.setQuery(() => []);
+    __adminTest.captureCommits([]);
+    const support = { uid: 'support-1', admin: true, role: 'admin' as const, permissionRole: 'support', testInjected: true as const };
+    const denied = await handleAdmin(request('/api/admin/users/deletion-preview', { uids: ['customer-1'] }), env, support) as any;
+    expect(denied.status).toBe(403);
+    const owner = { uid: 'owner-1', admin: true, role: 'super_admin' as const, permissionRole: 'owner', testInjected: true as const };
+    const preview = await handleAdmin(request('/api/admin/users/deletion-preview', { uids: ['staff-1', 'customer-1'] }), env, owner) as any;
+    expect(preview.protected).toBe(1);
+    const wrongConfirmation = await handleAdmin(request('/api/admin/users/deletion-jobs', { uids: ['staff-1', 'customer-1'], confirmation: 'DELETE 1 USERS', reason: 'cleanup' }), env, owner) as any;
+    expect(wrongConfirmation.status).toBe(400);
+  });
+
+  test('reminder preview classifies missing email and cooldown without sending', async () => {
+    __adminTest.setFirestore((collection, id) => {
+      if (collection === 'users' && id === 'missing-email') return { emailVerified: false };
+      if (collection === 'users' && id === 'cooldown-user') return { email: 'cooldown@example.test', emailVerified: false };
+      if (collection === 'emailVerificationRateLimits' && id === 'cooldown-user') return { nextAllowedAt: new Date(Date.now() + 60_000).toISOString() };
+      return null;
+    });
+    const support = { uid: 'support-1', admin: true, role: 'admin' as const, permissionRole: 'support', testInjected: true as const };
+    const result = await handleAdmin(request('/api/admin/email-verification/reminders/preview', { uids: ['missing-email', 'cooldown-user'] }), env, support) as any;
+    expect(result.success).toBe(true);
+    expect(result.missing).toBe(1);
+    expect(result.cooldown).toBe(1);
+    expect(result.eligible).toBe(0);
+  });
+
+  test('deletion enqueue consumes immutable preview token and ignores changed target input', async () => {
+    let consumed = false;
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    __adminTest.setQuery(() => []);
+    __adminTest.setFirestore((collection, id) => {
+      if (collection === 'heavyarConfig') return { ownerUid: 'owner-1' };
+      if (collection === 'users' && id === 'target-a') return { role: 'user' };
+      if (collection === 'deletionPreviewSnapshots' && id === 'token-1') return { actorUid: 'owner-1', uids: ['target-a'], expiresAt: new Date(Date.now() + 60_000).toISOString(), consumed };
+      return null;
+    });
+    const owner = { uid: 'owner-1', admin: true, role: 'super_admin' as const, permissionRole: 'owner', testInjected: true as const };
+    const first = await handleAdmin(request('/api/admin/users/deletion-jobs', { previewToken: 'token-1', uids: ['target-b'], filters: { q: 'changed' }, confirmation: 'DELETE 1 USERS', reason: 'test' }), env, owner) as any;
+    expect(first.success).toBe(true);
+    expect(JSON.stringify(commits).includes('target-a')).toBe(true);
+    consumed = true;
+    const reused = await handleAdmin(request('/api/admin/users/deletion-jobs', { previewToken: 'token-1', confirmation: 'DELETE 1 USERS', reason: 'test' }), env, owner) as any;
+    expect(reused.status).toBe(409);
+  });
+
+  test('users list exposes exact filtered total and deletion preview accepts more than 100 filtered users', async () => {
+    const rows = Array.from({ length: 125 }, (_, i) => ({ name: `projects/undefined/databases/(default)/documents/users/u-${i}`, data: { email: `u${i}@example.test`, accountStatus: 'active', emailVerified: false } }));
+    __adminTest.setQuery((collection, before, limit) => {
+      if (collection !== 'users') return [];
+      const start = before ? rows.findIndex(row => row.name === before) + 1 : 0;
+      return rows.slice(Math.max(0, start), Math.max(0, start) + limit);
+    });
+    __adminTest.setFirestore((collection, id) => collection === 'users' && /^u-\d+$/.test(id) ? { email: `${id}@example.test`, accountStatus: 'active', emailVerified: false } : null);
+    const admin = { uid: 'support-1', admin: true, role: 'admin' as const, permissionRole: 'support', testInjected: true as const };
+    const listed = await handleAdmin(new Request('https://worker.test/api/admin/users?accountStatus=active&emailVerified=false&limit=50'), env, admin) as any;
+    expect(listed.total).toBe(125);
+    const preview = await handleAdmin(request('/api/admin/email-verification/reminders/preview', { filters: { accountStatus: 'active', emailVerified: false } }), env, admin) as any;
+    expect(preview.targeted).toBe(125);
+  });
+
+  test('deletion preview batches four and twenty targets under the subrequest budget', async () => {
+    let batchQueries = 0;
+    __adminTest.captureCommits([]);
+    const users = Array.from({ length: 20 }, (_, i) => ({ name: `projects/undefined/databases/(default)/documents/users/b-${i}`, data: { role: 'user', email: `b${i}@example.test` } }));
+    __adminTest.setQuery((collection) => { batchQueries++; return collection === 'users' ? users : []; });
+    __adminTest.setFirestore((collection, id) => collection === 'heavyarConfig' && id === 'owner' ? { ownerUid: 'owner-1' } : null);
+    const owner = { uid: 'owner-1', admin: true, role: 'super_admin' as const, permissionRole: 'owner', testInjected: true as const };
+    const preview = await handleAdmin(request('/api/admin/users/deletion-preview', { uids: users.slice(0, 4).map(item => item.name.split('/').pop()) }), env, owner) as any;
+    expect(preview.success).toBe(true);
+    expect(batchQueries < 50).toBe(true);
+    batchQueries = 0;
+    const twenty = await handleAdmin(request('/api/admin/users/deletion-preview', { uids: users.map(item => item.name.split('/').pop()) }), env, owner) as any;
+    expect(twenty.success).toBe(true);
+    expect(batchQueries < 50).toBe(true);
+  });
+
+  test('restricted single reminder is rejected and active reservation is preview cooldown', async () => {
+    __adminTest.setFirestore((collection, id) => {
+      if (collection === 'users' && id === 'restricted') return { email: 'r@example.test', accountStatus: 'deletion_requested', emailVerified: false };
+      if (collection === 'users' && id === 'reserved') return { email: 'r2@example.test', emailVerified: false };
+      if (collection === 'emailVerificationRateLimits' && id === 'reserved') return { reservationUntil: new Date(Date.now() + 60_000).toISOString() };
+      return null;
+    });
+    const admin = { uid: 'support-1', admin: true, role: 'admin' as const, permissionRole: 'support', testInjected: true as const };
+    const denied = await handleAdmin(request('/api/admin/email-verification/reminder', { uid: 'restricted' }), env, admin) as any;
+    expect(denied.status).toBe(409);
+    const preview = await handleAdmin(request('/api/admin/email-verification/reminders/preview', { uids: ['reserved'] }), env, admin) as any;
+    expect(preview.cooldown).toBe(1);
+    expect(preview.eligible).toBe(0);
+  });
+
+  test('deletion historical verification events advance a durable cursor beyond the first 100', async () => {
+    const originalFetch = globalThis.fetch;
+    const commits: string[] = [];
+    const eventNames = Array.from({ length: 101 }, (_, i) => `projects/p/databases/(default)/documents/verificationEvents/e-${String(i).padStart(3, '0')}`);
+    let requestStatus = 'queued';
+    let cursor: string | undefined;
+    const keyPair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']) as CryptoKeyPair;
+    const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey));
+    const privateKey = `-----BEGIN PRIVATE KEY-----\n${btoa(String.fromCharCode(...pkcs8)).match(/.{1,64}/g)!.join('\n')}\n-----END PRIVATE KEY-----`;
+    const testEnv = { ...env, FIREBASE_PROJECT_ID: 'p', FIREBASE_CLIENT_EMAIL: 'test@example.test', FIREBASE_PRIVATE_KEY: privateKey } as Env;
+    const field = (value: any): any => Array.isArray(value) ? { arrayValue: { values: value.map(field) } } : value && typeof value === 'object' ? { mapValue: { fields: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, field(item)])) } } : typeof value === 'string' ? { stringValue: value } : typeof value === 'boolean' ? { booleanValue: value } : { integerValue: String(value) };
+    const document = (name: string, data: any, updateTime = 'u') => ({ name, updateTime, fields: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, field(value)])) });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) return new Response(JSON.stringify({ access_token: 'token' }), { status: 200 });
+      if (url.includes('accounts:delete')) return new Response(JSON.stringify({}), { status: 200 });
+      if (url.includes(':commit')) {
+        const writes = JSON.parse(String(init?.body || '{}')).writes || [];
+        for (const write of writes) {
+          const name = String(write.update?.name || '');
+          const fields = write.update?.fields || {};
+          if (name.includes('deletionRequests')) {
+            if (fields.status?.stringValue) requestStatus = fields.status.stringValue;
+            if (fields.historicalCursor?.mapValue?.fields?.verificationEvents?.stringValue) cursor = fields.historicalCursor.mapValue.fields.verificationEvents.stringValue;
+          }
+          if (name.includes('/verificationEvents/')) commits.push(name);
+        }
+        return new Response('{}', { status: 200 });
+      }
+      if (url.includes('/documents/users/target')) return new Response(JSON.stringify(document('users/target', { role: 'user' })), { status: 200 });
+      if (url.includes('/documents/deletionJobs/parent')) return new Response(JSON.stringify(document('deletionJobs/parent', { status: 'processing', total: 1 })), { status: 200 });
+      if (url.includes('/documents/deletionRequests/user%3Atarget')) return new Response(JSON.stringify(document('deletionRequests/user:target', { uid: 'target', parentJobId: 'parent', status: requestStatus, stage: 'historical', actorUid: 'owner', completedStages: ['auth'], historicalCursor: cursor ? { verificationEvents: cursor } : {} })), { status: 200 });
+      if (url.includes(':runQuery')) {
+        const body = JSON.parse(String(init?.body || '{}')), query = body.structuredQuery || {}, collection = query.from?.[0]?.collectionId;
+        if (collection === 'deletionRequests') return new Response(JSON.stringify([{ document: document('deletionRequests/user:target', { uid: 'target', parentJobId: 'parent', status: 'partially_completed', stage: 'historical', actorUid: 'owner', completedStages: ['auth'], historicalCursor: cursor ? { verificationEvents: cursor } : {} }) }]), { status: 200 });
+        if (collection === 'verificationEvents') {
+          const start = query.startAt?.values?.[0]?.referenceValue;
+          const index = start ? Math.max(0, eventNames.indexOf(start)) : 0;
+          return new Response(JSON.stringify(eventNames.slice(index, index + 100).map(name => ({ document: document(name, { uid: 'target' }) }))), { status: 200 });
+        }
+        return new Response('[]', { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    }) as typeof fetch;
+    try {
+      await processDeletionJobs(testEnv);
+      await processDeletionJobs(testEnv);
+      await processDeletionJobs(testEnv);
+      expect(commits.filter(name => name.endsWith('/e-000')).length).toBe(1);
+      expect(commits.some(name => name.endsWith('/e-100'))).toBe(true);
+      expect(requestStatus).toBe('completed');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test('authenticated normal users cannot access admin endpoints', async () => {

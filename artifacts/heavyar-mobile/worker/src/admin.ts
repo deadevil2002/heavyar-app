@@ -189,7 +189,7 @@ async function listCollection(env: Env, collection: string, query: Record<string
     // Filter locally after a bounded server scan.  This supports intersecting
     // operational filters without silently dropping all but the first one or
     // requiring a combinatorial set of Firestore composite indexes.
-    limit: Math.min(250, safeLimit * 5 + 1),
+    limit: collection === 'users' ? 5001 : Math.min(250, safeLimit * 5 + 1),
   };
   const startAt = cursorValue(env, collection, cursor, sort);
   if (startAt) structuredQuery.startAt = startAt;
@@ -222,6 +222,7 @@ async function listCollection(env: Env, collection: string, query: Record<string
   }) && (!search || [name.split('/').pop(), ...(searchFields[collection] || []).map(field => valueAt(record, field))]
     .some(value => String(value || '').toLowerCase().includes(search)));
   const matching = rows.filter(item => matches(decode(item.document), String(item.document.name)));
+  if (collection === 'users' && rows.length >= 5001) throw Object.assign(new Error('Too many users; narrow the selection'), { status: 413, code: 'too_many_results' });
   const docs = matching.slice(0, safeLimit);
   const scanLast = rows[rows.length - 1]?.document?.name;
   const lastReturned = docs[docs.length - 1]?.document;
@@ -229,6 +230,7 @@ async function listCollection(env: Env, collection: string, query: Record<string
   const cursorSortValue = sort && cursorDocument ? (decode(cursorDocument)[sort] ?? null) : undefined;
   return {
     items: docs.map(item => ({ id: String(item.document.name).split('/').pop(), ...redact(decode(item.document)) })),
+    ...(collection === 'users' && !cursor ? { total: matching.length, maxSelectable: 5000 } : {}),
     // If a page filled, continue after the last delivered row—not after the
     // scan window—so sparse filters cannot drop matching documents. If no page
     // filled, advancing after the scan is safe because every matching row in it
@@ -462,10 +464,19 @@ async function emailVerificationReminder(req: Request, env: Env, user: AdminUser
   const person = await rawDoc(env, 'users', uid);
   const email = String(person?.data?.email || person?.data?.emailLower || '').trim().toLowerCase();
   if (!person?.data || !email) return { error: 'User not found', status: 404 };
-  if (person.data.emailVerified === true) return { success: true, alreadyVerified: true };
   const rate = await rawDoc(env, 'emailVerificationRateLimits', uid), policy = await rawDoc(env, 'emailVerificationPolicies', 'default'), cooldownSeconds = Math.min(604800, Math.max(300, Number(policy?.data?.reminderCooldownSeconds) || 86400)), now = Date.now();
-  if (policy?.data?.allowReminders === false) return { error: 'Verification reminders disabled', status: 409 };
-  if (rate?.data?.nextAllowedAt && Date.parse(String(rate.data.nextAllowedAt)) > now) return { error: 'Verification email cooldown active', status: 429 };
+  const eligibility = reminderEligibility(person.data, rate?.data, policy?.data, now);
+  if (eligibility === 'alreadyVerified') return { success: true, alreadyVerified: true };
+  if (eligibility === 'restricted') return { error: 'User is restricted', status: 409 };
+  if (eligibility === 'disabled') return { error: 'Verification reminders disabled', status: 409 };
+  if (eligibility === 'cooldown') return { error: 'Verification email cooldown active', status: 429 };
+  const reservationToken = crypto.randomUUID(), reservationUntil = new Date(now + 120000).toISOString();
+  try {
+    await commit(env, [{ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(uid)}`), fields: { uid: jsonValue(uid), reservationToken: jsonValue(reservationToken), reservationUntil: { timestampValue: reservationUntil } } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } }]);
+  } catch {
+    return { error: 'Verification email cooldown active', status: 429, errorCode: 'cooldown_reservation_lost' };
+  }
+  const reservedRate = await rawDoc(env, 'emailVerificationRateLimits', uid);
   let delivered = false, providerMessageId = '', deliveryOutcome: 'accepted' | 'firebase_accepted' | 'auth_failed' | 'sender_rejected' | 'rate_limited' | 'provider_error' | 'not_configured' = env.RESEND_API_KEY ? 'provider_error' : 'not_configured';
   const resendFrom = env.RESEND_FROM_EMAIL || 'Heavyar <noreply@mail.heavyar.com>';
   const resendSenderValid = /@mail\.heavyar\.com>?\s*$/i.test(resendFrom);
@@ -493,8 +504,391 @@ async function emailVerificationReminder(req: Request, env: Env, user: AdminUser
     } catch { delivered = false; }
   }
   const nowIso = new Date(now).toISOString();
-  await commit(env, [{ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(uid)}`), fields: { uid: jsonValue(uid), lastSentAt: { timestampValue: nowIso }, nextAllowedAt: { timestampValue: new Date(now + cooldownSeconds * 1000).toISOString() }, count: { integerValue: String(Number(rate?.data?.count || 0) + 1) } } }, currentDocument: rate?.updateTime ? { updateTime: rate.updateTime } : { exists: false } }, await auditWrite(env, user, 'email_verification_reminder', 'user', uid, crypto.randomUUID(), delivered ? 'verification reminder sent' : 'verification reminder delivery unavailable', undefined, { delivered, deliveryOutcome, ...(providerMessageId ? { providerMessageId } : {}) })]);
-  return { success: delivered, accepted: true, delivered, deliveryOutcome };
+  const writes: any[] = [await auditWrite(env, user, 'email_verification_reminder', 'user', uid, crypto.randomUUID(), delivered ? 'verification reminder sent' : 'verification reminder delivery unavailable', undefined, { delivered, deliveryOutcome, ...(providerMessageId ? { providerMessageId } : {}) })];
+  writes.unshift({ update: { name: fullName(env, `emailVerificationRateLimits/${encodeURIComponent(uid)}`), fields: delivered
+    ? { uid: jsonValue(uid), lastSentAt: { timestampValue: nowIso }, nextAllowedAt: { timestampValue: new Date(now + cooldownSeconds * 1000).toISOString() }, count: { integerValue: String(Number(rate?.data?.count || 0) + 1) }, reservationToken: { nullValue: null }, reservationUntil: { nullValue: null } }
+    : { reservationToken: { nullValue: null }, reservationUntil: { nullValue: null } } }, updateMask: { fieldPaths: delivered ? ['uid', 'lastSentAt', 'nextAllowedAt', 'count', 'reservationToken', 'reservationUntil'] : ['reservationToken', 'reservationUntil'] }, currentDocument: reservedRate?.updateTime ? { updateTime: reservedRate.updateTime } : undefined });
+  await commit(env, writes);
+  if (!delivered) return { error: 'Verification email delivery failed', status: 502, deliveryOutcome };
+  return { success: true, sent: true, accepted: true, delivered: true, deliveryOutcome };
+}
+
+async function reminderTargets(env: Env, body: any) {
+  const ids = new Set<string>();
+  if (Array.isArray(body.uids)) {
+    if (body.uids.length > 5000) throw Object.assign(new Error('Too many targets; narrow the selection'), { status: 413, code: 'too_many_targets' });
+    if (body.uids.some((id: any) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id))) throw new Error('Invalid user IDs');
+    body.uids.forEach((id: string) => ids.add(id));
+  }
+  if (body.filters !== undefined) {
+    if (!body.filters || typeof body.filters !== 'object' || Array.isArray(body.filters) ||
+      Object.entries(body.filters).some(([key, value]) => {
+        if (key === 'q' || key === 'accountStatus') return typeof value !== 'string' || value.length > 200;
+        if (key === 'emailVerified') return typeof value !== 'boolean' && (typeof value !== 'string' || !['true', 'false'].includes(value));
+        return true;
+      })) throw new Error('Invalid filters');
+    const filters = Object.fromEntries(Object.entries(body.filters).map(([key, value]) => [key, key === 'emailVerified' ? String(value) : String(value)]));
+    let cursor: string | null = null;
+    for (;;) {
+      const result = await listCollection(env, 'users', filters, 50, cursor);
+      result.items.forEach(item => ids.add(String(item.id)));
+      if (ids.size > 5000) throw Object.assign(new Error('Too many targets; narrow the selection'), { status: 413, code: 'too_many_targets' });
+      cursor = result.nextCursor || null;
+      if (!cursor) break;
+    }
+  }
+  if (!ids.size) throw new Error('At least one user ID or filter is required');
+  return [...ids];
+}
+async function reminderSummary(env: Env, ids: string[]) {
+  const summary = { targeted: ids.length, eligible: 0, alreadyVerified: 0, cooldown: 0, restricted: 0, missing: 0 };
+  for (const uid of ids) {
+    const person = await rawDoc(env, 'users', uid);
+    const rate = await rawDoc(env, 'emailVerificationRateLimits', uid);
+    const policy = await rawDoc(env, 'emailVerificationPolicies', 'default');
+    const state = reminderEligibility(person?.data, rate?.data, policy?.data, Date.now());
+    if (state === 'missing') summary.missing++;
+    else if (state === 'alreadyVerified') summary.alreadyVerified++;
+    else if (state === 'restricted') summary.restricted++;
+    else if (state === 'cooldown') summary.cooldown++;
+    else summary.eligible++;
+  }
+  return summary;
+}
+function reminderEligibility(person: any, rate: any, policy: any, now: number): 'eligible' | 'missing' | 'alreadyVerified' | 'restricted' | 'cooldown' | 'disabled' {
+  if (!person || !String(person.email || person.emailLower || '').trim()) return 'missing';
+  if (person.emailVerified === true) return 'alreadyVerified';
+  if (['restricted', 'deletion_requested', 'deleted'].includes(String(person.accountStatus)) || ['temporarily_suspended', 'permanently_suspended', 'suspended'].includes(String(person.suspensionStatus))) return 'restricted';
+  if (policy?.allowReminders === false) return 'disabled';
+  if ((rate?.nextAllowedAt && Date.parse(String(rate.nextAllowedAt)) > now) || (rate?.reservationUntil && Date.parse(String(rate.reservationUntil)) > now)) return 'cooldown';
+  return 'eligible';
+}
+async function emailVerificationReminderPreview(req: Request, env: Env, user: AdminUser) {
+  if (!can(user, 'support.manage') && !can(user, 'config.manage')) return { error: 'Support permission required', status: 403 };
+  const policy = await rawDoc(env, 'emailVerificationPolicies', 'default');
+  if (policy?.data?.allowReminders === false) return { error: 'Verification reminders disabled', status: 409 };
+  try { return { success: true, ...(await reminderSummary(env, await reminderTargets(env, await req.json().catch(() => ({}))))) }; }
+  catch (error) { return { error: error instanceof Error ? error.message : 'Invalid request', status: (error as any)?.status || 400, ...(error as any)?.code ? { errorCode: (error as any).code } : {} }; }
+}
+async function bulkEmailVerificationReminder(req: Request, env: Env, user: AdminUser) {
+  if (!can(user, 'support.manage') && !can(user, 'config.manage')) return { error: 'Support permission required', status: 403 };
+  const policy = await rawDoc(env, 'emailVerificationPolicies', 'default');
+  if (policy?.data?.allowReminders === false) return { error: 'Verification reminders disabled', status: 409 };
+  const body: any = await req.json().catch(() => ({}));
+  let ids: string[]; try { ids = await reminderTargets(env, body); } catch (error) { return { error: error instanceof Error ? error.message : 'Invalid request', status: (error as any)?.status || 400, ...(error as any)?.code ? { errorCode: (error as any).code } : {} }; }
+  const counts = { targeted: ids.length, sent: 0, skippedVerified: 0, skippedCooldown: 0, skippedRestricted: 0, missing: 0, failed: 0 };
+  const results: any[] = [];
+  for (const uid of ids) {
+    const person = await rawDoc(env, 'users', uid);
+    const rate = await rawDoc(env, 'emailVerificationRateLimits', uid), policy = await rawDoc(env, 'emailVerificationPolicies', 'default');
+    const eligibility = reminderEligibility(person?.data, rate?.data, policy?.data, Date.now());
+    if (eligibility === 'missing') { counts.missing++; results.push({ uid, status: 'missing' }); continue; }
+    if (eligibility === 'alreadyVerified') { counts.skippedVerified++; results.push({ uid, status: 'alreadyVerified' }); continue; }
+    if (eligibility === 'restricted') {
+      counts.skippedRestricted++; results.push({ uid, status: 'restricted' }); continue;
+    }
+    try {
+      const result = await emailVerificationReminder(new Request(req.url, { method: 'POST', body: JSON.stringify({ uid }), headers: { 'Content-Type': 'application/json' } }), env, user);
+      if ((result as any).delivered) { counts.sent++; results.push({ uid, status: 'sent' }); }
+      else if ((result as any).status === 429) { counts.skippedCooldown++; results.push({ uid, status: 'cooldown' }); }
+      else { counts.failed++; results.push({ uid, status: (result as any).error || 'failed' }); }
+    } catch (error) {
+      counts.failed++;
+      results.push({ uid, status: 'failed' });
+    }
+  }
+  await commit(env, [await auditWrite(env, user, 'email_verification_reminder_bulk', 'users', 'bulk', crypto.randomUUID(), 'bulk verification reminder', undefined, counts)]);
+  return { success: true, ...counts, results };
+}
+
+const deletionCollections = ['users', 'userProfiles', 'providerProfiles', 'driverProfiles', 'deviceTokens', 'notificationTokenOwners', 'notificationInstallations', 'notifications', 'notificationPreferences', 'notificationDeliveries', 'notificationOutbox', 'emailVerificationRateLimits', 'phoneAliases', 'phoneOwners', 'recoveryCodes', 'temporaryRecovery', 'verificationIndexes', 'verificationProfiles', 'verificationAttempts', 'equipment', 'equipmentDrafts'];
+function deletionProtected(user: any) {
+  return user?.bootstrap === true || user?.system === true || user?.service === true || user?.isOwner === true || user?.currentOwner === true || user?.isCurrentOwner === true || user?.isSuperAdmin === true ||
+    user?.role === 'owner' || user?.role === 'super_admin' || user?.activeStaff === true || user?.staffActive === true;
+}
+async function mayDeleteUsers(env: Env, actor: AdminUser) {
+  if (!(can(actor, 'owner.transfer') || String(actor.permissionRole || actor.role) === 'super_admin')) return false;
+  return !['system', 'service', 'bootstrap'].includes(actor.uid);
+}
+async function staffActive(env: Env, uid: string) {
+  const staff = await rawDoc(env, 'staffMembers', uid);
+  return staff?.data?.active === true || staff?.data?.status === 'active' || staff?.data?.staffStatus === 'active';
+}
+async function canonicalOwnerUid(env: Env) {
+  const owner = await rawDoc(env, 'heavyarConfig', 'owner');
+  return String(owner?.data?.uid || owner?.data?.ownerUid || owner?.data?.currentOwnerUid || owner?.data?.currentOwner || '');
+}
+async function protectedDeletionTarget(env: Env, actor: AdminUser, uid: string, data: any) {
+  const ownerUid = await canonicalOwnerUid(env);
+  return uid === actor.uid || uid === ownerUid || deletionProtected(data) || await staffActive(env, uid) ||
+    ['system', 'service', 'bootstrap'].includes(uid);
+}
+async function deletionTargets(env: Env, body: any) {
+  return reminderTargets(env, body);
+}
+async function deletionPreview(req: Request, env: Env, actor: AdminUser) {
+  if (!(await mayDeleteUsers(env, actor))) return { error: 'Owner or super-admin governance permission required', status: 403 };
+  const body: any = await req.json().catch(() => ({}));
+  let uids: string[]; try { uids = await deletionTargets(env, body); } catch (error) { return { error: error instanceof Error ? error.message : 'Invalid request', status: (error as any)?.status || 400, ...(error as any)?.code ? { errorCode: (error as any).code } : {} }; }
+  const MAX_PREVIEW_TARGETS = 20;
+  if (uids.length > MAX_PREVIEW_TARGETS) return { error: 'Deletion preview is limited to 20 exact targets; narrow the selection', status: 413, errorCode: 'preview_too_large', maxSelectable: MAX_PREVIEW_TARGETS };
+  const targetSet = new Set(uids), batches = Math.ceil(uids.length / 30);
+  // One users read, one owner read, one staff read, and one set query per
+  // impact/retention field. This keeps a normal preview below the Worker
+  // subrequest budget and rejects broad destructive previews before I/O.
+  const plannedRequests = 2 + batches + 20;
+  if (plannedRequests >= 50) return { error: 'Deletion preview exceeds the safe query budget; narrow the selection', status: 413, errorCode: 'preview_too_large', maxSelectable: MAX_PREVIEW_TARGETS };
+  const batchQuery = async (collection: string, fields: string[]) => {
+    if (queryOverride) {
+      const mocked = queryOverride(collection, '', 5000);
+      if (mocked.length || !['users', 'staffMembers'].includes(collection)) return mocked.map(item => ({ document: { name: item.name || fullName(env, `${collection}/${crypto.randomUUID()}`), updateTime: item.updateTime, fields: Object.fromEntries(Object.entries(item.data || {}).map(([key, value]) => [key, jsonValue(value)])) } }));
+      return (await Promise.all(uids.map(async uid => rawDoc(env, collection, uid)))).filter(Boolean).map((item: any, index) => ({ document: { name: fullName(env, `${collection}/${encodeURIComponent(uids[index])}`), updateTime: item.updateTime, fields: Object.fromEntries(Object.entries(item.data || {}).map(([key, value]) => [key, jsonValue(value)])) } }));
+    }
+    const values = uids.map(uid => jsonValue(uid));
+    const where = fields.length === 1 && fields[0] === '__name__'
+      ? { fieldFilter: { field: { fieldPath: '__name__' }, op: 'IN', value: { arrayValue: { values: uids.map(uid => ({ referenceValue: fullName(env, `${collection}/${encodeURIComponent(uid)}`) })) } } } }
+      : { compositeFilter: { op: 'OR', filters: fields.map(field => ({ fieldFilter: { field: { fieldPath: field }, op: 'IN', value: { arrayValue: { values } } } })) } };
+    return await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where, limit: 5000 } }) }) as any[] || [];
+  };
+  const users = await batchQuery('users', ['__name__']);
+  const userDocs = new Map(users.filter((row: any) => row.document).map((row: any) => [String(row.document.name).split('/').pop(), { data: decode(row.document), updateTime: row.document.updateTime }]));
+  const staffRows = await batchQuery('staffMembers', ['uid']);
+  const activeStaff = new Set(staffRows.filter((row: any) => row.document).map((row: any) => ({ data: decode(row.document), uid: String(row.document.name).split('/').pop() })).filter(({ data }: any) => data.active === true || data.status === 'active' || data.staffStatus === 'active').map(({ data, uid }: any) => String(data.uid || uid)));
+  const ownerUid = await canonicalOwnerUid(env);
+  const impactFields: Record<string, string[]> = { equipment: ['ownerUid'], driverProfiles: ['uid'], phoneOwners: ['uid'], equipmentRequests: ['customerUid'], notifications: ['uid'], deviceTokens: ['uid'], complaints: ['customerUid'] };
+  const retainedFields: Record<string, string[]> = { payments: ['customerUid', 'providerUid'], invoices: ['customerId', 'providerId'], refunds: ['customerUid', 'providerUid'], adminAudit: ['actorUid', 'targetId'] };
+  const collectionRows = new Map<string, any[]>();
+  for (const [collection, fields] of Object.entries({ ...impactFields, ...retainedFields })) collectionRows.set(collection, await batchQuery(collection, fields));
+  const countByUser = (collection: string, fields: string[]) => {
+    const counts = new Map<string, number>(), seen = new Set<string>();
+    for (const row of collectionRows.get(collection) || []) {
+      if (!row.document) continue;
+      const data = decode(row.document), id = String(row.document.name);
+      if (seen.has(id)) continue;
+      const owners = fields.filter(field => targetSet.has(String(data[field] || '')));
+      for (const ownerField of [...new Set(owners)]) {
+        const owner = String(data[ownerField]), key = `${id}:${owner}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        counts.set(owner, (counts.get(owner) || 0) + 1);
+      }
+    }
+    return counts;
+  };
+  const countMaps = new Map(Object.entries(impactFields).map(([collection, fields]) => [collection, countByUser(collection, fields)]));
+  const retainedMaps = new Map(Object.entries(retainedFields).map(([collection, fields]) => [collection, countByUser(collection, fields)]));
+  const equipmentRows = collectionRows.get('equipment') || [], mediaByUser = new Map<string, number>();
+  for (const row of equipmentRows.filter((item: any) => item.document)) {
+    const data = decode(row.document), uid = String(data.ownerUid || '');
+    if (!targetSet.has(uid)) continue;
+    mediaByUser.set(uid, (mediaByUser.get(uid) || 0) + (Array.isArray(data.images) ? data.images.filter((image: any) => typeof image?.publicId === 'string').length : 0));
+  }
+  const items: any[] = [], aggregate: any = { equipment: 0, driverProfile: 0, phoneAlias: 0, requests: 0, notifications: 0, deviceTokens: 0, complaints: 0, media: 0, protected: 0, skipped: 0 };
+  for (const uid of uids) {
+    const doc = userDocs.get(uid), protectedAccount = !doc || uid === actor.uid || uid === ownerUid || activeStaff.has(uid) || deletionProtected(doc.data) || ['system', 'service', 'bootstrap'].includes(uid);
+    if (!doc) { aggregate.skipped++; items.push({ uid, exists: false, protected: false }); continue; }
+    if (protectedAccount) { aggregate.protected++; aggregate.skipped++; }
+    const counts = { equipment: countMaps.get('equipment')?.get(uid) || 0, driverProfile: countMaps.get('driverProfiles')?.get(uid) || 0, phoneAlias: countMaps.get('phoneOwners')?.get(uid) || 0, requests: countMaps.get('equipmentRequests')?.get(uid) || 0, notifications: countMaps.get('notifications')?.get(uid) || 0, deviceTokens: countMaps.get('deviceTokens')?.get(uid) || 0, complaints: countMaps.get('complaints')?.get(uid) || 0, media: (typeof doc.data.avatarPublicId === 'string' ? 1 : 0) + (mediaByUser.get(uid) || 0) };
+    const retained = Object.fromEntries(Object.entries(retainedFields).map(([collection, fields]) => [collection === 'adminAudit' ? 'audits' : collection, retainedMaps.get(collection)?.get(uid) || 0]));
+    Object.assign(aggregate, Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, aggregate[key] + value])));
+    items.push({ uid, exists: true, protected: protectedAccount, role: doc.data.role || null, email: doc.data.email || doc.data.emailLower || null, counts, retained });
+  }
+  const previewToken = crypto.randomUUID(), expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  await commit(env, [{ update: { name: fullName(env, `deletionPreviewSnapshots/${encodeURIComponent(previewToken)}`), fields: {
+    previewToken: jsonValue(previewToken), uids: jsonValue(uids), counts: jsonValue(aggregate), actorUid: jsonValue(actor.uid), expiresAt: { timestampValue: expiresAt }, consumed: { booleanValue: false }, createdAt: { timestampValue: new Date().toISOString() },
+  } }, currentDocument: { exists: false } }]);
+  const retained = items.reduce((total: any, item: any) => {
+    for (const key of ['payments', 'invoices', 'refunds', 'audits']) total[key] += Number(item.retained?.[key] || 0);
+    return total;
+  }, { payments: 0, invoices: 0, refunds: 0, audits: 0 });
+  return { success: true, previewToken, expiresAt, targeted: uids.length, eligible: items.filter((item: any) => item.exists && !item.protected).length, protected: aggregate.protected, skipped: aggregate.skipped, items, counts: aggregate, retained, requiresConfirmation: `DELETE ${uids.length} USERS` };
+}
+async function enqueueDeletion(req: Request, env: Env, actor: AdminUser) {
+  if (!(await mayDeleteUsers(env, actor))) return { error: 'Owner or super-admin governance permission required', status: 403 };
+  const body: any = await req.json().catch(() => ({})), confirmation = body.confirmation;
+  const previewToken = typeof body.previewToken === 'string' ? body.previewToken : '';
+  if (!previewToken) return { error: 'previewToken is required', status: 400, errorCode: 'preview_token_required' };
+  const snapshot = await rawDoc(env, 'deletionPreviewSnapshots', previewToken);
+  if (!snapshot?.data || snapshot.data.actorUid !== actor.uid || snapshot.data.consumed === true || !Array.isArray(snapshot.data.uids)
+    || !snapshot.data.expiresAt || Date.parse(String(snapshot.data.expiresAt)) <= Date.now()) return { error: 'Preview token expired or invalid', status: 409, errorCode: 'preview_token_invalid' };
+  const uids: string[] = snapshot.data.uids.map(String);
+  if (confirmation !== `DELETE ${uids.length} USERS`) return { error: 'Strong confirmation required', status: 400 };
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!reason || reason.length > 1000) return { error: 'Invalid deletion request', status: 400 };
+  await commit(env, [{ update: { name: fullName(env, `deletionPreviewSnapshots/${encodeURIComponent(previewToken)}`), fields: { consumed: { booleanValue: true }, consumedAt: { timestampValue: new Date().toISOString() } }, }, updateMask: { fieldPaths: ['consumed', 'consumedAt'] }, currentDocument: snapshot.updateTime ? { updateTime: snapshot.updateTime } : undefined }]);
+  const eligible: string[] = [];
+  const jobs: string[] = [], writes: any[] = [], now = new Date().toISOString(), jobId = crypto.randomUUID();
+  for (const uid of uids) {
+    const target = await rawDoc(env, 'users', uid);
+    if (!target?.data) continue;
+    if (await protectedDeletionTarget(env, actor, uid, target.data)) continue;
+    const id = `user:${uid}`, prior = await rawDoc(env, 'deletionRequests', id);
+    if (prior?.data && ['queued', 'processing', 'partially_completed', 'pending'].includes(String(prior.data.status))) continue;
+    if (prior?.data?.status === 'completed') continue;
+    eligible.push(uid);
+    jobs.push(id);
+    writes.push({ update: { name: fullName(env, `deletionRequests/${encodeURIComponent(id)}`), fields: Object.fromEntries(Object.entries({ uid, parentJobId: jobId, status: 'queued', stage: 'auth', completedStages: [], errors: [], actorUid: actor.uid, reason, createdAt: now, updatedAt: now }).map(([k, v]) => [k, jsonValue(v)])) }, currentDocument: prior?.updateTime ? { updateTime: prior.updateTime } : { exists: false } });
+  }
+  writes.push({ update: { name: fullName(env, `deletionJobs/${encodeURIComponent(jobId)}`), fields: Object.fromEntries(Object.entries({ status: eligible.length ? 'queued' : 'completed', total: eligible.length, completed: eligible.length ? 0 : 0, jobIds: jobs, actorUid: actor.uid, reason, result: { completed: 0, skipped: uids.length - eligible.length }, createdAt: now, updatedAt: now }).map(([k, v]) => [k, jsonValue(v)])) }, currentDocument: { exists: false } });
+  if (writes.length) {
+    const targetAudits = await Promise.all(eligible.map(uid => auditWrite(env, actor, 'user_deletion_target_queued', 'user', uid, `${jobId}:${uid}`, reason, undefined, { status: 'queued' })));
+    await commit(env, [...writes, ...targetAudits, await auditWrite(env, actor, 'user_deletion_queued', 'deletionJob', jobId, crypto.randomUUID(), reason, undefined, { total: eligible.length })]);
+  }
+  return { success: true, jobId, status: 'queued', total: eligible.length };
+}
+async function processDeletionJob(env: Env, row: any) {
+  const job = decode(row.document), uid = String(job.uid || ''), name = row.document.name;
+  if (!uid || ['completed', 'failed'].includes(String(job.status))) return;
+  const now = Date.now(), leaseUntil = Date.parse(String(job.leaseUntil || ''));
+  if (job.leaseOwner && Number.isFinite(leaseUntil) && leaseUntil > now) return;
+  const leaseOwner = crypto.randomUUID();
+  try {
+    await commit(env, [{ update: { name, fields: { status: jsonValue('processing'), leaseOwner: jsonValue(leaseOwner), leaseUntil: { timestampValue: new Date(now + 120000).toISOString() }, updatedAt: { timestampValue: new Date(now).toISOString() } } }, updateMask: { fieldPaths: ['status', 'leaseOwner', 'leaseUntil', 'updatedAt'] }, currentDocument: row.document.updateTime ? { updateTime: row.document.updateTime } : undefined }]);
+  } catch { return; }
+  const errors: string[] = Array.isArray(job.errors) ? job.errors : [], completed = new Set<string>(Array.isArray(job.completedStages) ? job.completedStages : []);
+  const stages = ['auth', 'media', 'historical', 'records'];
+  for (const stage of stages) {
+    if (completed.has(stage)) continue;
+    let stageMore = false;
+    let mediaCursorNext: string | undefined;
+    await commit(env, [{ update: { name, fields: { leaseOwner: jsonValue(leaseOwner), leaseUntil: { timestampValue: new Date(Date.now() + 120000).toISOString() } }, updateMask: { fieldPaths: ['leaseOwner', 'leaseUntil'] } } }]);
+    try {
+      if (stage === 'auth') {
+        const currentTarget = await rawDoc(env, 'users', uid);
+        if (!currentTarget?.data || await protectedDeletionTarget(env, { uid: String(job.actorUid || ''), admin: true, role: 'super_admin', permissionRole: 'owner' }, uid, currentTarget.data)) {
+          const summary = { status: 'skipped_protected', stage: 'auth', deleted: 0, anonymized: 0, retained: 0, media: 0 };
+          await commit(env, [{ update: { name, fields: { status: jsonValue('skipped_protected'), result: jsonValue(summary), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'result', 'leaseOwner', 'leaseUntil', 'updatedAt'] } }, await auditWrite(env, { uid: String(job.actorUid || 'system'), admin: true, role: 'super_admin' }, 'user_deletion_target_terminal', 'user', uid, `deletion-skipped-protected:${uid}`, 'deletion target became protected', undefined, summary)]);
+          return;
+        }
+        if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) throw new Error('auth_config_missing');
+        const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+        const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:delete`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: uid }) });
+        const result: any = await response.json().catch(() => ({}));
+        const code = String(result?.error?.message || result?.error?.status || '');
+        if (!response.ok && !['EMAIL_NOT_FOUND', 'USER_NOT_FOUND'].includes(code)) throw new Error('auth_delete_failed');
+      }
+      if (stage === 'media') {
+        const ids: string[] = [], person = await rawDoc(env, 'users', uid);
+        if (typeof person?.data?.avatarPublicId === 'string') ids.push(person.data.avatarPublicId);
+        const equipmentQuery: any = { from: [{ collectionId: 'equipment' }], where: { fieldFilter: { field: { fieldPath: 'ownerUid' }, op: 'EQUAL', value: jsonValue(uid) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 100 };
+        if (job.mediaCursor) equipmentQuery.startAt = { values: [{ referenceValue: String(job.mediaCursor) }] };
+        const listed = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: equipmentQuery }) }) as any[] || [];
+        if (listed.length >= 100) stageMore = true;
+        mediaCursorNext = listed[listed.length - 1]?.document?.name;
+        const page = job.mediaCursor && listed[0]?.document?.name === job.mediaCursor ? listed.slice(1) : listed;
+        for (const item of page.filter((x: any) => x.document)) {
+          const listing = decode(item.document);
+          for (const image of Array.isArray(listing.images) ? listing.images : []) if (typeof image?.publicId === 'string') ids.push(image.publicId);
+        }
+        const ownedIds = [...new Set(ids)].filter(id => id.startsWith(`${env.CLOUDINARY_FOLDER || 'heavyar'}/${uid}/`));
+        if (!(env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET)) {
+          if (ownedIds.length) throw new Error('cloudinary_config_missing');
+        } else for (const publicId of ownedIds) {
+          const timestamp = String(Math.floor(Date.now() / 1000));
+          const digest = await crypto.subtle.digest('SHA-1', enc.encode(`public_id=${publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`));
+          const signature = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join('');
+          const form = new FormData(); form.append('public_id', publicId); form.append('timestamp', timestamp); form.append('api_key', env.CLOUDINARY_API_KEY); form.append('signature', signature);
+           const response = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`, { method: 'POST', body: form });
+           const result: any = await response.json().catch(() => ({}));
+           if (!response.ok || !['ok', 'not found'].includes(String(result.result || '').toLowerCase())) throw new Error(`media:${publicId}`);
+        }
+      }
+      if (stage === 'historical') {
+        const writes: any[] = [];
+        const historicalCursor: Record<string, string> = job.historicalCursor && typeof job.historicalCursor === 'object' ? job.historicalCursor : {};
+        const nextHistoricalCursor: Record<string, string> = { ...historicalCursor };
+        for (const collection of ['equipmentRequests', 'complaints', 'driverRequests']) {
+          const historicalQuery: any = { from: [{ collectionId: collection }], where: { compositeFilter: { op: 'OR', filters: ['customerUid', 'providerUid', 'requesterUid', 'driverUid'].map(field => ({ fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: jsonValue(uid) } })) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 100 };
+          if (historicalCursor[collection]) historicalQuery.startAt = { values: [{ referenceValue: historicalCursor[collection] }] };
+          const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: historicalQuery }) }) as any[] || [];
+          const page = historicalCursor[collection] && rows[0]?.document?.name === historicalCursor[collection] ? rows.slice(1) : rows;
+          if (rows.length >= 100) stageMore = true;
+          if (rows.length) nextHistoricalCursor[collection] = rows[rows.length - 1]?.document?.name;
+          for (const item of page.filter((x: any) => x.document)) {
+            const data = decode(item.document), fields: Record<string, any> = {};
+            const roles = [
+              ['customerUid', ['customer', 'customerPublic', 'customerSnapshot', 'customerProfile']],
+              ['providerUid', ['provider', 'providerPublic', 'providerSnapshot', 'providerProfile']],
+              ['requesterUid', ['requester', 'requesterPublic', 'requesterSnapshot', 'requesterProfile']],
+              ['driverUid', ['driver', 'driverPublic', 'driverSnapshot', 'driverProfile']],
+            ] as const;
+            for (const [uidField, snapshots] of roles) {
+              if (data[uidField] !== uid) continue;
+              fields[uidField] = jsonValue('deleted-user');
+              for (const snapshot of snapshots) if (data[snapshot] !== undefined) fields[snapshot] = jsonValue({ deletedUser: true });
+            }
+            writes.push({ update: { name: item.document.name, fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: item.document.updateTime ? { updateTime: item.document.updateTime } : undefined });
+          }
+        }
+        const verificationQuery: any = { from: [{ collectionId: 'verificationEvents' },], where: { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: jsonValue(uid) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 100 };
+        if (historicalCursor.verificationEvents) verificationQuery.startAt = { values: [{ referenceValue: historicalCursor.verificationEvents }] };
+        const verificationEvents = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: verificationQuery }) }) as any[] || [];
+        const verificationPage = historicalCursor.verificationEvents && verificationEvents[0]?.document?.name === historicalCursor.verificationEvents ? verificationEvents.slice(1) : verificationEvents;
+        stageMore = stageMore || verificationEvents.length >= 100;
+        if (verificationEvents.length) nextHistoricalCursor.verificationEvents = verificationEvents[verificationEvents.length - 1]?.document?.name;
+        for (const item of verificationPage.filter((x: any) => x.document)) writes.push({ update: { name: item.document.name, fields: { uid: jsonValue('deleted-user'), subjectUid: jsonValue('deleted-user') } }, updateMask: { fieldPaths: ['uid', 'subjectUid'] }, currentDocument: item.document.updateTime ? { updateTime: item.document.updateTime } : undefined });
+        if (writes.length) await commit(env, writes.slice(0, 450));
+        if (stageMore) {
+          await commit(env, [{ update: { name, fields: { historicalCursor: jsonValue(nextHistoricalCursor) } }, updateMask: { fieldPaths: ['historicalCursor'] } }]);
+        }
+      }
+      if (stage === 'records') {
+        const writes: any[] = [];
+        const ownedFields: Record<string, string[]> = {
+          userProfiles: ['uid', 'userUid'], providerProfiles: ['uid', 'userUid'], driverProfiles: ['uid', 'userUid'],
+          deviceTokens: ['uid', 'userUid'], notifications: ['uid', 'userUid'], notificationPreferences: ['uid', 'userUid'],
+          notificationTokenOwners: ['uid', 'userUid'], notificationInstallations: ['uid', 'userUid'],
+          notificationDeliveries: ['uid', 'userUid'], notificationOutbox: ['uid', 'userUid'], emailVerificationRateLimits: ['uid'],
+          phoneAliases: ['uid', 'userUid'], phoneOwners: ['uid', 'userUid'], recoveryCodes: ['uid', 'userUid'],
+          temporaryRecovery: ['uid', 'userUid'], verificationIndexes: ['uid', 'userUid'], equipment: ['ownerUid', 'uid'],
+          verificationProfiles: ['uid', 'userUid'], verificationAttempts: ['uid', 'userUid'],
+          equipmentDrafts: ['ownerUid', 'uid'], driverRequests: ['driverUid', 'requesterUid'],
+        };
+        for (const collection of deletionCollections) {
+          const fields = collection === 'users' ? ['__name__'] : (ownedFields[collection] || ['uid']);
+          for (const ownerField of fields) {
+            const raw = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where: { fieldFilter: { field: { fieldPath: ownerField }, op: 'EQUAL', value: ownerField === '__name__' ? { referenceValue: fullName(env, `${collection}/${uid}`) } : jsonValue(uid) } }, limit: 100 } }) }) as any[] || [];
+            for (const item of raw.filter((x: any) => x.document)) writes.push({ delete: item.document.name, currentDocument: item.document.updateTime ? { updateTime: item.document.updateTime } : undefined });
+            stageMore = stageMore || raw.length >= 100;
+          }
+        }
+        if (writes.length) await commit(env, writes.slice(0, 450));
+        stageMore = stageMore || writes.length >= 100;
+      }
+      if (stageMore) {
+        const cursor = stage === 'media' ? mediaCursorNext : undefined;
+        await commit(env, [{ update: { name, fields: { status: jsonValue('partially_completed'), stage: jsonValue(stage), ...(cursor ? { mediaCursor: jsonValue(cursor) } : {}), errors: jsonValue(errors), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'stage', ...(cursor ? ['mediaCursor'] : []), 'errors', 'leaseOwner', 'leaseUntil', 'updatedAt'] } }]);
+        return;
+      }
+      completed.add(stage);
+      const stageResult = stage === 'records' ? { deleted: 1, anonymized: 0, retained: 0, media: 0, errors: [] } : stage === 'historical' ? { deleted: 0, anonymized: 1, retained: 0, media: 0, errors: [] } : stage === 'media' ? { deleted: 0, anonymized: 0, retained: 0, media: 1, errors: [] } : { deleted: 0, anonymized: 0, retained: 0, media: 0, errors: [] };
+      await commit(env, [{ update: { name, fields: { status: jsonValue(stage === 'records' ? 'completed' : 'processing'), stage: jsonValue(stage), completedStages: jsonValue([...completed]), errors: jsonValue(errors), result: jsonValue(stageResult), ...(stage === 'records' ? { leaseOwner: jsonValue(null), leaseUntil: jsonValue(null) } : {}), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'stage', 'completedStages', 'errors', 'result', ...(stage === 'records' ? ['leaseOwner', 'leaseUntil'] : []), 'updatedAt'] } }]);
+    } catch (error) {
+      errors.push(`${stage}:${error instanceof Error ? error.message : 'failed'}`);
+      const attempts = Number(job.attempts || 0) + 1;
+      const status = attempts >= 5 ? 'failed' : 'partially_completed';
+      await commit(env, [{ update: { name, fields: { status: jsonValue(status), attempts: { integerValue: String(attempts) }, errors: jsonValue(errors), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'attempts', 'errors', 'leaseOwner', 'leaseUntil', 'updatedAt'] } }, await auditWrite(env, { uid: String(job.actorUid || 'system'), admin: true, role: 'super_admin' }, 'user_deletion_target_terminal', 'user', uid, crypto.randomUUID(), 'deletion stage failed', undefined, { status, stage, errors: errors.slice(-1) })]);
+      return;
+    }
+  }
+}
+export async function processDeletionJobs(env: Env) {
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'deletionRequests' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['pending', 'queued', 'processing', 'partially_completed'].map(jsonValue) } } } }, limit: 10 } }) }) as any[] || [];
+  for (const row of rows.filter((x: any) => x.document)) await processDeletionJob(env, row);
+  const parents = new Set<string>();
+  for (const row of rows.filter((x: any) => x.document)) { const parent = decode(row.document).parentJobId; if (parent) parents.add(String(parent)); }
+  for (const parent of parents) {
+    const job = await rawDoc(env, 'deletionJobs', parent);
+    if (!job?.data) continue;
+    const children = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'deletionRequests' }], where: { fieldFilter: { field: { fieldPath: 'parentJobId' }, op: 'EQUAL', value: jsonValue(parent) } }, limit: 100 } }) }) as any[] || [];
+    const decoded = children.filter((x: any) => x.document).map((x: any) => decode(x.document)), total = Number(job.data.total || decoded.length), completed = decoded.filter((x: any) => ['completed', 'skipped_protected'].includes(x.status)).length, failed = decoded.filter((x: any) => x.status === 'failed').length;
+    const status = completed === total ? 'completed' : failed ? 'partially_completed' : 'processing';
+    const summaries = decoded.map((x: any) => x.result || {});
+    const result = { completed, failed, total, deleted: summaries.reduce((n: number, x: any) => n + Number(x.deleted || 0), 0), anonymized: summaries.reduce((n: number, x: any) => n + Number(x.anonymized || 0), 0), retained: summaries.reduce((n: number, x: any) => n + Number(x.retained || 0), 0), media: summaries.reduce((n: number, x: any) => n + Number(x.media || 0), 0), errors: summaries.flatMap((x: any) => x.errors || []) };
+    const writes: any[] = [{ update: { name: fullName(env, `deletionJobs/${encodeURIComponent(parent)}`), fields: { status: jsonValue(status), completed: { integerValue: String(completed) }, result: jsonValue(result), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'completed', 'result', 'updatedAt'] } }];
+    if (job.data.status !== status && ['completed', 'partially_completed'].includes(status)) writes.push(await auditWrite(env, { uid: String(job.data.actorUid || 'system'), admin: true, role: 'super_admin' }, 'user_deletion_job_terminal', 'deletionJob', parent, `deletion-terminal:${parent}:${status}`, 'deletion job terminal result', undefined, { status, ...result }));
+    await commit(env, writes);
+  }
 }
 const COUNTRY_CONTRACTS: Record<string, { nameEn: string; nameAr: string; dialCode: string; nativeCurrency: string; enabled: boolean }> = {
   SA: { nameEn: 'Saudi Arabia', nameAr: 'المملكة العربية السعودية', dialCode: '+966', nativeCurrency: 'SAR', enabled: true },
@@ -1436,6 +1830,16 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   if (!bootstrapException) await requireAdmin(user, env);
   if (url.pathname === '/api/admin/session' && req.method === 'GET') return { success: true, uid: user.uid, role: user.permissionRole || user.role, bootstrapRequired: bootstrapException };
   if (url.pathname === '/api/admin/email-verification/reminder' && req.method === 'POST') return emailVerificationReminder(req, env, user);
+  if (url.pathname === '/api/admin/email-verification/reminders/preview' && req.method === 'POST') return emailVerificationReminderPreview(req, env, user);
+  if (url.pathname === '/api/admin/email-verification/reminders/bulk' && req.method === 'POST') return bulkEmailVerificationReminder(req, env, user);
+  if ((url.pathname === '/api/admin/users/deletion-preview' || url.pathname === '/api/admin/deletion/preview') && req.method === 'POST') return deletionPreview(req, env, user);
+  if (url.pathname === '/api/admin/users/deletion-jobs' && req.method === 'POST') return enqueueDeletion(req, env, user);
+  const deletionStatus = url.pathname.match(/^\/api\/admin\/users\/deletion-jobs\/([^/]+)$/);
+  if (deletionStatus && req.method === 'GET') {
+    if (!(await mayDeleteUsers(env, user))) return { error: 'Owner or super-admin governance permission required', status: 403 };
+    const id = decodeURIComponent(deletionStatus[1]), job = await rawDoc(env, 'deletionJobs', id);
+    return job?.data ? { id, status: job.data.status, progress: Number(job.data.completed || 0), total: Number(job.data.total || 0), result: redact(job.data.result || null) } : { error: 'Deletion job not found', status: 404 };
+  }
   if (url.pathname === '/api/admin/email-verification-policy' && req.method === 'GET') {
     const policy = await rawDoc(env, 'emailVerificationPolicies', 'default');
     return { success: true, policy: policy?.data || { enabled: true, requireBeforeRentalRequest: true, requireBeforeListingSubmission: true, requireBeforeDriverActivation: true, allowReminders: true, reminderCooldownSeconds: 86400, version: 1 } };

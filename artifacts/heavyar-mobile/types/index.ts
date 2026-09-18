@@ -161,7 +161,6 @@ export interface Category {
   nameAr: string;
   nameEn: string;
   icon: string;
-  count: number;
 }
 
 export interface Invoice {

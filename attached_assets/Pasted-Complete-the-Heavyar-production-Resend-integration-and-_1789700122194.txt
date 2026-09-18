@@ -1,0 +1,330 @@
+Complete the Heavyar production Resend integration and transactional-email verification.
+
+IMPORTANT SOURCE OF TRUTH:
+
+Official Resend account:
+heavyar.official
+
+Verified sending domain:
+mail.heavyar.com
+
+The owner has now replaced the production secret:
+
+RESEND_API_KEY
+
+with a newly created active Resend sending key.
+
+DO NOT use:
+heavyar.app
+
+DO NOT use:
+noreply@heavyar.app
+
+DO NOT:
+- create another Resend account
+- create another Resend domain
+- change DNS
+- remove mail.heavyar.com
+- expose the API key
+- log the API key
+- move secrets into client code
+
+==================================================
+1. VERIFY RESEND AUTHENTICATION
+==================================================
+
+Using the existing production:
+
+heavyar-api
+
+verify that the new RESEND_API_KEY authenticates successfully with:
+
+https://api.resend.com
+
+Confirm the previous:
+
+auth_failed
+
+condition is gone.
+
+Do not print secret values.
+
+==================================================
+2. CORRECT PRODUCTION SENDER
+==================================================
+
+Use the verified domain:
+
+mail.heavyar.com
+
+Preferred sender:
+
+Heavyar <noreply@mail.heavyar.com>
+
+If another already-valid sender under:
+
+@mail.heavyar.com
+
+is intentionally configured and verified, inspect it before changing anything.
+
+Do not use heavyar.app.
+
+==================================================
+3. SAFE TRANSACTIONAL TEST
+==================================================
+
+Send ONE safe production transactional test email to an authorized QA/test recipient.
+
+Confirm:
+
+- Resend accepted the message
+- provider returned success
+- message ID was returned internally
+- no Firebase fallback was required
+- no credentials appeared in logs
+
+Do not send a broadcast.
+
+==================================================
+4. EMAIL VERIFICATION
+==================================================
+
+Verify the complete production flow:
+
+new Firebase user
+→ Firebase emailVerified = false
+→ Heavyar generates official Firebase verification action link
+→ Resend sends Heavyar-branded verification email
+→ user opens verification link
+→ Firebase confirms verification
+→ app/backend observes emailVerified = true
+
+Firebase must remain authoritative.
+
+Resend is delivery only.
+
+Do NOT implement a custom verification-token system.
+
+==================================================
+5. VERIFICATION EMAIL TEMPLATE
+==================================================
+
+Confirm the production verification email is professional and bilingual.
+
+Arabic should be primary when user language is Arabic.
+
+Include:
+
+- Heavyar branding
+- user name when safely available
+- clear "توثيق البريد الإلكتروني" action
+- security explanation
+- expiry/context guidance
+- ignore message if registration was not requested
+- Heavyar support contact
+
+English equivalent required.
+
+No sensitive information in email content.
+
+==================================================
+6. PASSWORD RESET
+==================================================
+
+Verify both recovery entry methods:
+
+A. Email
+B. Mobile alias
+
+For mobile recovery:
+
+mobile number
+→ Worker resolves linked Firebase account internally
+→ linked email is NEVER disclosed to the client
+→ official Firebase password reset link is generated
+→ Heavyar sends the branded reset email through Resend
+
+No SMS.
+No OTP.
+
+Test that after password change:
+
+- email + NEW password works
+- mobile + SAME NEW password works
+- old password fails for both
+
+Same Firebase UID must remain unchanged.
+
+==================================================
+7. PASSWORD RESET TEMPLATE
+==================================================
+
+Confirm professional bilingual Heavyar branding.
+
+Include:
+
+- Heavyar logo/brand treatment
+- clear reset-password button
+- security warning
+- expiry guidance
+- ignore message if reset was not requested
+- support contact
+
+Do not include raw Firebase action codes in visible text.
+
+==================================================
+8. FALLBACK SAFETY
+==================================================
+
+Keep the Firebase delivery fallback available for operational resilience unless removing it is clearly safer and fully tested.
+
+However, when Resend is healthy:
+Resend should be the primary branded delivery path.
+
+Clearly report which provider handled each QA email.
+
+==================================================
+9. EMAIL VERIFICATION ADMIN QA
+==================================================
+
+Verify the existing Admin controls:
+
+- Verified
+- Unverified
+- filters
+- send reminder
+- resend cooldown
+- verification policy controls
+
+Confirm Admin data reflects Firebase's authoritative verification status.
+
+Do not create a separate conflicting verification truth.
+
+==================================================
+10. REMINDER RATE LIMITING
+==================================================
+
+Verify:
+
+- one-user resend
+- cooldown
+- repeated-request protection
+- bulk reminder safety if bulk reminder exists
+
+Do not allow accidental email flooding.
+
+==================================================
+11. TEMPORARY QA CLEANUP
+==================================================
+
+If temporary QA Auth users are created:
+
+delete after testing:
+
+- Firebase Auth identity
+- user profile
+- phoneOwners alias
+- driver/provider test profile
+- associated QA documents
+
+No permanent fake production data.
+
+==================================================
+12. PRESERVE CURRENT HEAVYAR RELEASE
+==================================================
+
+Do NOT modify:
+
+- GCC country architecture
+- phone + password login model
+- phone OTP future architecture
+- equipment publishing policy
+- payments
+- Nafath
+- FX
+- Expo SDK 54
+- Heavyar website
+
+Do NOT run EAS builds.
+
+==================================================
+13. TESTS
+==================================================
+
+Run:
+
+- Worker tests
+- authentication tests
+- email verification tests
+- password recovery tests
+- mobile auth tests
+- Admin relevant tests
+- TypeScript
+- credential/security scan
+
+Verify no RESEND_API_KEY value appears anywhere in:
+- source
+- Git
+- logs
+- client bundle
+
+==================================================
+14. DEPLOYMENT
+==================================================
+
+If source/config changes are required:
+
+deploy only affected Worker/Admin components.
+
+Preserve:
+
+- all Worker bindings
+- all existing secrets
+- cron schedule
+- routes
+- workers.dev configuration
+
+Do not create another Worker.
+
+==================================================
+15. GIT
+==================================================
+
+If no source change is required:
+do not create a commit.
+
+If source changes are required:
+
+- review diff
+- no secrets
+- commit normally
+- push non-force to origin/main
+
+==================================================
+RETURN
+==================================================
+
+Return:
+
+1. Resend authentication result
+2. Verified production sending domain
+3. Sender address used
+4. Transactional test result
+5. Email-verification delivery result
+6. Firebase emailVerified result
+7. Password-reset-by-email result
+8. Password-reset-by-mobile result
+9. Same-UID after password change result
+10. Firebase fallback status
+11. Admin verification-status result
+12. Reminder/cooldown result
+13. QA cleanup result
+14. tests
+15. components deployed
+16. final Worker version
+17. final Git SHA
+18. any remaining real blocker
+
+Then STOP.
+
+Do NOT start Early Access, landing-page, SEO, or website work yet.

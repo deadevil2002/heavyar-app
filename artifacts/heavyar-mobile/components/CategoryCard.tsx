@@ -41,7 +41,6 @@ export default React.memo(function CategoryCard({ category, onPress, isSelected 
         <IconComponent size={24} color={isSelected ? Colors.primary : Colors.gold} />
       </View>
       <Text style={[styles.name, isSelected && styles.nameSelected]} numberOfLines={1}>{name}</Text>
-      <Text style={styles.count}>{category.count}</Text>
     </Pressable>
   );
 });
@@ -77,10 +76,5 @@ const styles = StyleSheet.create({
   nameSelected: {
     color: Colors.gold,
     fontWeight: '700' as const,
-  },
-  count: {
-    color: Colors.textMuted,
-    fontSize: 11,
-    marginTop: 2,
   },
 });

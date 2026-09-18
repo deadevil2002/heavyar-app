@@ -363,3 +363,59 @@ export function useRolesMutation() {
       fetchApi('/roles', { method: 'POST', body: JSON.stringify(data) }),
   });
 }
+
+// Bulk & Deletion Operations
+export function useRemindersPreview() {
+  return useMutation({
+    mutationFn: (data: { uids?: string[]; filters?: any }) =>
+      fetchApi<{ success: boolean; targeted: number; eligible: number; alreadyVerified: number; cooldown: number; restricted: number; missing: number }>('/email-verification/reminders/preview', { method: 'POST', body: JSON.stringify(data) })
+  });
+}
+
+export function useRemindersBulk() {
+  return useMutation({
+    mutationFn: (data: { uids?: string[]; filters?: any }) =>
+      fetchApi<{ success: boolean; targeted: number; sent: number; skippedVerified: number; skippedCooldown: number; skippedRestricted: number; missing: number; failed: number; results?: any }>('/email-verification/reminders/bulk', { method: 'POST', body: JSON.stringify(data) })
+  });
+}
+
+export function useDeletionPreview() {
+  return useMutation({
+    mutationFn: (data: { uids?: string[]; filters?: any }) =>
+      fetchApi<{
+        success: boolean;
+        targeted: number;
+        eligible: number;
+        protected: number;
+        skipped: number;
+        items?: any[];
+        counts: { equipment: number; driverProfile: number; phoneAlias: number; requests: number; notifications: number; deviceTokens: number; complaints: number; media: number; [key: string]: number };
+        retained: { payments: number; invoices: number; refunds: number; audits: number; [key: string]: number };
+        requiresConfirmation: string;
+        previewToken: string;
+        expiresAt: string;
+      }>('/users/deletion-preview', { method: 'POST', body: JSON.stringify(data) })
+  });
+}
+
+export function useDeletionJob() {
+  return useMutation({
+    mutationFn: (data: { previewToken: string; reason: string; confirmation: string }) =>
+      fetchApi<{ success: boolean; jobId: string; status: string; total: number }>('/users/deletion-jobs', { method: 'POST', body: JSON.stringify(data) })
+  });
+}
+
+export function useDeletionJobStatus(id?: string) {
+  return useQuery({
+    queryKey: ['deletionJob', id],
+    queryFn: () => fetchApi<{ id: string; status: 'queued' | 'processing' | 'completed' | 'partially_completed' | 'failed'; progress: number; total: number; result?: any }>(`/users/deletion-jobs/${id}`),
+    enabled: Boolean(id),
+    refetchInterval: 2000,
+  });
+}
+
+export function useSendReminder() {
+  return useMutation({
+    mutationFn: (uid: string) => fetchApi<{ success: boolean; sent?: boolean; alreadyVerified?: boolean }>(`/email-verification/reminder`, { method: 'POST', body: JSON.stringify({ uid }) })
+  });
+}

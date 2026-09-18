@@ -1,5 +1,5 @@
 import { quoteForRequest, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
-import { acceptStaffInvitation, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, processScheduledCampaigns, processStaffClaimSync, type AdminRole } from './admin';
+import { acceptStaffInvitation, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
 import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry } from './completion';
@@ -269,7 +269,7 @@ async function accountDeletionRequest(req: Request, env: Env, u: User) {
   }
   const now = new Date().toISOString(), writes: any[] = [];
   const requestFields = {
-    uid: { stringValue: u.uid }, status: { stringValue: 'pending' },
+    uid: { stringValue: u.uid }, lifecycle: { stringValue: 'user_deletion' }, status: { stringValue: 'pending' },
     refreshTokenRevocationStatus: { stringValue: 'pending' },
     requestedAt: { timestampValue: String(existing?.data?.requestedAt || now) }, updatedAt: { timestampValue: now },
   };
@@ -2110,6 +2110,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
   executionCtx.waitUntil(processPendingNotificationOutbox(requestEnv));
    executionCtx.waitUntil(processScheduledCampaigns(requestEnv));
    executionCtx.waitUntil(processStaffClaimSync(requestEnv));
+  executionCtx.waitUntil(processDeletionJobs(requestEnv));
   executionCtx.waitUntil(retryDueNotificationDeliveries(requestEnv));
   executionCtx.waitUntil(pollNotificationReceipts(requestEnv));
 } };
