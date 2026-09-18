@@ -413,6 +413,16 @@ service cloud.firestore {
     match /listingAudit/{auditId} {
       allow read, write: if false;
     }
+    // Early Access identities, tokens, consent and suppression are Worker-only,
+    // even for Firebase users with privileged custom claims.
+    match /earlyAccessConfig/{id} { allow read, write: if false; }
+    match /earlyAccessSubscribers/{id} { allow read, write: if false; }
+    match /earlyAccessSuppression/{id} { allow read, write: if false; }
+    match /earlyAccessTokens/{id} { allow read, write: if false; }
+    match /earlyAccessRateLimits/{id} { allow read, write: if false; }
+    match /earlyAccessCampaigns/{id} { allow read, write: if false; }
+    match /earlyAccessPreviews/{id} { allow read, write: if false; }
+    match /earlyAccessDeliveries/{id} { allow read, write: if false; }
     match /{document=**} { allow read, write: if false; }
   }
 }

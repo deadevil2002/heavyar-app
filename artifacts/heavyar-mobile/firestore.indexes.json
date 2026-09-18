@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "earlyAccessSubscribers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "filterFacets", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "normalizedEmail", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "equipment",
       "queryScope": "COLLECTION",
       "fields": [
@@ -158,5 +166,11 @@
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     }
+  ],
+  "fieldOverrides": [
+    { "collectionGroup": "earlyAccessTokens", "fieldPath": "expiresAt", "ttl": true, "indexes": [] },
+    { "collectionGroup": "earlyAccessRateLimits", "fieldPath": "expiresAt", "ttl": true, "indexes": [] },
+    { "collectionGroup": "earlyAccessPreviews", "fieldPath": "expiresAt", "ttl": true, "indexes": [] },
+    { "collectionGroup": "earlyAccessDeliveries", "fieldPath": "expiresAt", "ttl": true, "indexes": [] }
   ]
 }

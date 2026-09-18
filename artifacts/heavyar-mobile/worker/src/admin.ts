@@ -12,6 +12,12 @@ import { handleSeoAdmin, SeoPersistenceError, type SeoStore } from './seo-admin'
 import { handleSeoPublic } from './seo-public';
 import { minorToMajor, type CommercialSnapshot } from './commercial';
 import { quotaFetch, isQuotaError } from './quota-policy';
+import { sendResend } from './index';
+import { handleEarlyAccessAdmin } from './early-access-admin';
+import { handleEarlyAccessPublic } from './early-access-public';
+import { EarlyAccessError, subscriberFacets, type EarlyAccessStore } from './early-access-model';
+import { dailyEarlyAccessRetention } from './early-access-retention';
+import { earlyAccessDeliveryProof } from './early-access-delivery';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
@@ -127,7 +133,7 @@ async function rawDoc(env: Env, collection: string, id: string): Promise<RawDoc 
   return response ? { data: decode(response), updateTime: response.updateTime, name: response.name } : null;
 }
 
-async function priorResendEvent(env: Env, providerMessageId: string) {
+async function priorResendEvent(env: Env, providerMessageId: string, retainSubscriberSuppression = false) {
   if (!providerMessageId) return null;
   const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
     from: [{ collectionId: 'resendWebhookEvents' }],
@@ -137,21 +143,30 @@ async function priorResendEvent(env: Env, providerMessageId: string) {
   const allowed = new Set(['accepted', 'delivered', 'bounced', 'complained', 'failed']);
   return rows.flatMap(row => row.document ? [decode(row.document)] : [])
     .filter(event => event.providerMessageId === providerMessageId && allowed.has(String(event.status)))
-    .sort((a, b) => Date.parse(String(b.eventAt || b.processedAt || '')) - Date.parse(String(a.eventAt || a.processedAt || '')))[0] || null;
+    .sort((a, b) => {
+      if (retainSubscriberSuppression) {
+        const rank = (status: string) => status === 'complained' ? 2 : status === 'bounced' ? 1 : 0;
+        const terminal = rank(b.status) - rank(a.status);
+        if (terminal) return terminal;
+      }
+      return Date.parse(String(b.eventAt || b.processedAt || '')) - Date.parse(String(a.eventAt || a.processedAt || ''));
+    })[0] || null;
 }
 
-async function reconcileResendProjection(env: Env, collection: 'emailVerificationRateLimits' | 'staffInvitations', id: string, providerMessageId: string) {
+async function reconcileResendProjection(env: Env, collection: 'emailVerificationRateLimits' | 'staffInvitations' | 'earlyAccessDeliveries', id: string, providerMessageId: string) {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const event = await priorResendEvent(env, providerMessageId);
+    const event = await priorResendEvent(env, providerMessageId, collection === 'earlyAccessDeliveries');
     if (!event) return null;
     const record = await rawDoc(env, collection, id);
     if (!record?.updateTime || record.data.providerMessageId !== providerMessageId) return null;
     const eventTime = Date.parse(String(event.eventAt || event.processedAt || ''));
     const projectedTime = Date.parse(String(record.data.deliveryEventAt || ''));
     const projectedFinal = ['delivered', 'bounced', 'failed', 'complained'].includes(String(record.data.deliveryStatus));
-    if (!Number.isFinite(eventTime) || Number.isFinite(projectedTime) && (eventTime < projectedTime || eventTime === projectedTime && event.status === record.data.deliveryStatus) ||
-        event.status === 'accepted' && projectedFinal) return record.data.deliveryStatus || null;
-    const fields = { deliveryStatus: jsonValue(event.status), deliveryEventAt: { timestampValue: new Date(eventTime).toISOString() }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() } };
+    const terminalSubscriberEvent = collection === 'earlyAccessDeliveries' && record.data.subscriberId && ['bounced', 'complained'].includes(event.status);
+    if (!Number.isFinite(eventTime) || !terminalSubscriberEvent && (Number.isFinite(projectedTime) && (eventTime < projectedTime || eventTime === projectedTime && event.status === record.data.deliveryStatus) ||
+        event.status === 'accepted' && projectedFinal)) return record.data.deliveryStatus || null;
+    const fields = { deliveryStatus: jsonValue(event.status), deliveryEventAt: { timestampValue: new Date(eventTime).toISOString() }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() },
+      ...(collection === 'earlyAccessDeliveries' ? earlyAccessDeliveryProof(record.data, event.status) : {}) };
     try {
       await commit(env, [{ update: { name: fullName(env, `${collection}/${id}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: record.updateTime } }]);
       return event.status;
@@ -2195,6 +2210,65 @@ export async function handlePublishedSeo(req: Request, env: Env): Promise<Respon
   return handleSeoPublic(req, seoStore(env));
 }
 
+export function earlyAccessStore(env: Env, user: AdminUser = { uid: 'system', admin: false }): EarlyAccessStore {
+  return {
+    read: (collection, id) => rawDoc(env, collection, id),
+    readMany: async references => {
+      if (references.length > 200) throw new EarlyAccessError('INVALID_SELECTION');
+      if (firestoreOverride) return Promise.all(references.map(ref => rawDoc(env, ref.collection, ref.id)));
+      const documents = references.map(ref => fullName(env, `${ref.collection}/${ref.id}`));
+      const rows = await fs(env, ':batchGet', { method: 'POST', body: JSON.stringify({ documents }) }) as any[] || [];
+      const found = new Map<string, RawDoc>(rows.flatMap(row => row.found ? [[row.found.name, { data: decode(row.found), updateTime: row.found.updateTime, name: row.found.name }] as [string, RawDoc]] : []));
+      return documents.map(name => found.get(name) || null);
+    },
+    ownEmail: () => verifiedIdentityEmail(env, user),
+    send: (to, subject, html, key) => sendResend(env, to, subject, html, key),
+    query: async (collection, structuredQuery) => {
+      const cursorReference = structuredQuery.startAt?.values?.find((value: any) => value.referenceValue)?.referenceValue;
+      if (cursorReference && !cursorReference.startsWith(fullName(env, `${collection}/`))) throw new EarlyAccessError('INVALID_CURSOR');
+      if (queryOverride) return queryOverride(collection, '', structuredQuery.limit, structuredQuery);
+      const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [];
+      return rows.flatMap(row => row.document ? [{ data: decode(row.document), name: row.document.name, updateTime: row.document.updateTime }] : []);
+    },
+    save: async (changes, action, target, reason) => {
+      const writes: any[] = changes.map(change => ({
+        update: { name: fullName(env, `${change.collection}/${change.id}`), fields: Object.fromEntries(Object.entries({
+          ...change.data,
+          ...(change.collection === 'earlyAccessSubscribers' ? {
+            filterFacets: subscriberFacets(change.data),
+            retentionAt: change.data.status === 'anonymized' ? null : new Date(Date.parse(change.data.updatedAt) + 365 * 86400000).toISOString(),
+          } : {}),
+          ...(change.collection === 'earlyAccessDeliveries' ? { expiresAt: change.data.expiresAt || new Date(Date.now() + (change.data.subscriberId ? 366 : 90) * 86400000).toISOString() } : {}),
+        }).map(([key, value]) => [key, ['expiresAt', 'retentionAt'].includes(key) && typeof value === 'string' ? { timestampValue: value } : jsonValue(value)]).concat(Object.entries(change.collection === 'earlyAccessDeliveries' ? earlyAccessDeliveryProof(change.data, change.data.deliveryStatus) : {}))) },
+        currentDocument: change.prior ? { updateTime: change.prior.updateTime } : { exists: false },
+      }));
+      // A missing version must never become an unconditional overwrite.
+      if (changes.some(change => change.prior && !change.prior.updateTime)) throw new EarlyAccessError('STORAGE_UNAVAILABLE', 503);
+      if (action) writes.push(await auditWrite(env, user, action, 'earlyAccess', target, crypto.randomUUID(), reason || action));
+      try {
+        await commit(env, writes);
+        if (action === 'early_access_email_accepted') {
+          for (const change of changes) if (change.collection === 'earlyAccessDeliveries' && change.data.providerMessageId) {
+            await reconcileResendProjection(env, 'earlyAccessDeliveries', change.id, change.data.providerMessageId);
+          }
+        }
+      }
+      catch (error) { if (error instanceof FirestoreConflictError) throw new EarlyAccessError('CONCURRENT_UPDATE', 409); throw error; }
+    },
+  };
+}
+export async function handlePublicEarlyAccess(req: Request, env: Env) {
+  try { return await handleEarlyAccessPublic(req, earlyAccessStore(env)); }
+  catch (error) {
+    if (isQuotaError(error)) throw error;
+    if (error instanceof EarlyAccessError) return { error: error.code, status: error.status };
+    return { error: 'EARLY_ACCESS_UNAVAILABLE', status: 503 };
+  }
+}
+export async function processEarlyAccessRetention(env: Env) {
+  return dailyEarlyAccessRetention(earlyAccessStore(env));
+}
+
 export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const url = new URL(req.url);
   // This route is intentionally before requireAdmin: an invited customer or a
@@ -2213,6 +2287,14 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const bootstrapException = bootstrapCandidate && !bootstrapConfig?.data?.ownerUid;
   if (!bootstrapException) authorizeResolvedAdmin(user, user.testInjected ? undefined : staff);
   else requireVerifiedAdmin(user);
+  if (url.pathname.startsWith('/api/admin/early-access/')) {
+    try { return await handleEarlyAccessAdmin(req, earlyAccessStore(env, user), { uid: user.uid, role: user.permissionRole || user.role }); }
+    catch (error) {
+      if (isQuotaError(error)) throw error;
+      if (error instanceof EarlyAccessError) return { error: error.code, status: error.status };
+      return { error: 'EARLY_ACCESS_UNAVAILABLE', status: 503 };
+    }
+  }
   if (url.pathname === '/api/admin/seo' || url.pathname.startsWith('/api/admin/seo/')) {
     return handleSeoAdmin(req, seoStore(env, user), {
       uid: user.uid, canRead: can(user, 'seo.read'), canEdit: can(user, 'seo.edit'), canPublish: can(user, 'seo.publish'),

@@ -109,6 +109,19 @@ beforeEach(async () => {
 afterAll(async () => env?.cleanup());
 
 describe('Firestore authorization baseline', () => {
+  it('denies all direct Early Access reads, queries and writes, even privileged Firebase claims', async () => {
+    const collections = ['earlyAccessConfig', 'earlyAccessSubscribers', 'earlyAccessSuppression', 'earlyAccessTokens', 'earlyAccessRateLimits', 'earlyAccessCampaigns', 'earlyAccessPreviews', 'earlyAccessDeliveries'];
+    for (const db of [
+      asModularFirestore(env.unauthenticatedContext().firestore()),
+      asModularFirestore(env.authenticatedContext('early-owner', { admin: true, role: 'super_admin', heavyarRole: 'owner', email_verified: true }).firestore()),
+    ]) {
+      for (const name of collections) {
+        await assertFails(getDoc(doc(db, name, 'private')));
+        await assertFails(getDocs(query(collection(db, name))));
+        await assertFails(setDoc(doc(db, name, 'private'), { email: 'private@example.test', enabled: true }));
+      }
+    }
+  });
   it('denies role escalation and protected profile fields', async () => {
     const db = authed('customer-1');
     await assertFails(setDoc(doc(db, 'users/customer-1'), {

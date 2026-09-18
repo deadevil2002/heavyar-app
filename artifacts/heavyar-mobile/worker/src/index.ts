@@ -1,6 +1,6 @@
 import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
 import { buildLegacyCatalog, calculateCommercial, majorToMinor, minorToMajor, resolveRule, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
-import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
+import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
 import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry } from './completion';
@@ -8,6 +8,7 @@ import { PUBLIC_IDENTIFIER_COUNTER_IDS, PUBLIC_IDENTIFIER_FIELDS, formatPublicId
 import { isPublicRentableListing, legacyProviderReady, listingVisibilityForOwnerActive, requiresListingRereview } from './moderation';
 import { createInvoicePdfService, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
 import { quotaFetch, isQuotaError, quotaResponse, quotaBlocked } from './quota-policy';
+import { earlyAccessDeliveryProof } from './early-access-delivery';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -206,13 +207,16 @@ async function resendWebhook(req: Request, env: Env) {
   if (await fs(env, markerPath)) return out(env, req, { success: true, duplicate: true });
 
   const writes: any[] = [];
-  for (const collection of ['emailVerificationRateLimits', 'staffInvitations']) {
+  for (const collection of ['emailVerificationRateLimits', 'staffInvitations', 'earlyAccessDeliveries']) {
     const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where: { fieldFilter: { field: { fieldPath: 'providerMessageId' }, op: 'EQUAL', value: { stringValue: providerMessageId } } }, limit: 20 } }) }) as any[] || [];
     for (const row of rows.filter((item: any) => item.document && decode(item.document).providerMessageId === providerMessageId)) {
       const prior = decode(row.document), priorStatus = String(prior.deliveryStatus || ''), priorEventTime = Date.parse(String(prior.deliveryEventAt || ''));
       const priorIsFinal = ['delivered', 'bounced', 'failed', 'complained'].includes(priorStatus);
-      if (status === 'accepted' && priorIsFinal || Number.isFinite(priorEventTime) && parsedEventTime < priorEventTime) continue;
-      writes.push({ update: { name: row.document.name, fields: { deliveryStatus: { stringValue: status }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() }, deliveryEventAt: { timestampValue: eventAt } } }, updateMask: { fieldPaths: ['deliveryStatus', 'deliveryUpdatedAt', 'deliveryEventAt'] }, currentDocument: row.document.updateTime ? { updateTime: row.document.updateTime } : undefined });
+      const terminalSubscriberEvent = collection === 'earlyAccessDeliveries' && prior.subscriberId && ['bounced', 'complained'].includes(status);
+      if (!terminalSubscriberEvent && (status === 'accepted' && priorIsFinal || Number.isFinite(priorEventTime) && parsedEventTime < priorEventTime)) continue;
+      const fields = { deliveryStatus: { stringValue: status }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() }, deliveryEventAt: { timestampValue: eventAt },
+        ...(collection === 'earlyAccessDeliveries' ? earlyAccessDeliveryProof(prior, status) : {}) };
+      writes.push({ update: { name: row.document.name, fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: row.document.updateTime ? { updateTime: row.document.updateTime } : undefined });
     }
   }
   const processedAt = new Date().toISOString();
@@ -1752,9 +1756,9 @@ async function resendSenderReady(env: Env) {
   if (!resendSenderDomainValid(resendFrom(env))) { resendLastOutcome = 'sender_rejected'; return false; }
   return true;
 }
-async function sendResend(env: Env, to: string, subject: string, html: string): Promise<EmailDeliveryResult> {
+export async function sendResend(env: Env, to: string, subject: string, html: string, idempotencyKey?: string): Promise<EmailDeliveryResult> {
   if (!await resendSenderReady(env)) return { delivered: false, provider: 'none', outcome: resendLastOutcome };
-  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: resendFrom(env), to: [to], subject, html }) });
+  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) }, body: JSON.stringify({ from: resendFrom(env), to: [to], subject, html }) });
   const result: any = await response.json().catch(() => null);
   resendLastOutcome = response.ok ? 'accepted' : response.status === 401 || response.status === 403 ? 'auth_failed' : response.status === 429 ? 'rate_limited' : response.status === 400 && /sender|domain|from/i.test(String(result?.name || result?.message || '')) ? 'sender_rejected' : 'provider_error';
   resendLastDeliverySucceeded = response.ok;
@@ -2598,6 +2602,16 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
   const path = new URL(req.url).pathname;
   try {
     if (path === '/health') return out(env, req, { success: true, service: 'heavyar-api' });
+    if (path.startsWith('/api/early-access/')) {
+      const result = await handlePublicEarlyAccess(req, env);
+      if (result instanceof Response) return result;
+      const { status = 200, ...payload } = result as Record<string, any>;
+      const response = out(env, req, payload, status);
+      response.headers.set('Cache-Control', 'no-store');
+      response.headers.set('Referrer-Policy', 'no-referrer');
+      response.headers.set('X-Robots-Tag', 'noindex, nofollow');
+      return response;
+    }
     if (path === '/api/seo/published') return await handlePublishedSeo(req, env);
     if ((path === '/api/send-email-otp' || path === '/api/verify-email-otp') && req.method === 'POST') return out(env, req, { success: false, error: 'Deprecated verification flow', errorCode: 'DEPRECATED_VERIFICATION_FLOW' }, 410);
      if (path === '/api/auth/config' && req.method === 'GET') return await authConfig(req, env);
@@ -2722,7 +2736,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     // Sequence processors so exhaustion in one prevents the next scan. Existing
     // per-record leases/idempotency remain unchanged; future ticks can recover.
     for (const processor of [processPendingNotificationOutbox, processScheduledCampaigns,
-      processStaffClaimSync, processDeletionJobs, retryDueNotificationDeliveries, pollNotificationReceipts]) {
+      processStaffClaimSync, processDeletionJobs, retryDueNotificationDeliveries, pollNotificationReceipts, processEarlyAccessRetention]) {
       if (quotaBlocked()) break;
       try { await processor(requestEnv); }
       catch (error) { if (isQuotaError(error)) break; processorFailed = true; }

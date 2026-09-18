@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, Truck, Wrench, FileText, 
   CreditCard, FileBox, Undo2, AlertOctagon, ShieldCheck, 
   Settings, Database, History, Bell, LogOut, Globe, Menu, X,
-  Shield, Megaphone, UserCog, Wallet, Car, Search
+  Shield, Megaphone, UserCog, Wallet, Car, Search, Rocket
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { useAppState } from '@/lib/app-state';
@@ -25,7 +25,11 @@ export function Sidebar() {
 
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
 
-  const groups = [
+  const groups: {
+    title: string;
+    adminOnly?: boolean;
+    links: { href: string; icon: any; label: string; allowedRoles?: string[] }[];
+  }[] = [
     {
       title: t('الرئيسية', 'Main'),
       links: [
@@ -65,6 +69,7 @@ export function Sidebar() {
       title: t('التسويق', 'Marketing'),
       links: [
         { href: '/campaigns', icon: Megaphone, label: t('الحملات الترويجية', 'Marketing Campaigns') },
+        { href: '/early-access', icon: Rocket, label: t('الوصول المبكر', 'Early Access'), allowedRoles: ['owner', 'super_admin', 'marketing', 'admin', 'auditor'] },
         { href: '/seo', icon: Search, label: t('تحسين الظهور والبحث', 'SEO & Search') },
       ]
     },
@@ -123,7 +128,12 @@ export function Sidebar() {
               <div className="px-4 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                 {group.title}
               </div>
-              {group.links.map(link => <NavLink key={link.href} {...link} />)}
+              {group.links.map(link => {
+                if (link.allowedRoles && !link.allowedRoles.includes(session?.role || '')) {
+                  return null;
+                }
+                return <NavLink key={link.href} {...link} />;
+              })}
             </div>
           );
         })}
