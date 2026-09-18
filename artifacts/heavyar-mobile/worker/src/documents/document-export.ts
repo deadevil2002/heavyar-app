@@ -38,6 +38,21 @@ const amount = (row: Record<string, unknown>, ...names: string[]) => {
   }
   return '';
 };
+const commercial = (row: Record<string, unknown>) => {
+  const value = row.commercialSnapshot ?? row.paidCommercialSnapshot ?? row.finalCommercialSnapshot;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+};
+const commercialAmount = (row: Record<string, unknown>, field: string) => {
+  const snapshot = commercial(row), raw = snapshot[field], value = Number(raw), currency = String(snapshot.currency || '');
+  if (raw === null || raw === undefined) return '';
+  if (!Number.isSafeInteger(value) || value < 0 || !/^(SAR|AED|KWD|QAR|BHD|OMR)$/.test(currency)) return '';
+  const scale = currency === 'KWD' || currency === 'BHD' || currency === 'OMR' ? 1000 : 100;
+  return `${currency} ${(value / scale).toFixed(scale === 1000 ? 3 : 2)}`;
+};
+const commercialText = (row: Record<string, unknown>, field: string) => {
+  const value = commercial(row)[field];
+  return value === undefined || value === null || typeof value === 'object' ? '' : String(value);
+};
 const publicId = (row: Record<string, unknown>, ...names: string[]) => text(row, ...names, 'publicId', 'publicNumber', 'id');
 const created = (row: Record<string, unknown>) => text(row, 'createdAt', 'issuedAt', 'paidAt', 'updatedAt');
 
@@ -71,18 +86,26 @@ const schemas: Record<ExportEntity, (generatedAt: string) => Column[]> = {
     { header: 'Customer Email Address', value: row => text(row, 'customerEmail') }, { header: 'Provider Name', value: row => text(row, 'providerName', 'sellerName') },
     { header: 'Equipment', value: row => text(row, 'equipmentName', 'equipmentTitle') }, { header: 'Rental Start', value: row => text(row, 'startDate', 'rentalStart') },
     { header: 'Rental End', value: row => text(row, 'endDate', 'rentalEnd') }, { header: 'Total Amount', value: row => amount(row, 'total', 'totalAmount', 'amount') },
+    { header: 'Heavyar Fee', value: row => commercialAmount(row, 'platformFeeMinor') }, { header: 'Provider Receivable', value: row => commercialAmount(row, 'providerReceivableMinor') },
+    { header: 'Customer Payable', value: row => commercialAmount(row, 'customerPayableMinor') }, { header: 'Commission Version', value: row => commercialText(row, 'ruleVersion') },
     { header: 'Payment Status', value: row => text(row, 'paymentStatus', 'paymentState') }, { header: 'Request Status', value: row => text(row, 'status') }, commonTimestamp(generatedAt),
   ],
   payments: generatedAt => [
     { header: 'Payment ID', value: row => publicId(row, 'paymentPublicId', 'paymentId') }, { header: 'Request Number', value: row => publicId(row, 'publicRequestNumber', 'requestNumber', 'requestId') },
     { header: 'Customer Name', value: row => text(row, 'customerName', 'buyerName') }, { header: 'Provider Name', value: row => text(row, 'providerName', 'sellerName') },
     { header: 'Payment Provider', value: row => text(row, 'provider') }, { header: 'Payment Reference', value: row => text(row, 'paymentReference', 'providerReference', 'transactionReference') },
-    { header: 'Amount', value: row => amount(row, 'amount', 'totalAmount') }, { header: 'Payment Status', value: row => text(row, 'state', 'status') }, { header: 'Paid At', value: row => text(row, 'paidAt') }, commonTimestamp(generatedAt),
+    { header: 'Amount', value: row => amount(row, 'amount', 'totalAmount') }, { header: 'Heavyar Fee', value: row => commercialAmount(row, 'platformFeeMinor') },
+    { header: 'Provider Receivable', value: row => commercialAmount(row, 'providerReceivableMinor') }, { header: 'Commission Version', value: row => commercialText(row, 'ruleVersion') },
+    { header: 'Payment Status', value: row => text(row, 'state', 'status') }, { header: 'Paid At', value: row => text(row, 'paidAt') }, commonTimestamp(generatedAt),
   ],
   invoices: generatedAt => [
     { header: 'Invoice Number', value: row => publicId(row, 'invoiceNumber') }, { header: 'Request Number', value: row => publicId(row, 'publicRequestNumber', 'requestNumber', 'requestId') },
     { header: 'Customer Name', value: row => text(row, 'customerName', 'buyerName') }, { header: 'Provider Name', value: row => text(row, 'providerName', 'sellerName') },
-    { header: 'Total Amount', value: row => amount(row, 'totalAmount', 'amount') }, { header: 'Invoice Status', value: row => text(row, 'status') }, { header: 'Issued At', value: created }, commonTimestamp(generatedAt),
+    { header: 'Base Amount', value: row => commercialAmount(row, 'baseAmountMinor') }, { header: 'Heavyar Fee', value: row => commercialAmount(row, 'platformFeeMinor') },
+    { header: 'Customer Fee Share', value: row => commercialAmount(row, 'customerFeeMinor') }, { header: 'Provider Receivable', value: row => commercialAmount(row, 'providerReceivableMinor') },
+    { header: 'Tax', value: row => commercialAmount(row, 'taxAmountMinor') }, { header: 'Gateway Fee', value: row => commercialAmount(row, 'gatewayFeeMinor') },
+    { header: 'Total Amount', value: row => amount(row, 'totalAmount', 'amount') }, { header: 'Commission Version', value: row => commercialText(row, 'ruleVersion') },
+    { header: 'Invoice Status', value: row => text(row, 'status') }, { header: 'Issued At', value: created }, commonTimestamp(generatedAt),
   ],
   refunds: generatedAt => [
     { header: 'Refund ID', value: row => publicId(row, 'refundPublicId', 'refundId') }, { header: 'Request Number', value: row => publicId(row, 'publicRequestNumber', 'requestNumber', 'requestId') },

@@ -151,16 +151,10 @@ export default function EquipmentDetailScreen() {
       const startDate = start.toISOString().slice(0, 10);
 
       let endDate = '';
-      let amount = 0;
-      let platformFee = 0;
-      let providerAmount = 0;
 
       if (draft.requestMode === 'fixed_days') {
         const days = draft.numberOfDays || 0;
         endDate = new Date(start.getTime() + days * 86400000).toISOString().slice(0, 10);
-        amount = equipment.pricePerDay * days;
-        platformFee = Math.round(amount * 0.1);
-        providerAmount = amount - platformFee;
       }
 
       const availability = await checkListingAvailability(equipment.id, { from: startDate, ...(endDate ? { until: endDate } : {}) });
@@ -173,32 +167,7 @@ export default function EquipmentDetailScreen() {
         equipmentId: equipment.id,
         customerUid: currentUser.uid,
         providerUid: equipment.ownerUid,
-        pricePerDay: equipment.pricePerDay,
-        customerPublic: {
-          uid: currentUser.uid,
-          nameAr: currentUser.nameAr,
-          nameEn: currentUser.nameEn,
-          avatar: currentUser.avatar,
-        },
-        providerPublic: {
-          uid: equipment.ownerUid,
-          nameAr: ownerPublic?.nameAr || '',
-          nameEn: ownerPublic?.nameEn || '',
-          avatar: ownerPublic?.avatar || '',
-        },
-        status: 'pending' as const,
         requestMode: draft.requestMode,
-        startDate,
-        endDate,
-        notes: draft.notes || '',
-        amount,
-        platformFee,
-        providerAmount,
-        paymentStatus: 'unpaid' as const,
-        paymentId: '',
-        paidAt: null,
-        currency: listingCurrency(equipment.nativeCurrency, equipment.countryCode),
-        allowChat: false,
         ...(draft.requestMode === 'fixed_days' ? { numberOfDays: draft.numberOfDays } : {}),
       };
 

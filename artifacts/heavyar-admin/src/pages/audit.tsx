@@ -13,6 +13,9 @@ export default function Audit() {
   
   const { data, isLoading } = useAudit({ limit: 50, ...(cursor ? { cursor } : {}) });
   const actionLabels: Record<string, [string, string]> = {
+    commission_create: ['إنشاء إصدار للعمولات', 'Commission version created'],
+    commission_publish: ['اعتماد إصدار للعمولات', 'Commission version published'],
+    commission_retire: ['إيقاف إصدار للعمولات', 'Commission version retired'],
     owner_bootstrap: ['تم تفعيل المالك الأول للنظام', 'Initial system owner activated'],
     email_verification_reminder: ['إرسال تذكير توثيق البريد', 'Email verification reminder sent'],
     email_verification_reminder_bulk: ['إرسال تذكيرات توثيق البريد', 'Bulk email verification reminders sent'],
@@ -121,6 +124,7 @@ export default function Audit() {
     staffInvitation: ['دعوة موظف', 'Staff invitation'],
     ownershipTransfer: ['نقل ملكية', 'Ownership transfer'],
     configuration: ['إعدادات', 'Configuration'],
+    commercialSettings: ['العمولات والرسوم', 'Fees & Commission'],
     campaign: ['حملة', 'Campaign'],
     notificationDelivery: ['تسليم إشعار', 'Notification delivery'],
     verificationAttempt: ['محاولة تحقق', 'Verification attempt'],

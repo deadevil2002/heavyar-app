@@ -48,6 +48,7 @@ export function Sidebar() {
         { href: '/payments', icon: CreditCard, label: t('المدفوعات', 'Payments') },
         { href: '/invoices', icon: FileBox, label: t('الفواتير', 'Invoices') },
         { href: '/refunds', icon: Undo2, label: t('المستردات', 'Refunds') },
+        { href: '/fees', icon: FileText, label: t('العمولات والرسوم', 'Fees & Commission') },
         { href: '/gateways', icon: Wallet, label: t('بوابات الدفع', 'Payment Gateways') },
       ]
     },

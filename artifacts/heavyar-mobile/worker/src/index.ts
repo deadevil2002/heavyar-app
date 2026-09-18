@@ -1,4 +1,5 @@
-import { quoteForRequest, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
+import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
+import { buildLegacyCatalog, calculateCommercial, majorToMinor, minorToMajor, resolveRule, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
 import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
@@ -36,7 +37,7 @@ let customTokenOverride: ((uid: string) => Promise<string>) | undefined;
 let phoneLoginLimiterOverride: ((phoneHash: string, ipHash: string) => Promise<boolean | null>) | undefined;
 let publicDriverLimiterOverride: ((scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) | undefined;
 let capturedDriverQueries: any[] | undefined;
-  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries };
+  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -657,8 +658,135 @@ function paymentPricing(env: Env) {
     env.PAYMENT_VAT_RATE === undefined ? 0.15 : Number(env.PAYMENT_VAT_RATE),
   );
 }
-function paymentQuote(env: Env, r: any, e: any, requestId: string) {
-  return quoteForRequest(r, e, requestId, Date.now(), paymentPricing(env));
+async function paymentQuote(env: Env, r: any, e: any, requestId: string) {
+  const baseAmount = Number(r?.finalAmount ?? r?.amount);
+  const calculatedAt = new Date().toISOString();
+  const snapshot = r?.finalCommercialSnapshot
+    ? r.finalCommercialSnapshot as CommercialSnapshot
+    : r?.commercialSnapshot
+      ? recalculateLockedCommercial(env, r.commercialSnapshot, baseAmount, calculatedAt)
+      : legacyRecordCommercialSnapshot(env, r, e, baseAmount, calculatedAt);
+  return quoteFromCommercial(snapshot, requestId);
+}
+async function commercialCatalog(env: Env): Promise<CommercialCatalog> {
+  const stored = await getDoc(env, 'commercialSettings', 'catalog');
+  if (stored === null || stored === undefined) return buildLegacyCatalog(paymentPricing(env).platformFeeRate);
+  if (!Number.isSafeInteger(stored.revision) || !Array.isArray(stored.rules)) err('Commercial configuration unavailable');
+  return stored as CommercialCatalog;
+}
+function commercialContext(r: any, e: any) {
+  const currency = String(e?.nativeCurrency || e?.currency || r?.nativeCurrency || r?.currency || 'SAR').toUpperCase();
+  const countryCode = String(e?.countryCode || r?.countryCode || ({ SAR: 'SA', AED: 'AE', KWD: 'KW', QAR: 'QA', BHD: 'BH', OMR: 'OM' } as Record<string, string>)[currency] || '').toUpperCase();
+  // `other` is the canonical bucket for pre-category legacy listings.
+  const categoryId = String(e?.category || r?.categoryId || 'other');
+  const providerUid = String(e?.ownerUid || r?.providerUid || '');
+  return { currency, countryCode, categoryId, providerUid };
+}
+type LockedCommercialSnapshot = CommercialSnapshot & {
+  ruleEffectiveFrom?: string;
+  ruleEffectiveTo?: string | null;
+  ruleCreatedAt?: string;
+  ruleCreatedBy?: string;
+  ruleUpdatedAt?: string;
+  ruleUpdatedBy?: string;
+  ruleNotes?: string;
+};
+function configuredVatRateBps(env: Env): number {
+  const rate = paymentPricing(env).vatRate;
+  const bps = Math.round(rate * 10_000);
+  if (Math.abs(rate * 10_000 - bps) > Number.EPSILON * 10_000) err('VAT rate must be representable in basis points');
+  return bps;
+}
+function taxMinor(env: Env, baseAmountMinor: number, currency: string): { amount?: number; rateBps?: number | null; reference?: string } {
+  if (currency !== 'SAR') return {};
+  const bps = configuredVatRateBps(env);
+  return { amount: Number((BigInt(baseAmountMinor) * BigInt(bps) + 5_000n) / 10_000n), reference: 'legacy-sar-vat-policy' };
+}
+async function authoritativeCommercialSnapshot(env: Env, r: any, e: any, baseAmount: number, calculatedAt = new Date().toISOString()): Promise<CommercialSnapshot> {
+  const context = commercialContext(r, e);
+  const baseAmountMinor = majorToMinor(baseAmount, context.currency);
+  const catalog = await commercialCatalog(env);
+  const rule = resolveRule(catalog, { ...context, at: calculatedAt });
+  const tax = taxMinor(env, baseAmountMinor, context.currency);
+  const snapshot = calculateCommercial(rule, {
+    ...context, baseAmountMinor, calculatedAt,
+    ...(tax.amount === undefined ? {} : { taxAmountMinor: tax.amount, taxReference: tax.reference }),
+  });
+  return Object.assign(snapshot, {
+    taxRateBps: tax.amount === undefined ? null : configuredVatRateBps(env),
+    ruleEffectiveFrom: rule.effectiveFrom, ruleEffectiveTo: rule.effectiveTo,
+    ruleCreatedAt: rule.createdAt, ruleCreatedBy: rule.createdBy,
+    ruleUpdatedAt: rule.updatedAt, ruleUpdatedBy: rule.updatedBy, ruleNotes: rule.notes,
+  }) as LockedCommercialSnapshot;
+}
+function lockedRule(snapshot: LockedCommercialSnapshot): CommissionRule {
+  const legacy = snapshot.ruleVersion.startsWith('legacy-');
+  if (!legacy && (!snapshot.ruleEffectiveFrom || !snapshot.ruleCreatedAt || !snapshot.ruleCreatedBy || !snapshot.ruleUpdatedAt || !snapshot.ruleUpdatedBy)) {
+    err('Locked commercial rule metadata unavailable');
+  }
+  return {
+    version: snapshot.ruleVersion, status: snapshot.ruleStatus,
+    effectiveFrom: snapshot.ruleEffectiveFrom || '1970-01-01T00:00:00.000Z',
+    effectiveTo: snapshot.ruleEffectiveTo ?? null,
+    createdAt: snapshot.ruleCreatedAt || '1970-01-01T00:00:00.000Z', createdBy: snapshot.ruleCreatedBy || 'legacy',
+    updatedAt: snapshot.ruleUpdatedAt || '1970-01-01T00:00:00.000Z', updatedBy: snapshot.ruleUpdatedBy || 'legacy',
+    notes: snapshot.ruleNotes || '',
+    mode: snapshot.mode, percentageBps: snapshot.percentageBps,
+    fixedAmountMinor: snapshot.fixedAmountMinor, minimumFeeMinor: snapshot.minimumFeeMinor,
+    maximumFeeMinor: snapshot.maximumFeeMinor, payer: snapshot.payer,
+    customerShareBps: snapshot.customerShareBps, scope: snapshot.scope, currency: snapshot.currency,
+  };
+}
+function recalculateLockedCommercial(env: Env, snapshot: CommercialSnapshot, baseAmount: number, calculatedAt: string): CommercialSnapshot {
+  const baseAmountMinor = majorToMinor(baseAmount, snapshot.currency);
+  const locked = snapshot as LockedCommercialSnapshot;
+  const taxRateBps = locked.taxRateBps;
+  if (locked.currency === 'SAR' && !Number.isSafeInteger(taxRateBps)) err('Locked VAT policy unavailable');
+  const taxAmountMinor = taxRateBps === null || taxRateBps === undefined ? undefined
+    : Number((BigInt(baseAmountMinor) * BigInt(taxRateBps) + 5_000n) / 10_000n);
+  const result = calculateCommercial(lockedRule(locked), {
+    baseAmountMinor, countryCode: snapshot.countryCode, categoryId: snapshot.categoryId,
+    providerUid: snapshot.providerUid, currency: snapshot.currency, calculatedAt,
+    ...(taxAmountMinor === undefined ? {} : { taxAmountMinor, taxReference: snapshot.taxReference }),
+  });
+  return Object.assign(result, {
+    taxRateBps: taxRateBps ?? null,
+    ruleEffectiveFrom: locked.ruleEffectiveFrom, ruleEffectiveTo: locked.ruleEffectiveTo ?? null,
+    ruleCreatedAt: locked.ruleCreatedAt, ruleCreatedBy: locked.ruleCreatedBy,
+    ruleUpdatedAt: locked.ruleUpdatedAt, ruleUpdatedBy: locked.ruleUpdatedBy, ruleNotes: locked.ruleNotes,
+  });
+}
+function legacyRecordCommercialSnapshot(env: Env, r: any, e: any, baseAmount: number, calculatedAt: string): LockedCommercialSnapshot {
+  const context = commercialContext(r, e);
+  const baseAmountMinor = majorToMinor(baseAmount, context.currency);
+  const storedBase = Number(r.finalAmount ?? r.amount);
+  let storedFee = Number(r.finalPlatformFee ?? r.platformFee);
+  if (!Number.isFinite(storedBase) || storedBase <= 0) err('Legacy commercial values unavailable');
+  const hasStoredFee = Number.isFinite(storedFee) && storedFee >= 0 &&
+    !(r.requestMode === 'open_ended' && r.finalAmount === undefined && storedFee === 0);
+  if (!hasStoredFee) storedFee = Math.round(storedBase * paymentPricing(env).platformFeeRate * 100) / 100;
+  const sourceBaseMinor = majorToMinor(storedBase, context.currency);
+  const sourceFeeMinor = majorToMinor(storedFee, context.currency);
+  const platformFeeMinor = baseAmountMinor === sourceBaseMinor ? sourceFeeMinor
+    : Number((BigInt(sourceFeeMinor) * BigInt(baseAmountMinor) + BigInt(sourceBaseMinor) / 2n) / BigInt(sourceBaseMinor));
+  const providerReceivableMinor = baseAmountMinor - platformFeeMinor;
+  if (providerReceivableMinor < 0) err('Invalid legacy commercial values');
+  const tax = taxMinor(env, baseAmountMinor, context.currency);
+  const taxAmountMinor = tax.amount ?? null;
+  return {
+    ruleVersion: hasStoredFee ? 'legacy-record-values' : 'legacy-commission-v1', ruleStatus: hasStoredFee ? 'retired' : 'active', mode: hasStoredFee ? 'fixed' : 'percentage',
+    percentageBps: hasStoredFee ? 0 : Math.round(paymentPricing(env).platformFeeRate * 10_000), fixedAmountMinor: hasStoredFee ? sourceFeeMinor : 0, minimumFeeMinor: 0, maximumFeeMinor: null,
+    payer: 'provider', customerShareBps: 0, scope: { countryCode: null, categoryId: null, providerUid: null },
+    baseAmountMinor, platformFeeMinor, customerFeeMinor: 0, providerFeeMinor: platformFeeMinor,
+    providerReceivableMinor, customerPayableMinor: baseAmountMinor + (taxAmountMinor ?? 0),
+    taxAmountMinor, gatewayFeeMinor: null, currency: context.currency, countryCode: context.countryCode,
+    categoryId: context.categoryId, providerUid: context.providerUid, calculatedAt,
+    ...(tax.reference ? { taxReference: tax.reference } : {}),
+    taxRateBps: tax.amount === undefined ? null : configuredVatRateBps(env),
+    ruleEffectiveFrom: '1970-01-01T00:00:00.000Z', ruleEffectiveTo: null,
+    ruleCreatedAt: '1970-01-01T00:00:00.000Z', ruleCreatedBy: 'legacy',
+    ruleUpdatedAt: '1970-01-01T00:00:00.000Z', ruleUpdatedBy: 'legacy', ruleNotes: '',
+  };
 }
 function assertSarSettlement(r: any, e: any) {
   const currency = String(e?.nativeCurrency || r?.nativeCurrency || r?.currency || 'SAR').toUpperCase();
@@ -911,7 +1039,7 @@ async function enforceTrustForPayment(env: Env, u: User, request: any, equipment
   return enforceTrustForCustomerAction(env, u.uid, request, equipment);
 }
 function requestDto(id: string, value: any) {
-  return { id, publicRequestNumber: value.publicRequestNumber ?? null, equipmentId: value.equipmentId, customerUid: value.customerUid, providerUid: value.providerUid, status: value.status, requestMode: value.requestMode, numberOfDays: value.numberOfDays ?? null, startDate: value.startDate ?? null, endDate: value.endDate ?? null, amount: value.amount, platformFee: value.platformFee, providerAmount: value.providerAmount, paymentStatus: value.paymentStatus, paymentState: value.paymentState ?? null, currency: value.currency, allowChat: value.allowChat === true, createdAt: value.createdAt, updatedAt: value.updatedAt };
+  return { id, publicRequestNumber: value.publicRequestNumber ?? null, equipmentId: value.equipmentId, customerUid: value.customerUid, providerUid: value.providerUid, status: value.status, requestMode: value.requestMode, numberOfDays: value.numberOfDays ?? null, startDate: value.startDate ?? null, endDate: value.endDate ?? null, amount: value.amount, platformFee: value.platformFee, providerAmount: value.providerAmount, paymentStatus: value.paymentStatus, paymentState: value.paymentState ?? null, currency: value.currency, allowChat: value.allowChat === true, commercialSnapshot: value.commercialSnapshot ?? null, commercialSnapshotStatus: value.commercialSnapshotStatus ?? null, finalCommercialSnapshot: value.finalCommercialSnapshot ?? null, createdAt: value.createdAt, updatedAt: value.updatedAt };
 }
 function rentalDates(from: string, until: string): string[] {
   const start = Date.parse(`${from}T00:00:00Z`), end = Date.parse(`${until}T00:00:00Z`);
@@ -925,6 +1053,10 @@ function reservationPath(equipmentId: string, date: string) {
 }
 async function createRequest(req: Request, env: Env, u: User) {
   const body: any = await req.json().catch(() => ({}));
+  // A supplied public number is intentionally ignored for legacy-client
+  // compatibility; the Worker transaction always allocates the real value.
+  const allowedRequestFields = new Set(['equipmentId', 'requestMode', 'numberOfDays', 'startDate', 'endDate', 'publicRequestNumber']);
+  if (Object.keys(body).some(key => !allowedRequestFields.has(key))) return out(env, req, { success: false, error: 'Invalid request' }, 400);
   const equipmentId = String(body.equipmentId || '');
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(equipmentId)) return out(env, req, { success: false, error: 'Invalid request' }, 400);
   const equipment = await getDoc(env, 'equipment', equipmentId);
@@ -940,13 +1072,20 @@ async function createRequest(req: Request, env: Env, u: User) {
   const availabilityCheckResult = availabilityAllows(equipment.availability || { from: requestedRange.from }, requestedRange);
   if (!availabilityCheckResult.ok) return out(env, req, { success: false, error: availabilityCheckResult.error }, 409);
   if (!Number.isFinite(amount) || amount <= 0 || (mode === 'fixed_days' && (!Number.isInteger(days) || days < 1 || days > 365))) return out(env, req, { success: false, error: 'Invalid request amount' }, 400);
-  const id = `r_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString(), fee = mode === 'fixed_days' ? Math.round(amount * paymentPricing(env).platformFeeRate * 100) / 100 : 0;
-  const value: any = { equipmentId, customerUid: u.uid, providerUid: equipment.ownerUid, status: 'pending', requestMode: mode, ...(mode === 'fixed_days' ? { numberOfDays: days } : {}), startDate: requestedRange.from, endDate: requestedRange.until, availabilitySnapshot: equipment.availability || null, amount, platformFee: fee, providerAmount: amount - fee, paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: String(equipment.nativeCurrency || equipment.currency || 'SAR'), nativeCurrency: String(equipment.nativeCurrency || equipment.currency || 'SAR'), nativeAmount: amount, allowChat: false, createdAt: now, updatedAt: now };
+  const id = `r_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
+  let commercialSnapshot: CommercialSnapshot;
+  try {
+    commercialSnapshot = await authoritativeCommercialSnapshot(env, { providerUid: equipment.ownerUid }, equipment, amount, now);
+  } catch {
+    return out(env, req, { success: false, error: 'Commercial configuration unavailable' }, 503);
+  }
+  const initialQuote = quoteFromCommercial(commercialSnapshot, id, Date.parse(now));
+  const value: any = { equipmentId, customerUid: u.uid, providerUid: equipment.ownerUid, categoryId: String(equipment.category || ''), countryCode: commercialSnapshot.countryCode, status: 'pending', requestMode: mode, ...(mode === 'fixed_days' ? { numberOfDays: days } : {}), startDate: requestedRange.from, endDate: requestedRange.until, availabilitySnapshot: equipment.availability || null, amount, platformFee: Number(minorToMajor(commercialSnapshot.platformFeeMinor, commercialSnapshot.currency)), providerAmount: Number(minorToMajor(commercialSnapshot.providerReceivableMinor, commercialSnapshot.currency)), paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: commercialSnapshot.currency, nativeCurrency: commercialSnapshot.currency, nativeAmount: amount, commercialSnapshot, commercialSnapshotStatus: mode === 'fixed_days' ? 'finalized' : 'estimated', allowChat: false, createdAt: now, updatedAt: now };
   const publicRequestNumber = await createWithPublicIdentifier(
     env, 'request', `equipmentRequests/${id}`, value,
     [await notificationWrite(fullName.bind(null, env), String(equipment.ownerUid), 'rental_request_created', now, id, `${id}:created`)],
   );
-  return out(env, req, { success: true, request: requestDto(id, { ...value, publicRequestNumber }) }, 201);
+  return out(env, req, { success: true, request: requestDto(id, { ...value, publicRequestNumber }), quote: initialQuote, commercialSnapshot }, 201);
 }
 async function transitionRequest(req: Request, env: Env, u: User, requestId: string) {
   const body: any = await req.json().catch(() => ({})), action = body.action;
@@ -965,16 +1104,34 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
   if (!prior.includes(String(r.status))) return out(env, req, { success: false, error: 'Invalid request state' }, 409);
   if (action === 'accept' || action === 'start') await enforceTrustForCustomerAction(env, String(r.customerUid), r, await getDoc(env, 'equipment', r.equipmentId));
   const now = new Date().toISOString(), updates: any = { status: { stringValue: next }, updatedAt: { timestampValue: now } };
-  if (next === 'accepted') updates.allowChat = { booleanValue: true };
+  if (next === 'accepted') {
+    updates.allowChat = { booleanValue: true };
+    if (!r.commercialSnapshot) {
+      try {
+        const equipment = await getDoc(env, 'equipment', r.equipmentId);
+        const snapshot = legacyRecordCommercialSnapshot(env, r, equipment, Number(r.amount), now);
+        updates.commercialSnapshot = firestoreValue(snapshot);
+        updates.commercialSnapshotStatus = { stringValue: r.requestMode === 'open_ended' ? 'estimated' : 'finalized' };
+      } catch { return out(env, req, { success: false, error: 'Invalid request accounting' }, 409); }
+    }
+  }
   if (next === 'in_progress') updates.startedAt = { timestampValue: now };
   if (next === 'completed') {
     const started = Date.parse(String(r.startedAt || '')), daily = Number(r.amount);
     if (!Number.isFinite(started) || !Number.isFinite(daily) || daily <= 0) return out(env, req, { success: false, error: 'Invalid request accounting' }, 409);
     const days = r.requestMode === 'open_ended' ? Math.max(1, Math.ceil((Date.now() - started) / 86400000)) : Number(r.numberOfDays || 1);
     const finalAmount = r.requestMode === 'open_ended' ? daily * days : Number(r.finalAmount ?? r.amount);
-    const fee = Math.round(finalAmount * paymentPricing(env).platformFeeRate * 100) / 100;
+    let finalCommercial: CommercialSnapshot;
+    try {
+      finalCommercial = r.commercialSnapshot
+        ? recalculateLockedCommercial(env, r.commercialSnapshot, finalAmount, now)
+        : legacyRecordCommercialSnapshot(env, r, await getDoc(env, 'equipment', r.equipmentId), finalAmount, now);
+    } catch { return out(env, req, { success: false, error: 'Invalid request accounting' }, 409); }
+    const fee = Number(minorToMajor(finalCommercial.platformFeeMinor, finalCommercial.currency));
+    const providerAmount = Number(minorToMajor(finalCommercial.providerReceivableMinor, finalCommercial.currency));
     updates.endedAt = { timestampValue: now }; updates.endDate = { timestampValue: now }; updates.allowChat = { booleanValue: false };
-    updates.finalAmount = { doubleValue: finalAmount }; updates.finalPlatformFee = { doubleValue: fee }; updates.finalProviderAmount = { doubleValue: finalAmount - fee };
+    updates.finalAmount = { doubleValue: finalAmount }; updates.finalPlatformFee = { doubleValue: fee }; updates.finalProviderAmount = { doubleValue: providerAmount };
+    updates.finalCommercialSnapshot = firestoreValue(finalCommercial); updates.commercialSnapshotStatus = { stringValue: 'finalized' };
   }
   const reservationDates = (r.startDate && r.endDate) ? rentalDates(String(r.startDate), String(r.endDate)) : [];
   if (next === 'accepted' && reservationDates.length === 0) return out(env, req, { success: false, error: 'Invalid rental dates' }, 409);
@@ -993,7 +1150,7 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
   } catch {
     return out(env, req, { success: false, error: next === 'accepted' ? 'BOOKING_CONFLICT' : 'Request changed' }, 409);
   }
-  return out(env, req, { success: true, request: requestDto(requestId, { ...r, ...Object.fromEntries(Object.entries(updates).map(([k, v]: any) => [k, v.stringValue ?? v.timestampValue ?? v.booleanValue ?? v.doubleValue])) }) });
+  return out(env, req, { success: true, request: requestDto(requestId, { ...r, ...Object.fromEntries(Object.entries(updates).map(([k, v]: any) => [k, v.stringValue ?? v.timestampValue ?? v.booleanValue ?? v.doubleValue ?? (v.mapValue ? decode(v.mapValue) : undefined)])) }) });
 }
 async function startRequest(req: Request, env: Env, u: User) {
   await enforceOperationalAccess(env, u);
@@ -1019,9 +1176,17 @@ async function confirmCompletion(req: Request, env: Env, u: User) {
   const now = Date.now(), started = Date.parse(r.startedAt || ''), lockedRate = Number(r.amount);
   if (!Number.isFinite(started) || (r.requestMode === 'open_ended' && (!Number.isFinite(lockedRate) || lockedRate <= 0))) return out(env, req, { success: false, error: 'Invalid request state' }, 409);
   const days = r.requestMode === 'open_ended' ? Math.max(1, Math.ceil((now - started) / 86400000)) : Number(r.numberOfDays || 1);
-  const subtotal = r.requestMode === 'open_ended' ? lockedRate * days : Number(r.finalAmount ?? r.amount), fee = Math.round(subtotal * paymentPricing(env).platformFeeRate * 100) / 100, end = new Date(now).toISOString();
+  const subtotal = r.requestMode === 'open_ended' ? lockedRate * days : Number(r.finalAmount ?? r.amount), end = new Date(now).toISOString();
+  let finalCommercial: CommercialSnapshot;
+  try {
+    finalCommercial = r.commercialSnapshot
+      ? recalculateLockedCommercial(env, r.commercialSnapshot, subtotal, end)
+      : legacyRecordCommercialSnapshot(env, r, await getDoc(env, 'equipment', r.equipmentId), subtotal, end);
+  } catch { return out(env, req, { success: false, error: 'Invalid request accounting' }, 409); }
+  const fee = Number(minorToMajor(finalCommercial.platformFeeMinor, finalCommercial.currency));
+  const providerAmount = Number(minorToMajor(finalCommercial.providerReceivableMinor, finalCommercial.currency));
   const fields: Record<string, any> = { status: { stringValue: 'completed' }, endedAt: { timestampValue: end }, endDate: { timestampValue: end }, allowChat: { booleanValue: false } };
-  if (r.requestMode === 'open_ended') Object.assign(fields, { finalAmount: { doubleValue: subtotal }, finalPlatformFee: { doubleValue: fee }, finalProviderAmount: { doubleValue: subtotal - fee } });
+  Object.assign(fields, { finalAmount: { doubleValue: subtotal }, finalPlatformFee: { doubleValue: fee }, finalProviderAmount: { doubleValue: providerAmount }, finalCommercialSnapshot: firestoreValue(finalCommercial), commercialSnapshotStatus: { stringValue: 'finalized' } });
   try {
     await compareAndSwap(env, `equipmentRequests/${encodeURIComponent(requestId!)}`, raw.updateTime, fields);
     await commitWrites(env, [await notificationWrite(fullName.bind(null, env), String(r.providerUid || ''), 'rental_completed', end, requestId)]);
@@ -1035,13 +1200,21 @@ function quoteFromDoc(d: any): PaymentQuote {
   const quote = {
     amount: Number(d?.amount), total: Number(d?.total ?? d?.amount), subtotal,
     platformFee, providerAmount: Number(d?.providerAmount),
-    vatAmount, tax: Number(d?.tax ?? d?.vatAmount), currency: 'SAR' as const,
-    platformFeeRate: Number(d?.platformFeeRate ?? platformFee / subtotal),
-    vatRate: Number(d?.vatRate ?? vatAmount / subtotal),
-    policyVersion: String(d?.policyVersion || 'legacy-derived'),
+    vatAmount, tax: Number(d?.tax ?? d?.vatAmount), currency: String(d?.currency || ''),
+    platformFeeRate: Number.isFinite(Number(d?.platformFeeRate)) ? Number(d.platformFeeRate) : 0,
+    vatRate: Number.isFinite(Number(d?.vatRate)) ? Number(d.vatRate) : 0,
+    policyVersion: String(d?.policyVersion || 'legacy-record-values'),
     quoteId: String(d?.quoteId || ''), expiresAt: String(d?.expiresAt || ''),
+    ...(d?.commercialSnapshot ? { commercialSnapshot: d.commercialSnapshot as CommercialSnapshot } : {}),
   };
-  if (!quote.quoteId || !Number.isFinite(quote.amount) || quote.amount <= 0 || !Number.isFinite(quote.platformFeeRate) || !Number.isFinite(quote.vatRate) || quote.currency !== 'SAR') err('Invalid payment quote');
+  if (!quote.quoteId || !Number.isFinite(quote.amount) || quote.amount <= 0 ||
+      ![quote.total, subtotal, platformFee, quote.providerAmount, vatAmount, quote.tax].every(Number.isFinite) ||
+      Math.abs(quote.total - quote.amount) > 0.0001 || Math.abs(subtotal + (quote.commercialSnapshot?.customerFeeMinor ? Number(minorToMajor(quote.commercialSnapshot.customerFeeMinor, quote.currency)) : 0) + vatAmount - quote.total) > 0.0001) err('Invalid payment quote');
+  if (quote.commercialSnapshot) {
+    const canonical = quoteFromCommercial(quote.commercialSnapshot, String(d?.requestId || 'stored'), 0);
+    if (['amount', 'total', 'subtotal', 'platformFee', 'providerAmount', 'vatAmount'].some(key => Math.abs(Number((quote as any)[key]) - Number((canonical as any)[key])) > 0.0001) ||
+        canonical.currency !== quote.currency || canonical.policyVersion !== quote.policyVersion) err('Invalid payment quote');
+  }
   return quote;
 }
 function quoteWrite(env: Env, requestId: string, r: any, quote: PaymentQuote, now: string) {
@@ -1056,6 +1229,7 @@ function quoteWrite(env: Env, requestId: string, r: any, quote: PaymentQuote, no
     total: { doubleValue: quote.total }, amount: { doubleValue: quote.amount },
     currency: { stringValue: quote.currency }, createdAt: { timestampValue: now },
     expiresAt: { timestampValue: quote.expiresAt },
+    ...(quote.commercialSnapshot ? { commercialSnapshot: firestoreValue(quote.commercialSnapshot) } : {}),
   } }, currentDocument: { exists: false } };
 }
 function eventWrite(env: Env, eventId: string, requestId: string, r: any, type: string, state: PaymentState, now: string, providerReference?: string) {
@@ -1076,6 +1250,36 @@ async function fullySettled(env: Env, requestId: string) {
   return !!invoice && payment?.state === 'paid' && payment?.invoiceId === request.invoiceId;
 }
 
+function verifiedStoredCommercial(snapshot: any, currency: string): CommercialSnapshot | null {
+  if (!snapshot || typeof snapshot !== 'object' || snapshot.currency !== currency) return null;
+  const integerFields = [
+    'baseAmountMinor', 'platformFeeMinor', 'customerFeeMinor', 'providerFeeMinor',
+    'providerReceivableMinor', 'customerPayableMinor',
+  ] as const;
+  if (integerFields.some(field => !Number.isSafeInteger(snapshot[field]) || snapshot[field] < 0) ||
+      snapshot.taxAmountMinor !== null && (!Number.isSafeInteger(snapshot.taxAmountMinor) || snapshot.taxAmountMinor < 0) ||
+      snapshot.taxRateBps !== undefined && snapshot.taxRateBps !== null && (!Number.isSafeInteger(snapshot.taxRateBps) || snapshot.taxRateBps < 0 || snapshot.taxRateBps >= 10_000) ||
+      snapshot.gatewayFeeMinor !== null && (!Number.isSafeInteger(snapshot.gatewayFeeMinor) || snapshot.gatewayFeeMinor < 0) ||
+      snapshot.customerFeeMinor + snapshot.providerFeeMinor !== snapshot.platformFeeMinor ||
+      snapshot.providerReceivableMinor !== snapshot.baseAmountMinor - snapshot.providerFeeMinor ||
+      snapshot.customerPayableMinor !== snapshot.baseAmountMinor + snapshot.customerFeeMinor + (snapshot.taxAmountMinor ?? 0)) return null;
+  return snapshot as CommercialSnapshot;
+}
+function sameStoredCommercial(left: any, right: any): boolean {
+  const fields = [
+    'ruleVersion', 'ruleStatus', 'mode', 'percentageBps', 'fixedAmountMinor', 'minimumFeeMinor',
+    'maximumFeeMinor', 'payer', 'customerShareBps', 'baseAmountMinor', 'platformFeeMinor',
+    'customerFeeMinor', 'providerFeeMinor', 'providerReceivableMinor', 'customerPayableMinor',
+    'taxAmountMinor', 'gatewayFeeMinor', 'currency', 'countryCode', 'categoryId', 'providerUid',
+    'calculatedAt', 'taxReference', 'taxRateBps', 'ruleEffectiveFrom', 'ruleEffectiveTo',
+    'ruleCreatedAt', 'ruleCreatedBy', 'ruleUpdatedAt', 'ruleUpdatedBy', 'ruleNotes',
+  ];
+  return !!left && !!right && fields.every(field => left[field] === right[field]) &&
+    left.scope?.countryCode === right.scope?.countryCode &&
+    left.scope?.categoryId === right.scope?.categoryId &&
+    left.scope?.providerUid === right.scope?.providerUid;
+}
+
 async function trustedInvoiceSource(env: Env, invoiceId: string): Promise<TrustedInvoiceSource | null> {
   const invoice = await getDoc(env, 'invoices', invoiceId);
   const requestId = typeof invoice?.requestId === 'string' ? invoice.requestId : '';
@@ -1092,6 +1296,20 @@ async function trustedInvoiceSource(env: Env, invoiceId: string): Promise<Truste
   const total = Number(invoice.totalAmount);
   const paymentAmount = Number(payment?.amount);
   const rentalSubtotal = Number(rental?.finalAmount ?? rental?.amount);
+  const commercial = verifiedStoredCommercial(invoice.commercialSnapshot, String(invoice.currency));
+  const customerFee = commercial ? Number(minorToMajor(commercial.customerFeeMinor, String(invoice.currency))) : 0;
+  const providerReceivable = commercial ? Number(minorToMajor(commercial.providerReceivableMinor, String(invoice.currency))) : undefined;
+  const gatewayFee = commercial?.gatewayFeeMinor === null || !commercial ? undefined : Number(minorToMajor(commercial.gatewayFeeMinor, String(invoice.currency)));
+  const invoicePlatformFee = Number(invoice.platformFee);
+  const invoiceProviderAmount = Number(invoice.providerAmount);
+  const commercialRecordsAgree = !invoice.commercialSnapshot || !!commercial &&
+    sameStoredCommercial(commercial, payment?.commercialSnapshot) &&
+    sameStoredCommercial(commercial, rental?.paidCommercialSnapshot) &&
+    equivalentAmount(subtotal, Number(minorToMajor(commercial.baseAmountMinor, commercial.currency))) &&
+    equivalentAmount(invoicePlatformFee, Number(minorToMajor(commercial.platformFeeMinor, commercial.currency))) &&
+    equivalentAmount(invoiceProviderAmount, Number(minorToMajor(commercial.providerReceivableMinor, commercial.currency))) &&
+    equivalentAmount(vatAmount, Number(minorToMajor(commercial.taxAmountMinor ?? 0, commercial.currency))) &&
+    equivalentAmount(total, Number(minorToMajor(commercial.customerPayableMinor, commercial.currency)));
   const paymentReference = typeof payment?.providerReference === 'string' ? payment.providerReference : '';
   if (!rental || !payment ||
       invoiceNumber !== invoiceId || !settledState(invoice.status) ||
@@ -1101,10 +1319,11 @@ async function trustedInvoiceSource(env: Env, invoiceId: string): Promise<Truste
       payment.requestId !== requestId || !settledState(payment.state) || payment.invoiceId !== invoiceId ||
       payment.customerUid !== rental.customerUid || payment.currency !== 'SAR' ||
       !paymentReference || invoice.paymentReference !== paymentReference || rental.paymentId !== paymentReference ||
-      ![subtotal, vatAmount, total, paymentAmount, rentalSubtotal].every(Number.isFinite) ||
+      ![subtotal, vatAmount, customerFee, total, paymentAmount, rentalSubtotal].every(Number.isFinite) ||
       subtotal < 0 || vatAmount < 0 || total <= 0 ||
-      !equivalentAmount(subtotal + vatAmount, total) ||
-      !equivalentAmount(paymentAmount, total) || !equivalentAmount(rentalSubtotal, subtotal)) {
+      !equivalentAmount(subtotal + customerFee + vatAmount, total) ||
+      !equivalentAmount(paymentAmount, total) || !equivalentAmount(rentalSubtotal, subtotal) ||
+      !commercialRecordsAgree) {
     return null;
   }
   const publicRequestNumber = rental.publicRequestNumber;
@@ -1127,6 +1346,10 @@ async function trustedInvoiceSource(env: Env, invoiceId: string): Promise<Truste
     rentalEnd: typeof rental.endDate === 'string' ? rental.endDate : undefined,
     subtotal,
     platformFee: Number.isFinite(Number(invoice.platformFee)) ? Number(invoice.platformFee) : undefined,
+    customerFee: commercial ? customerFee : undefined,
+    providerReceivable,
+    gatewayFee,
+    commissionConfigVersion: commercial?.ruleVersion,
     vatAmount: Number.isFinite(Number(invoice.vatAmount)) ? Number(invoice.vatAmount) : undefined,
     total,
     currency: 'SAR',
@@ -1210,6 +1433,7 @@ async function settlePaid(env: Env, requestId: string, raw: { data: any; updateT
     vatRate: { doubleValue: quote.vatRate }, vatAmount: { doubleValue: quote.vatAmount },
     policyVersion: { stringValue: quote.policyVersion },
     totalAmount: { doubleValue: quote.total }, currency: { stringValue: quote.currency },
+    ...(quote.commercialSnapshot ? { commercialSnapshot: firestoreValue(quote.commercialSnapshot) } : {}),
     status: { stringValue: 'paid' }, createdAt: { timestampValue: now }, paidAt: { timestampValue: now },
     paymentReference: { stringValue: d.id },
   };
@@ -1217,19 +1441,22 @@ async function settlePaid(env: Env, requestId: string, raw: { data: any; updateT
     { update: { name: fullName(env, `equipmentRequests/${encodeURIComponent(requestId)}`), fields: {
       paymentStatus: { stringValue: 'paid' }, paymentState: { stringValue: 'paid' },
       paymentId: { stringValue: d.id }, paidAt: { timestampValue: now }, invoiceId: { stringValue: invoice },
-    } }, updateMask: { fieldPaths: ['paymentStatus', 'paymentState', 'paymentId', 'paidAt', 'invoiceId'] }, currentDocument: { updateTime: raw.updateTime } },
+       ...(quote.commercialSnapshot ? { paidCommercialSnapshot: firestoreValue(quote.commercialSnapshot) } : {}),
+    } }, updateMask: { fieldPaths: ['paymentStatus', 'paymentState', 'paymentId', 'paidAt', 'invoiceId', ...(quote.commercialSnapshot ? ['paidCommercialSnapshot'] : [])] }, currentDocument: { updateTime: raw.updateTime } },
     { update: { name: fullName(env, `invoices/${encodeURIComponent(invoice)}`), fields: invoiceFields }, currentDocument: { exists: false } },
     payment
       ? { update: { name: fullName(env, `payments/${encodeURIComponent(requestId)}`), fields: {
           state: { stringValue: 'paid' }, invoiceId: { stringValue: invoice }, paidAt: { timestampValue: now },
           providerReference: { stringValue: d.id },
-        } }, updateMask: { fieldPaths: ['state', 'invoiceId', 'paidAt', 'providerReference'] }, currentDocument: { exists: true } }
+           ...(quote.commercialSnapshot ? { commercialSnapshot: firestoreValue(quote.commercialSnapshot) } : {}),
+        } }, updateMask: { fieldPaths: ['state', 'invoiceId', 'paidAt', 'providerReference', ...(quote.commercialSnapshot ? ['commercialSnapshot'] : [])] }, currentDocument: { exists: true } }
       : { update: { name: fullName(env, `payments/${encodeURIComponent(requestId)}`), fields: {
           requestId: { stringValue: requestId }, paymentId: { stringValue: paymentIdForRequest(requestId) },
           provider: { stringValue: 'tap' }, providerReference: { stringValue: d.id }, state: { stringValue: 'paid' },
           quoteId: { stringValue: quote.quoteId }, amount: { doubleValue: quote.amount },
           currency: { stringValue: quote.currency }, customerUid: { stringValue: String(r.customerUid) },
           invoiceId: { stringValue: invoice }, paidAt: { timestampValue: now },
+           ...(quote.commercialSnapshot ? { commercialSnapshot: firestoreValue(quote.commercialSnapshot) } : {}),
         } }, currentDocument: { exists: false } },
     eventWrite(env, `${requestId}:payment_confirmed`, requestId, r, 'payment_confirmed', 'paid', now, d.id),
     eventWrite(env, `${requestId}:invoice_created`, requestId, r, 'invoice_created', 'paid', now, d.id),
@@ -1266,7 +1493,7 @@ async function persistProviderState(env: Env, requestId: string, raw: { data: an
 }
 async function create(req: Request, env: Env, u: User) {
   const body = await req.json() as { requestId?: string; amount?: number; purpose?: string };
-  if (!body.requestId || body.amount !== undefined || (body.purpose && body.purpose !== 'equipment_request')) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
+  if (!body.requestId || Object.keys(body).some(key => !['requestId', 'purpose'].includes(key)) || (body.purpose && body.purpose !== 'equipment_request')) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', body.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
   try { await enforceOperationalAccess(env, u, e); await enforceTrustForPayment(env, u, r, e); } catch (error) {
     const message = error instanceof Error ? error.message : '';
@@ -1279,7 +1506,7 @@ async function create(req: Request, env: Env, u: User) {
   let quote: PaymentQuote;
   const storedQuote = await getDoc(env, 'paymentQuotes', body.requestId);
   try {
-    quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : paymentQuote(env, r, e, body.requestId);
+    quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : await paymentQuote(env, r, e, body.requestId);
   } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
   if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
   const expected = quote.amount;
@@ -1311,7 +1538,7 @@ async function create(req: Request, env: Env, u: User) {
       if (!existingPayment) {
         writes.push(
           quoteWrite(env, body.requestId, r, quote, now),
-          { update: { name: fullName(env, `payments/${encodeURIComponent(body.requestId)}`), fields: { requestId: { stringValue: body.requestId }, paymentId: { stringValue: paymentIdForRequest(body.requestId) }, provider: { stringValue: 'tap' }, state: { stringValue: 'created' }, quoteId: { stringValue: quote.quoteId }, amount: { doubleValue: expected }, currency: { stringValue: 'SAR' }, customerUid: { stringValue: u.uid }, idempotencyKey: { stringValue: idempotencyKey }, attempt: { integerValue: attempt } } }, currentDocument: { exists: false } },
+          { update: { name: fullName(env, `payments/${encodeURIComponent(body.requestId)}`), fields: { requestId: { stringValue: body.requestId }, paymentId: { stringValue: paymentIdForRequest(body.requestId) }, provider: { stringValue: 'tap' }, state: { stringValue: 'created' }, quoteId: { stringValue: quote.quoteId }, amount: { doubleValue: expected }, currency: { stringValue: 'SAR' }, customerUid: { stringValue: u.uid }, idempotencyKey: { stringValue: idempotencyKey }, attempt: { integerValue: attempt }, ...(quote.commercialSnapshot ? { commercialSnapshot: firestoreValue(quote.commercialSnapshot) } : {}) } }, currentDocument: { exists: false } },
           eventWrite(env, `${body.requestId}:payment_created`, body.requestId, r, 'payment_created', 'created', now),
         );
       } else {
@@ -1369,12 +1596,13 @@ async function create(req: Request, env: Env, u: User) {
 }
 async function verify(req: Request, env: Env, u: User) {
   const body = await req.json() as { chargeId?: string; paymentId?: string }, chargeId = body.paymentId || body.chargeId;
+  if (Object.keys(body).some(key => !['chargeId', 'paymentId'].includes(key))) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
   if (!chargeId || !env.TAP_SECRET_KEY_TEST) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
   let d; try { d = await new TapPaymentProvider(env.TAP_SECRET_KEY_TEST).retrieve(chargeId); } catch { return out(env, req, { success: false, error: 'Payment unavailable' }, 502); }
   const m = d.metadata || {};
   const raw = await getRawDoc(env, 'equipmentRequests', m.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
   let quote: PaymentQuote; const storedQuote = await getDoc(env, 'paymentQuotes', String(m.requestId));
-  try { assertSarSettlement(r, e); quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : paymentQuote(env, r, e, String(m.requestId)); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
+  try { assertSarSettlement(r, e); quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : await paymentQuote(env, r, e, String(m.requestId)); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
   if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
   const expected = quote.amount;
   if (!owned(u, r) || m.customerUid !== u.uid && !u.admin) return out(env, req, { success: false, error: 'Forbidden' }, 403);
@@ -1407,7 +1635,7 @@ async function tapWebhook(req: Request, env: Env) {
   if (!requestId || d.id !== chargeId) return out(env, req, { success: false, error: 'Invalid transaction' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
   const storedQuote = await getDoc(env, 'paymentQuotes', requestId);
-  let quote; try { assertSarSettlement(r, e); quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : paymentQuote(env, r, e, requestId); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid transaction' }, 400); }
+  let quote; try { assertSarSettlement(r, e); quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : await paymentQuote(env, r, e, requestId); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid transaction' }, 400); }
   if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
   const payment = await getDoc(env, 'payments', requestId);
   const reservation = `reservation:${String(m.idempotencyKey || idempotencyKeyForPayment(String(m.customerUid), requestId))}`;

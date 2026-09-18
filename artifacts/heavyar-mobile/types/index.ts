@@ -134,6 +134,44 @@ export interface EquipmentRequest {
   quoteCurrency?: string;
   exchangeRateSnapshot?: number;
   exchangeRateTimestamp?: string;
+  commercialSnapshot?: CommercialSnapshot;
+  commercialSnapshotStatus?: 'estimated' | 'finalized';
+  finalCommercialSnapshot?: CommercialSnapshot;
+}
+
+export interface CommercialSnapshot {
+  ruleVersion: string;
+  ruleStatus: 'draft' | 'active' | 'scheduled' | 'retired';
+  mode: 'percentage' | 'fixed' | 'percentage_fixed';
+  percentageBps: number;
+  fixedAmountMinor: number;
+  minimumFeeMinor: number;
+  maximumFeeMinor: number | null;
+  payer: 'customer' | 'provider' | 'split';
+  customerShareBps: number;
+  scope: { countryCode: string | null; categoryId: string | null; providerUid: string | null };
+  baseAmountMinor: number;
+  platformFeeMinor: number;
+  customerFeeMinor: number;
+  providerFeeMinor: number;
+  providerReceivableMinor: number;
+  customerPayableMinor: number;
+  taxAmountMinor: number | null;
+  taxRateBps?: number | null;
+  gatewayFeeMinor: number | null;
+  currency: string;
+  countryCode: string;
+  categoryId: string;
+  providerUid: string;
+  calculatedAt: string;
+  taxReference?: string;
+  ruleEffectiveFrom?: string;
+  ruleEffectiveTo?: string | null;
+  ruleCreatedAt?: string;
+  ruleCreatedBy?: string;
+  ruleUpdatedAt?: string;
+  ruleUpdatedBy?: string;
+  ruleNotes?: string;
 }
 
 export interface ChatMessage {
@@ -181,6 +219,7 @@ export interface Invoice {
   createdAt: string;
   paidAt: string;
   paymentReference: string;
+  commercialSnapshot?: CommercialSnapshot;
 }
 
 export interface AppSettings {

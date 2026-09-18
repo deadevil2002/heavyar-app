@@ -1,4 +1,4 @@
-import { Category } from '@/types';
+import type { Category } from '../types';
 
 export const mockCategories: Category[] = [
   { id: 'excavators', nameAr: 'حفارات', nameEn: 'Excavators', icon: 'Shovel' },

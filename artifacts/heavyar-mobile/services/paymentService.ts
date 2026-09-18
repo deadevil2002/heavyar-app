@@ -1,6 +1,7 @@
 import { getFirebaseAuth } from './firebaseConfig';
 import { WORKER_BASE_URL } from '@/constants/worker';
 import { createAccountDeletionRequest } from './accountDeletionContract';
+import type { CommercialSnapshot } from '@/types';
 
 export { createAccountDeletionRequest } from './accountDeletionContract';
 
@@ -29,6 +30,7 @@ export interface PaymentQuote {
   tax?: number;
   total?: number;
   expiresAt?: string;
+  commercialSnapshot?: CommercialSnapshot;
 }
 
 export interface CreatePaymentResponse {

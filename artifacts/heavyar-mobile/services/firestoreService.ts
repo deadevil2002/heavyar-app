@@ -185,6 +185,9 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     finalAmount: typeof data.finalAmount === 'number' ? data.finalAmount : undefined,
     finalPlatformFee: typeof data.finalPlatformFee === 'number' ? data.finalPlatformFee : undefined,
     finalProviderAmount: typeof data.finalProviderAmount === 'number' ? data.finalProviderAmount : undefined,
+    commercialSnapshot: data.commercialSnapshot as EquipmentRequest['commercialSnapshot'],
+    commercialSnapshotStatus: data.commercialSnapshotStatus === 'estimated' || data.commercialSnapshotStatus === 'finalized' ? data.commercialSnapshotStatus : undefined,
+    finalCommercialSnapshot: data.finalCommercialSnapshot as EquipmentRequest['finalCommercialSnapshot'],
     createdAt: toISOString(data.createdAt),
     updatedAt: toISOString(data.updatedAt),
   };
@@ -413,7 +416,7 @@ export async function fetchRequestById(id: string): Promise<EquipmentRequest | n
   return null;
 }
 
-export async function createRequest(data: Omit<EquipmentRequest, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+export async function createRequest(data: Pick<EquipmentRequest, 'equipmentId' | 'customerUid' | 'providerUid' | 'requestMode' | 'numberOfDays'>): Promise<string> {
   if (!data.equipmentId || !data.customerUid || !data.providerUid) {
     throw new Error('Missing required fields for request creation');
   }
@@ -679,6 +682,7 @@ function parseInvoice(id: string, data: Record<string, unknown>): Invoice {
     createdAt: toISOString(data.createdAt),
     paidAt: toISOString(data.paidAt),
     paymentReference: (data.paymentReference as string) || '',
+    commercialSnapshot: data.commercialSnapshot as Invoice['commercialSnapshot'],
   };
 }
 

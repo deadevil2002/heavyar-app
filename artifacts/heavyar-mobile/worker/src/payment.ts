@@ -1,3 +1,5 @@
+import { minorToMajor, type CommercialSnapshot } from './commercial';
+
 export const PAYMENT_STATES = [
   'created', 'pending', 'requires_action', 'processing', 'paid', 'failed',
   'cancelled', 'expired', 'refund_pending', 'refunded', 'partially_refunded',
@@ -6,9 +8,10 @@ export type PaymentState = typeof PAYMENT_STATES[number];
 
 export type PaymentQuote = {
   amount: number; total: number; subtotal: number; platformFee: number;
-  providerAmount: number; vatAmount: number; tax: number; currency: 'SAR';
+  providerAmount: number; vatAmount: number; tax: number; currency: string;
   platformFeeRate: number; vatRate: number; policyVersion: string;
   quoteId: string; expiresAt: string;
+  commercialSnapshot?: CommercialSnapshot;
 };
 export type ProviderPayment = {
   id: string; status: string; amount: number; currency: string;
@@ -67,6 +70,35 @@ export function quoteForRequest(request: any, equipment: any, requestId: string,
     platformFeeRate: policy.platformFeeRate, vatRate: policy.vatRate, policyVersion: 'phase1-v1',
     quoteId: `quote:${requestId}:${subtotal.toFixed(2)}:SAR`,
     expiresAt: new Date(now + 30 * 60 * 1000).toISOString(),
+  };
+}
+
+/** Adapts an immutable Heavyar commercial calculation to the legacy payment/invoice shape. */
+export function quoteFromCommercial(snapshot: CommercialSnapshot, requestId: string, now = Date.now()): PaymentQuote {
+  const major = (minor: number) => Number(minorToMajor(minor, snapshot.currency));
+  const subtotal = major(snapshot.baseAmountMinor);
+  const platformFee = major(snapshot.platformFeeMinor);
+  const vatAmount = major(snapshot.taxAmountMinor ?? 0);
+  const total = major(snapshot.customerPayableMinor);
+  const providerAmount = major(snapshot.providerReceivableMinor);
+  if (![subtotal, platformFee, vatAmount, total, providerAmount].every(Number.isFinite) || subtotal <= 0 || total <= 0) {
+    throw new Error('Invalid commercial payment quote');
+  }
+  return {
+    amount: total,
+    total,
+    subtotal,
+    platformFee,
+    providerAmount,
+    vatAmount,
+    tax: vatAmount,
+    currency: snapshot.currency,
+    platformFeeRate: subtotal ? platformFee / subtotal : 0,
+    vatRate: subtotal ? vatAmount / subtotal : 0,
+    policyVersion: snapshot.ruleVersion,
+    quoteId: `quote:${requestId}:${snapshot.ruleVersion}:${snapshot.customerPayableMinor}:${snapshot.currency}`,
+    expiresAt: new Date(now + 30 * 60 * 1000).toISOString(),
+    commercialSnapshot: snapshot,
   };
 }
 export function paymentIdForRequest(requestId: string) { return `payment:${requestId}`; }

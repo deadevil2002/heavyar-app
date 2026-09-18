@@ -199,7 +199,7 @@ export type PhoneVerificationPolicy = {
   expirySeconds: number;
   version: number;
 };
-export type AdminCountry = { code: string; nameEn: string; nameAr: string; dialCode: string; nativeCurrency: string; enabled: boolean; marketplaceAvailable: boolean; providerOnboardingAvailable: boolean; crossBorderAvailable: boolean; version?: number };
+export type AdminCountry = { code: string; nameEn: string; nameAr: string; dialCode: string; currency: string; enabled: boolean; marketplaceAvailable: boolean; providerOnboardingAvailable: boolean; crossBorderAvailable: boolean; version?: number };
 export type AdminCountriesResponse = { success: boolean; version: number; countries: AdminCountry[] };
 export type FxProviderConfig = { provider: 'none'; enabled: false; refreshIntervalSeconds: number; cacheTtlSeconds: number; status: 'disabled'; lastSuccessfulAt?: string | null; lastSuccessfulVersion?: number | null; version: number; updatedAt?: string };
 export type AuditEntry = { id: string; actorUid: string; action: string; targetType: string; targetId: string; before?: any; after?: any; reason?: string; timestamp: string };
@@ -365,6 +365,86 @@ export function useFxProviderConfig() {
 export function useUpdateFxProviderConfig() {
   return useMutation({ mutationFn: (data: { expectedVersion: number; refreshIntervalSeconds: number; cacheTtlSeconds: number }) => fetchApi<{ success: boolean; fx: FxProviderConfig }>('/fx-provider', { method: 'PUT', body: JSON.stringify(data) }) });
 }
+
+// Commercial / Fees API
+export type CommercialRule = {
+  id?: string;
+  version: string;
+  status: 'draft' | 'active' | 'scheduled' | 'retired';
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  createdAt?: string;
+  createdBy?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+  notes?: string;
+  mode: 'percentage' | 'fixed' | 'percentage_fixed';
+  percentageBps?: number;
+  fixedAmountMinor?: number;
+  minimumFeeMinor?: number | null;
+  maximumFeeMinor?: number | null;
+  payer: 'customer' | 'provider' | 'split';
+  customerShareBps?: number;
+  scope: {
+    countryCode?: string | null;
+    categoryId?: string | null;
+    providerUid?: string | null;
+  };
+  currency: string;
+};
+
+export type CommercialRulesResponse = {
+  success: boolean;
+  revision: number;
+  rules: CommercialRule[];
+  canManage: boolean;
+  countries: AdminCountry[];
+  categories: { id: string; nameEn: string; nameAr: string }[];
+  serverTime: string;
+  precedence: any;
+  legacyFallback: boolean;
+};
+
+export type CommercialSnapshot = {
+  ruleVersion: string;
+  baseAmountMinor: number;
+  platformFeeMinor: number;
+  customerFeeMinor: number;
+  providerFeeMinor: number;
+  providerReceivableMinor: number;
+  customerPayableMinor: number;
+  taxAmountMinor: number | null;
+  gatewayFeeMinor: number | null;
+  currency: string;
+  calculatedAt: string;
+};
+
+export function useCommercialRules() {
+  return useQuery({
+    queryKey: ['commercialRules'],
+    queryFn: () => fetchApi<CommercialRulesResponse>('/commercial'),
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: true,
+  });
+}
+
+export function useCommercialMutate() {
+  return useMutation({
+    mutationFn: (data: { action: 'create' | 'publish' | 'retire'; expectedRevision: number; reason: string; rule?: any; version?: string }) =>
+      fetchApi<{ success: boolean }>('/commercial', { method: 'POST', body: JSON.stringify(data) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['commercialRules'] });
+    }
+  });
+}
+
+export function useCommercialPreview() {
+  return useMutation({
+    mutationFn: (data: { baseAmountMinor: number; countryCode?: string; categoryId?: string; providerUid?: string; currency: string; at?: string; draftRule?: any }) =>
+      fetchApi<{ success: boolean; snapshot: CommercialSnapshot; matchedRule?: CommercialRule }>('/commercial/preview', { method: 'POST', body: JSON.stringify(data) }),
+  });
+}
+
 export function useAudit(params: Record<string, any> = {}) { return useListQuery<AuditEntry>('audit', '/audit', params); }
 export function useDetail<T = Record<string, unknown>>(resource: string, id?: string) {
   return useQuery({ queryKey: ['detail', resource, id], queryFn: () => fetchApi<{ success?: boolean; item: T }>(`/detail/${resource}/${encodeURIComponent(id!)}`), enabled: Boolean(id), retry: false, refetchInterval: 5000, refetchOnWindowFocus: true });

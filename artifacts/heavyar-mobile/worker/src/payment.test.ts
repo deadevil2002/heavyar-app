@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { TapPaymentProvider, quoteForRequest, canTransition, stateForProvider, tapConfig, invoiceNumberForPayment } from './payment';
+import { TapPaymentProvider, quoteForRequest, quoteFromCommercial, canTransition, stateForProvider, tapConfig, invoiceNumberForPayment } from './payment';
 
 describe('payment trust core', () => {
   test('quote is rounded and exposes fee, payout, tax and expiry', () => {
@@ -25,6 +25,23 @@ describe('payment trust core', () => {
     expect(canTransition('paid', 'paid')).toBe(true);
     expect(stateForProvider('CAPTURED')).toBe('paid');
     expect(stateForProvider('DECLINED')).toBe('failed');
+  });
+  test('payment adapter uses the authoritative commercial customer payable unchanged', () => {
+    const snapshot = {
+      ruleVersion: 'legacy-commission-v1', ruleStatus: 'active' as const, mode: 'percentage' as const,
+      percentageBps: 1000, fixedAmountMinor: 0, minimumFeeMinor: 0, maximumFeeMinor: null,
+      payer: 'split' as const, customerShareBps: 5000,
+      scope: { countryCode: null, categoryId: null, providerUid: null },
+      baseAmountMinor: 10000, platformFeeMinor: 1000, customerFeeMinor: 500,
+      providerFeeMinor: 500, providerReceivableMinor: 9500, customerPayableMinor: 12000,
+      taxAmountMinor: 1500, gatewayFeeMinor: null, currency: 'SAR', countryCode: 'SA',
+      categoryId: 'excavators', providerUid: 'provider', calculatedAt: '2025-01-01T00:00:00.000Z',
+    };
+    const quote = quoteFromCommercial(snapshot, 'r', 0);
+    expect(quote.amount).toBe(120);
+    expect(quote.platformFee).toBe(10);
+    expect(quote.providerAmount).toBe(95);
+    expect(quote.commercialSnapshot).toBe(snapshot);
   });
   test('Tap adapter sends idempotency and normalizes response', async () => {
     const calls: RequestInit[] = [];

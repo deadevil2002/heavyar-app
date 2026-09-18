@@ -30,6 +30,7 @@ import Requests from '@/pages/requests';
 import Payments from '@/pages/payments';
 import Invoices from '@/pages/invoices';
 import Refunds from '@/pages/refunds';
+import Fees from '@/pages/fees';
 import Complaints from '@/pages/complaints';
 import Verification from '@/pages/verification';
 import ProviderConfigs from '@/pages/providers-config';
@@ -155,6 +156,7 @@ function AdminRouter() {
           <Route path="/payments" component={Payments} />
           <Route path="/invoices" component={Invoices} />
           <Route path="/refunds" component={Refunds} />
+          <Route path="/fees" component={Fees} />
           <Route path="/complaints" component={Complaints} />
           <Route path="/verification" component={Verification} />
           <Route path="/identity-integrations" component={IdentityIntegrations} />

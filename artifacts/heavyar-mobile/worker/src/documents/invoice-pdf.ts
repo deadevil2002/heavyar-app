@@ -32,6 +32,10 @@ export type TrustedInvoiceSource = {
   rentalEnd?: string;
   subtotal: number;
   platformFee?: number;
+  customerFee?: number;
+  providerReceivable?: number;
+  gatewayFee?: number;
+  commissionConfigVersion?: string;
   vatAmount?: number;
   total: number;
   currency: 'SAR';
@@ -267,7 +271,14 @@ export function generateInvoicePdf(source: TrustedInvoiceSource, business: Invoi
     `BT /F1 10 Tf 0.25 g 1 0 0 1 372 774 Tm (Invoice Number: ${pdfText(source.invoiceNumber)}) Tj ET\nBT /F1 10 Tf 0.25 g 1 0 0 1 372 758 Tm (Issue Date: ${pdfText(source.issueDate)}) Tj ET\n`,
     line('Request Number', source.requestNumber), line('Payment Status', source.paymentStatus), line('Payment Provider', source.paymentProvider || 'Not recorded'), line('Payment Reference', source.paymentReference || 'Not recorded'),
     line('Customer Name', source.customer.name), line('Provider Name', source.provider.name), line('Equipment Name', source.equipmentName), line('Rental Period', [source.rentalStart, source.rentalEnd].filter(Boolean).join(' to ') || 'Not recorded'),
-    line('Subtotal', sar(source.subtotal)), source.platformFee === undefined ? '' : line('Platform Fee', sar(source.platformFee)), source.vatAmount === undefined ? '' : line('VAT', sar(source.vatAmount)), line('Total Amount', sar(source.total)),
+    line('Subtotal', sar(source.subtotal)),
+    source.platformFee === undefined ? '' : line('Heavyar Platform Fee', sar(source.platformFee)),
+    source.customerFee === undefined ? '' : line('Customer Fee Share', sar(source.customerFee)),
+    source.providerReceivable === undefined ? '' : line('Provider Receivable', sar(source.providerReceivable)),
+    source.gatewayFee === undefined ? '' : line('Gateway Fee', sar(source.gatewayFee)),
+    source.vatAmount === undefined ? '' : line('VAT', sar(source.vatAmount)),
+    source.commissionConfigVersion ? line('Commission Version', source.commissionConfigVersion) : '',
+    line('Total Amount', sar(source.total)),
   ].join('');
   const taxDesignation = business?.vatRegistrationNumber ? 'Tax invoice' : 'Non-tax invoice - VAT registration not configured';
   const legal = [

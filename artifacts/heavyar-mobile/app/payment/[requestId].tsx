@@ -205,12 +205,16 @@ export default function PaymentScreen() {
     );
   }
 
-  const subtotal = quote?.subtotal ?? request.finalAmount ?? request.amount;
-  const platformFee = quote?.platformFee ?? request.finalPlatformFee ?? request.platformFee;
-  const vatAmount = quote?.tax ?? Math.round(subtotal * 0.15 * 100) / 100;
-  const vatRatePercent = Math.round((quote?.vatRate ?? 0.15) * 10000) / 100;
-  const totalWithVat = quote?.total ?? quote?.amount ?? Math.round((subtotal + vatAmount) * 100) / 100;
-  const quoteCurrency = quote?.currency ?? request.currency ?? 'SAR';
+  const snapshot = quote?.commercialSnapshot ?? request.finalCommercialSnapshot ??
+    (request.commercialSnapshotStatus === 'finalized' ? request.commercialSnapshot : undefined);
+  const minorScale = snapshot ? (['KWD', 'BHD', 'OMR'].includes(snapshot.currency) ? 1000 : 100) : 1;
+  const subtotal = quote?.subtotal ?? (snapshot ? snapshot.baseAmountMinor / minorScale : null);
+  const platformFee = quote?.platformFee ?? (snapshot ? snapshot.platformFeeMinor / minorScale : null);
+  const vatAmount = quote?.tax ?? (snapshot?.taxAmountMinor !== null && snapshot?.taxAmountMinor !== undefined ? snapshot.taxAmountMinor / minorScale : null);
+  const vatRatePercent = quote?.vatRate === undefined ? null : Math.round(quote.vatRate * 10000) / 100;
+  const totalWithVat = quote?.total ?? quote?.amount ?? (snapshot ? snapshot.customerPayableMinor / minorScale : null);
+  const quoteCurrency = quote?.currency ?? snapshot?.currency ?? request.currency;
+  const money = (value: number | null) => value === null ? '—' : `${value.toLocaleString()} ${quoteCurrency}`;
 
   return (
     <View style={styles.container}>
@@ -226,19 +230,19 @@ export default function PaymentScreen() {
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <View style={styles.amountCard}>
             <Text style={styles.amountLabel}>{t('total_amount')}</Text>
-            <Text style={styles.amountValue}>{totalWithVat.toLocaleString()} {quoteCurrency}</Text>
+            <Text style={styles.amountValue}>{money(totalWithVat)}</Text>
             <View style={styles.feeBreakdown}>
               <View style={[styles.feeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Text style={styles.feeText}>{t('subtotal')}</Text>
-                <Text style={styles.feeAmount}>{subtotal.toLocaleString()} {quoteCurrency}</Text>
+                <Text style={styles.feeAmount}>{money(subtotal)}</Text>
               </View>
               <View style={[styles.feeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                <Text style={styles.feeText}>{t('vat')} ({vatRatePercent}%)</Text>
-                <Text style={styles.feeAmount}>{vatAmount.toLocaleString()} {quoteCurrency}</Text>
+                <Text style={styles.feeText}>{t('vat')}{vatRatePercent === null ? '' : ` (${vatRatePercent}%)`}</Text>
+                <Text style={styles.feeAmount}>{money(vatAmount)}</Text>
               </View>
               <View style={[styles.feeRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Text style={styles.feeText}>{t('platform_fee')}</Text>
-                <Text style={styles.feeAmount}>{platformFee.toLocaleString()} {quoteCurrency}</Text>
+                <Text style={styles.feeAmount}>{money(platformFee)}</Text>
               </View>
             </View>
           </View>
@@ -263,7 +267,7 @@ export default function PaymentScreen() {
               <Pressable style={[styles.payButton, (gatewayLoading || gateways.length === 0) && styles.payButtonDisabled]} onPress={handleCreatePayment} disabled={gatewayLoading || gateways.length === 0}>
                 <CreditCard size={20} color={Colors.primary} />
                 <Text style={styles.payButtonText}>
-                  {t('pay_now')} - {totalWithVat.toLocaleString()} {quoteCurrency}
+                  {t('pay_now')}{totalWithVat === null ? '' : ` - ${money(totalWithVat)}`}
                 </Text>
               </Pressable>
             </>

@@ -7,6 +7,8 @@ import { invitationRole, isFreshReauthentication, normalizeAuthorityEmail, pendi
 import { createAdminExportService, createInvoicePdfService, type DocumentBinaryResponse, type DocumentActor, type ExportEntity, type ExportFilters, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
 import { ensurePublicIdentifier, formatPublicIdentifier, isPublicIdentifier, PUBLIC_IDENTIFIER_COUNTER_IDS, PUBLIC_IDENTIFIER_FIELDS, type PublicIdentifierKind } from './public-identifiers';
 import { legacyProviderReady } from './moderation';
+import { handleCommercialAdmin, CommercialPersistenceError } from './commercial-admin';
+import { minorToMajor, type CommercialSnapshot } from './commercial';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
@@ -1198,8 +1200,38 @@ async function trustedInvoiceSource(env: Env, invoiceId: string): Promise<Truste
   const sellerName = typeof invoiceData.sellerName === 'string' ? invoiceData.sellerName.trim() : '';
   const total = Number(invoiceData.totalAmount), subtotal = Number(invoiceData.subtotal), vatAmount = Number(invoiceData.vatAmount);
   const platformFee = invoiceData.platformFee === undefined || invoiceData.platformFee === null ? undefined : Number(invoiceData.platformFee);
+  const providerAmount = invoiceData.providerAmount === undefined || invoiceData.providerAmount === null ? undefined : Number(invoiceData.providerAmount);
   const paymentAmount = Number(paymentData.amount), rentalSubtotal = Number(requestData.finalAmount ?? requestData.amount);
   const paymentReference = typeof paymentData.providerReference === 'string' ? paymentData.providerReference : '';
+  const verifyCommercial = (value: any): CommercialSnapshot | null => {
+    if (!value || typeof value !== 'object' || value.currency !== invoiceData.currency) return null;
+    const fields = ['baseAmountMinor', 'platformFeeMinor', 'customerFeeMinor', 'providerFeeMinor', 'providerReceivableMinor', 'customerPayableMinor'];
+    if (fields.some(field => !Number.isSafeInteger(value[field]) || value[field] < 0) ||
+        value.taxAmountMinor !== null && (!Number.isSafeInteger(value.taxAmountMinor) || value.taxAmountMinor < 0) ||
+        value.taxRateBps !== undefined && value.taxRateBps !== null && (!Number.isSafeInteger(value.taxRateBps) || value.taxRateBps < 0 || value.taxRateBps >= 10_000) ||
+        value.gatewayFeeMinor !== null && (!Number.isSafeInteger(value.gatewayFeeMinor) || value.gatewayFeeMinor < 0) ||
+        value.customerFeeMinor + value.providerFeeMinor !== value.platformFeeMinor ||
+        value.providerReceivableMinor !== value.baseAmountMinor - value.providerFeeMinor ||
+        value.customerPayableMinor !== value.baseAmountMinor + value.customerFeeMinor + (value.taxAmountMinor ?? 0)) return null;
+    return value as CommercialSnapshot;
+  };
+  const commercial = verifyCommercial(invoiceData.commercialSnapshot);
+  const sameCommercial = (other: any) => {
+    if (!commercial || !other || typeof other !== 'object') return false;
+    const fields = ['ruleVersion', 'ruleStatus', 'mode', 'percentageBps', 'fixedAmountMinor', 'minimumFeeMinor', 'maximumFeeMinor', 'payer', 'customerShareBps', 'baseAmountMinor', 'platformFeeMinor', 'customerFeeMinor', 'providerFeeMinor', 'providerReceivableMinor', 'customerPayableMinor', 'taxAmountMinor', 'taxRateBps', 'gatewayFeeMinor', 'currency', 'countryCode', 'categoryId', 'providerUid', 'calculatedAt', 'taxReference', 'ruleEffectiveFrom', 'ruleEffectiveTo', 'ruleCreatedAt', 'ruleCreatedBy', 'ruleUpdatedAt', 'ruleUpdatedBy', 'ruleNotes'];
+    return fields.every(field => commercial[field as keyof CommercialSnapshot] === other[field]) &&
+      commercial.scope?.countryCode === other.scope?.countryCode &&
+      commercial.scope?.categoryId === other.scope?.categoryId &&
+      commercial.scope?.providerUid === other.scope?.providerUid;
+  };
+  const customerFee = commercial ? Number(minorToMajor(commercial.customerFeeMinor, commercial.currency)) : 0;
+  const commercialRecordsAgree = !invoiceData.commercialSnapshot || !!commercial &&
+    sameCommercial(paymentData.commercialSnapshot) && sameCommercial(requestData.paidCommercialSnapshot) &&
+    equivalentAmount(subtotal, Number(minorToMajor(commercial.baseAmountMinor, commercial.currency))) &&
+    platformFee !== undefined && equivalentAmount(platformFee, Number(minorToMajor(commercial.platformFeeMinor, commercial.currency))) &&
+    providerAmount !== undefined && equivalentAmount(providerAmount, Number(minorToMajor(commercial.providerReceivableMinor, commercial.currency))) &&
+    equivalentAmount(vatAmount, Number(minorToMajor(commercial.taxAmountMinor ?? 0, commercial.currency))) &&
+    equivalentAmount(total, Number(minorToMajor(commercial.customerPayableMinor, commercial.currency)));
   if (!customerUid || !providerUid || !equipmentId ||
       invoiceNumber !== invoiceId || !settledState(invoiceData.status) ||
       requestData.customerUid !== invoiceData.customerId || requestData.providerUid !== invoiceData.providerId ||
@@ -1208,9 +1240,10 @@ async function trustedInvoiceSource(env: Env, invoiceId: string): Promise<Truste
       paymentData.requestId !== requestId || !settledState(paymentData.state) || paymentData.invoiceId !== invoiceId ||
       paymentData.customerUid !== customerUid || invoiceData.currency !== 'SAR' || paymentData.currency !== 'SAR' ||
       !paymentReference || invoiceData.paymentReference !== paymentReference || requestData.paymentId !== paymentReference ||
-      ![subtotal, vatAmount, total, paymentAmount, rentalSubtotal].every(Number.isFinite) ||
+      ![subtotal, vatAmount, customerFee, total, paymentAmount, rentalSubtotal].every(Number.isFinite) ||
       subtotal < 0 || vatAmount < 0 || total <= 0 || (platformFee !== undefined && (!Number.isFinite(platformFee) || platformFee < 0)) ||
-      !equivalentAmount(subtotal + vatAmount, total) || !equivalentAmount(paymentAmount, total) || !equivalentAmount(rentalSubtotal, subtotal) ||
+      !equivalentAmount(subtotal + customerFee + vatAmount, total) || !equivalentAmount(paymentAmount, total) || !equivalentAmount(rentalSubtotal, subtotal) ||
+      !commercialRecordsAgree ||
       !buyerName || !sellerName ||
       !/^HV-REQ-[0-9]{6,12}$/.test(String(requestData.publicRequestNumber || '')) ||
       !Number.isFinite(Date.parse(String(invoiceData.createdAt || invoiceData.paidAt || '')))) return null;
@@ -1231,6 +1264,10 @@ async function trustedInvoiceSource(env: Env, invoiceId: string): Promise<Truste
     rentalEnd: typeof requestData.endDate === 'string' ? requestData.endDate : requestData.rentalEnd,
     subtotal,
     platformFee,
+    customerFee: commercial ? customerFee : undefined,
+    providerReceivable: commercial ? Number(minorToMajor(commercial.providerReceivableMinor, commercial.currency)) : undefined,
+    gatewayFee: commercial?.gatewayFeeMinor === null || !commercial ? undefined : Number(minorToMajor(commercial.gatewayFeeMinor, commercial.currency)),
+    commissionConfigVersion: commercial?.ruleVersion,
     vatAmount,
     total,
     currency: 'SAR',
@@ -2097,6 +2134,27 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
       (url.pathname === '/api/admin/owner-bootstrap' && (user.role === 'super_admin' || user.permissionRole === 'super_admin')));
   if (!bootstrapException) await requireAdmin(user, env);
   else requireVerifiedAdmin(user);
+  if (url.pathname === '/api/admin/commercial' || url.pathname === '/api/admin/commercial/preview') {
+    return handleCommercialAdmin(req, {
+      read: async (collection, id) => {
+        try { return await rawDoc(env, collection, id); }
+        catch { throw new CommercialPersistenceError('Commercial configuration is temporarily unavailable.', 503); }
+      },
+      save: async (prior, change, before) => {
+        try {
+          if (prior && !prior.updateTime) throw new CommercialPersistenceError('Commercial version precondition is unavailable.', 503);
+          await commit(env, [{
+            update: { name: fullName(env, 'commercialSettings/catalog'), fields: Object.fromEntries(Object.entries(change.catalog).map(([key, value]) => [key, jsonValue(value)])) },
+            currentDocument: prior ? { updateTime: prior.updateTime } : { exists: false },
+          }, await auditWrite(env, user, `commission_${change.audit.action}`, 'commercialSettings', change.audit.version,
+            crypto.randomUUID(), change.audit.reason, before, change.catalog)]);
+        } catch (error) {
+          if (error instanceof FirestoreConflictError) throw new CommercialPersistenceError('Commercial configuration changed. Reload before confirming.', 409);
+          throw new CommercialPersistenceError('Commercial configuration could not be saved. No changes were committed.', 503);
+        }
+      },
+    }, { uid: user.uid, canRead: can(user, 'fees.read'), canManage: can(user, 'fees.manage') }, env);
+  }
   if (url.pathname === '/api/admin/session' && req.method === 'GET') return { success: true, uid: user.uid, role: user.permissionRole || user.role, bootstrapRequired: bootstrapException };
   if (url.pathname === '/api/admin/email-verification/reminder' && req.method === 'POST') return emailVerificationReminder(req, env, user);
   if (url.pathname === '/api/admin/email-verification/reminders/preview' && req.method === 'POST') return emailVerificationReminderPreview(req, env, user);
