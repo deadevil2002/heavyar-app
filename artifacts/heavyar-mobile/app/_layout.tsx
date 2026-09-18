@@ -3,6 +3,7 @@ import { Stack, useRouter } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useRef } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { Platform } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import Colors from "@/constants/colors";
 import { LanguageProvider } from "@/contexts/LanguageContext";
@@ -51,7 +52,7 @@ function NotificationNavigation() {
   const handled = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || Platform.OS === "web") return;
     const open = (response: Notifications.NotificationResponse) => {
       const data = response.notification.request.content.data as Record<string, unknown> | undefined;
       const key = `${String(data?.notificationId || '')}:${String(data?.action || '')}:${String(data?.subjectId || '')}`;

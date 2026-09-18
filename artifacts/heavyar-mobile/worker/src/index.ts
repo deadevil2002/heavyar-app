@@ -41,7 +41,7 @@ const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/
 const b64u = (v: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(v))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const cors = (env: Env, origin: string | null) => {
   const allow = (env.CORS_ORIGINS || 'https://heavyar.app,https://www.heavyar.app,https://heavyar-app.web.app,https://heavyar-app.firebaseapp.com').split(',').map(x => x.trim());
-  const trustedExpoPreview = /^https:\/\/[a-z0-9-]+\.expo\.sisko\.replit\.dev$/i.test(origin || '');
+  const trustedExpoPreview = /^https:\/\/[a-z0-9-]+(?:\.expo)?\.sisko\.replit\.dev$/i.test(origin || '');
   return { 'Access-Control-Allow-Origin': allow.includes(origin || '') || trustedExpoPreview ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Correlation-ID', Vary: 'Origin' };
 };
 const out = (env: Env, req: Request, value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', ...cors(env, req.headers.get('Origin')) } });

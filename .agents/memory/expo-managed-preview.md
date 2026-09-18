@@ -14,3 +14,9 @@ In the pnpm monorepo, Metro must watch resolved package roots rather than every 
 **Why:** Expo's generated monorepo watch list can exceed Replit's inotify allowance, while removing external package roots entirely lets Metro start but makes bundling fail with missing SHA-1/module errors.
 
 **How to apply:** Keep sibling workspaces out of Metro's watch list when the mobile app does not import them, but retain the resolved pnpm package roots needed by the bundle. Verify both sustained workflow health and an actual bundle request.
+
+Replit browser previews may use either `*.expo.sisko.replit.dev` or `*.sisko.replit.dev`, even when the shell’s Expo development domain uses the former.
+
+**Why:** Browser preview QA used the direct `*.sisko.replit.dev` origin, which caused Worker configuration requests to fail CORS while the Expo bundle itself still rendered.
+
+**How to apply:** When an app-scoped API permits Replit Expo previews, allow only these two tightly scoped HTTPS hostname forms and keep unrelated origins denied. Confirm the browser’s actual `window.location.origin`, not only the shell environment value.

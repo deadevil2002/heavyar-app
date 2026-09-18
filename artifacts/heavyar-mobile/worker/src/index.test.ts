@@ -43,9 +43,12 @@ describe('worker security boundary', () => {
 
   test('CORS permits only configured sites and scoped Expo preview origins', async () => {
     const expoOrigin = 'https://preview-123.expo.sisko.replit.dev';
+    const expoDirectOrigin = 'https://preview-123.sisko.replit.dev';
     const allowed = await worker.fetch(new Request('https://worker.test/health', { headers: { Origin: expoOrigin } }), env);
+    const directAllowed = await worker.fetch(new Request('https://worker.test/health', { headers: { Origin: expoDirectOrigin } }), env);
     const denied = await worker.fetch(new Request('https://worker.test/health', { headers: { Origin: 'https://attacker.example' } }), env);
     expect(allowed.headers.get('Access-Control-Allow-Origin')).toBe(expoOrigin);
+    expect(directAllowed.headers.get('Access-Control-Allow-Origin')).toBe(expoDirectOrigin);
     expect(denied.headers.get('Access-Control-Allow-Origin')).toBe('null');
   });
 
