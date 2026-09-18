@@ -11,6 +11,12 @@ When persistence tests capture writes instead of sending them, also test the exa
 
 Treat document IDs returned by persistence as opaque. URI escaping belongs in HTTP paths, not Firestore JSON resource names.
 
-**Why:** Escaping a colon in a JSON resource name creates a literal percent-encoded document ID. Live browser QA also found older UUID-prefixed invitations, which hash-prefix-only tests missed. Naming assumptions can make visible invitations impossible to cancel.
+**Why:** Escaping a colon in a JSON resource name creates a literal percent-encoded document ID. Production read-only inspection confirmed this storage mismatch. Naming assumptions can make visible invitations impossible to cancel.
 
 **How to apply:** Cover canonical, encoded, and unrelated legacy physical IDs in management tests. Preserve the actual document identity and version; do not decode IDs. Management identity is not bearer authority: acceptance must still use the verified hashed-token architecture.
+
+Do not infer resource identity from nearby UI metadata.
+
+**Why:** Browser QA mistook a UUID shown beside an invitation for its document ID, then reused it in a mock. The mocked request succeeded while direct Firestore inspection showed an encoded-hash document with no ID shadowing.
+
+**How to apply:** Obtain mutation IDs from the actual unmocked API response or captured request. Keep live observations separate from fixture behavior when reporting root causes.
