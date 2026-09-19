@@ -15,6 +15,7 @@ import { createListing } from '@/services/workerClient';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { preferredDisplayCurrency } from '@/services/currency';
+import { safeErrorMessage } from '@/services/errorMessages';
 
 export default function AddEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -153,8 +154,7 @@ export default function AddEquipmentScreen() {
       setImages([]);
     } catch (e) {
       await Promise.all(uploadedImages.map(image => deleteCloudinaryImage(image.publicId)));
-      const message = e instanceof Error ? e.message : t('unexpected_error');
-      showDialog(t('error_title'), message, [{ text: t('ok'), style: 'default' }]);
+      showDialog(t('error_title'), safeErrorMessage(e, isRTL ? 'ar' : 'en'), [{ text: t('ok'), style: 'default' }]);
     } finally {
       setPublishing(false);
       setUploading(false);

@@ -22,6 +22,7 @@ export default function Users() {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [verification, setVerification] = useState('');
+  const [purpose, setPurpose] = useState('');
   const [cursor, setCursor] = useState<string>();
   const [history, setHistory] = useState<string[]>([]);
   const [selected, setSelected] = useState<User | null>(null);
@@ -39,7 +40,7 @@ export default function Users() {
   const [deletionTarget, setDeletionTarget] = useState<User | null>(null);
   const [bulkDeletionOpen, setBulkDeletionOpen] = useState(false);
 
-  const filters = { q: search || undefined, accountStatus: status || undefined, emailVerified: verification === 'verified' ? true : verification === 'unverified' ? false : undefined };
+  const filters = { q: search || undefined, accountStatus: status || undefined, accountPurpose: purpose || undefined, emailVerified: verification === 'verified' ? true : verification === 'unverified' ? false : undefined };
 
   const { data, isLoading } = useUsers({ ...filters, limit: 20, cursor });
   const selectedLive = selected ? (data?.items?.find(item => item.id === selected.id) || selected) : null;
@@ -68,6 +69,12 @@ export default function Users() {
 
   const handleVerificationChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setVerification(e.target.value);
+    setCursor(undefined);
+    setHistory([]);
+    clearSelection();
+  };
+  const handlePurposeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setPurpose(e.target.value);
     setCursor(undefined);
     setHistory([]);
     clearSelection();
@@ -104,7 +111,7 @@ export default function Users() {
   };
 
   const columns: OperationsColumn<User>[] = [
-    { key: 'person', label: t('المستخدم', 'User'), sortable: true, render: u => <div><div className="font-medium">{u.nameAr || u.nameEn || u.displayName || '—'}</div><div dir="ltr" className="text-xs text-muted-foreground">{u.email || '—'}</div></div> },
+    { key: 'person', label: t('المستخدم', 'User'), sortable: true, render: u => <div><div className="font-medium">{u.nameAr || u.nameEn || u.displayName || '—'} {u.accountPurpose === 'store_review' && <span className="ms-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">{t('حساب مراجعة/اختبار', 'Store Review / QA')}</span>}</div><div dir="ltr" className="text-xs text-muted-foreground">{u.email || '—'}</div></div> },
     { key: 'role', label: t('دور التطبيق', 'App role'), render: u => u.role || 'user' },
     { key: 'status', label: t('الحالة', 'Status'), render: u => <span className={u.suspensionStatus && u.suspensionStatus !== 'active' ? 'text-destructive' : 'text-emerald-500'}>{u.suspensionStatus && u.suspensionStatus !== 'active' ? t('موقوف', 'Suspended') : t('نشط', 'Active')}</span> },
     { key: 'verification', label: t('التحقق', 'Verification'), render: u => <div className="space-y-1"><TrustIndicator value={u} language={language} /><div className={`flex items-center gap-1 text-xs ${u.emailVerified ? 'text-emerald-600' : 'text-amber-600'}`}>{u.emailVerified ? <MailCheck className="h-3.5 w-3.5" /> : <MailWarning className="h-3.5 w-3.5" />}{u.emailVerified ? t('البريد موثق', 'Email verified') : t('البريد غير موثق', 'Email unverified')}</div></div> },
@@ -232,7 +239,11 @@ export default function Users() {
               <option value="verified">{t('موثق', 'Verified')}</option>
               <option value="unverified">{t('غير موثق', 'Unverified')}</option>
             </select>
-            <ExportControls resource="users" params={{ search, status, emailVerified: verification === 'verified' ? true : verification === 'unverified' ? false : undefined }} />
+            <select value={purpose} onChange={handlePurposeChange} className="h-9 rounded-md border bg-background px-2 text-sm">
+              <option value="">{t('كل أغراض الحساب', 'All account purposes')}</option>
+              <option value="store_review">{t('حسابات مراجعة/اختبار', 'Store Review / QA')}</option>
+            </select>
+            <ExportControls resource="users" params={{ search, status, accountPurpose: purpose || undefined, emailVerified: verification === 'verified' ? true : verification === 'unverified' ? false : undefined }} />
           </>
         }
       />
@@ -249,6 +260,7 @@ export default function Users() {
             { label: t('حالة البريد', 'Email verification'), value: selectedLive.emailVerified ? t('موثق', 'Verified') : t('غير موثق', 'Unverified') },
             { label: t('آخر تذكير', 'Last reminder'), value: selectedLive.lastEmailVerificationSentAt || '—' },
             { label: t('عدد التذكيرات', 'Reminder count'), value: selectedLive.verificationReminderCount ?? 0 },
+            { label: t('غرض الحساب', 'Account purpose'), value: selectedLive.accountPurpose === 'store_review' ? t('حساب مراجعة/اختبار', 'Store Review / QA') : t('حساب إنتاجي', 'Production account') },
             { label: t('الحالة', 'Status'), value: selectedLive.suspensionStatus },
             { label: 'UID', value: selectedLive.id, technical: true }
           ]}

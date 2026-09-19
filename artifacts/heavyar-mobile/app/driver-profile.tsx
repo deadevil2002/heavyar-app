@@ -12,6 +12,7 @@ import { GCC_COUNTRIES, type GccCountryCode } from '@/constants/gcc';
 import { citiesForLocation, regionsForCountry } from '@/services/locationHierarchy';
 import { fetchMarketConfig, type MarketConfig } from '@/services/authService';
 import { mockCategories } from '@/mocks/categories';
+import { safeErrorMessage } from '@/services/errorMessages';
 import {
   buildDriverOwnerSavePayload,
   canEditDriverOwnerProfile,
@@ -83,7 +84,7 @@ export default function DriverProfileScreen() {
       applyProfile(profile, !dirty.current);
       setLoadError('');
     } catch (error) {
-      setLoadError(error instanceof WorkerError ? error.message : localized(
+      setLoadError(error instanceof WorkerError ? safeErrorMessage(error, isRTL ? 'ar' : 'en') : localized(
         'تعذر تحميل ملف السائق. تحقق من الاتصال وحاول مرة أخرى.',
         'Could not load the driver profile. Check your connection and try again.',
       ));
@@ -137,7 +138,7 @@ export default function DriverProfileScreen() {
       applyProfile(result.profile, true);
       showDialog(t('success'), t('profile_updated'), [{ text: t('ok'), style: 'default' }]);
     } catch (error) {
-      showDialog(t('error_title'), error instanceof WorkerError ? error.message : localized(
+      showDialog(t('error_title'), error instanceof WorkerError ? safeErrorMessage(error, isRTL ? 'ar' : 'en') : localized(
         'تعذر حفظ ملف السائق. حاول مرة أخرى.',
         'Could not save the driver profile. Try again.',
       ), [{ text: t('ok'), style: 'default' }]);

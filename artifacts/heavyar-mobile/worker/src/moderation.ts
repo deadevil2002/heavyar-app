@@ -14,7 +14,8 @@ export function isListingModerationStatus(value: unknown): value is ListingModer
 
 /** Legacy listings without an explicit moderation result fail closed. */
 export function isPublicRentableListing(listing: Record<string, unknown>): boolean {
-  return listing.isActive === true
+  return listing.accountPurpose !== 'store_review'
+    && listing.isActive === true
     && listing.visibility === 'visible'
     && listing.moderationStatus === 'approved';
 }

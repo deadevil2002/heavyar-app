@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import createContextHook from '@nkzw/create-context-hook';
 import { AccountState, User } from '@/types';
@@ -22,6 +22,8 @@ import {
 import { isGccPhone } from '@/constants/gcc';
 import { useLanguage } from './LanguageContext';
 import { registrationErrorMessage } from '@/services/registrationErrors';
+import { safeErrorMessage } from '@/services/errorMessages';
+import { registrationFailureDisposition, registrationListenerMayPublish, type RegistrationTransaction } from '@/services/registrationState';
 import {
   registerCurrentDevice,
   revokeCurrentDevice,
@@ -40,6 +42,16 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const [accountState, setAccountState] = useState<AccountState | null>(null);
   const [identityEmail, setIdentityEmail] = useState<string | null>(null);
   const [recoveryRegistrationOpen, setRecoveryRegistrationOpen] = useState(false);
+  const [registrationTransaction, setRegistrationTransaction] = useState<RegistrationTransaction>('idle');
+  const registrationTransactionRef = useRef<RegistrationTransaction>('idle');
+  const registrationGenerationRef = useRef(0);
+  const setRegistrationPhase = useCallback((phase: RegistrationTransaction) => {
+    if (phase === 'preflight' && registrationTransactionRef.current === 'idle') {
+      registrationGenerationRef.current += 1;
+    }
+    registrationTransactionRef.current = phase;
+    setRegistrationTransaction(phase);
+  }, []);
 
   useEffect(() => {
     const loadCachedProfile = async () => {
@@ -56,10 +68,24 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     void loadCachedProfile();
 
     const unsubscribe = subscribeToAuthState(async (firebaseUser) => {
+      const listenerGeneration = registrationGenerationRef.current;
+      const isStale = () => !registrationListenerMayPublish(
+        registrationTransactionRef.current,
+        listenerGeneration,
+        registrationGenerationRef.current,
+      );
+      if (registrationTransactionRef.current !== 'idle') {
+        if (firebaseUser) {
+          setIdentityEmail(firebaseUser.email || null);
+          setEmailVerified(firebaseUser.emailVerified);
+        }
+        return;
+      }
       if (firebaseUser) {
         setIdentityEmail(firebaseUser.email || null);
         setEmailVerified(firebaseUser.emailVerified);
         const verificationStatus = await fetchEmailVerificationStatus();
+        if (isStale()) return;
         if (verificationStatus?.policy) {
           setAuthPolicy(previous => previous ? {
             ...previous,
@@ -76,6 +102,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
             fetchUserProfile(firebaseUser.uid),
             fetchAccountProfileStatus(),
           ]);
+          if (isStale()) return;
           if (profile && canonicalStatus.state === 'authenticated_complete') {
             setUser(profile);
             setIsAuthenticated(true);
@@ -87,6 +114,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
             } catch {
               // Notifications are optional; authentication must still complete.
             }
+            if (isStale()) return;
           } else {
             setUser(null);
             setIsAuthenticated(true);
@@ -94,9 +122,11 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
             await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
           }
         } catch (e) {
+          if (isStale()) return;
           setUser(null);
           setIsAuthenticated(false);
           await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+          if (isStale()) return;
           setAuthError('SESSION_EXPIRED');
           setAccountState(null);
         }
@@ -130,7 +160,9 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     setAccountState('authenticated_complete');
     setRecoveryRegistrationOpen(false);
     await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
-  }, []);
+    setRegistrationPhase('success');
+    setTimeout(() => setRegistrationPhase('idle'), 0);
+  }, [setRegistrationPhase]);
 
   const beginRecoveryRegistration = useCallback(() => setRecoveryRegistrationOpen(true), []);
 
@@ -148,19 +180,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       }
     } catch (e: unknown) {
       const error = e as { code?: string; message?: string; errorCode?: string };
-      let errorMsg = 'فشل تسجيل الدخول';
-      if (error.message === 'PHONE_LOGIN_INVALID' || error.message === 'PHONE_LOGIN_RATE_LIMITED' ||
-          error.message === 'PHONE_LOGIN_UNAVAILABLE' || error.message === 'EMAIL_LOGIN_UNAVAILABLE') {
-        errorMsg = error.message;
-      } else if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
-        errorMsg = 'البريد الإلكتروني أو كلمة المرور غير صحيحة';
-      } else if (error.code === 'auth/invalid-email') {
-        errorMsg = 'البريد الإلكتروني غير صالح';
-      } else if (error.code === 'auth/too-many-requests') {
-        errorMsg = 'محاولات كثيرة. حاول لاحقاً';
-      } else if (error.code === 'auth/invalid-credential') {
-        errorMsg = 'بيانات الدخول غير صحيحة';
-      }
+      const errorMsg = safeErrorMessage({ errorCode: error.errorCode || error.code || error.message }, language);
       setAuthError(errorMsg);
       throw Object.assign(new Error(errorMsg), { errorCode: error.errorCode || error.code });
     }
@@ -173,6 +193,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     providerType?: 'individual' | 'company',
   ) => {
     setAuthError(null);
+    setRegistrationPhase('preflight');
     try {
       const profileData = {
         nameAr: name,
@@ -186,15 +207,47 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         crNumber,
         providerType,
       };
-      if (accountState === 'provisioning_incomplete') await resumeRegistration(profileData);
-      else await registerWithEmail(email, password, profileData);
+      if (accountState === 'provisioning_incomplete') {
+        setRegistrationPhase('provisioning');
+        await resumeRegistration(profileData);
+      } else {
+        setRegistrationPhase('creating_identity');
+        const identity = await registerWithEmail(email, password, profileData);
+        setRegistrationPhase('provisioning');
+        const [profile, canonicalStatus] = await Promise.all([
+          fetchUserProfile(identity.uid),
+          fetchAccountProfileStatus(),
+        ]);
+        if (!profile || canonicalStatus.state !== 'authenticated_complete') {
+          throw Object.assign(new Error('REGISTRATION_RETRY_REQUIRED'), { errorCode: 'REGISTRATION_RETRY_REQUIRED' });
+        }
+        setUser(profile);
+        setIsAuthenticated(true);
+        setAccountState('authenticated_complete');
+        await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
+        setRegistrationPhase('success');
+        setTimeout(() => setRegistrationPhase('idle'), 0);
+      }
     } catch (e: unknown) {
       const error = e as { code?: string; message?: string; errorCode?: string };
+      const code = error.errorCode || error.code || error.message || '';
+      const ambiguous = registrationFailureDisposition(code) === 'preserve_recovery_identity';
+      if (ambiguous) {
+        setAccountState('provisioning_incomplete');
+        setIsAuthenticated(true);
+        setRecoveryRegistrationOpen(true);
+        setRegistrationPhase('ambiguous_failure_recovery');
+      } else {
+        setRegistrationPhase('known_failure_rollback');
+        setAccountState(null);
+        setIsAuthenticated(false);
+        setRegistrationPhase('idle');
+      }
       const errorMsg = registrationErrorMessage(error, language);
       setAuthError(errorMsg);
       throw Object.assign(new Error(errorMsg), { errorCode: error.errorCode || error.code });
     }
-  }, [language, accountState, resumeRegistration]);
+  }, [language, accountState, resumeRegistration, setRegistrationPhase]);
 
   const refreshEmailVerification = useCallback(async () => {
     const verified = await refreshFirebaseEmailVerification();
@@ -316,5 +369,6 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     refreshEmailVerification,
     sendEmailVerification,
     requiresEmailVerification,
-  }), [user, accountState, identityEmail, recoveryRegistrationOpen, isLoading, isAuthenticated, authError, login, register, resumeRegistration, beginRecoveryRegistration, deleteIncompleteAccount, logout, refreshProfile, updateProfile, emailVerified, authPolicy, refreshEmailVerification, sendEmailVerification, requiresEmailVerification]);
+    registrationTransaction,
+  }), [user, accountState, identityEmail, recoveryRegistrationOpen, registrationTransaction, isLoading, isAuthenticated, authError, login, register, resumeRegistration, beginRecoveryRegistration, deleteIncompleteAccount, logout, refreshProfile, updateProfile, emailVerified, authPolicy, refreshEmailVerification, sendEmailVerification, requiresEmailVerification]);
 });

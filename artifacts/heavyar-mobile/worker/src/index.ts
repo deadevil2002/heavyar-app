@@ -9,7 +9,7 @@ import { isPublicRentableListing, legacyProviderReady, listingVisibilityForOwner
 import { createInvoicePdfService, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
 import { quotaFetch, isQuotaError, quotaResponse, quotaBlocked } from './quota-policy';
 import { earlyAccessDeliveryProof } from './early-access-delivery';
-import { evaluateCanonicalCompleteness, type CompletenessResult } from './integrity';
+import { evaluateCanonicalCompleteness, isStoreReviewAccount, type CompletenessResult } from './integrity';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -1592,10 +1592,16 @@ async function create(req: Request, env: Env, u: User) {
   const body = await req.json() as { requestId?: string; amount?: number; purpose?: string };
   if (!body.requestId || Object.keys(body).some(key => !['requestId', 'purpose'].includes(key)) || (body.purpose && body.purpose !== 'equipment_request')) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', body.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
-  try { await enforceOperationalAccess(env, u, e); await enforceTrustForPayment(env, u, r, e); } catch (error) {
+  try {
+    await enforceOperationalAccess(env, u, e);
+    const customer = r?.customerUid ? await getDoc(env, 'users', String(r.customerUid)) : null;
+    const provider = e?.ownerUid ? await getDoc(env, 'users', String(e.ownerUid)) : null;
+    if (isStoreReviewAccount(customer) || isStoreReviewAccount(provider)) err('STORE_REVIEW_FINANCIAL_DISABLED');
+    await enforceTrustForPayment(env, u, r, e);
+  } catch (error) {
     const message = error instanceof Error ? error.message : '';
     const trust = message.startsWith('TRUST_');
-    return out(env, req, { success: false, error: trust ? 'Identity verification required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : 'Listing unavailable', code: trust ? message.replace('TRUST_', '').toLowerCase() : undefined }, 403);
+    return out(env, req, { success: false, error: trust ? 'Identity verification required' : message === 'STORE_REVIEW_FINANCIAL_DISABLED' ? 'Store Review accounts cannot initiate financial settlement' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : 'Listing unavailable', code: trust ? message.replace('TRUST_', '').toLowerCase() : message === 'STORE_REVIEW_FINANCIAL_DISABLED' ? message : undefined }, 403);
   }
   if (!owned(u, r) || !r?.customerUid || r.customerUid !== u.uid) return out(env, req, { success: false, error: 'Forbidden' }, 403);
   try { assertSarSettlement(r, e); } catch { return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); }
@@ -2296,7 +2302,8 @@ async function listingCreate(req: Request, env: Env, u: User) {
   const id = `eq_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
   const ownerPublic = { uid: u.uid, nameAr: String(profile.nameAr || ''), nameEn: String(profile.nameEn || ''), avatar: String(profile.avatar || '') };
   const publicationReason = 'automated_post_moderation_eligible_provider';
-  const value: any = { ownerUid: u.uid, countryCode: country.code, nativeCurrency: country.currency, nativePricePerDay: dailyPrice, titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), pricePerDay: dailyPrice, images, availability, ownerPublic, isActive: true, visibility: 'visible', moderationStatus: 'approved', moderationReason: publicationReason, createdAt: now, updatedAt: now };
+  const reviewOnly = profile.accountPurpose === 'store_review';
+  const value: any = { ownerUid: u.uid, ...(reviewOnly ? { accountPurpose: 'store_review' } : {}), countryCode: country.code, nativeCurrency: country.currency, nativePricePerDay: dailyPrice, titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), pricePerDay: dailyPrice, images, availability, ownerPublic, isActive: true, visibility: reviewOnly ? 'hidden' : 'visible', moderationStatus: 'approved', moderationReason: reviewOnly ? 'store_review_qa_only' : publicationReason, createdAt: now, updatedAt: now };
   const writes: any[] = [
     { update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:create`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: 'create' }, reason: { stringValue: publicationReason }, automated: { booleanValue: true }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
   ];
@@ -2328,6 +2335,7 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
     if (overlaps) return out(env, req, { success: false, error: 'AVAILABILITY_CONFLICT' }, 409);
   }
   if (patch.isActive !== undefined) patch.visibility = listingVisibilityForOwnerActive(patch.isActive === true);
+  if (raw.data.accountPurpose === 'store_review') patch.visibility = 'hidden';
   // Owners may hide an approved listing, but can never undo an Admin
   // restriction (or self-approve a listing awaiting review).
   if (patch.isActive === true && raw.data.moderationStatus !== 'approved') return out(env, req, { success: false, error: 'LISTING_MODERATION_LOCKED' }, 403);
@@ -2439,7 +2447,7 @@ async function resolveDriverPublicId(env: Env, publicId: string): Promise<{ uid:
 }
 
 function eligibleAccount(account: any, role: 'driver' | 'requester'): boolean {
-  if (!account || (account.accountStatus !== undefined && account.accountStatus !== 'active') || account.isActive === false ||
+  if (!account || isStoreReviewAccount(account) || (account.accountStatus !== undefined && account.accountStatus !== 'active') || account.isActive === false ||
       ['temporarily_suspended', 'permanently_suspended', 'suspended'].includes(String(account.suspensionStatus || '')) ||
       ['restricted', 'deletion_requested', 'suspended'].includes(String(account.accountStatus || ''))) return false;
   return role === 'driver' ? account.role === 'driver' : ['customer', 'provider'].includes(String(account.role));

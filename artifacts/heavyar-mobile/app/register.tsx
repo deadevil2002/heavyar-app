@@ -14,6 +14,7 @@ import { UserRole } from '@/types';
 import { saudiRegions, getCitiesByRegion } from '@/mocks/saudiRegions';
 import { GCC_COUNTRIES, countryFor, normalizePhoneForCountry, type GccCountryCode } from '@/constants/gcc';
 import { registrationErrorMessage } from '@/services/registrationErrors';
+import { registrationFieldForCode } from '@/services/registrationState';
 
 type RegistrationStep = 'email' | 'info' | 'role';
 const crRules: Record<GccCountryCode, { maxLength: number; placeholder: string }> = {
@@ -64,6 +65,8 @@ export default function RegisterScreen() {
   const [citySearch, setCitySearch] = useState<string>('');
 
   const [loading, setLoading] = useState<boolean>(false);
+  const [fieldErrors, setFieldErrors] = useState<{ email?: string; phone?: string }>({});
+  const [showEmailLoginAction, setShowEmailLoginAction] = useState(false);
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
   React.useEffect(() => {
@@ -160,9 +163,17 @@ export default function RegisterScreen() {
     } catch (e) {
       const code = (e as { errorCode?: string }).errorCode;
       const errorMsg = registrationErrorMessage(e, language);
-      showDialog(t('error_title'), errorMsg, code === 'DUPLICATE_COMPLETE_EMAIL'
-        ? [{ text: t('cancel'), style: 'cancel' }, { text: t('login'), style: 'default', onPress: () => router.replace('/login') }]
-        : [{ text: t('ok'), style: 'default' }]);
+      const field = registrationFieldForCode(code);
+      if (field === 'phone') {
+        setStep('info');
+        setFieldErrors({ phone: errorMsg });
+      } else if (field === 'email') {
+        setStep('email');
+        setFieldErrors({ email: errorMsg });
+        setShowEmailLoginAction(true);
+      } else {
+        showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
+      }
     } finally {
       setLoading(false);
     }
@@ -204,11 +215,13 @@ export default function RegisterScreen() {
           placeholder={t('email')}
           placeholderTextColor={Colors.textMuted}
           value={email}
-          onChangeText={value => setEmail(value.trim().toLowerCase())}
+            onChangeText={value => { setEmail(value.trim().toLowerCase()); setFieldErrors(previous => ({ ...previous, email: undefined })); setShowEmailLoginAction(false); }}
           keyboardType="email-address"
           autoCapitalize="none"
         />
-      </View>
+       </View>
+       {!!fieldErrors.email && <Text style={[styles.fieldError, { textAlign: isRTL ? 'right' : 'left' }]}>{fieldErrors.email}</Text>}
+       {showEmailLoginAction && <Pressable onPress={() => router.replace('/login')} style={styles.inlineAction}><Text style={styles.inlineActionText}>{t('login')}</Text></Pressable>}
       <Pressable style={styles.primaryButton} onPress={handleContinueEmail}>
         <Text style={styles.primaryButtonText}>{t('next')}</Text>
       </Pressable>
@@ -266,10 +279,11 @@ export default function RegisterScreen() {
           placeholder={`${country.dialCode} 5XXXXXXXX`}
           placeholderTextColor={Colors.textMuted}
           value={phone}
-          onChangeText={setPhone}
+           onChangeText={value => { setPhone(value); setFieldErrors(previous => ({ ...previous, phone: undefined })); }}
           keyboardType="phone-pad"
         />
-      </View>
+       </View>
+       {!!fieldErrors.phone && <Text style={[styles.fieldError, { textAlign: isRTL ? 'right' : 'left' }]}>{fieldErrors.phone}</Text>}
 
       <View style={[styles.inputRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
         <Lock size={20} color={Colors.textMuted} />
@@ -562,6 +576,9 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
   },
   input: { flex: 1, color: Colors.textPrimary, fontSize: 16 },
+  fieldError: { color: Colors.error, fontSize: 13, marginTop: -8, marginBottom: 8 },
+  inlineAction: { alignSelf: 'flex-start', marginBottom: 8 },
+  inlineActionText: { color: Colors.gold, fontSize: 14, fontWeight: '700' },
   primaryButton: { backgroundColor: Colors.gold, borderRadius: 14, paddingVertical: 16, alignItems: 'center', marginTop: 4 },
   buttonDisabled: { opacity: 0.6 },
   primaryButtonText: { color: Colors.primary, fontSize: 17, fontWeight: '700' as const },

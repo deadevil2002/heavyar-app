@@ -13,6 +13,7 @@ import { User } from '@/types';
 import { WORKER_BASE_URL } from '@/constants/worker';
 import { GCC_COUNTRIES, GccCountryCode, normalizeGccPhone, normalizePhoneForCountry } from '@/constants/gcc';
 import { buildRegistrationProfilePayload } from '@/services/registrationPayload';
+import { registrationRollbackDisposition } from '@/services/registrationState';
 export { buildRegistrationProfilePayload } from '@/services/registrationPayload';
 
 export interface AuthPolicy {
@@ -221,9 +222,13 @@ export async function registerWithEmail(
   }
 
   let shouldDelete = false;
+  let safeToDeleteIdentity = false;
+  let failureCode: string | undefined;
+  let preserveIdentityForRecovery = true;
   try {
     if (!createdIdentity && await fetchUserProfile(credential.user.uid)) {
       const duplicate = Object.assign(new Error('DUPLICATE_COMPLETE_EMAIL'), { errorCode: 'DUPLICATE_COMPLETE_EMAIL' });
+      preserveIdentityForRecovery = false;
       throw duplicate;
     }
     const token = await credential.user.getIdToken();
@@ -240,16 +245,60 @@ export async function registerWithEmail(
       throw networkError;
     }
     if (!response.ok) {
-      const failure = await response.json().catch(() => ({})) as { safeToDeleteIdentity?: boolean; error?: string; errorCode?: string };
-      shouldDelete = failure.safeToDeleteIdentity === true;
-      const error = new Error(failure.errorCode || (response.status >= 500 ? 'REGISTRATION_RETRY_REQUIRED' : 'INVALID_REGISTRATION_DETAILS'));
-      (error as Error & { errorCode?: string }).errorCode = failure.errorCode;
+      const failure = await response.json().catch(() => null) as { safeToDeleteIdentity?: unknown; error?: unknown; errorCode?: unknown } | null;
+      failureCode = typeof failure?.errorCode === 'string' ? failure.errorCode : undefined;
+      safeToDeleteIdentity = failure?.safeToDeleteIdentity === true;
+      const protocolCode = response.status >= 500 ? 'REGISTRATION_RETRY_REQUIRED' : failureCode;
+      const code = protocolCode || 'REGISTRATION_ROLLBACK_UNCERTAIN';
+      shouldDelete = registrationRollbackDisposition({
+        code,
+        safeToDeleteIdentity,
+        createdThisAttempt: createdIdentity,
+        deleteConfirmed: true,
+      }) === 'stay_on_registration';
+      const error = new Error(code);
+      (error as Error & { errorCode?: string }).errorCode = code;
+      preserveIdentityForRecovery = !shouldDelete;
       throw error;
     }
     return credential.user;
   } catch (error) {
-    if (shouldDelete && createdIdentity) await credential.user.delete().catch(() => undefined);
-    await signOut(auth).catch(() => undefined);
+    let rollbackDeleteConfirmed = false;
+    if (shouldDelete && createdIdentity && safeToDeleteIdentity) {
+      try {
+        await credential.user.delete();
+        rollbackDeleteConfirmed = true;
+      } catch {
+        preserveIdentityForRecovery = true;
+        const rollbackError = Object.assign(new Error('REGISTRATION_ROLLBACK_UNCERTAIN'), {
+          errorCode: 'REGISTRATION_ROLLBACK_UNCERTAIN',
+        });
+        if (registrationRollbackDisposition({
+          code: failureCode,
+          safeToDeleteIdentity,
+          createdThisAttempt: createdIdentity,
+          deleteConfirmed: rollbackDeleteConfirmed,
+        }) === 'preserve_recovery_identity') {
+          error = rollbackError;
+        }
+      }
+    }
+    if (shouldDelete && createdIdentity && safeToDeleteIdentity && !rollbackDeleteConfirmed) {
+      preserveIdentityForRecovery = true;
+    } else if (shouldDelete && createdIdentity && safeToDeleteIdentity) {
+      preserveIdentityForRecovery = registrationRollbackDisposition({
+        code: failureCode,
+        safeToDeleteIdentity,
+        createdThisAttempt: createdIdentity,
+        deleteConfirmed: rollbackDeleteConfirmed,
+      }) === 'preserve_recovery_identity';
+    }
+    if (!preserveIdentityForRecovery) await signOut(auth).catch(() => undefined);
+    else {
+      error = Object.assign(new Error('REGISTRATION_ROLLBACK_UNCERTAIN'), {
+        errorCode: 'REGISTRATION_ROLLBACK_UNCERTAIN',
+      });
+    }
     throw error;
   }
 }

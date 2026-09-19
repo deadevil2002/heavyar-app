@@ -4,6 +4,10 @@ export type CompletenessResult = {
   role: CanonicalRole | null; missingFields: string[];
   profilePresent: boolean; roleProfilePresent: boolean;
 };
+export const STORE_REVIEW_PURPOSE = 'store_review' as const;
+export function isStoreReviewAccount(value: Record<string, any> | null | undefined): boolean {
+  return value?.accountPurpose === STORE_REVIEW_PURPOSE;
+}
 const text = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
 export function evaluateCanonicalCompleteness(auth: { uid?: string; email?: string } | null, profile: Record<string, any> | null, roleProfile: Record<string, any> | null = null): CompletenessResult {
   const role = ['customer', 'provider', 'driver'].includes(String(profile?.role)) ? profile!.role as CanonicalRole : null;

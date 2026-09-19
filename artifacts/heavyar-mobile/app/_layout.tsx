@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Stack, useRouter } from "expo-router";
+import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useRef } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -20,8 +20,11 @@ void SplashScreen.preventAutoHideAsync();
 const queryClient = new QueryClient();
 
 function RootLayoutNav() {
-  const { accountState, recoveryRegistrationOpen } = useAuth();
-  if (accountState && accountState !== 'authenticated_complete' && !(accountState === 'provisioning_incomplete' && recoveryRegistrationOpen)) return <ProvisioningRecoveryScreen state={accountState} />;
+  const { accountState, recoveryRegistrationOpen, registrationTransaction } = useAuth();
+  const segments = useSegments();
+  const onRegistrationRoute = segments.includes('register');
+  const registrationOwnsTransition = registrationTransaction !== 'idle' || onRegistrationRoute;
+  if (accountState && accountState !== 'authenticated_complete' && !registrationOwnsTransition && !(accountState === 'provisioning_incomplete' && recoveryRegistrationOpen)) return <ProvisioningRecoveryScreen state={accountState} />;
   return (
     <Stack
       screenOptions={{

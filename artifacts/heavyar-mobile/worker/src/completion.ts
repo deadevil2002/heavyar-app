@@ -178,8 +178,9 @@ export function chunk<T>(items: readonly T[], size: number): T[][] {
   return result;
 }
 
-export function campaignRecipients(users: readonly { uid: string; role?: string; region?: string; city?: string; marketingOptOut?: boolean }[], filter: { audience: 'all' | 'customers' | 'providers' | 'drivers'; region?: string; city?: string }): string[] {
+export function campaignRecipients(users: readonly { uid: string; role?: string; region?: string; city?: string; marketingOptOut?: boolean; accountPurpose?: string }[], filter: { audience: 'all' | 'customers' | 'providers' | 'drivers'; region?: string; city?: string }): string[] {
   return users.filter((user) => {
+    if (user.accountPurpose === 'store_review') return false;
     if (user.marketingOptOut === true) return false;
     if (filter.region && user.region !== filter.region) return false;
     if (filter.city && user.city !== filter.city) return false;

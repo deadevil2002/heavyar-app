@@ -1,5 +1,5 @@
 import { listFirebaseAuthIdentities, type Env } from './index';
-import { evaluateCanonicalCompleteness } from './integrity';
+import { evaluateCanonicalCompleteness, STORE_REVIEW_PURPOSE, isStoreReviewAccount } from './integrity';
 import { canTransitionManualReview, deriveProviderTrust, isProviderComponentName, normalizeRequiredProviderComponents, providerComponentNames, providerVerificationFor, verificationStatuses } from './verification';
 import { defaultVerificationPolicy, normalizeVerificationPolicy } from './verification';
 import { notificationWrite } from './notifications';
@@ -206,7 +206,7 @@ function nextCursor(name?: string, sortValue?: string | number | boolean | null,
 }
 
 const FILTERS: Record<string, string[]> = {
-  users: ['role', 'accountStatus', 'suspensionStatus', 'emailLower', 'email', 'emailVerified', 'countryCode'],
+  users: ['role', 'accountPurpose', 'accountStatus', 'suspensionStatus', 'emailLower', 'email', 'emailVerified', 'countryCode'],
   equipment: ['ownerUid', 'isActive', 'visibility', 'moderationStatus', 'city', 'slug'],
   equipmentRequests: ['status', 'paymentStatus', 'paymentState', 'customerUid', 'providerUid'],
   payments: ['state', 'provider'],
@@ -274,7 +274,7 @@ async function listCollection(env: Env, collection: string, query: Record<string
   const search = query.q?.trim().toLowerCase();
   if (search !== undefined && (!search || search.length > 200)) throw new Error('Invalid search query');
   const searchFields: Record<string, string[]> = {
-    users: ['emailLower', 'email', 'displayName', 'name', 'nameEn'],
+    users: ['emailLower', 'email', 'displayName', 'name', 'nameEn', 'accountPurpose'],
     equipment: ['slug', 'title', 'name', 'publicEquipmentNumber', 'equipmentNumber'],
     equipmentRequests: ['requestId', 'publicRequestNumber', 'requestNumber'],
     payments: ['requestId', 'paymentId', 'providerReference'],
@@ -335,12 +335,29 @@ async function authoritativeAccountProjection(env: Env, items: any[]) {
   } catch { throw new Error('Account verification temporarily unavailable'); }
 }
 
-async function countCollection(env: Env, collection: string, filter?: { field: string; value: unknown }) {
+type AggregateFilter = { field: string; value: unknown };
+async function countCollection(env: Env, collection: string, filter?: AggregateFilter | AggregateFilter[]) {
   return aggregateCollection(env, collection, filter);
+}
+async function countOperationalUsers(env: Env, filter?: AggregateFilter) {
+  const reviewFilter = filter ? [filter, { field: 'accountPurpose', value: STORE_REVIEW_PURPOSE }] : { field: 'accountPurpose', value: STORE_REVIEW_PURPOSE };
+  const [total, review] = await Promise.all([
+    countCollection(env, 'users', filter),
+    countCollection(env, 'users', reviewFilter),
+  ]);
+  if (total === null) return null;
+  return Math.max(0, total - Number(review || 0));
+}
+async function countOperationalEquipment(env: Env) {
+  const [total, review] = await Promise.all([
+    countCollection(env, 'equipment', { field: 'isActive', value: true }),
+    countCollection(env, 'equipment', [{ field: 'isActive', value: true }, { field: 'accountPurpose', value: STORE_REVIEW_PURPOSE }]),
+  ]);
+  return total === null ? null : Math.max(0, total - Number(review || 0));
 }
 
 const secondaryStats = new Map<string, { expires: number; value: Promise<number | null> }>();
-async function aggregateCollection(env: Env, collection: string, filter?: { field: string; value: unknown }, sumField?: string) {
+async function aggregateCollection(env: Env, collection: string, filter?: AggregateFilter | AggregateFilter[], sumField?: string) {
   const key = JSON.stringify([env.FIREBASE_PROJECT_ID, collection, filter, sumField]);
   const cached = secondaryStats.get(key);
   if (cached && cached.expires > Date.now()) return cached.value;
@@ -354,10 +371,15 @@ async function aggregateCollection(env: Env, collection: string, filter?: { fiel
   return value;
 }
 
-async function loadAggregateCollection(env: Env, collection: string, filter?: { field: string; value: unknown }, sumField?: string) {
+async function loadAggregateCollection(env: Env, collection: string, filter?: AggregateFilter | AggregateFilter[], sumField?: string) {
   try {
     const structuredQuery: any = { from: [{ collectionId: collection }] };
-    if (filter) structuredQuery.where = { fieldFilter: { field: { fieldPath: filter.field }, op: 'EQUAL', value: jsonValue(filter.value) } };
+    if (filter) {
+      const filters = Array.isArray(filter) ? filter : [filter];
+      structuredQuery.where = filters.length === 1
+        ? { fieldFilter: { field: { fieldPath: filters[0].field }, op: 'EQUAL', value: jsonValue(filters[0].value) } }
+        : { compositeFilter: { op: 'AND', filters: filters.map(item => ({ fieldFilter: { field: { fieldPath: item.field }, op: 'EQUAL', value: jsonValue(item.value) } })) } };
+    }
     const aggregations: any[] = [{ alias: 'count', count: {} }];
     if (sumField) aggregations.push({ alias: 'sum', sum: { field: { fieldPath: sumField } } });
     const response = await fs(env, ':runAggregationQuery', { method: 'POST', body: JSON.stringify({ structuredAggregationQuery: { structuredQuery, aggregations } }) }) as any[] || [];
@@ -462,9 +484,34 @@ async function migrateLegacyEquipment(req: Request, env: Env, user: AdminUser) {
     const countryCode = String(listing.countryCode || owner?.data?.countryCode || 'SA').toUpperCase();
     const country = await rawDoc(env, 'countryConfigs', countryCode);
     const evaluation = evaluateLegacyEquipment(listing, owner?.data || null, country?.data || null, history.items || []);
-    const { eligible, needsMigration, reasons } = evaluation;
-    results.push({ id, eligible, action: eligible && apply && raw?.updateTime ? 'pending_publish' : eligible ? 'would_publish' : 'skipped', reasons });
-    if (eligible && needsMigration && apply && raw?.updateTime) {
+    const reviewOwned = isStoreReviewAccount(listing) || isStoreReviewAccount(owner?.data);
+    const { eligible, needsMigration, reasons: evaluatedReasons } = evaluation;
+    const reasons = reviewOwned ? [...evaluatedReasons, 'store_review_non_public'] : evaluatedReasons;
+    const publishEligible = eligible && !reviewOwned;
+    const reviewNeedsCorrection = reviewOwned && (listing.isActive !== false || listing.visibility !== 'hidden' || listing.accountPurpose !== STORE_REVIEW_PURPOSE);
+    results.push({
+      id,
+      eligible: publishEligible,
+      action: reviewNeedsCorrection
+        ? apply && raw?.updateTime ? 'pending_hide' : 'would_hide'
+        : publishEligible && apply && raw?.updateTime ? 'pending_publish' : publishEligible ? 'would_publish' : 'skipped',
+      reasons,
+    });
+    if (reviewNeedsCorrection && apply && raw?.updateTime) {
+      writes.push({
+        update: {
+          name: fullName(env, `equipment/${encodeURIComponent(id)}`),
+          fields: {
+            accountPurpose: jsonValue(STORE_REVIEW_PURPOSE),
+            isActive: { booleanValue: false },
+            visibility: jsonValue('hidden'),
+            updatedAt: { timestampValue: new Date().toISOString() },
+          },
+        },
+        updateMask: { fieldPaths: ['accountPurpose', 'isActive', 'visibility', 'updatedAt'] },
+        currentDocument: { updateTime: raw.updateTime },
+      });
+    } else if (publishEligible && needsMigration && apply && raw?.updateTime) {
       const now = new Date().toISOString(), reason = 'legacy_migration_post_moderation_eligible';
       writes.push({ update: { name: fullName(env, `equipment/${encodeURIComponent(id)}`), fields: { isActive: { booleanValue: true }, visibility: { stringValue: 'visible' }, moderationStatus: { stringValue: 'approved' }, moderationReason: { stringValue: reason }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['isActive', 'visibility', 'moderationStatus', 'moderationReason', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } });
       writes.push({ update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:legacy-migration`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: ownerUid }, action: { stringValue: 'legacy_migration_publish' }, reason: { stringValue: reason }, automated: { booleanValue: true }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } });
@@ -1820,6 +1867,14 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     // through the provider callback boundary.
     return { error: 'Verification case status changes are not supported', status: 400 };
   } else if (!Object.keys(fields).length) return { error: 'Unsupported action', status: 400 };
+  if (normalizedType === 'equipment' && isStoreReviewAccount(current)) {
+    fields = {
+      ...fields,
+      accountPurpose: jsonValue(STORE_REVIEW_PURPOSE),
+      isActive: { booleanValue: false },
+      visibility: jsonValue('hidden'),
+    };
+  }
   const now = new Date().toISOString(), notify: any[] = [];
   if (normalizedType === 'user' && actionName === 'suspend_user') notify.push(await notificationWrite(fullName.bind(null, env), targetId, 'account_suspended', now, undefined, correlationId));
   if (normalizedType === 'user' && actionName === 'unsuspend_user') notify.push(await notificationWrite(fullName.bind(null, env), targetId, 'suspension_lifted', now, undefined, correlationId));
@@ -2275,6 +2330,119 @@ export async function processEarlyAccessRetention(env: Env) {
   return dailyEarlyAccessRetention(earlyAccessStore(env));
 }
 
+type StoreReviewRole = 'customer' | 'provider' | 'driver';
+export const STORE_REVIEW_ALIASES: Readonly<Record<string, StoreReviewRole>> = Object.freeze({
+  'heavyar.official+review.customer@gmail.com': 'customer',
+  'heavyar.official+review.provider@gmail.com': 'provider',
+  'heavyar.official+review.driver@gmail.com': 'driver',
+});
+
+function storeReviewProfileFields(uid: string, email: string, role: StoreReviewRole, body: any, now: string) {
+  const common: Record<string, unknown> = {
+    uid, email, emailLower: email, emailVerified: true, accountPurpose: STORE_REVIEW_PURPOSE,
+    role, nameEn: String(body.nameEn).trim(), nameAr: String(body.nameAr || body.nameEn).trim(),
+    countryCode: String(body.countryCode).toUpperCase(), region: String(body.region).trim(), city: String(body.city).trim(),
+    customCity: String(body.customCity || '').trim(), accountStatus: 'active', suspensionStatus: 'active',
+    isActive: true, termsAccepted: true, emailVerifiedAt: now, createdAt: now, updatedAt: now,
+  };
+  if (role === 'provider') Object.assign(common, {
+    providerType: body.providerType === 'company' ? 'company' : 'individual',
+    providerOnboardingCompleted: true,
+    crVerified: false,
+  });
+  return common;
+}
+
+async function createStoreReviewIdentity(env: Env, email: string, password: string): Promise<string> {
+  if (!env.FIREBASE_WEB_API_KEY) throw new Error('STORE_REVIEW_IDENTITY_UNAVAILABLE');
+  const created = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${encodeURIComponent(env.FIREBASE_WEB_API_KEY)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, returnSecureToken: false }),
+  });
+  const createdValue: any = await created.json().catch(() => ({}));
+  if (!created.ok) {
+    if (/EMAIL_EXISTS/i.test(String(createdValue.error?.message || ''))) throw new Error('STORE_REVIEW_EMAIL_EXISTS');
+    throw new Error('STORE_REVIEW_IDENTITY_UNAVAILABLE');
+  }
+  const uid = String(createdValue.localId || '');
+  if (!uid) {
+    try { await deleteStoreReviewIdentityByEmail(env, email); }
+    catch { throw new Error('STORE_REVIEW_CLEANUP_REQUIRED'); }
+    throw new Error('STORE_REVIEW_IDENTITY_UNAVAILABLE');
+  }
+  try {
+    const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(String(env.FIREBASE_PROJECT_ID))}/accounts:update`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ localId: uid, emailVerified: true, disableUser: false }),
+    });
+    if (!response.ok) throw new Error('STORE_REVIEW_IDENTITY_UNAVAILABLE');
+  } catch {
+    try { await deleteStoreReviewIdentity(env, uid); }
+    catch { throw new Error('STORE_REVIEW_CLEANUP_REQUIRED'); }
+    throw new Error('STORE_REVIEW_IDENTITY_UNAVAILABLE');
+  }
+  return uid;
+}
+
+async function deleteStoreReviewIdentity(env: Env, uid: string) {
+  const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(String(env.FIREBASE_PROJECT_ID))}/accounts:delete`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: uid }),
+  });
+  if (!response.ok) throw new Error('STORE_REVIEW_CLEANUP_REQUIRED');
+}
+
+async function deleteStoreReviewIdentityByEmail(env: Env, email: string) {
+  const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+  const lookup = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(String(env.FIREBASE_PROJECT_ID))}/accounts:lookup`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: [email] }),
+  });
+  const value: any = await lookup.json().catch(() => ({}));
+  const uid = String(value.users?.[0]?.localId || '');
+  if (!lookup.ok || !uid) throw new Error('STORE_REVIEW_CLEANUP_REQUIRED');
+  await deleteStoreReviewIdentity(env, uid);
+}
+
+async function provisionStoreReviewAccount(req: Request, env: Env, user: AdminUser) {
+  const ownerUid = await canonicalOwnerUid(env);
+  if (!ownerUid || user.uid !== ownerUid) return { error: 'Canonical owner provisioning permission required', status: 403 };
+  if (!user.authTime || Date.now() - user.authTime > 5 * 60 * 1000) return { error: 'Recent administrator authentication required', errorCode: 'RECENT_AUTH_REQUIRED', status: 409 };
+  const body: any = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['alias', 'password', 'nameEn', 'nameAr', 'countryCode', 'region', 'city', 'customCity', 'providerType'].includes(key))) return { error: 'Invalid Store Review account request', status: 400 };
+  const email = String(body.alias || '').trim().toLowerCase();
+  const password = typeof body.password === 'string' ? body.password : '';
+  const fixedRole = STORE_REVIEW_ALIASES[email];
+  if (!fixedRole || password.length < 12 || password.length > 128 || !String(body.nameEn || '').trim() || !String(body.countryCode || '').trim() || !String(body.region || '').trim() || !String(body.city || '').trim()) return { error: 'A prescribed alias, password, name, country, region, and city are required', status: 400 };
+  const now = new Date().toISOString();
+  let uid = '';
+  try {
+    uid = await createStoreReviewIdentity(env, email, password);
+    const common = storeReviewProfileFields(uid, email, fixedRole, body, now);
+    const writes: any[] = [
+      { update: { name: fullName(env, `users/${uid}`), fields: Object.fromEntries(Object.entries(common).map(([key, value]) => [key, jsonValue(value)])) }, currentDocument: { exists: false } },
+      await auditWrite(env, user, 'store_review_account_provisioned', 'users', uid, crypto.randomUUID(), 'server-provisioned Store Review account', undefined, { accountPurpose: STORE_REVIEW_PURPOSE, role: fixedRole, alias: email }),
+    ];
+    if (fixedRole === 'provider') writes.push({ update: { name: fullName(env, `providerProfiles/${uid}`), fields: Object.fromEntries(Object.entries({ uid, accountPurpose: STORE_REVIEW_PURPOSE, providerType: common.providerType, onboardingStatus: 'completed', verificationStatus: 'unverified', crVerified: false, createdAt: now, updatedAt: now }).map(([key, value]) => [key, jsonValue(value)])) }, currentDocument: { exists: false } });
+    if (fixedRole === 'driver') writes.push({ update: { name: fullName(env, `driverProfiles/${uid}`), fields: Object.fromEntries(Object.entries({ uid, accountPurpose: STORE_REVIEW_PURPOSE, countryCode: common.countryCode, region: common.region, city: common.city, nameEn: common.nameEn, nameAr: common.nameAr, active: true, moderationStatus: 'approved', trustStatus: 'unverified', availabilityStatus: 'available', createdAt: now, updatedAt: now }).map(([key, value]) => [key, jsonValue(value)])) }, currentDocument: { exists: false } });
+    await commit(env, writes);
+    return { success: true, uid, email, role: fixedRole, accountPurpose: STORE_REVIEW_PURPOSE, emailVerified: true, phoneLogin: false, passwordSetupRequired: false };
+  } catch (error) {
+    if (uid) {
+      try { await deleteStoreReviewIdentity(env, uid); }
+      catch { return { error: 'Store Review identity cleanup required', errorCode: 'STORE_REVIEW_CLEANUP_REQUIRED', status: 503 }; }
+    }
+    if (error instanceof Error && error.message === 'STORE_REVIEW_EMAIL_EXISTS') return { error: 'Store Review email already exists', errorCode: 'STORE_REVIEW_EMAIL_EXISTS', status: 409 };
+    if (error instanceof Error && error.message === 'STORE_REVIEW_CLEANUP_REQUIRED') return { error: 'Store Review identity cleanup required', errorCode: 'STORE_REVIEW_CLEANUP_REQUIRED', status: 503 };
+    if (error instanceof Error && error.message === 'STORE_REVIEW_IDENTITY_UNAVAILABLE') return { error: 'Identity service unavailable', status: 503 };
+    throw error;
+  }
+}
+
 export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const url = new URL(req.url);
   // This route is intentionally before requireAdmin: an invited customer or a
@@ -2371,6 +2539,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
     }, { uid: user.uid, canRead: can(user, 'fees.read'), canManage: can(user, 'fees.manage') }, env);
   }
   if (url.pathname === '/api/admin/session' && req.method === 'GET') return { success: true, uid: user.uid, role: user.permissionRole || user.role, bootstrapRequired: bootstrapException };
+  if (url.pathname === '/api/admin/store-review/accounts/provision' && req.method === 'POST') return provisionStoreReviewAccount(req, env, user);
   if (url.pathname === '/api/admin/email-verification/reminder' && req.method === 'POST') return emailVerificationReminder(req, env, user);
   if (url.pathname === '/api/admin/email-verification/reminders/preview' && req.method === 'POST') return emailVerificationReminderPreview(req, env, user);
   if (url.pathname === '/api/admin/email-verification/reminders/bulk' && req.method === 'POST') return bulkEmailVerificationReminder(req, env, user);
@@ -2537,14 +2706,14 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
     const paymentStates = ['created', 'pending', 'requires_action', 'processing', 'paid', 'failed', 'cancelled', 'expired', 'refund_pending', 'refunded', 'partially_refunded'];
     const financeVisible = can(user, 'finance.read') || can(user, 'payouts.read');
     const [users, providers, equipment, requests, payments, invoices, complaints, suspended, paidVolume, pendingVolume, failedPayments, recent] = await Promise.all([
-      countCollection(env, 'users'),
-      countCollection(env, 'users', { field: 'role', value: 'provider' }),
-      countCollection(env, 'equipment', { field: 'isActive', value: true }),
+      countOperationalUsers(env),
+      countOperationalUsers(env, { field: 'role', value: 'provider' }),
+      countOperationalEquipment(env),
       Promise.all(requestStatuses.map(status => countCollection(env, 'equipmentRequests', { field: 'status', value: status }))),
       financeVisible ? countCollection(env, 'payments') : Promise.resolve(null),
       financeVisible ? countCollection(env, 'invoices') : Promise.resolve(null),
       countCollection(env, 'complaints', { field: 'status', value: 'open' }),
-      Promise.all(['temporarily_suspended', 'permanently_suspended'].map(status => countCollection(env, 'users', { field: 'suspensionStatus', value: status }))),
+      Promise.all(['temporarily_suspended', 'permanently_suspended'].map(status => countOperationalUsers(env, { field: 'suspensionStatus', value: status }))),
       financeVisible ? aggregateCollection(env, 'payments', { field: 'state', value: 'paid' }, 'amount') : Promise.resolve(null),
       financeVisible ? aggregateCollection(env, 'payments', { field: 'state', value: 'pending' }, 'amount') : Promise.resolve(null),
       financeVisible ? countCollection(env, 'payments', { field: 'state', value: 'failed' }) : Promise.resolve(null),

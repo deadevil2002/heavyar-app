@@ -8,6 +8,7 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
+import { safeErrorMessage } from '@/services/errorMessages';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { fetchAuthPolicy, requestPasswordReset } from '@/services/authService';
@@ -39,13 +40,7 @@ export default function LoginScreen() {
       await login(email, password);
       router.back();
     } catch (e) {
-      const errorMsg = e instanceof Error && e.message === 'PHONE_LOGIN_INVALID'
-        ? t('invalid_mobile_password')
-        : e instanceof Error && e.message === 'PHONE_LOGIN_RATE_LIMITED'
-          ? t('phone_login_rate_limited')
-          : e instanceof Error && (e.message === 'PHONE_LOGIN_UNAVAILABLE' || e.message === 'EMAIL_LOGIN_UNAVAILABLE')
-            ? t('authentication_unavailable')
-            : t('authentication_unavailable');
+      const errorMsg = safeErrorMessage(e, language);
       showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
     } finally {
       setLoading(false);
