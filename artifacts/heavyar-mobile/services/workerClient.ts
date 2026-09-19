@@ -69,6 +69,27 @@ export class WorkerError extends Error {
   }
 }
 
+const REQUEST_TIMEOUT_MS = 15_000;
+
+function requestSignal(external?: AbortSignal | null) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
+  const abort = () => controller.abort();
+  external?.addEventListener('abort', abort, { once: true });
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    cleanup: () => {
+      clearTimeout(timeout);
+      external?.removeEventListener('abort', abort);
+    },
+  };
+}
+
 async function request<T>(path: string, init: RequestInit = {}, authenticated = true): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('Content-Type', 'application/json');
@@ -77,11 +98,30 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
     if (!token) throw new WorkerError('Authentication required', 401, 'AUTH_REQUIRED');
     headers.set('Authorization', `Bearer ${token}`);
   }
-  const response = await fetch(`${WORKER_BASE_URL}${path}`, { ...init, headers });
+  const bounded = requestSignal(init.signal);
+  let response: Response;
+  try {
+    response = await fetch(`${WORKER_BASE_URL}${path}`, { ...init, headers, signal: bounded.signal });
+  } catch {
+    if (init.signal?.aborted) throw new WorkerError('Request cancelled', 0, 'REQUEST_CANCELLED');
+    if (bounded.timedOut()) throw new WorkerError('Request timed out', 0, 'NETWORK_TIMEOUT');
+    throw new WorkerError('Network unavailable', 0, 'NETWORK_UNAVAILABLE');
+  } finally {
+    bounded.cleanup();
+  }
   let body: any = null;
   try { body = await response.json(); } catch { /* server may return an empty response */ }
   if (!response.ok || body?.success === false) {
-    throw new WorkerError(String(body?.error || 'Request unavailable'), response.status, String(body?.error || 'WORKER_ERROR'));
+    const code = typeof body?.errorCode === 'string' ? body.errorCode
+      : typeof body?.code === 'string' ? body.code
+        : response.status === 401 ? 'AUTH_REQUIRED'
+          : response.status >= 500 ? 'SERVICE_UNAVAILABLE' : 'REQUEST_FAILED';
+    const message = response.status >= 500 ? 'Service temporarily unavailable'
+      : response.status === 401 ? 'Authentication required'
+        : response.status === 403 ? 'Action not permitted'
+          : response.status === 404 ? 'Requested item was not found'
+            : 'Request could not be completed';
+    throw new WorkerError(message, response.status, code);
   }
   return body as T;
 }

@@ -124,6 +124,8 @@ export default function ProfileScreen() {
     if (!user) return;
     if (avatarBusy) return;
     setAvatarBusy(true);
+    let uploaded: Awaited<ReturnType<typeof uploadImageToCloudinary>> | null = null;
+    let profileUpdated = false;
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
@@ -140,11 +142,12 @@ export default function ProfileScreen() {
 
       const previousPublicId = user.avatarPublicId || '';
 
-      const uploaded = await uploadImageToCloudinary(localUri);
+      uploaded = await uploadImageToCloudinary(localUri);
       await updateProfile({
         avatar: uploaded.url,
         avatarPublicId: uploaded.publicId,
       });
+      profileUpdated = true;
 
       if (previousPublicId && previousPublicId !== uploaded.publicId) {
         try {
@@ -154,6 +157,7 @@ export default function ProfileScreen() {
 
       showDialog(t('success'), t('avatar_updated'), [{ text: t('ok'), style: 'default' }]);
     } catch (e) {
+      if (uploaded && !profileUpdated) await deleteCloudinaryImage(uploaded.publicId);
       showDialog(t('error_title'), t('avatar_update_failed'), [{ text: t('ok'), style: 'default' }]);
     } finally {
       setAvatarBusy(false);

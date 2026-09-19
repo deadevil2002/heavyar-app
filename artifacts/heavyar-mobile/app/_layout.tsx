@@ -11,7 +11,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { DiscoveryProvider } from "@/contexts/DiscoveryContext";
 import EmailVerificationBanner from "@/components/EmailVerificationBanner";
 import { useAuth } from "@/contexts/AuthContext";
-import { notificationRouteFromPayload } from "@/services/notificationService";
+import { notificationRouteFromPayload, subscribeToPushTokenRefresh } from "@/services/notificationService";
 import * as Notifications from "expo-notifications";
 
 void SplashScreen.preventAutoHideAsync();
@@ -54,6 +54,14 @@ function NotificationNavigation() {
 
   useEffect(() => {
     if (!isAuthenticated || Platform.OS === "web") return;
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowBanner: true,
+        shouldShowList: true,
+        shouldPlaySound: false,
+        shouldSetBadge: true,
+      }),
+    });
     const open = (response: Notifications.NotificationResponse) => {
       const data = response.notification.request.content.data as Record<string, unknown> | undefined;
       const key = `${String(data?.notificationId || '')}:${String(data?.action || '')}:${String(data?.subjectId || '')}`;
@@ -61,10 +69,16 @@ function NotificationNavigation() {
       handled.current.add(key);
       const route = notificationRouteFromPayload(data);
       if (route) router.push(route as never);
+      void Notifications.clearLastNotificationResponseAsync();
     };
     const subscription = Notifications.addNotificationResponseReceivedListener(open);
+    let removePushRefresh: () => void = () => {};
+    void subscribeToPushTokenRefresh().then((remove) => { removePushRefresh = remove; });
     void Notifications.getLastNotificationResponseAsync().then((response) => { if (response) open(response); });
-    return () => subscription.remove();
+    return () => {
+      subscription.remove();
+      removePushRefresh();
+    };
   }, [isAuthenticated, router]);
   return null;
 }

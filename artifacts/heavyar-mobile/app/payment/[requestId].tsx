@@ -215,6 +215,7 @@ export default function PaymentScreen() {
   const totalWithVat = quote?.total ?? quote?.amount ?? (snapshot ? snapshot.customerPayableMinor / minorScale : null);
   const quoteCurrency = quote?.currency ?? snapshot?.currency ?? request.currency;
   const money = (value: number | null) => value === null ? '—' : `${value.toLocaleString()} ${quoteCurrency}`;
+  const testMode = gateways.some((gateway) => !['LIVE', 'PRODUCTION'].includes(gateway.environment.toUpperCase()));
 
   return (
     <View style={styles.container}>
@@ -228,6 +229,14 @@ export default function PaymentScreen() {
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+          {testMode && (
+            <View style={styles.testModeBanner}>
+              <Text style={styles.testModeTitle}>{isRTL ? 'وضع اختبار الدفع' : 'PAYMENT TEST MODE'}</Text>
+              <Text style={styles.testModeText}>
+                {isRTL ? 'لا يتم تحصيل دفعة إنتاجية حقيقية.' : 'No live production payment is collected.'}
+              </Text>
+            </View>
+          )}
           <View style={styles.amountCard}>
             <Text style={styles.amountLabel}>{t('total_amount')}</Text>
             <Text style={styles.amountValue}>{money(totalWithVat)}</Text>
@@ -351,6 +360,16 @@ const styles = StyleSheet.create({
   backBtn: { width: 42, height: 42, borderRadius: 14, backgroundColor: Colors.surface, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.border },
   headerTitle: { fontSize: 18, fontWeight: '700' as const, color: Colors.textPrimary },
   scrollContent: { paddingHorizontal: 20, paddingTop: 12 },
+  testModeBanner: {
+    backgroundColor: 'rgba(212, 168, 67, 0.16)',
+    borderColor: Colors.gold,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 14,
+    padding: 12,
+  },
+  testModeTitle: { color: Colors.gold, fontSize: 13, fontWeight: '800' as const, letterSpacing: 0.4 },
+  testModeText: { color: Colors.textSecondary, fontSize: 12, lineHeight: 18, marginTop: 4 },
   amountCard: {
     backgroundColor: Colors.card,
     borderRadius: 20,

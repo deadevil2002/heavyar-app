@@ -94,8 +94,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (body.data ?? body) as T;
 }
 
-export async function registerCurrentDevice(): Promise<void> {
-  if (Platform.OS === 'web') return;
+export type DeviceRegistrationResult =
+  | { status: 'registered'; token: string }
+  | { status: 'web' | 'permission-denied' | 'missing-project-id' | 'invalid-token' };
+
+export async function registerCurrentDevice(): Promise<DeviceRegistrationResult> {
+  if (Platform.OS === 'web') return { status: 'web' };
   const Notifications = await import('expo-notifications');
   const Constants = await import('expo-constants');
   if (Platform.OS === 'android') {
@@ -106,16 +110,26 @@ export async function registerCurrentDevice(): Promise<void> {
   }
   const permissions = await Notifications.getPermissionsAsync();
   const granted = permissions.granted || (await Notifications.requestPermissionsAsync()).granted;
-  if (!granted) return;
+  if (!granted) return { status: 'permission-denied' };
   const projectId = Constants.default.expoConfig?.extra?.eas?.projectId;
-  if (!projectId) return;
+  if (!projectId) return { status: 'missing-project-id' };
   const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
-  if (!/^ExpoPushToken\[[A-Za-z0-9_-]+\]$/.test(token)) return;
+  if (!/^ExpoPushToken\[[A-Za-z0-9_-]+\]$/.test(token)) return { status: 'invalid-token' };
   await request('/api/notifications/devices', {
     method: 'POST',
     body: JSON.stringify({ token, installationId: await installationId(), platform: Platform.OS }),
   });
   await AsyncStorage.setItem(INSTALLATION_TOKEN_KEY, token);
+  return { status: 'registered', token };
+}
+
+export async function subscribeToPushTokenRefresh(): Promise<() => void> {
+  if (Platform.OS === 'web') return () => undefined;
+  const Notifications = await import('expo-notifications');
+  const subscription = Notifications.addPushTokenListener(() => {
+    void registerCurrentDevice().catch(() => undefined);
+  });
+  return () => subscription.remove();
 }
 
 export async function revokeCurrentDevice(): Promise<void> {
