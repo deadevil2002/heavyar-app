@@ -28,5 +28,5 @@ const packageTargets = fs.readdirSync(pnpmStore).flatMap((instance) => {
 
 module.exports = {
   ...config,
-  watchFolders: [...new Set(packageTargets)],
+  watchFolders: [...new Set([...(config.watchFolders ?? []), ...packageTargets])],
 };
