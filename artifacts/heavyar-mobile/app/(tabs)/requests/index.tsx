@@ -10,26 +10,32 @@ import { subscribeToUserRequests } from '@/services/firestoreService';
 import RequestCard from '@/components/RequestCard';
 import EmptyState from '@/components/EmptyState';
 import { EquipmentRequest } from '@/types';
+import { hasCapability } from '@/services/roleCapabilities';
 
 export default function RequestsScreen() {
   const { isRTL, t } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<'customer' | 'provider'>('customer');
   const [requests, setRequests] = useState<EquipmentRequest[]>([]);
 
   const currentUid = user?.uid || '';
+  const requestPerspective = user?.role === 'provider' ? 'provider' : 'customer';
+  const canViewDriverRequests = hasCapability(user?.role, 'driverRequests');
 
   useEffect(() => {
     if (!currentUid) {
       setRequests([]);
       return;
     }
-    const unsub = subscribeToUserRequests(currentUid, tab, (items) => {
+    if (canViewDriverRequests) {
+      setRequests([]);
+      return;
+    }
+    const unsub = subscribeToUserRequests(currentUid, requestPerspective, (items) => {
       setRequests(items);
     });
     return () => unsub();
-  }, [currentUid, tab]);
+  }, [canViewDriverRequests, currentUid, requestPerspective]);
 
   const renderItem = useCallback(({ item }: { item: EquipmentRequest }) => (
     <RequestCard request={item} />
@@ -63,33 +69,18 @@ export default function RequestsScreen() {
         <View style={styles.headerRow}>
           <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>{t('my_requests')}</Text>
         </View>
-        <Pressable accessibilityRole="button" testID="driver-requests-link" style={styles.driverRequestsLink} onPress={() => router.push('/driver/requests')}>
-          <Text style={styles.driverRequestsText}>{isRTL ? 'طلبات السائقين' : 'Driver Requests'}</Text>
-        </Pressable>
-
-        <View style={[styles.tabBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-          <Pressable
-            style={[styles.tabItem, tab === 'customer' && styles.tabActive]}
-            onPress={() => setTab('customer')}
-          >
-            <Text style={[styles.tabText, tab === 'customer' && styles.tabTextActive]}>{t('my_sent_requests')}</Text>
+        {canViewDriverRequests ? (
+          <Pressable accessibilityRole="button" testID="driver-requests-link" style={styles.driverRequestsLink} onPress={() => router.push('/driver/requests')}>
+            <Text style={styles.driverRequestsText}>{isRTL ? 'طلبات السائقين' : 'Driver Requests'}</Text>
           </Pressable>
-          <Pressable
-            style={[styles.tabItem, tab === 'provider' && styles.tabActive]}
-            onPress={() => setTab('provider')}
-          >
-            <Text style={[styles.tabText, tab === 'provider' && styles.tabTextActive]}>{t('incoming_requests')}</Text>
-          </Pressable>
-        </View>
-
-        <FlatList
+        ) : <FlatList
           data={requests}
           renderItem={renderItem}
           keyExtractor={item => item.id}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={<EmptyState title={t('no_requests')} />}
-        />
+        />}
       </SafeAreaView>
     </View>
   );

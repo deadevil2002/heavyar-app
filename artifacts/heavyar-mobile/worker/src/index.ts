@@ -1778,9 +1778,12 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
   const declaredLength = Number(req.headers.get('Content-Length') || 0);
   if (!declaredLength || declaredLength > 10 * 1024 * 1024 + 65536) return out(env, req, { success: false, error: 'Upload too large' }, 413);
   const account = await getDoc(env, 'users', u.uid);
-  if (!u.admin && !account) return out(env, req, { success: false, error: 'Complete your account setup before uploading media.', errorCode: 'PROFILE_REQUIRED' }, 409);
   if (!u.admin && (account?.suspensionStatus === 'temporarily_suspended' || account?.suspensionStatus === 'permanently_suspended' || account?.accountStatus === 'restricted')) {
     return out(env, req, { success: false, error: 'ACCOUNT_SUSPENDED' }, 403);
+  }
+  const roleProfile = account?.role === 'driver' ? await getDoc(env, 'driverProfiles', u.uid) : null;
+  if (!u.admin && evaluateCanonicalCompleteness(u, account || null, roleProfile).state !== 'authenticated_complete') {
+    return out(env, req, { success: false, error: 'Complete your account setup before uploading media.', errorCode: 'PROFILE_REQUIRED' }, 409);
   }
   const now = Date.now(), windowStart = new Date(Math.floor(now / 60000) * 60000).toISOString(), ratePath = `cloudinaryUploadRates/${encodeURIComponent(u.uid)}`;
   const rate = await getRawDoc(env, 'cloudinaryUploadRates', u.uid);

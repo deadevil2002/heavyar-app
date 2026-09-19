@@ -160,7 +160,13 @@ export default function EquipmentDetailScreen() {
 
       const availability = await checkListingAvailability(equipment.id, { from: startDate, ...(endDate ? { until: endDate } : {}) });
       if (!availability.available) {
-        showDialog(t('error_title'), availability.reason === 'ACTIVE_RENTAL_OVERLAP' ? safeErrorMessage({ errorCode: availability.reason }, isRTL ? 'ar' : 'en') : availability.reason || t('listing_unavailable_dates'), [{ text: t('ok'), style: 'default' }]);
+        showDialog(
+          t('error_title'),
+          availability.reason
+            ? safeErrorMessage({ errorCode: availability.reason }, isRTL ? 'ar' : 'en')
+            : t('listing_unavailable_dates'),
+          [{ text: t('ok'), style: 'default' }],
+        );
         return;
       }
 

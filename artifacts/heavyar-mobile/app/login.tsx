@@ -45,7 +45,7 @@ export default function LoginScreen() {
           ? t('phone_login_rate_limited')
           : e instanceof Error && (e.message === 'PHONE_LOGIN_UNAVAILABLE' || e.message === 'EMAIL_LOGIN_UNAVAILABLE')
             ? t('authentication_unavailable')
-        : e instanceof Error ? e.message : t('unexpected_error');
+            : t('authentication_unavailable');
       showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
     } finally {
       setLoading(false);

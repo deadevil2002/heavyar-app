@@ -3,6 +3,10 @@ import worker, { __test, type Env } from './index';
 import { defaultNotificationPreferences, notificationFields, notificationWrite } from './notifications';
 
 const env = { FIREBASE_PROJECT_ID: 'test-project' } as Env;
+const completeCustomer = (uid: string) => ({
+  uid, role: 'customer', email: `${uid}@example.com`, nameEn: 'Customer',
+  countryCode: 'SA', region: 'Riyadh', city: 'Riyadh',
+});
 const request = (path: string, init: RequestInit = {}) => new Request(`https://worker.test${path}`, {
   ...init, headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json', ...(init.headers || {}) },
 });
@@ -154,7 +158,7 @@ describe('trusted notification foundation', () => {
   });
   test('signed upload binds folder to authenticated uid and never returns secret', async () => {
     __test.setAuth({ uid: 'owner-1', admin: false });
-    __test.setFirestore((collection) => collection === 'users' ? {} : null);
+    __test.setFirestore((collection) => collection === 'users' ? completeCustomer('owner-1') : null);
     __test.captureWrites([]);
     const response = await worker.fetch(request('/cloudinary/upload', { method: 'POST', body: JSON.stringify({ folder: 'evil', transformation: 'raw' }), headers: { 'Content-Length': '100' } }), { ...env, CLOUDINARY_CLOUD_NAME: 'cloud', CLOUDINARY_API_KEY: 'public', CLOUDINARY_API_SECRET: 'server-secret' });
     const body: any = await response.json();
@@ -168,13 +172,15 @@ describe('trusted notification foundation', () => {
   });
   test('signed upload rate limits through KV without exposing secret', async () => {
     __test.setAuth({ uid: 'owner-2', admin: false });
-    __test.setFirestore((collection) => collection === 'cloudinaryUploadRates' ? { count: 10, windowStart: new Date(Math.floor(Date.now() / 60000) * 60000).toISOString() } : {});
+    __test.setFirestore((collection) => collection === 'cloudinaryUploadRates'
+      ? { count: 10, windowStart: new Date(Math.floor(Date.now() / 60000) * 60000).toISOString() }
+      : collection === 'users' ? completeCustomer('owner-2') : null);
     const response = await worker.fetch(request('/cloudinary/upload', { method: 'POST', body: '{}', headers: { 'Content-Length': '100' } }), { ...env, CLOUDINARY_CLOUD_NAME: 'cloud', CLOUDINARY_API_KEY: 'public', CLOUDINARY_API_SECRET: 'secret' });
     expect(response.status).toBe(429);
   });
   test('upload proxy accepts only bounded allowlisted multipart images and returns canonical DTO', async () => {
     __test.setAuth({ uid: 'u-upload', admin: false });
-    __test.setFirestore(() => ({}));
+    __test.setFirestore((collection) => collection === 'users' ? completeCustomer('u-upload') : {});
     __test.captureWrites([]);
     const form = new FormData(); form.append('file', new File(['image'], 'a.png', { type: 'image/png' }));
     const uploadRequest = new Request('https://worker.test/cloudinary/upload', { method: 'POST', body: form, headers: { Authorization: 'Bearer test', 'Content-Length': '100' } });

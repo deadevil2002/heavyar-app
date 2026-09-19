@@ -19,7 +19,7 @@ import { hasCapability, roleLabel } from '@/services/roleCapabilities';
 
 export default function ProfileScreen() {
   const { isRTL, t, localizedText } = useLanguage();
-  const { user, isAuthenticated, logout, updateProfile, accountState } = useAuth();
+  const { user, isAuthenticated, logout, updateProfile, refreshProfile, accountState } = useAuth();
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
@@ -149,6 +149,7 @@ export default function ProfileScreen() {
         avatar: uploaded.url,
         avatarPublicId: uploaded.publicId,
       });
+      await refreshProfile();
       profileUpdated = true;
 
       if (previousPublicId && previousPublicId !== uploaded.publicId) {
@@ -159,12 +160,18 @@ export default function ProfileScreen() {
 
       showDialog(t('success'), t('avatar_updated'), [{ text: t('ok'), style: 'default' }]);
     } catch (e) {
-      if (uploaded && !profileUpdated) await deleteCloudinaryImage(uploaded.publicId);
+      if (uploaded && !profileUpdated) {
+        try {
+          await deleteCloudinaryImage(uploaded.publicId);
+        } catch {
+          // Preserve the original persistence failure for the user.
+        }
+      }
       showDialog(t('error_title'), t('avatar_update_failed'), [{ text: t('ok'), style: 'default' }]);
     } finally {
       setAvatarBusy(false);
     }
-  }, [accountState, avatarBusy, showDialog, t, updateProfile, user]);
+  }, [accountState, avatarBusy, refreshProfile, showDialog, t, updateProfile, user]);
 
   const handleRemoveAvatar = useCallback(async () => {
     if (!user) return;

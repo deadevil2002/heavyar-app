@@ -13,6 +13,7 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 import { UserRole } from '@/types';
 import { saudiRegions, getCitiesByRegion } from '@/mocks/saudiRegions';
 import { GCC_COUNTRIES, countryFor, normalizePhoneForCountry, type GccCountryCode } from '@/constants/gcc';
+import { registrationErrorMessage } from '@/services/registrationErrors';
 
 type RegistrationStep = 'email' | 'info' | 'role';
 const crRules: Record<GccCountryCode, { maxLength: number; placeholder: string }> = {
@@ -158,7 +159,7 @@ export default function RegisterScreen() {
        router.replace(role === 'driver' ? '/driver-profile' : '/');
     } catch (e) {
       const code = (e as { errorCode?: string }).errorCode;
-      const errorMsg = e instanceof Error ? e.message : t('unexpected_error');
+      const errorMsg = registrationErrorMessage(e, language);
       showDialog(t('error_title'), errorMsg, code === 'DUPLICATE_COMPLETE_EMAIL'
         ? [{ text: t('cancel'), style: 'cancel' }, { text: t('login'), style: 'default', onPress: () => router.replace('/login') }]
         : [{ text: t('ok'), style: 'default' }]);

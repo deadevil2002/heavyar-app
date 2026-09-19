@@ -12,6 +12,7 @@ import { getRequestStatusLabel } from '@/services/driverUtils';
 import EmptyState from '@/components/EmptyState';
 import { useAuth } from '@/contexts/AuthContext';
 import { LatestRequestGuard, mergeUniqueById, refreshLoadedPages } from '@/services/driverLiveSync';
+import { safeErrorMessage } from '@/services/errorMessages';
 
 export default function DriverRequestsScreen() {
   const { isRTL, t } = useLanguage();
@@ -28,6 +29,7 @@ export default function DriverRequestsScreen() {
   const authKeyRef = useRef('');
   const loadingMoreRef = useRef(false);
   const guardRef = useRef(new LatestRequestGuard());
+  const wrongRole = isAuthenticated && user?.role !== 'driver';
 
   const fetchRequests = useCallback(async (append = false, silent = false) => {
     if (authLoading) {
@@ -37,7 +39,7 @@ export default function DriverRequestsScreen() {
       setLoading(true);
       return;
     }
-    if (!isAuthenticated) {
+    if (!isAuthenticated || wrongRole) {
       guardRef.current.cancel();
       setRequests([]);
       setError(false);
@@ -95,7 +97,7 @@ export default function DriverRequestsScreen() {
         loadingMoreRef.current = false;
       }
     }
-  }, [authLoading, isAuthenticated, user?.uid]);
+  }, [authLoading, isAuthenticated, user?.uid, wrongRole]);
 
   useFocusEffect(
     useCallback(() => {
@@ -128,7 +130,7 @@ export default function DriverRequestsScreen() {
               void fetchRequests();
             } catch (e: any) {
               setTimeout(() => {
-                showDialog(t('error_title'), e.message, [{ text: t('ok'), style: 'default' }]);
+                showDialog(t('error_title'), safeErrorMessage(e, isRTL ? 'ar' : 'en'), [{ text: t('ok'), style: 'default' }]);
               }, 500);
             }
           }
@@ -171,6 +173,20 @@ export default function DriverRequestsScreen() {
       </View>
     );
   };
+
+  if (wrongRole) {
+    return (
+      <View style={styles.container}>
+        <SafeAreaView edges={['top']} style={styles.safe}>
+          <View style={styles.roleDenied}>
+            <Text style={styles.roleDeniedText}>
+              {isRTL ? 'هذه الصفحة متاحة لحسابات السائقين فقط.' : 'This page is available to driver accounts only.'}
+            </Text>
+          </View>
+        </SafeAreaView>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -240,4 +256,6 @@ const styles = StyleSheet.create({
   clearText: { color: Colors.error, fontSize: 13, fontWeight: '600' },
   loadMoreButton: { alignSelf: 'center', paddingHorizontal: 20, paddingVertical: 12, marginVertical: 12 },
   loadMoreText: { color: Colors.gold, fontSize: 14, fontWeight: '700' },
+  roleDenied: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  roleDeniedText: { color: Colors.textPrimary, fontSize: 16, textAlign: 'center' },
 });
