@@ -353,6 +353,18 @@ describe('worker security boundary', () => {
     } finally { globalThis.fetch = old; }
   });
 
+  test('authenticated owner can remove an unreferenced asset from their own namespace for rollback cleanup', async () => {
+    __test.setAuth({ uid: 'owner', admin: false });
+    const old = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ result: 'ok' }))) as typeof fetch;
+    try {
+      const response = await worker.fetch(request('/cloudinary/delete', { publicId: 'heavyar/owner/unpersisted' }, { Authorization: 'Bearer test' }), {
+        ...env, CLOUDINARY_CLOUD_NAME: 'x', CLOUDINARY_API_KEY: 'k', CLOUDINARY_API_SECRET: 's',
+      });
+      expect(response.status).toBe(200);
+    } finally { globalThis.fetch = old; }
+  });
+
   test('Saudi phone normalization accepts all mobile contract forms', () => {
     expect(__test.normalizeSaudiPhone('+966512345678')).toBe('+966512345678');
     expect(__test.normalizeSaudiPhone('00966512345678')).toBe('+966512345678');

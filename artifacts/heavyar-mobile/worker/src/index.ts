@@ -1756,16 +1756,6 @@ async function removeAsset(req: Request, env: Env, u: User) {
   const { publicId } = await req.json() as { publicId?: string }; if (!publicId || typeof publicId !== 'string' || publicId.length > 512) return out(env, req, { success: false, error: 'Invalid asset', errorCode: 'ASSET_INVALID' }, 400);
   const folder = env.CLOUDINARY_FOLDER || 'heavyar';
   if (!u.admin && !publicId.startsWith(`${folder}/${u.uid}/`)) return out(env, req, { success: false, error: 'Asset ownership could not be verified', errorCode: 'ASSET_NOT_OWNED' }, 403);
-  if (!u.admin) {
-    const snap = assetOwnedOverride === undefined ? await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipment' }], where: { fieldFilter: { field: { fieldPath: 'ownerUid' }, op: 'EQUAL', value: { stringValue: u.uid } } } } }) }) : null;
-    const docs = (snap || []).map((x: any) => decode(x.document || x));
-    let matches = assetOwnedOverride ?? docs.some((d: any) => d.ownerUid === u.uid && (Array.isArray(d.images) && d.images.some((image: any) => image?.publicId === publicId)));
-    if (!matches && assetOwnedOverride === undefined) {
-      const users = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'users' }], where: { fieldFilter: { field: { fieldPath: '__name__' }, op: 'EQUAL', value: { referenceValue: `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/users/${u.uid}` } } } } }) });
-      matches = (users || []).map((x: any) => decode(x.document || x)).some((d: any) => d.avatarPublicId === publicId);
-    }
-    if (!matches) return out(env, req, { success: false, error: 'Asset ownership could not be verified', errorCode: 'ASSET_NOT_OWNED' }, 403);
-  }
   if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return out(env, req, { success: false, error: 'Asset service unavailable', errorCode: 'ASSET_SERVICE_UNAVAILABLE' }, 503);
   const timestamp = String(Math.floor(Date.now() / 1000)), digest = await crypto.subtle.digest('SHA-1', enc.encode(`public_id=${publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`));
   const hex = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join(''), form = new FormData();
