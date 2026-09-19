@@ -167,6 +167,7 @@ export default function DriverProfileScreen() {
     </View></SafeAreaView></View>;
   }
 
+  if (isAuthenticated && user?.role !== 'driver') return <SafeAreaView style={{ flex: 1, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center' }}><Text style={{ color: Colors.textPrimary }}>{localized('هذه الصفحة متاحة لحسابات السائقين فقط.', 'This page is available to driver accounts only.')}</Text></SafeAreaView>;
   return <View style={styles.container}><SafeAreaView edges={['top', 'bottom']} style={styles.safe}><ScrollView contentContainerStyle={styles.content}>
     <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>{t('driver_profile')}</Text>
     <View style={styles.statusCard}>

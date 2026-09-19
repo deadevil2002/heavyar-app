@@ -203,7 +203,13 @@ export async function registerWithEmail(
   let credential;
   let createdIdentity = true;
   try {
-    credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
+    const current = auth.currentUser;
+    if (current?.email?.toLowerCase() === normalizedEmail) {
+      credential = { user: current };
+      createdIdentity = false;
+    } else {
+      credential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
+    }
   } catch (error) {
     const code = (error as { code?: string }).code;
     if (code !== 'auth/email-already-in-use') throw error;
@@ -216,6 +222,10 @@ export async function registerWithEmail(
 
   let shouldDelete = false;
   try {
+    if (!createdIdentity && await fetchUserProfile(credential.user.uid)) {
+      const duplicate = Object.assign(new Error('DUPLICATE_COMPLETE_EMAIL'), { errorCode: 'DUPLICATE_COMPLETE_EMAIL' });
+      throw duplicate;
+    }
     const token = await credential.user.getIdToken();
     let response: Response;
     try {
@@ -242,6 +252,57 @@ export async function registerWithEmail(
     await signOut(auth).catch(() => undefined);
     throw error;
   }
+}
+
+export async function provisionCurrentIdentity(profileData: Parameters<typeof buildRegistrationProfilePayload>[0]): Promise<FirebaseUser> {
+  const firebaseUser = getFirebaseAuth().currentUser;
+  if (!firebaseUser) throw Object.assign(new Error('AUTH_REQUIRED'), { errorCode: 'AUTH_REQUIRED' });
+  const token = await firebaseUser.getIdToken();
+  const response = await fetch(`${WORKER_BASE_URL}/api/register-profile`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(buildRegistrationProfilePayload(profileData)),
+  });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({})) as { errorCode?: string };
+    throw Object.assign(new Error(failure.errorCode || 'REGISTRATION_RETRY_REQUIRED'), { errorCode: failure.errorCode || 'REGISTRATION_RETRY_REQUIRED' });
+  }
+  return firebaseUser;
+}
+
+export type AccountProfileStatus = {
+  state: 'authenticated_complete' | 'provisioning_incomplete';
+  role: 'customer' | 'provider' | 'driver' | null;
+  missingFields: string[];
+  accountStatus?: string | null;
+};
+
+export async function fetchAccountProfileStatus(): Promise<AccountProfileStatus> {
+  const firebaseUser = getFirebaseAuth().currentUser;
+  if (!firebaseUser) throw Object.assign(new Error('AUTH_REQUIRED'), { errorCode: 'AUTH_REQUIRED' });
+  const token = await firebaseUser.getIdToken();
+  const response = await fetch(`${WORKER_BASE_URL}/api/account/profile-status`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw Object.assign(new Error('PROFILE_STATUS_UNAVAILABLE'), { errorCode: 'PROFILE_STATUS_UNAVAILABLE' });
+  return response.json() as Promise<AccountProfileStatus>;
+}
+
+export async function deleteIncompleteIdentity(): Promise<void> {
+  const firebaseUser = getFirebaseAuth().currentUser;
+  if (!firebaseUser) throw Object.assign(new Error('AUTH_REQUIRED'), { errorCode: 'AUTH_REQUIRED' });
+  const token = await firebaseUser.getIdToken();
+  const response = await fetch(`${WORKER_BASE_URL}/api/account/identity-delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ confirmation: 'DELETE_INCOMPLETE_ACCOUNT' }),
+  });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({})) as { errorCode?: string };
+    throw Object.assign(new Error(failure.errorCode || 'AUTH_IDENTITY_DELETE_UNAVAILABLE'), {
+      errorCode: failure.errorCode || 'AUTH_IDENTITY_DELETE_UNAVAILABLE',
+    });
+  }
+  await signOut(getFirebaseAuth()).catch(() => undefined);
 }
 
 export async function logoutUser(): Promise<void> {
@@ -276,6 +337,7 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
   const snap = await getDoc(doc(db, 'users', uid));
   if (snap.exists()) {
     const data = snap.data();
+    if (data.role !== 'customer' && data.role !== 'provider' && data.role !== 'driver') return null;
     return {
       uid: data.uid || uid,
       nameAr: data.nameAr || '',
@@ -287,7 +349,7 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
       region: data.region || '',
       city: data.city || '',
       customCity: data.customCity || '',
-      role: data.role || 'customer',
+       role: data.role,
       crNumber: data.crNumber || '',
       crVerified: data.crVerified || false,
       rating: data.rating || 0,
@@ -298,10 +360,12 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
       emailVerified: data.emailVerified === true,
       emailVerifiedAt: typeof data.emailVerifiedAt === 'string' ? data.emailVerifiedAt : '',
       phoneVerified: data.phoneVerified === true,
+      accountStatus: typeof data.accountStatus === 'string' ? data.accountStatus : undefined,
+      suspensionStatus: typeof data.suspensionStatus === 'string' ? data.suspensionStatus : undefined,
       countryCode: data.countryCode,
       nativeCurrency: data.nativeCurrency || data.currency || 'SAR',
       displayCurrency: data.displayCurrency || data.nativeCurrency || data.currency || 'SAR',
-    } as User;
+     } as User;
   }
   return null;
 }

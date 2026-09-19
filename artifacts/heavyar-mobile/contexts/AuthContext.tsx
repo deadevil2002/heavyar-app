@@ -1,13 +1,16 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import createContextHook from '@nkzw/create-context-hook';
-import { User } from '@/types';
+import { AccountState, User } from '@/types';
 import {
   subscribeToAuthState,
   loginWithEmail,
   loginWithPhone,
   fetchAuthPolicy,
   registerWithEmail,
+  provisionCurrentIdentity,
+  deleteIncompleteIdentity,
+  fetchAccountProfileStatus,
   logoutUser,
   fetchUserProfile,
   updateUserProfile,
@@ -34,6 +37,9 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const [authError, setAuthError] = useState<string | null>(null);
   const [emailVerified, setEmailVerified] = useState<boolean>(false);
   const [authPolicy, setAuthPolicy] = useState<AuthPolicy | null>(null);
+  const [accountState, setAccountState] = useState<AccountState | null>(null);
+  const [identityEmail, setIdentityEmail] = useState<string | null>(null);
+  const [recoveryRegistrationOpen, setRecoveryRegistrationOpen] = useState(false);
 
   useEffect(() => {
     const loadCachedProfile = async () => {
@@ -41,8 +47,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         const cached = await AsyncStorage.getItem(AUTH_PROFILE_KEY);
         if (cached) {
           const parsed = JSON.parse(cached) as User;
-          setUser(parsed);
-          setIsAuthenticated(true);
+          if (parsed.uid && ['customer', 'provider', 'driver'].includes(parsed.role)) setUser(parsed);
         }
       } catch (e) {
       }
@@ -52,6 +57,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
     const unsubscribe = subscribeToAuthState(async (firebaseUser) => {
       if (firebaseUser) {
+        setIdentityEmail(firebaseUser.email || null);
         setEmailVerified(firebaseUser.emailVerified);
         const verificationStatus = await fetchEmailVerificationStatus();
         if (verificationStatus?.policy) {
@@ -66,10 +72,15 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
           } : previous);
         }
         try {
-          const profile = await fetchUserProfile(firebaseUser.uid);
-          if (profile) {
+          const [profile, canonicalStatus] = await Promise.all([
+            fetchUserProfile(firebaseUser.uid),
+            fetchAccountProfileStatus(),
+          ]);
+          if (profile && canonicalStatus.state === 'authenticated_complete') {
             setUser(profile);
             setIsAuthenticated(true);
+            const status = canonicalStatus.accountStatus || profile.accountStatus;
+            setAccountState(status === 'deletion_requested' ? 'deletion_requested' : status === 'restricted' ? 'restricted' : profile.suspensionStatus ? 'suspended' : 'authenticated_complete');
             await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
             try {
               await registerCurrentDevice();
@@ -77,40 +88,24 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
               // Notifications are optional; authentication must still complete.
             }
           } else {
-            const fallbackUser: User = {
-              uid: firebaseUser.uid,
-              nameAr: firebaseUser.displayName || '',
-              nameEn: firebaseUser.displayName || '',
-              email: firebaseUser.email || '',
-              phone: firebaseUser.phoneNumber || '',
-              avatar: firebaseUser.photoURL || '',
-              avatarPublicId: '',
-              region: '',
-              city: '',
-              customCity: '',
-              role: 'customer',
-              crNumber: '',
-              crVerified: false,
-              rating: 0,
-              totalRatings: 0,
-              equipmentCount: 0,
-              joinedAt: new Date().toISOString().split('T')[0],
-              isVerified: false,
-            };
-            setUser(fallbackUser);
+            setUser(null);
             setIsAuthenticated(true);
-            await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(fallbackUser));
+            setAccountState('provisioning_incomplete');
+            await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
           }
         } catch (e) {
           setUser(null);
           setIsAuthenticated(false);
           await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
           setAuthError('SESSION_EXPIRED');
+          setAccountState(null);
         }
       } else {
         setEmailVerified(false);
         setUser(null);
         setIsAuthenticated(false);
+        setAccountState(null);
+        setIdentityEmail(null);
         await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
       }
       setIsLoading(false);
@@ -121,7 +116,23 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
   useEffect(() => {
     void fetchAuthPolicy().then(setAuthPolicy);
+  }, [language]);
+
+  const resumeRegistration = useCallback(async (profileData: Parameters<typeof provisionCurrentIdentity>[0]) => {
+    const identity = await provisionCurrentIdentity(profileData);
+    const [profile, canonicalStatus] = await Promise.all([
+      fetchUserProfile(identity.uid),
+      fetchAccountProfileStatus(),
+    ]);
+    if (!profile || canonicalStatus.state !== 'authenticated_complete') throw new Error('REGISTRATION_RETRY_REQUIRED');
+    setUser(profile);
+    setIsAuthenticated(true);
+    setAccountState('authenticated_complete');
+    setRecoveryRegistrationOpen(false);
+    await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
   }, []);
+
+  const beginRecoveryRegistration = useCallback(() => setRecoveryRegistrationOpen(true), []);
 
   const login = useCallback(async (email: string, password: string) => {
     setAuthError(null);
@@ -151,9 +162,9 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         errorMsg = 'بيانات الدخول غير صحيحة';
       }
       setAuthError(errorMsg);
-      throw new Error(errorMsg);
+      throw Object.assign(new Error(errorMsg), { errorCode: error.errorCode || error.code });
     }
-  }, []);
+  }, [language]);
 
   const register = useCallback(async (
     name: string, email: string, phone: string, password: string,
@@ -163,7 +174,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   ) => {
     setAuthError(null);
     try {
-      await registerWithEmail(email, password, {
+      const profileData = {
         nameAr: name,
         nameEn: name,
         phone,
@@ -174,14 +185,16 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         role,
         crNumber,
         providerType,
-      });
+      };
+      if (accountState === 'provisioning_incomplete') await resumeRegistration(profileData);
+      else await registerWithEmail(email, password, profileData);
     } catch (e: unknown) {
       const error = e as { code?: string; message?: string; errorCode?: string };
       const errorMsg = registrationErrorMessage(error, language);
       setAuthError(errorMsg);
-      throw new Error(errorMsg);
+      throw Object.assign(new Error(errorMsg), { errorCode: error.errorCode || error.code });
     }
-  }, []);
+  }, [language, accountState, resumeRegistration]);
 
   const refreshEmailVerification = useCallback(async () => {
     const verified = await refreshFirebaseEmailVerification();
@@ -214,11 +227,17 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       if (options?.clearLocalStorage) await AsyncStorage.clear();
       setUser(null);
       setIsAuthenticated(false);
+      setAccountState(null);
+      setIdentityEmail(null);
+      setRecoveryRegistrationOpen(false);
     } catch {
       await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
       if (options?.clearLocalStorage) await AsyncStorage.clear();
       setUser(null);
       setIsAuthenticated(false);
+      setAccountState(null);
+      setIdentityEmail(null);
+      setRecoveryRegistrationOpen(false);
     }
   }, []);
 
@@ -270,13 +289,25 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     }
   }, [user]);
 
+  const deleteIncompleteAccount = useCallback(async () => {
+    await deleteIncompleteIdentity();
+    await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+    setUser(null); setIsAuthenticated(false); setAccountState(null); setIdentityEmail(null);
+  }, []);
+
   return useMemo(() => ({
     user,
+    accountState,
+    identityEmail,
+    recoveryRegistrationOpen,
     isLoading,
     isAuthenticated,
     authError,
     login,
     register,
+    resumeRegistration,
+    beginRecoveryRegistration,
+    deleteIncompleteAccount,
     logout,
     refreshProfile,
     updateProfile,
@@ -285,5 +316,5 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     refreshEmailVerification,
     sendEmailVerification,
     requiresEmailVerification,
-  }), [user, isLoading, isAuthenticated, authError, login, register, logout, refreshProfile, updateProfile, emailVerified, authPolicy, refreshEmailVerification, sendEmailVerification, requiresEmailVerification]);
+  }), [user, accountState, identityEmail, recoveryRegistrationOpen, isLoading, isAuthenticated, authError, login, register, resumeRegistration, beginRecoveryRegistration, deleteIncompleteAccount, logout, refreshProfile, updateProfile, emailVerified, authPolicy, refreshEmailVerification, sendEmailVerification, requiresEmailVerification]);
 });

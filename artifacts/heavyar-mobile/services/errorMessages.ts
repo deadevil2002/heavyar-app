@@ -1,0 +1,10 @@
+import type { Language } from '@/types';
+const messages: Record<Language, Record<string, string>> = {
+  ar: { ACTIVE_RENTAL_OVERLAP: 'يوجد طلب أو تأجير نشط يتعارض مع الفترة المحددة. راجع طلباتك الحالية أو اختر فترة أخرى.', BOOKING_CONFLICT: 'هذه الفترة لم تعد متاحة. اختر فترة أخرى.', AVAILABILITY_CONFLICT: 'المعدة غير متاحة في الفترة المحددة.', EMAIL_VERIFICATION_REQUIRED: 'يرجى توثيق بريدك الإلكتروني قبل تنفيذ هذا الإجراء.', AUTH_REQUIRED: 'يرجى تسجيل الدخول للمتابعة.', ACCOUNT_SUSPENDED: 'هذا الحساب موقوف مؤقتاً. تواصل مع الدعم للمساعدة.', ACCOUNT_DELETION_REQUESTED: 'تم طلب حذف الحساب ولا يمكن تنفيذ هذا الإجراء حالياً.', NETWORK_UNAVAILABLE: 'تعذر الاتصال بالخدمة. تحقق من الإنترنت وحاول مرة أخرى.', REQUEST_FAILED: 'تعذر إكمال الطلب. حاول مرة أخرى.' },
+  en: { ACTIVE_RENTAL_OVERLAP: 'You already have an active request or rental that overlaps this period. Review your current requests or choose different dates.', BOOKING_CONFLICT: 'This period is no longer available. Choose different dates.', AVAILABILITY_CONFLICT: 'The equipment is unavailable for the selected period.', EMAIL_VERIFICATION_REQUIRED: 'Please verify your email before continuing.', AUTH_REQUIRED: 'Please sign in to continue.', ACCOUNT_SUSPENDED: 'This account is suspended. Contact support for help.', ACCOUNT_DELETION_REQUESTED: 'Account deletion has been requested and this action is unavailable.', NETWORK_UNAVAILABLE: 'The service could not be reached. Check your connection and try again.', REQUEST_FAILED: 'The request could not be completed. Please try again.' },
+};
+export function safeErrorMessage(error: unknown, language: Language) {
+  const value = error as { code?: unknown; errorCode?: unknown };
+  const code = typeof value?.errorCode === 'string' ? value.errorCode : typeof value?.code === 'string' ? value.code : '';
+  return messages[language][code] || messages[language].REQUEST_FAILED;
+}

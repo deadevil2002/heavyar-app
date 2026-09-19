@@ -15,10 +15,11 @@ import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloud
 import { requestAccountDeletion } from '@/services/paymentService';
 import { fetchEquipmentByOwner, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
 import { getVerificationProfile, type VerificationProfile } from '@/services/verificationService';
+import { hasCapability, roleLabel } from '@/services/roleCapabilities';
 
 export default function ProfileScreen() {
   const { isRTL, t, localizedText } = useLanguage();
-  const { user, isAuthenticated, logout, updateProfile } = useAuth();
+  const { user, isAuthenticated, logout, updateProfile, accountState } = useAuth();
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
@@ -122,6 +123,7 @@ export default function ProfileScreen() {
 
   const handleUploadAvatar = useCallback(async () => {
     if (!user) return;
+    if (accountState !== 'authenticated_complete') return;
     if (avatarBusy) return;
     setAvatarBusy(true);
     let uploaded: Awaited<ReturnType<typeof uploadImageToCloudinary>> | null = null;
@@ -162,7 +164,7 @@ export default function ProfileScreen() {
     } finally {
       setAvatarBusy(false);
     }
-  }, [avatarBusy, showDialog, t, updateProfile, user]);
+  }, [accountState, avatarBusy, showDialog, t, updateProfile, user]);
 
   const handleRemoveAvatar = useCallback(async () => {
     if (!user) return;
@@ -269,9 +271,9 @@ export default function ProfileScreen() {
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
 
   const menuItems = [
-    { icon: Briefcase, label: t('driver_profile'), route: '/driver-profile' as const },
-    { icon: Search, label: t('find_driver'), route: '/drivers' as const },
-    ...(user?.role === 'provider' ? [{ icon: Package, label: t('my_equipment'), route: '/my-equipment' as const }] : []),
+    ...(hasCapability(user?.role, 'manageDriverProfile') ? [{ icon: Briefcase, label: t('driver_profile'), route: '/driver-profile' as const }] : []),
+    ...(hasCapability(user?.role, 'findDriver') ? [{ icon: Search, label: t('find_driver'), route: '/drivers' as const }] : []),
+    ...(hasCapability(user?.role, 'manageEquipment') ? [{ icon: Package, label: t('my_equipment'), route: '/my-equipment' as const }] : []),
     { icon: Shield, label: isRTL ? 'التحقق والموثوقية' : 'Verification & trust', route: '/verification' as const },
     { icon: Bell, label: t('notifications'), route: '/notifications' as const },
     { icon: Receipt, label: t('invoices'), route: '/invoices' as const },
@@ -339,14 +341,14 @@ export default function ProfileScreen() {
                     <ShoppingCart size={12} color={Colors.info} />
                   )}
                   <Text style={[styles.roleText, { color: user.role === 'provider' ? Colors.gold : Colors.info }]}>
-                    {user.role === 'provider' ? t('provider') : t('customer')}
+                    {roleLabel(user.role, isRTL)}
                   </Text>
                 </View>
                 <Text style={styles.memberSince}>{t('member_since')} {user.joinedAt}</Text>
               </View>
             </View>
 
-            <View style={[styles.statsRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            {user.role === 'provider' && <View style={[styles.statsRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               <View style={styles.stat}>
                 <Text style={styles.statValue}>{user.equipmentCount}</Text>
                 <Text style={styles.statLabel}>{t('equipment_count')}</Text>
@@ -366,7 +368,7 @@ export default function ProfileScreen() {
                 </Text>
                 <Text style={styles.statLabel}>{t('city')}</Text>
               </View>
-            </View>
+            </View>}
           </View>
 
           {user.role === 'provider' ? (

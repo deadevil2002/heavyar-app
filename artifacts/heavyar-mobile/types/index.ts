@@ -8,6 +8,7 @@ export type PaymentLifecycleStatus = 'pending' | 'requires_action' | 'processing
 export type InvoiceStatus = 'paid' | 'pending' | 'refunded';
 
 export type UserRole = 'customer' | 'provider' | 'driver';
+export type AccountState = 'authenticated_complete' | 'provisioning_incomplete' | 'restricted' | 'deletion_requested' | 'suspended';
 export type GccCountryCode = 'SA' | 'AE' | 'KW' | 'QA' | 'BH' | 'OM';
 
 export type RequestMode = 'fixed_days' | 'open_ended';
@@ -44,6 +45,8 @@ export interface User {
   emailVerified?: boolean;
   emailVerifiedAt?: string;
   phoneVerified?: boolean;
+  accountStatus?: string;
+  suspensionStatus?: string;
 }
 
 export interface CloudinaryImage {

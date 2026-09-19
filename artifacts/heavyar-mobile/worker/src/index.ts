@@ -9,6 +9,7 @@ import { isPublicRentableListing, legacyProviderReady, listingVisibilityForOwner
 import { createInvoicePdfService, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
 import { quotaFetch, isQuotaError, quotaResponse, quotaBlocked } from './quota-policy';
 import { earlyAccessDeliveryProof } from './early-access-delivery';
+import { evaluateCanonicalCompleteness, type CompletenessResult } from './integrity';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -40,7 +41,8 @@ let customTokenOverride: ((uid: string) => Promise<string>) | undefined;
 let phoneLoginLimiterOverride: ((phoneHash: string, ipHash: string) => Promise<boolean | null>) | undefined;
 let publicDriverLimiterOverride: ((scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) | undefined;
 let capturedDriverQueries: any[] | undefined;
-  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource };
+let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
+  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -101,6 +103,11 @@ async function authenticatedUser(req: Request, env: Env, allowAccountManagement 
   // exercise downstream validation without a Firestore fixture.
   if (authOverride && !firestoreOverride) return user;
   const profile = await getDoc(env, 'users', user.uid);
+  if (!user.testInjected) {
+    if (!profile) err('ACCOUNT_PROVISIONING_INCOMPLETE');
+    const roleProfile = profile.role === 'driver' ? await getDoc(env, 'driverProfiles', user.uid) : null;
+    if (evaluateCanonicalCompleteness(user, profile, roleProfile).state !== 'authenticated_complete') err('ACCOUNT_PROVISIONING_INCOMPLETE');
+  }
   if (profile?.accountStatus === 'deletion_requested' || profile?.accountStatus === 'restricted' ||
       profile?.suspensionStatus === 'temporarily_suspended' || profile?.suspensionStatus === 'permanently_suspended') {
     err(profile.accountStatus === 'deletion_requested' ? 'ACCOUNT_DELETION_REQUESTED' : 'ACCOUNT_SUSPENDED');
@@ -116,6 +123,15 @@ async function googleToken(env: Env, scope = 'https://www.googleapis.com/auth/da
   const jwt = `${h}.${p}.${b64u(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(`${h}.${p}`)))}`;
   const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}` });
   if (!r.ok) err('Firestore unavailable'); return (await r.json() as { access_token: string }).access_token;
+}
+export async function listFirebaseAuthIdentities(env: Env, limit = 50, pageToken?: string) {
+  const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+  const query = new URLSearchParams({ maxResults: String(Math.min(50, Math.max(1, Math.floor(limit)))) });
+  if (pageToken) query.set('nextPageToken', pageToken);
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(String(env.FIREBASE_PROJECT_ID))}/accounts:batchGet?${query}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error('AUTH_DIRECTORY_UNAVAILABLE');
+  const result: any = await response.json();
+  return { identities: (result.users || []).map((identity: any) => ({ uid: String(identity.localId || ''), email: typeof identity.email === 'string' ? identity.email : null, emailVerified: identity.emailVerified === true, disabled: identity.disabled === true, createdAt: identity.createdAt ? new Date(Number(identity.createdAt)).toISOString() : undefined })).filter((identity: any) => identity.uid), nextPageToken: typeof result.nextPageToken === 'string' ? result.nextPageToken : null };
 }
 const val = (v: any): any => v?.stringValue ?? v?.integerValue ?? v?.doubleValue ?? v?.booleanValue ?? v?.timestampValue ?? (v?.arrayValue ? (v.arrayValue.values || []).map(val) : v?.mapValue ? decode(v.mapValue) : undefined);
 const decode = (d: any) => Object.fromEntries(Object.entries(d?.fields || {}).map(([k, v]) => [k, val(v)]));
@@ -342,6 +358,77 @@ async function getDoc(env: Env, collection: string, id: string) {
 async function getRawDoc(env: Env, collection: string, id: string): Promise<{ data: any; updateTime?: string } | null> {
   if (firestoreOverride) { const data = firestoreOverride(collection, id); return data ? { data, updateTime: 'test-update-time' } : null; }
   const d = await fs(env, `${collection}/${encodeURIComponent(id)}`); return d ? { data: decode(d), updateTime: d.updateTime } : null;
+}
+async function queryOwnedDocuments(env: Env, collection: string, uid: string, fields = ['uid']): Promise<any[]> {
+  if (identityQueryOverride) return identityQueryOverride(collection, uid) || [];
+  if (firestoreOverride) return [];
+  const filters = fields.map(field => ({ fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: { stringValue: uid } } }));
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: collection }], where: filters.length === 1 ? filters[0] : { compositeFilter: { op: 'OR', filters } }, limit: 100,
+  } }) }) as any[] || [];
+  return rows.filter(row => row.document).map(row => ({ id: String(row.document.name).split('/').pop(), data: decode(row.document), updateTime: row.document.updateTime }));
+}
+async function deleteFirebaseIdentity(env: Env, uid: string) {
+  if (refreshTokenRevokeOverride) return refreshTokenRevokeOverride(env, uid);
+  const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(String(env.FIREBASE_PROJECT_ID))}/accounts:delete`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: uid }) });
+  if (!response.ok && response.status !== 404) throw new Error('AUTH_IDENTITY_DELETE_UNAVAILABLE');
+}
+async function destroyOwnedCloudinaryAsset(env: Env, publicId: string, uid: string): Promise<boolean> {
+  const folder = env.CLOUDINARY_FOLDER || 'heavyar';
+  if (!publicId.startsWith(`${folder}/${uid}/`) || !env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return false;
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const digest = await crypto.subtle.digest('SHA-1', enc.encode(`public_id=${publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`));
+  const signature = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join('');
+  const form = new FormData(); form.append('public_id', publicId); form.append('timestamp', timestamp); form.append('api_key', env.CLOUDINARY_API_KEY); form.append('signature', signature);
+  return (await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`, { method: 'POST', body: form })).ok;
+}
+async function identityStatus(env: Env, u: User): Promise<CompletenessResult> {
+  const profile = await getDoc(env, 'users', u.uid);
+  return evaluateCanonicalCompleteness(u, profile, profile?.role === 'driver' ? await getDoc(env, 'driverProfiles', u.uid) : null);
+}
+async function accountProfileStatus(req: Request, env: Env, u: User) {
+  const result = await identityStatus(env, u);
+  return out(env, req, { success: true, ...result, accountStatus: (await getDoc(env, 'users', u.uid))?.accountStatus || null });
+}
+async function identityOnlyDeletion(req: Request, env: Env, u: User) {
+  const body: any = await req.json().catch(() => null);
+  if (!body || Object.keys(body).length !== 1 || body.confirmation !== 'DELETE_INCOMPLETE_ACCOUNT') return out(env, req, { success: false, error: 'Confirmation required', errorCode: 'CONFIRMATION_REQUIRED' }, 400);
+  const profile = await getRawDoc(env, 'users', u.uid);
+  const roleProfile = profile?.data?.role === 'driver' ? await getDoc(env, 'driverProfiles', u.uid) : null;
+  if (evaluateCanonicalCompleteness(u, profile?.data || null, roleProfile).state === 'authenticated_complete') {
+    return out(env, req, { success: false, error: 'Complete accounts use the account deletion lifecycle.', errorCode: 'COMPLETE_ACCOUNT_USE_DELETION' }, 409);
+  }
+  const marker = await getRawDoc(env, 'identityDeletionRequests', u.uid);
+  if (marker?.data?.status === 'completed') return out(env, req, { success: true, status: 'completed', alreadyDeleted: true });
+  // Shared marketplace transactions are deliberately preserved. This cleanup
+  // only removes identity-owned profile, device, verification, and draft media.
+  const targets: Array<[string, string[]]> = [['phoneOwners', ['uid']], ['driverProfiles', ['uid']], ['providerProfiles', ['uid']], ['equipment', ['ownerUid']], ['notifications', ['uid']], ['deviceTokens', ['uid']], ['notificationTokenOwners', ['uid']], ['notificationInstallations', ['uid']], ['verificationProfiles', ['uid']], ['verificationAttempts', ['uid']], ['verificationEvents', ['uid']]];
+  const rows: any[] = profile ? [{ collection: 'users', id: u.uid, ...profile }] : [];
+  for (const [collection, fields] of targets) {
+    const owned = await queryOwnedDocuments(env, collection, u.uid, fields);
+    if (owned.length >= 100) return out(env, req, { success: false, error: 'Incomplete account cleanup requires review.', errorCode: 'INCOMPLETE_ACCOUNT_CLEANUP_REQUIRES_REVIEW' }, 409);
+    rows.push(...owned.map(row => ({ collection, ...row })));
+  }
+  const uniqueRows = [...new Map(rows.map(row => [`${row.collection}/${row.id}`, row])).values()];
+  if (uniqueRows.length > 450) return out(env, req, { success: false, error: 'Incomplete account cleanup requires review.', errorCode: 'INCOMPLETE_ACCOUNT_CLEANUP_REQUIRES_REVIEW' }, 409);
+  const media = new Set<string>(Array.isArray(marker?.data?.mediaPublicIds) ? marker.data.mediaPublicIds.filter((id: unknown) => typeof id === 'string') : []);
+  for (const row of uniqueRows) {
+    if (typeof row.data?.avatarPublicId === 'string') media.add(row.data.avatarPublicId);
+    for (const image of Array.isArray(row.data?.images) ? row.data.images : []) if (typeof image?.publicId === 'string') media.add(image.publicId);
+  }
+  const now = new Date().toISOString();
+  const writes: any[] = uniqueRows.map(row => ({ delete: fullName(env, `${row.collection}/${encodeURIComponent(row.id)}`), ...(row.updateTime ? { currentDocument: { updateTime: row.updateTime } } : {}) }));
+  const markerFields = { uid: { stringValue: u.uid }, status: { stringValue: 'pending' }, lifecycle: { stringValue: 'identity_only' }, mediaPublicIds: { arrayValue: { values: [...media].map(id => ({ stringValue: id })) } }, requestedAt: { timestampValue: marker?.data?.requestedAt || now }, updatedAt: { timestampValue: now } };
+  writes.push({ update: { name: fullName(env, `identityDeletionRequests/${encodeURIComponent(u.uid)}`), fields: markerFields }, ...(marker?.updateTime ? { updateMask: { fieldPaths: Object.keys(markerFields) }, currentDocument: { updateTime: marker.updateTime } } : { currentDocument: { exists: false } }) });
+  try {
+    await commitWrites(env, writes);
+    const mediaResults = await Promise.all([...media].map(id => destroyOwnedCloudinaryAsset(env, id, u.uid).catch(() => false)));
+    if (mediaResults.some(result => !result)) return out(env, req, { success: false, status: 'pending', error: 'Incomplete account deletion is pending.', errorCode: 'MEDIA_CLEANUP_PENDING' }, 503);
+    await deleteFirebaseIdentity(env, u.uid);
+  } catch { return out(env, req, { success: false, status: 'pending', error: 'Incomplete account deletion is pending.', errorCode: 'AUTH_IDENTITY_DELETE_UNAVAILABLE' }, 503); }
+  await commitWrites(env, [{ update: { name: fullName(env, `identityDeletionRequests/${encodeURIComponent(u.uid)}`), fields: { status: { stringValue: 'completed' }, updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'updatedAt'] } }, { update: { name: fullName(env, `adminAudit/identity-delete:${encodeURIComponent(u.uid)}`), fields: { actorUid: { stringValue: u.uid }, action: { stringValue: 'identity_only_account_deleted' }, targetId: { stringValue: u.uid }, timestamp: { timestampValue: new Date().toISOString() } } }, currentDocument: { exists: false } }]).catch(() => undefined);
+  return out(env, req, { success: true, status: 'completed', cleanedRecords: uniqueRows.length });
 }
 async function patchDoc(env: Env, path: string, fields: Record<string, unknown>) {
   if (firestoreWrites) { firestoreWrites.push({ path, fields }); return null; }
@@ -1077,6 +1164,9 @@ async function createRequest(req: Request, env: Env, u: User) {
   if (!dateCheck.ok || !requestedRange.until || (mode === 'fixed_days' && Math.round((Date.parse(`${requestedRange.until}T00:00:00Z`) - Date.parse(`${requestedRange.from}T00:00:00Z`)) / 86400000) + 1 !== days)) return out(env, req, { success: false, error: 'Invalid rental dates' }, 400);
   const availabilityCheckResult = availabilityAllows(equipment.availability || { from: requestedRange.from }, requestedRange);
   if (!availabilityCheckResult.ok) return out(env, req, { success: false, error: availabilityCheckResult.error }, 409);
+  const existingRequests = firestoreOverride ? [] : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: equipmentId } } }, limit: 100 } }) }) as any[] || [];
+  const overlap = existingRequests.map(row => decode(row.document || row)).some(existing => hasActiveRental([existing]) && existing.startDate && String(existing.startDate) <= String(requestedRange.until || '9999-12-31') && String(requestedRange.from) <= String(existing.endDate || '9999-12-31'));
+  if (overlap) return out(env, req, { success: false, error: 'An active request or rental overlaps this period.', errorCode: 'ACTIVE_RENTAL_OVERLAP', details: { ar: 'يوجد طلب أو تأجير نشط يتعارض مع الفترة المحددة. اختر فترة أخرى.', en: 'An active request or rental overlaps this period. Choose different dates.' } }, 409);
   if (!Number.isFinite(amount) || amount <= 0 || (mode === 'fixed_days' && (!Number.isInteger(days) || days < 1 || days > 365))) return out(env, req, { success: false, error: 'Invalid request amount' }, 400);
   const id = `r_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
   let commercialSnapshot: CommercialSnapshot;
@@ -1663,9 +1753,9 @@ async function tapWebhook(req: Request, env: Env) {
   return out(env, req, { success: true, paymentId: chargeId, paymentState: state, canonicalStatus: state, status: state, providerStatus: d.status, chargeId, requestId, amount: d.amount, currency: d.currency });
 }
 async function removeAsset(req: Request, env: Env, u: User) {
-  const { publicId } = await req.json() as { publicId?: string }; if (!publicId) return out(env, req, { success: false, error: 'Invalid asset' }, 400);
+  const { publicId } = await req.json() as { publicId?: string }; if (!publicId || typeof publicId !== 'string' || publicId.length > 512) return out(env, req, { success: false, error: 'Invalid asset', errorCode: 'ASSET_INVALID' }, 400);
   const folder = env.CLOUDINARY_FOLDER || 'heavyar';
-  if (!u.admin && !publicId.startsWith(`${folder}/${u.uid}/`)) return out(env, req, { success: false, error: 'Forbidden' }, 403);
+  if (!u.admin && !publicId.startsWith(`${folder}/${u.uid}/`)) return out(env, req, { success: false, error: 'Asset ownership could not be verified', errorCode: 'ASSET_NOT_OWNED' }, 403);
   if (!u.admin) {
     const snap = assetOwnedOverride === undefined ? await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipment' }], where: { fieldFilter: { field: { fieldPath: 'ownerUid' }, op: 'EQUAL', value: { stringValue: u.uid } } } } }) }) : null;
     const docs = (snap || []).map((x: any) => decode(x.document || x));
@@ -1674,20 +1764,21 @@ async function removeAsset(req: Request, env: Env, u: User) {
       const users = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'users' }], where: { fieldFilter: { field: { fieldPath: '__name__' }, op: 'EQUAL', value: { referenceValue: `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/users/${u.uid}` } } } } }) });
       matches = (users || []).map((x: any) => decode(x.document || x)).some((d: any) => d.avatarPublicId === publicId);
     }
-    if (!matches) return out(env, req, { success: false, error: 'Forbidden' }, 403);
+    if (!matches) return out(env, req, { success: false, error: 'Asset ownership could not be verified', errorCode: 'ASSET_NOT_OWNED' }, 403);
   }
-  if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return out(env, req, { success: false, error: 'Asset service unavailable' }, 503);
+  if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return out(env, req, { success: false, error: 'Asset service unavailable', errorCode: 'ASSET_SERVICE_UNAVAILABLE' }, 503);
   const timestamp = String(Math.floor(Date.now() / 1000)), digest = await crypto.subtle.digest('SHA-1', enc.encode(`public_id=${publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`));
   const hex = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join(''), form = new FormData();
   form.append('public_id', publicId); form.append('timestamp', timestamp); form.append('api_key', env.CLOUDINARY_API_KEY); form.append('signature', hex);
   const r = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`, { method: 'POST', body: form });
-  return out(env, req, { success: r.ok }, r.ok ? 200 : 502);
+  return out(env, req, { success: r.ok, ...(r.ok ? {} : { errorCode: 'CLOUDINARY_DELETE_FAILED' }) }, r.ok ? 200 : 502);
 }
 async function cloudinaryUpload(req: Request, env: Env, u: User) {
-  if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return out(env, req, { success: false, error: 'Asset service unavailable' }, 503);
+  if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return out(env, req, { success: false, error: 'Asset service unavailable', errorCode: 'ASSET_SERVICE_UNAVAILABLE' }, 503);
   const declaredLength = Number(req.headers.get('Content-Length') || 0);
   if (!declaredLength || declaredLength > 10 * 1024 * 1024 + 65536) return out(env, req, { success: false, error: 'Upload too large' }, 413);
   const account = await getDoc(env, 'users', u.uid);
+  if (!u.admin && !account) return out(env, req, { success: false, error: 'Complete your account setup before uploading media.', errorCode: 'PROFILE_REQUIRED' }, 409);
   if (!u.admin && (account?.suspensionStatus === 'temporarily_suspended' || account?.suspensionStatus === 'permanently_suspended' || account?.accountStatus === 'restricted')) {
     return out(env, req, { success: false, error: 'ACCOUNT_SUSPENDED' }, 403);
   }
@@ -2051,16 +2142,17 @@ async function registerProfile(req: Request, env: Env, u: User) {
    const email = u.email.trim().toLowerCase(), body = await req.json().catch(() => null) as any;
    if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
   const role = String(body.role || body.requestedRole || 'customer');
-   const existing = await getDoc(env, 'users', u.uid);
-   if (existing) {
+   const existingRaw = await getRawDoc(env, 'users', u.uid), existing = existingRaw?.data;
+    if (existing) {
      const existingEmail = String(existing.email || existing.emailLower || '').trim().toLowerCase();
      if (existingEmail === email && String(existing.role || '') === role) {
-       return out(env, req, { success: true, alreadyProvisioned: true, existingRole: String(existing.role) });
-     }
-     if (existingEmail === email) {
+       const roleProfile = role === 'driver' ? await getDoc(env, 'driverProfiles', u.uid) : null;
+       if (evaluateCanonicalCompleteness(u, existing, roleProfile).state === 'authenticated_complete') return out(env, req, { success: true, alreadyProvisioned: true, existingRole: String(existing.role) });
+      } else if (existingEmail === email) {
        return out(env, req, { success: false, error: 'Profile already exists for a different role', errorCode: 'ROLE_MISMATCH', existingRole: String(existing.role || '') }, 409);
-     }
-     return out(env, req, { success: false, error: 'Profile already exists', errorCode: 'PROFILE_ALREADY_EXISTS' }, 409);
+      } else {
+        return out(env, req, { success: false, error: 'Profile already exists', errorCode: 'PROFILE_ALREADY_EXISTS' }, 409);
+      }
    }
   const config = effectiveAuthConfig(await getDoc(env, 'heavyarConfig', 'auth'));
   if (!['customer', 'provider', 'driver'].includes(role) || body.termsAccepted !== true && body.acceptedTerms !== true) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
@@ -2081,13 +2173,16 @@ async function registerProfile(req: Request, env: Env, u: User) {
    if (role === 'provider' && providerType === 'company' && country.code === 'SA' && !registrationPattern.test(crNumber) || crNumber && !registrationPattern.test(crNumber)) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
    const providerOnboardingCompleted = role === 'provider' && Boolean(nameAr || nameEn) && Boolean(region) && Boolean(city || customCity) && Boolean(country.enabled && country.providerOnboardingAvailable);
    const now = new Date().toISOString(), idToken = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, ''), fields: Record<string, any> = { uid: { stringValue: u.uid }, email: { stringValue: email }, emailLower: { stringValue: email }, emailVerified: { booleanValue: u.emailVerified === true }, emailVerificationVersion: { integerValue: '1' }, nameAr: { stringValue: nameAr }, nameEn: { stringValue: nameEn }, ...(phone ? { phone: { stringValue: phone } } : {}), countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, region: { stringValue: region }, city: { stringValue: city }, customCity: { stringValue: customCity }, ...(crNumber ? { crNumber: { stringValue: crNumber } } : {}), ...(role === 'provider' ? { providerType: { stringValue: providerType! }, providerOnboardingCompleted: { booleanValue: providerOnboardingCompleted } } : {}), role: { stringValue: role }, requestedRole: { stringValue: role }, termsAccepted: { booleanValue: true }, termsAcceptedAt: { timestampValue: now }, createdAt: { timestampValue: now } };
-  const writes: any[] = [{ update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields }, currentDocument: { exists: false } }];
+  const writes: any[] = [{ update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields }, currentDocument: existingRaw?.updateTime ? { updateTime: existingRaw.updateTime } : { exists: false } }];
   if (phone) {
     const ownerId = await hashedId(`phone:${phone}`), owner = await getRawDoc(env, 'phoneOwners', ownerId);
     if (owner && owner.data.uid !== u.uid) return out(env, req, { success: false, error: 'Registration unavailable', errorCode: 'PHONE_ALREADY_IN_USE', safeToDeleteIdentity: true }, 409);
     writes.push({ update: { name: fullName(env, `phoneOwners/${ownerId}`), fields: { uid: { stringValue: u.uid }, phoneHash: { stringValue: ownerId }, createdAt: { timestampValue: now } } }, currentDocument: owner?.updateTime ? { updateTime: owner.updateTime } : { exists: false } });
   }
-   if (role === 'driver') writes.push({ update: { name: fullName(env, `driverProfiles/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, publicId: { stringValue: await canonicalDriverPublicId(u.uid) }, countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, displayName: { stringValue: String(body.nameEn || body.nameAr || '') }, ...(phone ? { phone: { stringValue: phone } } : {}), region: { stringValue: String(body.region || '') }, city: { stringValue: String(body.city || '') }, customCity: { stringValue: customCity }, equipmentCategories: { arrayValue: { values: [] } }, experience: { integerValue: '0' }, active: { booleanValue: false }, verified: { booleanValue: false }, moderationStatus: { stringValue: 'pending_review' }, availabilityStatus: { stringValue: 'offline' }, trustStatus: { stringValue: 'unverified' }, createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, currentDocument: { exists: false } });
+   if (role === 'driver') {
+     const driverRaw = await getRawDoc(env, 'driverProfiles', u.uid);
+     writes.push({ update: { name: fullName(env, `driverProfiles/${encodeURIComponent(u.uid)}`), fields: { uid: { stringValue: u.uid }, publicId: { stringValue: await canonicalDriverPublicId(u.uid) }, countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, displayName: { stringValue: String(body.nameEn || body.nameAr || '') }, ...(phone ? { phone: { stringValue: phone } } : {}), region: { stringValue: String(body.region || '') }, city: { stringValue: String(body.city || '') }, customCity: { stringValue: customCity }, equipmentCategories: { arrayValue: { values: [] } }, experience: { integerValue: '0' }, active: { booleanValue: false }, verified: { booleanValue: false }, moderationStatus: { stringValue: 'pending_review' }, availabilityStatus: { stringValue: 'offline' }, trustStatus: { stringValue: 'unverified' }, createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, currentDocument: driverRaw?.updateTime ? { updateTime: driverRaw.updateTime } : { exists: false } });
+   }
   try { await commitWrites(env, writes); } catch {
     try {
       const after = await getDoc(env, 'users', u.uid);
@@ -2378,13 +2473,14 @@ async function ownerDriverProfile(env: Env, uid: string, profile: any) {
 
 async function driverProfile(req: Request, env: Env, u: User) {
   const id = u.uid, raw = await getRawDoc(env, 'driverProfiles', id);
+  const account = await getDoc(env, 'users', id);
+  if (!u.admin && account?.role !== 'driver') return out(env, req, { success: false, error: 'Driver profile unavailable for this account' }, 403);
   if (req.method === 'GET') return out(env, req, { success: true, profile: raw ? await ownerDriverProfile(env, id, raw.data) : null });
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid driver profile' }, 400);
   if (raw && ['suspended', 'rejected'].includes(String(raw.data.moderationStatus)) && !u.admin) return out(env, req, { success: false, error: 'DRIVER_MODERATION_LOCKED' }, 403);
   const allowed = ['displayName', 'photoUrl', 'countryCode', 'region', 'city', 'equipmentTypes', 'yearsExperience', 'description', 'availabilityStatus', 'availableFrom', 'availableUntil'];
   if (Object.keys(body).some((key) => !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported driver profile field' }, 400);
-  const account = await getDoc(env, 'users', id);
   if (!u.admin && !eligibleAccount(account, 'driver')) return out(env, req, { success: false, error: 'Driver profile unavailable for this account' }, 403);
   const country = await countrySettings(env, String(body.countryCode || account?.countryCode || raw?.data?.countryCode || 'SA'));
   if (!country.enabled || !country.providerOnboardingAvailable) return out(env, req, { success: false, error: 'Country driver onboarding unavailable' }, 400);
@@ -2628,7 +2724,9 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       if (path === '/api/auth/email-verification/send' && req.method === 'POST') return await emailVerificationSend(req, env, await authenticatedUser(req, env, true));
       if ((path === '/api/auth/phone-login' || path === '/api/auth/login-phone' || path === '/api/auth/alias-login') && req.method === 'POST') return await phonePasswordLogin(req, env);
      if (path === '/api/auth/password-reset' && req.method === 'POST') return await passwordReset(req, env);
-     if (path === '/api/register-profile' && req.method === 'POST') return await registerProfile(req, env, await authenticatedUser(req, env));
+     if (path === '/api/register-profile' && req.method === 'POST') return await registerProfile(req, env, await auth(req, env));
+     if (path === '/api/account/profile-status' && req.method === 'GET') return await accountProfileStatus(req, env, await auth(req, env));
+     if (path === '/api/account/identity-delete' && req.method === 'POST') return await identityOnlyDeletion(req, env, await auth(req, env));
      if (path === '/api/account/deletion-request' && req.method === 'GET') return await accountDeletionStatus(req, env, await authenticatedUser(req, env, true));
      if (path === '/api/account/deletion-request' && req.method === 'POST') return await accountDeletionRequest(req, env, await authenticatedUser(req, env, true));
      if (path === '/api/verification/profile' && req.method === 'GET') return await verificationProfile(req, env, await authenticatedUser(req, env));

@@ -16,6 +16,7 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 import RentalRequestModal, { RentalRequestDraft } from '@/components/RentalRequestModal';
 import { checkListingAvailability, WorkerError } from '@/services/workerClient';
 import { nativePrice, formatListingDailyPrice, listingCurrency } from '@/services/currency';
+import { safeErrorMessage } from '@/services/errorMessages';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -159,7 +160,7 @@ export default function EquipmentDetailScreen() {
 
       const availability = await checkListingAvailability(equipment.id, { from: startDate, ...(endDate ? { until: endDate } : {}) });
       if (!availability.available) {
-        showDialog(t('error_title'), availability.reason || t('listing_unavailable_dates'), [{ text: t('ok'), style: 'default' }]);
+        showDialog(t('error_title'), availability.reason === 'ACTIVE_RENTAL_OVERLAP' ? safeErrorMessage({ errorCode: availability.reason }, isRTL ? 'ar' : 'en') : availability.reason || t('listing_unavailable_dates'), [{ text: t('ok'), style: 'default' }]);
         return;
       }
 
@@ -181,7 +182,7 @@ export default function EquipmentDetailScreen() {
     } catch (e) {
       showDialog(
         t('error_title'),
-        e instanceof WorkerError && e.code === 'AVAILABILITY_CONFLICT' ? t('listing_unavailable_dates') : t('error_generic_message'),
+        e instanceof WorkerError ? safeErrorMessage(e, isRTL ? 'ar' : 'en') : t('error_generic_message'),
         [{ text: t('ok'), style: 'default' }]
       );
       throw e;

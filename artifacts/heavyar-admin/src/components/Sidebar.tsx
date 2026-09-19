@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, Truck, Wrench, FileText, 
   CreditCard, FileBox, Undo2, AlertOctagon, ShieldCheck, 
   Settings, Database, History, Bell, LogOut, Globe, Menu, X,
-  Shield, Megaphone, UserCog, Wallet, Car, Search, Rocket
+  Shield, Megaphone, UserCog, Wallet, Car, Search, Rocket, ShieldAlert
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { useAppState } from '@/lib/app-state';
@@ -40,6 +40,7 @@ export function Sidebar() {
       title: t('السوق', 'Marketplace'),
       links: [
         { href: '/users', icon: Users, label: t('المستخدمين', 'Users') },
+        { href: '/account-integrity', icon: ShieldAlert, label: t('سلامة الحسابات', 'Account Integrity'), allowedRoles: ['owner', 'super_admin'] },
         { href: '/providers', icon: Truck, label: t('المزودين', 'Providers') },
         { href: '/drivers', icon: Car, label: t('السائقين', 'Drivers') },
         { href: '/equipment', icon: Wrench, label: t('المعدات', 'Equipment') },

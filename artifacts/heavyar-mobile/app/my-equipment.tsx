@@ -55,6 +55,7 @@ export default function MyEquipmentScreen() {
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
+
   const handleDelete = useCallback((item: Equipment) => {
     const title = localizedText(item.titleAr, item.titleEn);
     showDialog(
@@ -180,6 +181,12 @@ export default function MyEquipmentScreen() {
       </View>
     );
   }, [isRTL, t, localizedText, router, deletingId, updatingId, handleDelete, handleVisibility, handleArchive]);
+
+  if (user?.role !== 'provider') {
+    return <SafeAreaView style={{ flex: 1, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center' }}>
+      <Text style={{ color: Colors.textPrimary }}>{isRTL ? 'هذه الصفحة متاحة لمقدمي الخدمة فقط.' : 'This page is available to providers only.'}</Text>
+    </SafeAreaView>;
+  }
 
   return (
     <View style={styles.container}>

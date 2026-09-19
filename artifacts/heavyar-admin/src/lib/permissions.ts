@@ -16,3 +16,6 @@ const ROLE_PERMISSIONS: Record<string, Permission[]> = {
 export function hasPermission(role: StaffRole | undefined, permission: Permission) { return Boolean(role && ROLE_PERMISSIONS[role]?.includes(permission)); }
 export function permissionsForRole(role: StaffRole | undefined) { return role ? [...(ROLE_PERMISSIONS[role] || [])] : []; }
 export function canManageStaff(role: StaffRole | undefined) { return role === 'owner' || role === 'super_admin'; }
+export function canViewAccountIntegrity(role: StaffRole | undefined) {
+  return role === 'owner' || role === 'super_admin';
+}

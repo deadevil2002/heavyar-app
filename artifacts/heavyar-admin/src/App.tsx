@@ -48,6 +48,7 @@ import Gateways from '@/pages/gateways';
 import IdentityIntegrations from '@/pages/identity-integrations';
 import SeoPage from '@/pages/seo';
 import EarlyAccessPage from '@/pages/early-access';
+import AccountIntegrity from '@/pages/account-integrity';
 
 function BootstrapRequired() {
   const { logout, refreshClaims } = useAuth();
@@ -165,6 +166,7 @@ function AdminRouter() {
         <Switch>
           <Route path="/" component={Dashboard} />
           <Route path="/users" component={Users} />
+          <Route path="/account-integrity" component={AccountIntegrity} />
           <Route path="/providers" component={Providers} />
           <Route path="/drivers" component={Drivers} />
           <Route path="/equipment" component={Equipment} />

@@ -5,6 +5,7 @@ import { adminListParams } from './operations-contract';
 import { SafeApiError } from './error-messages';
 import { accountRefreshKeys, refreshQueries } from './admin-feedback';
 import { useEffect } from 'react';
+import { ACCOUNT_INTEGRITY_ENDPOINT, normalizeIntegrityParams, type IncompleteRegistrationsResponse } from './account-integrity';
 
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://heavyar-api.heavyar-official.workers.dev';
 export const API_BASE = configuredApiBase.replace(/\/+$/, '').replace(/\/api\/admin$/, '') + '/api/admin';
@@ -305,6 +306,18 @@ export function useListQuery<T>(key: string, endpoint: string, params: Record<st
 }
 
 export function useUsers(params: Record<string, any> = {}) { return useListQuery<User>('users', '/users', params); }
+export function useAccountIntegrity(params: { q?: string; state?: string; cursor?: string; enabled?: boolean } = {}) {
+  const { enabled = true, ...filters } = params;
+  return useQuery({
+    queryKey: ['accountIntegrity', filters],
+    enabled,
+    queryFn: () => {
+      const query = new URLSearchParams(normalizeIntegrityParams(filters));
+      return fetchApi<IncompleteRegistrationsResponse>(`${ACCOUNT_INTEGRITY_ENDPOINT}?${query.toString()}`);
+    },
+    retry: false,
+  });
+}
 export function useProviders(params: Record<string, any> = {}) { return useListQuery<Provider>('providers', '/providers', params); }
 export function useDrivers(params: Record<string, any> = {}) { return useListQuery<Driver>('drivers', '/drivers', params); }
 export function useEquipment(params: Record<string, any> = {}) { return useListQuery<Equipment>('equipment', '/equipment', params); }

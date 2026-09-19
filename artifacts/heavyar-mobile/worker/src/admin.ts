@@ -1,4 +1,5 @@
-import type { Env } from './index';
+import { listFirebaseAuthIdentities, type Env } from './index';
+import { evaluateCanonicalCompleteness } from './integrity';
 import { canTransitionManualReview, deriveProviderTrust, isProviderComponentName, normalizeRequiredProviderComponents, providerComponentNames, providerVerificationFor, verificationStatuses } from './verification';
 import { defaultVerificationPolicy, normalizeVerificationPolicy } from './verification';
 import { notificationWrite } from './notifications';
@@ -2292,6 +2293,48 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const bootstrapException = bootstrapCandidate && !bootstrapConfig?.data?.ownerUid;
   if (!bootstrapException) authorizeResolvedAdmin(user, user.testInjected ? undefined : staff);
   else requireVerifiedAdmin(user);
+  if (url.pathname === '/api/admin/account-integrity' && req.method === 'GET') {
+    const role = normalizeStaffRole(user.permissionRole || user.role);
+    if (role !== 'owner' && role !== 'super_admin') return { error: 'Owner or super-admin integrity permission required', status: 403 };
+    const rawLimit = Number(url.searchParams.get('limit') || 20);
+    const limit = Math.min(20, Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 20));
+    const query = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    const registrationState = String(url.searchParams.get('registrationState') || '');
+    let directory;
+    try { directory = await listFirebaseAuthIdentities(env, limit, url.searchParams.get('pageToken') || undefined); }
+    catch { return { error: 'Account integrity directory unavailable', errorCode: 'AUTH_DIRECTORY_UNAVAILABLE', status: 503 }; }
+    const items = [];
+    for (const identity of directory.identities) {
+      const profile = await rawDoc(env, 'users', identity.uid);
+      const [driverProfile, providerProfile] = await Promise.all([
+        rawDoc(env, 'driverProfiles', identity.uid),
+        rawDoc(env, 'providerProfiles', identity.uid),
+      ]);
+      const roleProfile = profile?.data?.role === 'driver' ? driverProfile : null;
+      const completeness = evaluateCanonicalCompleteness(identity, profile?.data || null, roleProfile?.data || null);
+      const state = completeness.state === 'authenticated_complete' ? 'complete' : 'incomplete';
+      if (registrationState && registrationState !== state) continue;
+      const displayName = String(profile?.data?.nameEn || profile?.data?.nameAr || '');
+      if (query && !String(identity.email || '').toLowerCase().includes(query) && !identity.uid.toLowerCase().includes(query) && !displayName.toLowerCase().includes(query)) continue;
+      items.push({
+        id: identity.uid,
+        email: identity.email,
+        displayName,
+        emailVerified: identity.emailVerified,
+        registrationState: state,
+        role: completeness.role,
+        missingFields: completeness.missingFields,
+        accountStatus: profile?.data?.accountStatus,
+        phonePresent: typeof profile?.data?.phone === 'string' && profile.data.phone.length > 0,
+        hasUserProfile: completeness.profilePresent,
+        hasProviderProfile: !!providerProfile?.data,
+        hasDriverProfile: !!driverProfile?.data,
+        createdAt: identity.createdAt || profile?.data?.createdAt,
+        updatedAt: profile?.data?.updatedAt,
+      });
+    }
+    return { success: true, bounded: true, limit, maxLimit: 20, items, nextCursor: directory.nextPageToken };
+  }
   if (url.pathname.startsWith('/api/admin/early-access/')) {
     try { return await handleEarlyAccessAdmin(req, earlyAccessStore(env, user), { uid: user.uid, role: user.permissionRole || user.role }); }
     catch (error) {

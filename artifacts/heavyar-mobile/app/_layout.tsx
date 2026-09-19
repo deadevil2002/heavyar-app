@@ -13,12 +13,15 @@ import EmailVerificationBanner from "@/components/EmailVerificationBanner";
 import { useAuth } from "@/contexts/AuthContext";
 import { notificationRouteFromPayload, subscribeToPushTokenRefresh } from "@/services/notificationService";
 import * as Notifications from "expo-notifications";
+import ProvisioningRecoveryScreen from "@/components/ProvisioningRecoveryScreen";
 
 void SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient();
 
 function RootLayoutNav() {
+  const { accountState, recoveryRegistrationOpen } = useAuth();
+  if (accountState && accountState !== 'authenticated_complete' && !(accountState === 'provisioning_incomplete' && recoveryRegistrationOpen)) return <ProvisioningRecoveryScreen state={accountState} />;
   return (
     <Stack
       screenOptions={{

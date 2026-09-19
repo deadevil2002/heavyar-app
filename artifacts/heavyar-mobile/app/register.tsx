@@ -1,9 +1,9 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, Pressable, KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Mail, Lock, Eye, EyeOff, User, Phone, Briefcase, ShoppingCart, Truck, FileText, ChevronDown, MapPin, CheckCircle, ArrowLeft, ArrowRight, Search } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -26,12 +26,20 @@ const crRules: Record<GccCountryCode, { maxLength: number; placeholder: string }
 
 export default function RegisterScreen() {
   const { isRTL, t, localizedText, language } = useLanguage();
-  const { register } = useAuth();
+  const { register, identityEmail } = useAuth();
   const router = useRouter();
+  const { recovery } = useLocalSearchParams<{ recovery?: string }>();
   const [step, setStep] = useState<RegistrationStep>('email');
 
   const [email, setEmail] = useState<string>('');
   const [emailVerified, setEmailVerified] = useState<boolean>(false);
+  useEffect(() => {
+    if (recovery === '1' && identityEmail && !email) {
+      setEmail(identityEmail);
+      setEmailVerified(true);
+      setStep('info');
+    }
+  }, [email, identityEmail, recovery]);
 
   const [name, setName] = useState<string>('');
   const [phone, setPhone] = useState<string>('');
@@ -149,8 +157,11 @@ export default function RegisterScreen() {
       );
        router.replace(role === 'driver' ? '/driver-profile' : '/');
     } catch (e) {
+      const code = (e as { errorCode?: string }).errorCode;
       const errorMsg = e instanceof Error ? e.message : t('unexpected_error');
-      showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
+      showDialog(t('error_title'), errorMsg, code === 'DUPLICATE_COMPLETE_EMAIL'
+        ? [{ text: t('cancel'), style: 'cancel' }, { text: t('login'), style: 'default', onPress: () => router.replace('/login') }]
+        : [{ text: t('ok'), style: 'default' }]);
     } finally {
       setLoading(false);
     }
