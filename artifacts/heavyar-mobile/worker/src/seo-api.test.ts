@@ -343,6 +343,19 @@ describe('public published SEO contract', () => {
     const response = await handleSeoPublic(new Request('https://worker.test/api/seo/published'), mem.store);
     expect(response.status).toBe(200);
     expect((await response.json() as any).version.id).toBe(draft.id);
+    const create = await handleSeoAdmin(adminRequest({
+      action: 'create', expectedRevision: 2, reason: 'Prepare replacement',
+    }), mem.store, permissions) as any;
+    const replacementId = create.state.draftId;
+    await handleSeoAdmin(adminRequest({
+      action: 'publish', expectedRevision: 3, versionId: replacementId, reason: 'Publish replacement',
+    }), mem.store, permissions);
+    const republish = await handleSeoAdmin(adminRequest({
+      action: 'republish', expectedRevision: 4, versionId: draft.id, reason: 'Restore prior release',
+    }), mem.store, permissions) as any;
+    expect(republish.success).toBe(true);
+    expect((projection.value as any).versionId).toBe(republish.state.currentPublishedId);
+    expect(mem.versions.get(republish.state.currentPublishedId)?.sourceVersionId).toBe(draft.id);
   });
 
   test('drafts are isolated and private version/editorial metadata are excluded', async () => {
