@@ -185,7 +185,7 @@ describe('trusted notification foundation', () => {
     const form = new FormData(); form.append('file', new File(['image'], 'a.png', { type: 'image/png' }));
     const uploadRequest = new Request('https://worker.test/cloudinary/upload', { method: 'POST', body: form, headers: { Authorization: 'Bearer test', 'Content-Length': '100' } });
     const oldFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL) => String(input).includes('cloudinary') ? new Response(JSON.stringify({ cloud_name: 'cloud', public_id: 'heavyar/u-upload/a', secure_url: 'https://cdn/a' })) : new Response('{}')) as typeof fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => String(input).includes('cloudinary') ? new Response(JSON.stringify({ public_id: 'heavyar/u-upload/a', secure_url: 'https://cdn/a' })) : new Response('{}')) as typeof fetch;
     try {
       const response = await worker.fetch(uploadRequest, { ...env, CLOUDINARY_CLOUD_NAME: 'cloud', CLOUDINARY_API_KEY: 'public', CLOUDINARY_API_SECRET: 'secret' });
       const body: any = await response.json();

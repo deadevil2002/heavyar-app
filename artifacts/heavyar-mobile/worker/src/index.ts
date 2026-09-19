@@ -1795,7 +1795,7 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
   const upload = new FormData(); upload.append('file', file); upload.append('folder', folder); upload.append('timestamp', timestamp); upload.append('api_key', env.CLOUDINARY_API_KEY); upload.append('signature', signature);
   const response = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/upload`, { method: 'POST', body: upload });
   const result: any = await response.json().catch(() => ({}));
-  if (!response.ok || result.cloud_name !== env.CLOUDINARY_CLOUD_NAME || typeof result.public_id !== 'string' || typeof result.secure_url !== 'string' || !result.public_id.startsWith(`${folder}/`)) return out(env, req, { success: false, error: 'Upload failed' }, 502);
+  if (!response.ok || typeof result.public_id !== 'string' || typeof result.secure_url !== 'string' || !result.public_id.startsWith(`${folder}/`)) return out(env, req, { success: false, error: 'Upload failed' }, 502);
   return out(env, req, { success: true, url: result.secure_url, publicId: result.public_id });
 }
 export const DEFAULT_AUTH_CONFIG = Object.freeze({
