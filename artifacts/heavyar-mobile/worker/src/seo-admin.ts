@@ -1,11 +1,13 @@
 import { applySeoChange, checkSeoConfig, defaultSeoConfig, emptySeoState, resolveSeo, SEO_REGISTRY, validateSeoConfig } from './seo';
 import type { SeoAdminView, SeoChange, SeoCommand, SeoPermissions, SeoState, SeoVersion } from './seo-types';
 import { isQuotaError } from './quota-policy';
-import { seoPayloadCache } from './config-cache';
+import { seoPayloadCache, seoProjectionRecoveryCache } from './config-cache';
+import { publishedSeoProjection, type SeoProjectionStorage } from './seo-projection';
 
 export interface SeoRecord<T = unknown> { data: T; updateTime?: string }
 export interface SeoStore {
   cacheKey?: string;
+  projection?: SeoProjectionStorage;
   read(collection: 'seoSettings' | 'seoVersions', id: string): Promise<SeoRecord | null>;
   save(prior: SeoRecord<SeoState> | null, versions: Map<string, SeoRecord<SeoVersion>>, change: SeoChange): Promise<void>;
 }
@@ -95,8 +97,21 @@ export async function handleSeoAdmin(req: Request, store: SeoStore, actor: SeoPe
     // Firestore's 1MB document limit is not a reason to discard history or audit.
     if (new TextEncoder().encode(JSON.stringify(change.audit)).byteLength > 650_000) throw new Error('SEO audit payload capacity exceeded.');
     await store.save(prior, versions, change);
-    if (publish) seoPayloadCache.invalidate(store.cacheKey);
     for (const version of change.writes) versions.set(version.id, { data: version });
+    if (publish) {
+      const activeId = change.state.currentPublishedId;
+      const active = activeId ? versions.get(activeId)?.data : null;
+      if (!active) throw new SeoPersistenceError('SEO was committed, but its public projection could not be synchronized.');
+      if (store.projection) {
+        try {
+          await store.projection.write(await publishedSeoProjection(active, change.state.revision, change.audit.at));
+        } catch {
+          throw new SeoPersistenceError('SEO was committed, but its public projection could not be synchronized.');
+        }
+      }
+      seoPayloadCache.invalidate(store.cacheKey);
+      seoProjectionRecoveryCache.invalidate(store.cacheKey);
+    }
     return await view(change.state);
   } catch (error) {
     if (isQuotaError(error)) throw error;

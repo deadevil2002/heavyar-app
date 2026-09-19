@@ -5,7 +5,8 @@ import { defaultSeoConfig, emptySeoState } from './seo';
 import { handleSeoAdmin, type SeoRecord, type SeoStore } from './seo-admin';
 import { handleSeoPublic } from './seo-public';
 import type { SeoChange, SeoConfig, SeoState, SeoVersion } from './seo-types';
-import { seoPayloadCache } from './config-cache';
+import { seoPayloadCache, seoProjectionRecoveryCache } from './config-cache';
+import { negativeSeoProjection, publishedSeoProjection, type SeoProjection } from './seo-projection';
 
 test('current published cache avoids reads for conditional GET/HEAD and publish invalidates locally', async () => {
   seoPayloadCache.invalidate();
@@ -87,9 +88,25 @@ function memoryStore(seed: SeoVersion[] = []) {
   return { store, history, get state() { return state; }, versions };
 }
 
+function projectionStore(initial: unknown = null) {
+  let value = initial;
+  let reads = 0;
+  let writes = 0;
+  return {
+    projection: {
+      read: async () => { reads++; return structuredClone(value); },
+      write: async (next: SeoProjection) => { writes++; value = structuredClone(next); },
+    },
+    get reads() { return reads; },
+    get writes() { return writes; },
+    get value() { return value; },
+  };
+}
+
 afterEach(() => {
   __adminTest.setFirestore(undefined);
   __adminTest.captureCommits(undefined);
+  seoProjectionRecoveryCache.invalidate();
 });
 
 describe('SEO Admin authority', () => {
@@ -256,6 +273,78 @@ describe('SEO lifecycle and persistence', () => {
 });
 
 describe('public published SEO contract', () => {
+  test('durable negative projection responds without Firestore and retains a conditional ETag', async () => {
+    const mem = memoryStore();
+    const projection = projectionStore(negativeSeoProjection(7));
+    mem.store.cacheKey = 'negative-projection';
+    mem.store.projection = projection.projection;
+    let reads = 0;
+    const original = mem.store.read.bind(mem.store);
+    mem.store.read = async (...args) => { reads++; return original(...args); };
+    const first = await handleSeoPublic(new Request('https://worker.test/api/seo/published'), mem.store);
+    expect(first.status).toBe(404);
+    expect((await first.json() as any).errorCode).toBe('SEO_NOT_PUBLISHED');
+    expect(reads).toBe(0);
+    expect(projection.reads).toBe(1);
+    const conditional = await handleSeoPublic(new Request('https://worker.test/api/seo/published', {
+      headers: { 'If-None-Match': first.headers.get('ETag')! },
+    }), mem.store);
+    expect(conditional.status).toBe(304);
+    expect(reads).toBe(0);
+  });
+
+  test('durable published projection serves the public payload with zero Firestore reads', async () => {
+    const published = version('projection-public', 'published');
+    const mem = memoryStore([published]);
+    const projection = projectionStore(await publishedSeoProjection(published, 4));
+    mem.store.cacheKey = 'published-projection';
+    mem.store.projection = projection.projection;
+    let reads = 0;
+    const original = mem.store.read.bind(mem.store);
+    mem.store.read = async (...args) => { reads++; return original(...args); };
+    const response = await handleSeoPublic(new Request('https://worker.test/api/seo/published'), mem.store);
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).version.id).toBe('projection-public');
+    expect(reads).toBe(0);
+  });
+
+  test('missing or malicious durable projection recovers once from Firestore and self-heals', async () => {
+    const published = version('recovery-public', 'published');
+    const mem = memoryStore([published]);
+    const projection = projectionStore({ published: true, encoded: '<script>bad</script>' });
+    mem.store.cacheKey = 'recovery-projection';
+    mem.store.projection = projection.projection;
+    let reads = 0;
+    const original = mem.store.read.bind(mem.store);
+    mem.store.read = async (...args) => { reads++; return original(...args); };
+    const [first, second] = await Promise.all([
+      handleSeoPublic(new Request('https://worker.test/api/seo/published'), mem.store),
+      handleSeoPublic(new Request('https://worker.test/api/seo/published'), mem.store),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(reads).toBe(2);
+    expect(projection.writes).toBe(1);
+    expect((projection.value as any).versionId).toBe('recovery-public');
+  });
+
+  test('publish and republish synchronize the authoritative result into the projection', async () => {
+    const draft = version('projection-draft', 'draft');
+    const mem = memoryStore([draft]);
+    const projection = projectionStore(negativeSeoProjection(0));
+    mem.store.cacheKey = 'publish-projection';
+    mem.store.projection = projection.projection;
+    const publish = await handleSeoAdmin(adminRequest({
+      action: 'publish', expectedRevision: 1, versionId: draft.id, reason: 'Project public release',
+    }), mem.store, permissions) as any;
+    expect(publish.success).toBe(true);
+    expect((projection.value as any).published).toBe(true);
+    expect((projection.value as any).versionId).toBe(draft.id);
+    const response = await handleSeoPublic(new Request('https://worker.test/api/seo/published'), mem.store);
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).version.id).toBe(draft.id);
+  });
+
   test('drafts are isolated and private version/editorial metadata are excluded', async () => {
     const config = defaultSeoConfig();
     config.editorialTopics = ['private roadmap'];

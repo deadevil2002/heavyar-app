@@ -2172,8 +2172,13 @@ async function ownership(req: Request, env: Env, user: AdminUser, operation: 'in
 }
 
 function seoStore(env: Env, user?: AdminUser): SeoStore {
+  const projection = env.SEO_PUBLIC_KV;
   return {
     cacheKey: String(env.FIREBASE_PROJECT_ID),
+    projection: projection ? {
+      read: () => projection.get('published:v1', 'json'),
+      write: value => projection.put('published:v1', JSON.stringify(value)),
+    } : undefined,
     read: async (collection, id) => {
       try { return await rawDoc(env, collection, id); }
       catch (error) { if (isQuotaError(error)) throw error; throw new SeoPersistenceError('SEO storage is temporarily unavailable.'); }

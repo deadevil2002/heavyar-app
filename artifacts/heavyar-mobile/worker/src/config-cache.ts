@@ -26,6 +26,7 @@ export class ConfigCache<T> {
   }
 }
 export const seoPayloadCache = new ConfigCache<{ encoded: string; etag: string }>();
+export const seoProjectionRecoveryCache = new ConfigCache<any>(30_000);
 export const commercialReadCache = new ConfigCache<any>();
 export function commercialExpiry(record: any): number {
   const now = Date.now();

@@ -19,6 +19,7 @@ export interface Env {
   CORS_ORIGINS?: string; PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string; OTP_KV?: KVNamespace;
   IDENTITY_PROVIDER_MODE?: 'official';
   AUTH_RATE_LIMIT_KV?: KVNamespace;
+  SEO_PUBLIC_KV?: KVNamespace;
   VERIFICATION_RETENTION_DAYS?: string;
   FIREBASE_MESSAGING_SENDER_ID?: string;
   __executionCtx?: { waitUntil(promise: Promise<unknown>): void };
