@@ -2612,7 +2612,13 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       response.headers.set('X-Robots-Tag', 'noindex, nofollow');
       return response;
     }
-    if (path === '/api/seo/published') return await handlePublishedSeo(req, env);
+    if (path === '/api/seo/published') {
+      const response = await handlePublishedSeo(req, env);
+      const scopedCors = cors(env, req.headers.get('Origin'));
+      response.headers.set('Access-Control-Allow-Origin', scopedCors['Access-Control-Allow-Origin']);
+      response.headers.set('Vary', scopedCors.Vary);
+      return response;
+    }
     if ((path === '/api/send-email-otp' || path === '/api/verify-email-otp') && req.method === 'POST') return out(env, req, { success: false, error: 'Deprecated verification flow', errorCode: 'DEPRECATED_VERIFICATION_FLOW' }, 410);
      if (path === '/api/auth/config' && req.method === 'GET') return await authConfig(req, env);
       if (path === '/api/config/markets' && req.method === 'GET') return await marketConfig(req, env);

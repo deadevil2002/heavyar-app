@@ -72,6 +72,19 @@ describe('worker security boundary', () => {
     }
   });
 
+  test('published SEO GET never overrides scoped CORS with a wildcard', async () => {
+    const response = await worker.fetch(new Request('https://worker.test/api/seo/published', {
+      headers: { Origin: 'https://heavyar.com' },
+    }), env);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('https://heavyar.com');
+    expect(response.headers.get('Vary')).toBe('Origin');
+
+    const denied = await worker.fetch(new Request('https://worker.test/api/seo/published', {
+      headers: { Origin: 'https://heavyar.com.evil' },
+    }), env);
+    expect(denied.headers.get('Access-Control-Allow-Origin')).toBe('null');
+  });
+
   test('unauthenticated payment and deletion endpoints return 401', async () => {
     expect((await worker.fetch(request('/api/create-payment', { requestId: 'r', amount: 1 }), env)).status).toBe(401);
     expect((await worker.fetch(request('/api/verify-payment', { chargeId: 'c' }), env)).status).toBe(401);

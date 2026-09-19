@@ -49,7 +49,7 @@ test('public SEO adapter preserves quota identity and exposes Retry-After for GE
       method, headers: { Origin: 'https://public.example.test' },
     }), env);
     expect(response.status).toBe(503);
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('null');
     expect(response.headers.get('Access-Control-Expose-Headers')).toBe('Retry-After');
     expect(response.headers.get('Retry-After')).toBe('90');
     expect(response.headers.get('Cache-Control')).toBe('no-store');
