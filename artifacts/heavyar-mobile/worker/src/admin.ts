@@ -2316,6 +2316,27 @@ export function earlyAccessStore(env: Env, user: AdminUser = { uid: 'system', ad
       }
       catch (error) { if (error instanceof FirestoreConflictError) throw new EarlyAccessError('CONCURRENT_UPDATE', 409); throw error; }
     },
+    delete: async (records, action, target, reason, guards = []) => {
+      if (records.some(record => !record.prior.updateTime) || guards.some(guard => !guard.prior?.updateTime)) throw new EarlyAccessError('STORAGE_UNAVAILABLE', 503);
+      const deletes: any[] = records.map(record => ({
+        delete: fullName(env, `${record.collection}/${record.id}`),
+        currentDocument: { updateTime: record.prior.updateTime },
+      }));
+      const guardWrites: any[] = guards.map(guard => ({
+        update: {
+          name: fullName(env, `${guard.collection}/${guard.id}`),
+          fields: Object.fromEntries(Object.entries(guard.data).map(([key, value]) => [key, jsonValue(value)])),
+        },
+        currentDocument: { updateTime: guard.prior!.updateTime },
+      }));
+      if (deletes.length + guardWrites.length + (action ? 1 : 0) > 500) throw new EarlyAccessError('AUDIENCE_TOO_LARGE', 413);
+      try {
+        const writes = [...deletes, ...guardWrites];
+        if (action) writes.push(await auditWrite(env, user, action, 'earlyAccess', target, crypto.randomUUID(), reason || action));
+        if (writes.length) await commit(env, writes);
+      }
+      catch (error) { if (error instanceof FirestoreConflictError) throw new EarlyAccessError('CONCURRENT_UPDATE', 409); throw error; }
+    },
   };
 }
 export async function handlePublicEarlyAccess(req: Request, env: Env) {
@@ -2330,7 +2351,7 @@ export async function processEarlyAccessRetention(env: Env) {
   return dailyEarlyAccessRetention(earlyAccessStore(env));
 }
 export async function processScheduledEarlyAccessCampaigns(env: Env) {
-  return processEarlyAccessCampaigns(earlyAccessStore(env), (to, subject, html, key) => sendResend(env, to, subject, html, key));
+  return processEarlyAccessCampaigns(earlyAccessStore(env), (to, subject, html, key, text) => sendResend(env, to, subject, html, key, text));
 }
 
 type StoreReviewRole = 'customer' | 'provider' | 'driver';

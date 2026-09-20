@@ -7,7 +7,7 @@ import { campaignProgress, campaignRecipients, parseCampaignCsv, processEarlyAcc
 
 function memoryStore() {
   const docs = new Map<string, NonNullable<RecordVersion>>(), sent: any[] = [], audit: any[] = [], queries: any[] = [];
-  let version = 0;
+  let version = 0, ownEmail = 'actor@example.com';
   const put = (collection: string, id: string, data: any) => docs.set(`${collection}/${id}`, { data: structuredClone(data), updateTime: String(++version), name: `projects/demo-early/databases/(default)/documents/${collection}/${id}` });
     const store: EarlyAccessStore = {
     read: async (c, id) => structuredClone(docs.get(`${c}/${id}`) || null),
@@ -17,7 +17,7 @@ function memoryStore() {
       if (action) audit.push({ action, target });
     },
     send: async (to, subject, html, key, text) => { sent.push({ to, subject, html, key, text }); return { delivered: true, messageId: 'provider-id' }; },
-    ownEmail: async () => 'actor@example.com',
+    ownEmail: async () => ownEmail,
     query: async (collection, query) => {
       queries.push(query);
       let rows = [...docs.values()].filter(d => d.name!.includes(`/${collection}/`));
@@ -38,7 +38,7 @@ function memoryStore() {
     },
   };
   const token = (kind: string) => sent.at(-1)?.html.match(new RegExp(`/${kind}\\?token=([a-f0-9]{64})`))?.[1];
-  return { store, docs, sent, audit, put, token, queries };
+  return { store, docs, sent, audit, put, token, queries, setOwnEmail: (email: string) => { ownEmail = email; } };
 }
 const request = (path: string, value?: unknown, method = value === undefined ? 'GET' : 'POST') => new Request(`https://worker.test${path}`, { method, headers: { 'CF-Connecting-IP': '192.0.2.1', 'Content-Type': 'application/json' }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
 const register = (value: any) => request('/api/early-access/register', value);
@@ -402,5 +402,50 @@ describe('Early Access privileged campaign foundation', () => {
     m.put(EA.deliveries, 'test', { previewId: 'preview', campaignRevision: 1, actorUid: actor.uid, deliveryStatus: 'accepted' });
     m.put(EA.previews, 'preview', { ...m.docs.get(`${EA.previews}/preview`)!.data, recipientCount: 0 });
     expect(await errorCode(approve)).toBe('SUCCESSFUL_TEST_REQUIRED');
+    expect(await errorCode(() => handleEarlyAccessAdmin(request('/api/admin/early-access/campaigns/campaign/approve', { previewId: 'preview', confirm: true, confirmOwnerQa: true }), m.store, actor))).toBe('OWNER_QA_AUDIENCE_MISMATCH');
+  });
+  test('owner QA snapshot requires authoritative exact owner and rejects mixed or suppressed audiences', async () => {
+    const path = '/api/admin/early-access/campaigns/owner-qa/owner-qa-snapshot';
+    const unauthorized = memoryStore();
+    unauthorized.put(EA.campaigns, 'owner-qa', { ...campaign, status: 'draft', revision: 1 });
+    unauthorized.setOwnEmail('heavyar.official@gmail.com');
+    expect(await errorCode(() => handleEarlyAccessAdmin(request(path, { confirm: true, language: 'ar' }), unauthorized.store, { uid: 'marketing', role: 'marketing' }))).toBe('FORBIDDEN');
+    unauthorized.setOwnEmail('other@example.com');
+    expect(await errorCode(() => handleEarlyAccessAdmin(request(path, { confirm: true, language: 'ar' }), unauthorized.store, actor))).toBe('FORBIDDEN');
+
+    const mixed = memoryStore();
+    mixed.setOwnEmail('heavyar.official@gmail.com');
+    mixed.put(EA.campaigns, 'owner-qa', { ...campaign, status: 'draft', revision: 1 });
+    mixed.put(EA.deliveries, 'foreign', { campaignId: 'owner-qa', source: 'subscriber', deliveryStatus: 'not_sent' });
+    expect(await errorCode(() => handleEarlyAccessAdmin(request(path, { confirm: true, language: 'ar' }), mixed.store, actor))).toBe('OWNER_QA_AUDIENCE_MISMATCH');
+
+    const suppressed = memoryStore();
+    suppressed.setOwnEmail('heavyar.official@gmail.com');
+    suppressed.put(EA.campaigns, 'owner-qa', { ...campaign, status: 'draft', revision: 1 });
+    suppressed.put(EA.suppression, await hash('early-access-email:heavyar.official@gmail.com'), { suppressed: true });
+    expect(await errorCode(() => handleEarlyAccessAdmin(request(path, { confirm: true, language: 'ar' }), suppressed.store, actor))).toBe('OWNER_QA_SUPPRESSED');
+  });
+  test('owner QA bypass queues exactly one immutable owner email and globally prevents repeat attempts', async () => {
+    const m = memoryStore();
+    m.setOwnEmail('heavyar.official@gmail.com');
+    const prepare = async (id: string) => {
+      m.put(EA.campaigns, id, { ...campaign, status: 'draft', revision: 1 });
+      const prefix = `/api/admin/early-access/campaigns/${id}`;
+      const snapshot: any = await handleEarlyAccessAdmin(request(`${prefix}/owner-qa-snapshot`, { confirm: true, language: 'ar' }), m.store, actor);
+      const recipientId = m.docs.get(`${EA.campaigns}/${id}`)!.data.ownerQaRecipientId;
+      expect(m.docs.get(`${EA.deliveries}/${recipientId}`)!.data).toMatchObject({ email: 'heavyar.official@gmail.com', source: 'owner_qa', deliveryStatus: 'not_sent' });
+      await handleEarlyAccessAdmin(request(`${prefix}/approve`, { previewId: snapshot.previewId, confirm: true, confirmOwnerQa: true }), m.store, actor);
+      await handleEarlyAccessAdmin(request(`${prefix}/send`, { previewId: snapshot.previewId, confirm: true }), m.store, actor);
+      return recipientId;
+    };
+    const firstRecipient = await prepare('owner-qa-one');
+    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(1);
+    expect(m.sent).toHaveLength(1);
+    expect(m.sent[0].to).toBe('heavyar.official@gmail.com');
+    expect(m.docs.get(`${EA.deliveries}/${firstRecipient}`)!.data.retryEligible).toBe(false);
+    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(0);
+    await prepare('owner-qa-two');
+    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(0);
+    expect(m.sent).toHaveLength(1);
   });
 });

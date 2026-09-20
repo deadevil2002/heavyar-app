@@ -1,4 +1,4 @@
-import { EA, body, countryCodes, eligible, fail, hash, nowIso, safeId, selectedRecords, template, text, type EarlyAccessStore } from './early-access-model';
+import { EA, OWNER_QA_EMAIL, body, countryCodes, eligible, fail, hash, nowIso, safeId, selectedRecords, template, text, type EarlyAccessStore } from './early-access-model';
 import { deliver, rateLimit } from './early-access-public';
 import { campaignDeliveryStatuses, snapshotCampaignRecipients, queueCampaign } from './early-access-campaign-delivery';
 
@@ -35,6 +35,7 @@ export async function campaignAction(req: Request, store: EarlyAccessStore, acto
     if (!preview || !campaign || preview.data.campaignId !== id || preview.data.actorUid !== actorUid || preview.data.campaignRevision !== campaign.data.revision || Date.parse(preview.data.expiresAt) <= Date.now()) fail('PREVIEW_EXPIRED', 409);
     const subscriberIds = Array.isArray(preview.data.subscriberIds) ? preview.data.subscriberIds : [];
     const approvedRecipientIds = Array.isArray(preview.data.recipientIds) ? preview.data.recipientIds : [];
+    if (campaign.data.ownerQa === true && (preview.data.ownerQa !== true || subscriberIds.length || approvedRecipientIds.length !== 1 || approvedRecipientIds[0] !== campaign.data.ownerQaRecipientId)) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
     let finalRecipientIds: string[] = [...approvedRecipientIds];
     if (subscriberIds.length) {
       const records = await subscriberPairs(store, subscriberIds);
@@ -55,6 +56,7 @@ export async function campaignAction(req: Request, store: EarlyAccessStore, acto
     const value = campaignFields(await body(req, ['name', 'subjectAr', 'subjectEn', 'bodyAr', 'bodyEn']));
     const prior = await store.read(EA.campaigns, id);
     if (req.method === 'PATCH' && !prior) fail('NOT_FOUND', 404);
+    if (prior?.data.ownerQa === true) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
     if (req.method === 'POST' && segments[5]) fail('INVALID_ROUTE');
     const campaign = { ...value, status: 'draft', revision: Number(prior?.data.revision || 0) + 1, createdAt: prior?.data.createdAt || nowIso(), updatedAt: nowIso(), createdBy: prior?.data.createdBy || actorUid, storeLinks: { appStore: null, googlePlay: null } };
     await store.save([{ collection: EA.campaigns, id, prior, data: campaign }], prior ? 'early_access_campaign_updated' : 'early_access_campaign_created', id);
@@ -63,6 +65,7 @@ export async function campaignAction(req: Request, store: EarlyAccessStore, acto
   if (req.method !== 'POST') fail('NOT_FOUND', 404);
   const campaign = await store.read(EA.campaigns, id);
   if (!campaign) fail('NOT_FOUND', 404);
+  if (campaign.data.ownerQa === true && ['preview', 'test'].includes(action || '')) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
   if (action === 'preview') {
     const value = await body(req, ['subscriberIds', 'language', 'country', 'recipientIds', 'selectAllRecipients', 'recipientFilters']);
     if (value.subscriberIds !== undefined && (!Array.isArray(value.subscriberIds) || value.subscriberIds.length > 500 || value.subscriberIds.some((v: any) => typeof v !== 'string'))) fail('INVALID_SELECTION');
@@ -125,21 +128,34 @@ export async function campaignAction(req: Request, store: EarlyAccessStore, acto
   }
   if (action === 'test' || action === 'approve') {
     if (!(action === 'test' ? allowed.testSend : allowed.approve)) fail('FORBIDDEN', 403);
-    const value = await body(req, action === 'test' ? ['previewId', 'confirm', 'idempotencyKey', 'language'] : ['previewId', 'confirm']);
+    const value = await body(req, action === 'test' ? ['previewId', 'confirm', 'idempotencyKey', 'language'] : ['previewId', 'confirm', 'confirmOwnerQa']);
     if (value.confirm !== true || typeof value.previewId !== 'string') fail('CONFIRMATION_REQUIRED');
     const previewId = safeId(value.previewId), preview = await store.read(EA.previews, previewId);
     if (!preview || preview.data.campaignId !== id || preview.data.campaignRevision !== campaign!.data.revision || preview.data.actorUid !== actorUid || Date.parse(preview.data.expiresAt) <= Date.now()) fail('PREVIEW_EXPIRED', 409);
     if (action === 'approve') {
-      if (preview.data.recipientCount < 1 || !preview.data.testDeliveryId) fail('SUCCESSFUL_TEST_REQUIRED', 409);
-      const testDelivery = await store.read(EA.deliveries, preview.data.testDeliveryId);
-      if (!testDelivery || testDelivery.data.previewId !== previewId || testDelivery.data.campaignRevision !== campaign!.data.revision ||
-        testDelivery.data.actorUid !== actorUid || !['accepted', 'delivered'].includes(testDelivery.data.deliveryStatus)) fail('SUCCESSFUL_TEST_REQUIRED', 409);
+      const ownerQaBypass = value.confirmOwnerQa === true;
+      let testDelivery = null;
+      if (ownerQaBypass) {
+        const recipientIds = Array.isArray(preview.data.recipientIds) ? preview.data.recipientIds : [];
+        const ownEmail = await store.ownEmail();
+        const recipient = recipientIds.length === 1 ? await store.read(EA.deliveries, recipientIds[0]) : null;
+        if (ownEmail !== OWNER_QA_EMAIL || campaign.data.ownerQa !== true || preview.data.ownerQa !== true ||
+          preview.data.actorUid !== actorUid || preview.data.recipientCount !== 1 || recipientIds[0] !== campaign.data.ownerQaRecipientId ||
+          !recipient || recipient.data.campaignId !== id || recipient.data.source !== 'owner_qa' ||
+          recipient.data.email !== OWNER_QA_EMAIL || recipient.data.normalizedEmail !== OWNER_QA_EMAIL) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
+      } else {
+        if (preview.data.recipientCount < 1 || !preview.data.testDeliveryId) fail('SUCCESSFUL_TEST_REQUIRED', 409);
+        testDelivery = await store.read(EA.deliveries, preview.data.testDeliveryId);
+        if (!testDelivery || testDelivery.data.previewId !== previewId || testDelivery.data.campaignRevision !== campaign!.data.revision ||
+          testDelivery.data.actorUid !== actorUid || !['accepted', 'delivered'].includes(testDelivery.data.deliveryStatus)) fail('SUCCESSFUL_TEST_REQUIRED', 409);
+      }
       const data = { ...campaign!.data, status: 'approved', approvedBy: actorUid, approvedAt: nowIso(), previewId, productionSendEnabled: false };
-      await store.save([
+      const changes: any[] = [
         { collection: EA.campaigns, id, prior: campaign, data },
         { collection: EA.previews, id: previewId, prior: preview, data: preview!.data },
-        { collection: EA.deliveries, id: preview.data.testDeliveryId, prior: testDelivery, data: testDelivery.data },
-      ], 'early_access_campaign_approved', id);
+      ];
+      if (testDelivery) changes.push({ collection: EA.deliveries, id: preview.data.testDeliveryId, prior: testDelivery, data: testDelivery.data });
+      await store.save(changes, ownerQaBypass ? 'early_access_owner_qa_approved' : 'early_access_campaign_approved', id);
       return { campaign: { ...data, id } };
     }
     if (!['ar', 'en'].includes(value.language)) fail('INVALID_LANGUAGE');

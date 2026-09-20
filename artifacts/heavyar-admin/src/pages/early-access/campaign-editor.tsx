@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { useUpdateCampaign, usePreviewCampaign, useTestCampaign, useApproveCampaign, useImportCampaign, useCampaignSnapshot, useCampaignRecipients, useCampaignProgress, useSendCampaign, useRetryCampaign, buildSnapshotPayload, buildRetryPayload, buildImportPayload, EarlyAccessPermissions, Campaign } from '@/lib/early-access';
+import { useUpdateCampaign, usePreviewCampaign, useTestCampaign, useApproveCampaign, useImportCampaign, useCampaignSnapshot, useCampaignRecipients, useCampaignProgress, useSendCampaign, useRetryCampaign, useOwnerQaSnapshot, useCleanupCampaignQa, buildOwnerQaSnapshotPayload, buildSnapshotPayload, buildRetryPayload, buildImportPayload, csvPreviewCounts, safeDeliveryReason, EarlyAccessPermissions, Campaign } from '@/lib/early-access';
 import { useAppState } from '@/lib/app-state';
+import { useAuth } from '@/lib/auth';
+import { useAdminSession } from '@/lib/api';
+import { userErrorMessage } from '@/lib/error-messages';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -26,10 +29,21 @@ interface CampaignEditorProps {
   selectedIds: Set<string>;
 }
 
+function localCampaignPreview(subject: string, body: string, language: 'ar' | 'en') {
+  const escape = (value: string) => value.replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[character] || character));
+  return `<article dir="${language === 'ar' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;padding:24px;color:#17202a"><h1>${escape(subject)}</h1><p style="white-space:pre-wrap;line-height:1.7">${escape(body)}</p></article>`;
+}
+
 export function CampaignEditor({ campaignId, initialData, onBack, permissions, selectedIds }: CampaignEditorProps) {
   const { language: appLang, direction } = useAppState();
   const t = (ar: string, en: string) => (appLang === 'ar' ? ar : en);
   const { toast } = useToast();
+  const { user } = useAuth();
+  const { data: session } = useAdminSession();
+  const canUseOwnerQa = user?.email?.toLowerCase() === 'heavyar.official@gmail.com'
+    && (session?.role === 'owner' || session?.role === 'super_admin');
 
   const [name, setName] = useState(initialData?.name || '');
   const [subjectAr, setSubjectAr] = useState(initialData?.subjectAr || '');
@@ -59,6 +73,8 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
   const snapshotCampaign = useCampaignSnapshot(campaignId);
   const sendCampaign = useSendCampaign(campaignId);
   const retryCampaign = useRetryCampaign(campaignId);
+  const ownerQaSnapshot = useOwnerQaSnapshot(campaignId);
+  const cleanupCampaignQa = useCleanupCampaignQa(campaignId);
   const [recipientIds, setRecipientIds] = useState<Set<string>>(new Set());
   const [recipientCursor, setRecipientCursor] = useState<string | undefined>();
   const [recipientCursorHistory, setRecipientCursorHistory] = useState<string[]>([]);
@@ -72,11 +88,19 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
   const [sendLawfulBasisConfirmed, setSendLawfulBasisConfirmed] = useState(false);
   const [confirmSendOpen, setConfirmSendOpen] = useState(false);
   const [confirmRetryAllOpen, setConfirmRetryAllOpen] = useState(false);
+  const [confirmCleanupQaOpen, setConfirmCleanupQaOpen] = useState(false);
   const [selectAllFiltered, setSelectAllFiltered] = useState(false);
   const [campaignStatus, setCampaignStatus] = useState(initialData?.status || 'draft');
   const [finalRecipientCount, setFinalRecipientCount] = useState<number | null>(null);
+  const [ownerQaLanguage, setOwnerQaLanguage] = useState<'ar' | 'en'>('ar');
+  const [ownerQaConfirmOpen, setOwnerQaConfirmOpen] = useState(false);
+  const [persistedOwnerQa, setPersistedOwnerQa] = useState(initialData?.ownerQa === true);
+  const ownerQaMode = persistedOwnerQa;
+  const csvCounts = csvPreviewCounts(csvPreview?.preview);
   const progress = useCampaignProgress(campaignId);
-  const activeCampaign = progress.data ? progress.data.status === 'queued' : campaignStatus === 'queued';
+  const activeCampaign = progress.data
+    ? progress.data.status === 'queued' || progress.data.queued > 0 || progress.data.accepted > 0
+    : campaignStatus === 'queued';
   const recipientFilters = {
     ...(recipientStatus !== 'all' ? { status: recipientStatus } : {}),
     ...(recipientSource !== 'all' ? { source: recipientSource } : {}),
@@ -88,14 +112,31 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
   const selectedRetryableIds = retryableRecipients.filter((item) => recipientIds.has(item.id)).map((item) => item.id);
   const hasCsvRecipients = Boolean(
     csvPreview?.snapshot ||
-    (selectAllFiltered && recipientSource !== 'subscriber') ||
+    (selectAllFiltered && recipientSource !== 'subscriber' && recipientSource !== 'owner_qa') ||
     (!selectAllFiltered && recipients.data?.items.some((item) => item.source === 'csv_import' && recipientIds.has(item.id))),
+  );
+  const canCleanupQa = Boolean(
+    (session?.role === 'owner' || session?.role === 'super_admin') &&
+    initialData?.createdBy && initialData.createdBy === user?.uid &&
+    recipients.data?.items.some(item =>
+      item.source === 'csv_import' && item.deliveryStatus === 'not_sent' &&
+      (item.email.toLowerCase().endsWith('@example.test') || item.email.toLowerCase().endsWith('@invalid')),
+    ),
   );
 
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewFilterLang, setPreviewFilterLang] = useState<string>('all');
   const [previewFilterCountry, setPreviewFilterCountry] = useState<string>('all');
-  const [previewResult, setPreviewResult] = useState<any>(null);
+  const [previewResult, setPreviewResult] = useState<any>(() => initialData?.ownerQa && initialData.ownerQaSnapshotId ? {
+    previewId: initialData.ownerQaSnapshotId,
+    recipientCount: 1,
+    excludedCount: 0,
+    byLanguage: {},
+    byCountry: { unknown: 1 },
+    exclusionReasons: {},
+    htmlAr: localCampaignPreview(initialData.subjectAr, initialData.bodyAr, 'ar'),
+    htmlEn: localCampaignPreview(initialData.subjectEn, initialData.bodyEn, 'en'),
+  } : null);
 
   const [testLang, setTestLang] = useState<string>('ar');
   const [baseIdempotencyKey, setBaseIdempotencyKey] = useState<string>('');
@@ -105,12 +146,13 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
   const [confirmApproveOpen, setConfirmApproveOpen] = useState(false);
 
   useEffect(() => {
+    if (ownerQaMode) return;
     setPreviewResult(null);
     setHasTested(false);
     setBaseIdempotencyKey('');
     setConfirmTestOpen(false);
     setConfirmApproveOpen(false);
-  }, [selectedIds, recipientIds]);
+  }, [selectedIds, recipientIds, ownerQaMode]);
 
   const handleSave = () => {
     updateCampaign.mutate({
@@ -203,7 +245,38 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
     complained: t('شكوى', 'Complained'),
     suppressed: t('محظور/ملغى', 'Suppressed'),
     skipped: t('تم التخطي', 'Skipped'),
-  }[status] || status);
+  }[status] || t('حالة غير معروفة', 'Unknown status'));
+
+  const progressLabel = (label: string) => ({
+    status: t('حالة الحملة', 'Campaign status'),
+    audience: t('إجمالي الجمهور', 'Total selected'),
+    eligible: t('المؤهل', 'Eligible'),
+    not_sent: t('لم يُرسل', 'Not sent'),
+    queued: t('في الانتظار', 'Queued'),
+    accepted: t('مقبول', 'Accepted'),
+    delivered: t('تم التسليم', 'Delivered'),
+    failed: t('فشل', 'Failed'),
+    bounced: t('مرتد', 'Bounced'),
+    complained: t('شكوى', 'Complained'),
+    suppressed: t('محظور / متخطى', 'Suppressed / skipped'),
+    remaining: t('المتبقي', 'Remaining'),
+  }[label] || t('العدد النهائي', 'Final count'));
+
+  const timestampLabel = (value?: string | null) => {
+    if (!value) return '—';
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? '—' : format(parsed, 'yyyy-MM-dd HH:mm');
+  };
+
+  const exclusionLabel = (reason: string) => ({
+    global_suppression: t('قائمة الاستبعاد العامة', 'Global suppression'),
+    suppressed: t('محظور', 'Suppressed'),
+    already_sent: t('سبق الإرسال', 'Already sent'),
+    duplicate: t('مكرر', 'Duplicate'),
+    unsubscribed: t('ألغى الاشتراك', 'Unsubscribed'),
+    invalid_email: t('بريد غير صالح', 'Invalid email'),
+    not_eligible: t('غير مؤهل', 'Not eligible'),
+  }[reason] || t('مستبعد وفق ضوابط الإرسال', 'Excluded by delivery safeguards'));
 
   const handleTest = () => {
     if (!previewResult) return;
@@ -236,12 +309,16 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
       id: campaignId,
       previewId: previewResult.previewId,
       confirm: true,
+      ...(ownerQaMode ? { confirmOwnerQa: true as const } : {}),
     }, {
       onSuccess: () => {
         toast({ title: t('تم اعتماد الحملة', 'Campaign approved') });
+        setCampaignStatus('approved');
         setConfirmApproveOpen(false);
-        setIsPreviewOpen(false);
-        onBack();
+        if (!ownerQaMode) {
+          setIsPreviewOpen(false);
+          onBack();
+        }
       },
       onError: () => {
         toast({ title: t('فشل الاعتماد', 'Failed to approve'), variant: 'destructive' });
@@ -263,7 +340,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
           </div>
         </div>
         <div className="flex gap-2">
-          {permissions.manage && (
+          {permissions.manage && !ownerQaMode && (
             <Button variant="outline" onClick={handleSave} disabled={updateCampaign.isPending}>
               {updateCampaign.isPending ? <Loader2 className="w-4 h-4 animate-spin me-2" /> : <Save className="w-4 h-4 me-2" />}
               {t('حفظ كمسودة', 'Save Draft')}
@@ -272,7 +349,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
           {permissions.testSend && (
             <Button onClick={() => setIsPreviewOpen(true)} disabled={isDirty}>
               <Play className="w-4 h-4 me-2" />
-              {isDirty ? t('احفظ أولاً', 'Save First') : t('معاينة واختبار', 'Preview & Test')}
+              {isDirty ? t('احفظ أولاً', 'Save First') : ownerQaMode ? t('معاينة اختبار المالك', 'Review owner QA preview') : t('معاينة واختبار', 'Preview & Test')}
             </Button>
           )}
         </div>
@@ -286,7 +363,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
           <CardContent className="space-y-4" dir="rtl">
             <div className="space-y-2">
               <Label>{t('الموضوع', 'Subject')}</Label>
-              <Input value={subjectAr} onChange={(e) => setSubjectAr(e.target.value)} disabled={!permissions.manage} />
+              <Input value={subjectAr} onChange={(e) => setSubjectAr(e.target.value)} disabled={!permissions.manage || ownerQaMode} />
             </div>
             <div className="space-y-2">
               <Label>{t('المحتوى (نص عادي؛ دون HTML)', 'Body (plain text; no HTML)')}</Label>
@@ -295,7 +372,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                 dir="ltr"
                 value={bodyAr} 
                 onChange={(e) => setBodyAr(e.target.value)} 
-                disabled={!permissions.manage} 
+                disabled={!permissions.manage || ownerQaMode}
               />
             </div>
           </CardContent>
@@ -308,7 +385,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
           <CardContent className="space-y-4" dir="ltr">
             <div className="space-y-2">
               <Label>{t('Subject', 'Subject')}</Label>
-              <Input value={subjectEn} onChange={(e) => setSubjectEn(e.target.value)} disabled={!permissions.manage} />
+              <Input value={subjectEn} onChange={(e) => setSubjectEn(e.target.value)} disabled={!permissions.manage || ownerQaMode} />
             </div>
             <div className="space-y-2">
               <Label>{t('المحتوى (نص عادي؛ دون HTML)', 'Body (plain text; no HTML)')}</Label>
@@ -316,19 +393,31 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                 className="min-h-[300px] font-mono" 
                 value={bodyEn} 
                 onChange={(e) => setBodyEn(e.target.value)} 
-                disabled={!permissions.manage} 
+                disabled={!permissions.manage || ownerQaMode}
               />
             </div>
           </CardContent>
         </Card>
       </div>
 
+      {ownerQaMode && (
+        <Alert className="border-emerald-500/40 bg-emerald-500/10">
+          <Lock className="h-4 w-4" />
+          <AlertDescription>
+            {t(
+              'وضع اختبار المالك مفعّل: المستلم الوحيد هو heavyar.official@gmail.com. لا يبدأ أي إرسال تلقائياً؛ أنشئ المعاينة ثم اعتمدها وأكّد وضع مستلم واحد في القائمة.',
+              'Owner QA mode is active: the only recipient is heavyar.official@gmail.com. Nothing sends automatically; generate the preview, approve it, then explicitly confirm queueing one recipient.',
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center justify-between gap-3 flex-wrap">
             <span>{t('جمهور الحملة ونتائج الإرسال', 'Campaign audience and delivery history')}</span>
             <div className="flex gap-2">
-              {permissions.manage && (
+              {permissions.manage && !ownerQaMode && (
                 <>
                   <Button variant="outline" onClick={() => handleRecipientSnapshot()} disabled={snapshotCampaign.isPending}>
                     {snapshotCampaign.isPending ? <Loader2 className="w-4 h-4 animate-spin me-2" /> : <RefreshCw className="w-4 h-4 me-2" />}
@@ -338,6 +427,18 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                     {t('تحديد كل النتائج المصفاة', 'Select all filtered')}
                   </Button>
                 </>
+              )}
+              {canUseOwnerQa && permissions.approve && permissions.send && (
+                <Button variant="outline" onClick={() => setOwnerQaConfirmOpen(true)} disabled={isDirty || ownerQaMode || ownerQaSnapshot.isPending} title={isDirty ? t('احفظ المسودة أولاً', 'Save the draft first') : undefined}>
+                  {ownerQaSnapshot.isPending ? <Loader2 className="w-4 h-4 animate-spin me-2" /> : <Lock className="w-4 h-4 me-2" />}
+                  {t('تجهيز اختبار المالك (مستلم واحد)', 'Prepare owner QA (1 recipient)')}
+                </Button>
+              )}
+              {canCleanupQa && (
+                <Button variant="outline" onClick={() => setConfirmCleanupQaOpen(true)} disabled={cleanupCampaignQa.isPending}>
+                  {cleanupCampaignQa.isPending ? <Loader2 className="w-4 h-4 animate-spin me-2" /> : <RefreshCw className="w-4 h-4 me-2" />}
+                  {t('تنظيف بيانات CSV الاختبارية', 'Clean up synthetic CSV QA')}
+                </Button>
               )}
               {permissions.send && (
                 <>
@@ -370,21 +471,25 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
         </CardHeader>
         <CardContent className="space-y-4">
           {progress.data && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2" aria-label={t('تقدم الحملة', 'Campaign progress')}>
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2" aria-label={t('تقدم الحملة', 'Campaign progress')}>
               {[
                 ['status', progress.data.status],
                 ['audience', progress.data.audience],
+                ['eligible', Math.max(0, progress.data.audience - progress.data.suppressed - progress.data.skipped)],
                 ['not_sent', progress.data.notSent],
                 ['queued', progress.data.queued],
                 ['accepted', progress.data.accepted],
                 ['delivered', progress.data.delivered],
                 ['failed', progress.data.failed],
+                ['bounced', progress.data.bounced],
+                ['complained', progress.data.complained],
+                ['suppressed', progress.data.suppressed + progress.data.skipped],
                 ['remaining', progress.data.remaining],
                 ['final', finalRecipientCount ?? progress.data.finalRecipientCount],
               ].map(([label, value]) => (
                 <div key={String(label)} className="rounded-md border p-2 text-center">
-                  <div className="font-semibold text-sm">{value}</div>
-                  <div className="text-[11px] text-muted-foreground">{label === 'not_sent' ? t('لم يُرسل', 'Not sent') : label === 'final' ? t('العدد النهائي', 'Final count') : label}</div>
+                  <div className="font-semibold text-sm">{label === 'status' ? statusLabel(String(value)) : value}</div>
+                  <div className="text-[11px] text-muted-foreground">{progressLabel(String(label))}</div>
                 </div>
               ))}
             </div>
@@ -403,6 +508,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                 <SelectItem value="all">{t('كل المصادر', 'All sources')}</SelectItem>
                 <SelectItem value="subscriber">{t('مشترك', 'Subscriber')}</SelectItem>
                 <SelectItem value="csv_import">{t('استيراد CSV', 'CSV import')}</SelectItem>
+                {canUseOwnerQa && <SelectItem value="owner_qa">{t('اختبار المالك', 'Owner QA')}</SelectItem>}
               </SelectContent>
             </Select>
             <Select value={recipientCountry} onValueChange={setRecipientCountry}>
@@ -413,11 +519,11 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
               <SelectTrigger className="w-[130px]" aria-label={t('تصفية اللغة', 'Filter language')}><SelectValue /></SelectTrigger>
               <SelectContent><SelectItem value="all">{t('كل اللغات', 'All languages')}</SelectItem><SelectItem value="ar">AR</SelectItem><SelectItem value="en">EN</SelectItem></SelectContent>
             </Select>
-            <label className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm cursor-pointer">
+            {!ownerQaMode && <label className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm cursor-pointer">
               <Upload className="w-4 h-4" />
               {t('رفع CSV للمعاينة', 'Upload CSV for preview')}
               <input type="file" accept=".csv,text/csv" className="sr-only" onChange={(event) => handleCsv(event.target.files?.[0])} />
-            </label>
+            </label>}
             {recipients.isFetching && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" aria-label={t('جار التحديث', 'Refreshing')} />}
             <Badge variant={selectAllFiltered ? 'default' : 'outline'}>
               {selectAllFiltered
@@ -429,19 +535,21 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
 
           {csvPreview && (
             <div className="rounded-md border bg-muted/20 p-4 space-y-3" role="region" aria-label={t('معاينة CSV', 'CSV preview')}>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-                <div><strong>{csvPreview.preview?.totalRows ?? 0}</strong><span className="block text-muted-foreground">{t('إجمالي الصفوف', 'Total rows')}</span></div>
-                <div><strong>{csvPreview.preview?.counts?.validEmail ?? csvPreview.preview?.contacts?.length ?? 0}</strong><span className="block text-muted-foreground">{t('صالحة', 'Valid')}</span></div>
-                <div><strong>{csvPreview.preview?.counts?.missingEmail ?? 0}</strong><span className="block text-muted-foreground">{t('بلا بريد', 'Missing email')}</span></div>
-                <div><strong>{csvPreview.preview?.counts?.invalidEmail ?? 0}</strong><span className="block text-muted-foreground">{t('بريد غير صالح', 'Invalid email')}</span></div>
-                <div><strong>{csvPreview.preview?.counts?.duplicateFile ?? 0}</strong><span className="block text-muted-foreground">{t('تكرار الملف', 'File duplicates')}</span></div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 text-sm">
+                <div><strong>{csvCounts.total}</strong><span className="block text-muted-foreground">{t('إجمالي الصفوف', 'Total rows')}</span></div>
+                <div><strong>{csvCounts.valid}</strong><span className="block text-muted-foreground">{t('بريد صالح', 'Valid email')}</span></div>
+                <div><strong>{csvCounts.missing}</strong><span className="block text-muted-foreground">{t('بلا بريد', 'Missing email')}</span></div>
+                <div><strong>{csvCounts.invalid}</strong><span className="block text-muted-foreground">{t('بريد غير صالح', 'Invalid email')}</span></div>
+                <div><strong>{csvCounts.duplicate}</strong><span className="block text-muted-foreground">{t('بريد مكرر', 'Duplicate email')}</span></div>
+                <div><strong>{csvCounts.suppressed ?? '—'}</strong><span className="block text-muted-foreground">{t('محظور', 'Suppressed')}</span></div>
+                <div><strong>{csvCounts.eligible ?? '—'}</strong><span className="block text-muted-foreground">{t('المؤهل النهائي', 'Final eligible')}</span></div>
               </div>
               <div className="max-h-44 overflow-auto rounded border bg-background">
                 <Table>
                   <TableHeader><TableRow><TableHead>{t('البريد', 'Email')}</TableHead><TableHead>{t('النتيجة', 'Result')}</TableHead></TableRow></TableHeader>
                   <TableBody>
                     {(csvPreview.preview?.contacts || []).slice(0, 50).map((contact: any, index: number) => <TableRow key={`ok-${index}`}><TableCell>{contact.email}</TableCell><TableCell><Badge variant="outline">{t('مقبول', 'Accepted')}</Badge></TableCell></TableRow>)}
-                    {(csvPreview.preview?.rejected || []).slice(0, 50).map((row: any, index: number) => <TableRow key={`bad-${index}`}><TableCell>{row.email || '—'}</TableCell><TableCell><Badge variant="destructive">{row.reason}</Badge></TableCell></TableRow>)}
+                    {(csvPreview.preview?.rejected || []).slice(0, 50).map((row: any, index: number) => <TableRow key={`bad-${index}`}><TableCell>{row.email || '—'}</TableCell><TableCell><Badge variant="destructive">{row.reason === 'missing_email' ? t('البريد مفقود', 'Missing email') : row.reason === 'invalid_email' ? t('البريد غير صالح', 'Invalid email') : row.reason === 'duplicate_file' ? t('بريد مكرر', 'Duplicate email') : t('صف غير صالح', 'Invalid row')}</Badge></TableCell></TableRow>)}
                   </TableBody>
                 </Table>
               </div>
@@ -467,25 +575,28 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
           <div className="rounded-md border overflow-auto">
             <Table>
               <TableHeader><TableRow>
-                 <TableHead className="w-10"><Checkbox aria-label={t('تحديد الصفحة', 'Select page')} checked={!selectAllFiltered && Boolean(recipients.data?.items?.length && recipients.data.items.every((item) => recipientIds.has(item.id)))} onCheckedChange={() => {
+                 <TableHead className="w-10"><Checkbox disabled={ownerQaMode} aria-label={t('تحديد الصفحة', 'Select page')} checked={!selectAllFiltered && Boolean(recipients.data?.items?.length && recipients.data.items.every((item) => recipientIds.has(item.id)))} onCheckedChange={() => {
                    setSelectAllFiltered(false);
                   const next = new Set(recipientIds);
                   for (const item of recipients.data?.items || []) next.has(item.id) ? next.delete(item.id) : next.add(item.id);
                   setRecipientIds(next);
                 }} /></TableHead>
-                <TableHead>{t('البريد', 'Email')}</TableHead><TableHead>{t('المصدر', 'Source')}</TableHead><TableHead>{t('الحالة', 'Status')}</TableHead><TableHead>{t('آخر تحديث', 'Updated')}</TableHead>
+                 <TableHead>{t('البريد', 'Email')}</TableHead><TableHead>{t('المصدر', 'Source')}</TableHead><TableHead>{t('الدولة / اللغة', 'Country / language')}</TableHead><TableHead>{t('الحالة', 'Status')}</TableHead><TableHead>{t('وقت الإرسال', 'Sent')}</TableHead><TableHead>{t('وقت التسليم', 'Delivered')}</TableHead><TableHead>{t('سبب آمن / استبعاد', 'Safe reason / suppression')}</TableHead>
               </TableRow></TableHeader>
               <TableBody>
                 {(recipients.data?.items || []).filter((item) => (recipientStatus === 'all' || item.deliveryStatus === recipientStatus) && (recipientSource === 'all' || item.source === recipientSource) && (recipientCountry === 'all' || item.country === recipientCountry) && (recipientLanguage === 'all' || item.language === recipientLanguage)).map((item) => (
                   <TableRow key={item.id}>
-                   <TableCell><Checkbox aria-label={`${t('تحديد', 'Select')} ${item.email}`} checked={!selectAllFiltered && recipientIds.has(item.id)} onCheckedChange={() => { setSelectAllFiltered(false); const next = new Set(recipientIds); next.has(item.id) ? next.delete(item.id) : next.add(item.id); setRecipientIds(next); }} /></TableCell>
+                    <TableCell><Checkbox disabled={ownerQaMode} aria-label={`${t('تحديد', 'Select')} ${item.email}`} checked={!selectAllFiltered && recipientIds.has(item.id)} onCheckedChange={() => { setSelectAllFiltered(false); const next = new Set(recipientIds); next.has(item.id) ? next.delete(item.id) : next.add(item.id); setRecipientIds(next); }} /></TableCell>
                     <TableCell><div className="font-medium">{item.email}</div><div className="text-xs text-muted-foreground">{item.businessName || item.name || '—'}</div></TableCell>
-                    <TableCell>{item.source === 'csv_import' ? t('CSV', 'CSV') : t('مشترك', 'Subscriber')}</TableCell>
+                     <TableCell>{item.source === 'csv_import' ? t('استيراد CSV', 'CSV import') : item.source === 'owner_qa' ? t('اختبار المالك', 'Owner QA') : t('مشترك', 'Subscriber')}</TableCell>
+                     <TableCell>{item.country || '—'} / {item.language === 'ar' ? t('العربية', 'Arabic') : item.language === 'en' ? t('الإنجليزية', 'English') : '—'}</TableCell>
                     <TableCell><Badge variant={item.deliveryStatus === 'delivered' ? 'default' : item.deliveryStatus === 'failed' ? 'destructive' : 'secondary'}>{statusLabel(item.deliveryStatus)}</Badge></TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{item.updatedAt ? format(new Date(item.updatedAt), 'yyyy-MM-dd HH:mm') : '—'}</TableCell>
+                     <TableCell className="text-xs text-muted-foreground">{timestampLabel(item.sentAt || item.acceptedAt || item.lastAttemptAt)}</TableCell>
+                     <TableCell className="text-xs text-muted-foreground">{timestampLabel(item.deliveredAt)}</TableCell>
+                     <TableCell className="max-w-52 text-xs text-muted-foreground">{safeDeliveryReason(item.suppressionReason || item.failureReason, appLang)}</TableCell>
                   </TableRow>
                 ))}
-                {!recipients.isLoading && !recipients.data?.items?.length && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">{t('لا توجد نتائج إرسال بعد', 'No delivery records yet')}</TableCell></TableRow>}
+                 {!recipients.isLoading && !recipients.data?.items?.length && <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">{t('لا توجد نتائج إرسال بعد', 'No delivery records yet')}</TableCell></TableRow>}
               </TableBody>
             </Table>
           </div>
@@ -497,17 +608,77 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
         </CardContent>
       </Card>
 
+      <AlertDialog open={ownerQaConfirmOpen} onOpenChange={setOwnerQaConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2"><Lock className="w-5 h-5" />{t('تجهيز اختبار المالك المقيد', 'Prepare restricted owner QA')}</AlertDialogTitle>
+            <AlertDialogDescription className="text-foreground space-y-3">
+              <span className="block">{t('سينشئ هذا الإجراء لقطة مستلم واحدة فقط:', 'This prepares an immutable snapshot of exactly one recipient:')}</span>
+              <strong className="block" dir="ltr">heavyar.official@gmail.com</strong>
+              <span className="block">{t('لن يتم إرسال أي رسالة في هذه الخطوة. يلزم لاحقاً اعتماد المعاينة وتأكيد الإرسال النهائي بشكل منفصل.', 'No email is sent by this step. Preview approval and a separate final send confirmation are still required.')}</span>
+              <span className="block font-medium">{t('لغة الرسالة', 'Message language')}</span>
+              <Select value={ownerQaLanguage} onValueChange={(value) => setOwnerQaLanguage(value as 'ar' | 'en')}>
+                <SelectTrigger aria-label={t('لغة اختبار المالك', 'Owner QA language')}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ar">العربية (AR)</SelectItem>
+                  <SelectItem value="en">English (EN)</SelectItem>
+                </SelectContent>
+              </Select>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={ownerQaSnapshot.isPending}>{t('إلغاء', 'Cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                ownerQaSnapshot.mutate(buildOwnerQaSnapshotPayload(ownerQaLanguage), {
+                  onSuccess: (result) => {
+                    setPersistedOwnerQa(true);
+                    setRecipientSource('owner_qa');
+                    setRecipientIds(new Set());
+                    setSelectAllFiltered(false);
+                    setPreviewResult({
+                      previewId: result.previewId,
+                      recipientCount: result.recipientCount,
+                      excludedCount: 0,
+                      byLanguage: { [result.language]: 1 },
+                      byCountry: { unknown: 1 },
+                      exclusionReasons: {},
+                      expiresAt: result.expiresAt,
+                      htmlAr: localCampaignPreview(subjectAr, bodyAr, 'ar'),
+                      htmlEn: localCampaignPreview(subjectEn, bodyEn, 'en'),
+                    });
+                    setHasTested(false);
+                    setFinalRecipientCount(1);
+                    setOwnerQaConfirmOpen(false);
+                    setIsPreviewOpen(true);
+                    toast({ title: t('تم تجهيز مستلم اختبار المالك', 'Owner QA recipient prepared'), description: t('مستلم واحد. لم يتم إرسال أي رسالة.', 'One recipient. No email was sent.') });
+                  },
+                  onError: (error) => toast({ title: t('تعذر تجهيز اختبار المالك', 'Could not prepare owner QA'), description: userErrorMessage(error, appLang), variant: 'destructive' }),
+                });
+              }}
+              disabled={ownerQaSnapshot.isPending}
+            >
+              {ownerQaSnapshot.isPending && <Loader2 className="w-4 h-4 animate-spin me-2" />}
+              {t('تأكيد تجهيز مستلم واحد', 'Confirm one-recipient snapshot')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Dialog open={isPreviewOpen} onOpenChange={setIsPreviewOpen}>
         <DialogContent className="max-w-5xl w-[95vw] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{t('معاينة واختبار الحملة', 'Preview & Test Campaign')}</DialogTitle>
             <DialogDescription>
-              {t('حدد الجمهور المستهدف للمعاينة والاختبار. الاعتماد يتطلب اختباراً ناجحاً أولاً.', 'Select target audience for preview. Approval requires a successful test first.')}
+              {ownerQaMode
+                ? t('تحقق من أن العدد النهائي يساوي مستلماً واحداً. يسمح وضع اختبار المالك المقيد بالاعتماد دون رسالة الاختبار فقط.', 'Verify the final count is exactly one. Only restricted owner QA may be approved without a separate test email.')
+                : t('حدد الجمهور المستهدف للمعاينة والاختبار. الاعتماد يتطلب اختباراً ناجحاً أولاً.', 'Select target audience for preview. Approval requires a successful test first.')}
             </DialogDescription>
           </DialogHeader>
           
           <div className="space-y-6 py-4">
-            <div className="flex gap-4 p-4 border rounded-md bg-muted/20">
+            {!ownerQaMode && <div className="flex gap-4 p-4 border rounded-md bg-muted/20">
               <div className="flex-1 space-y-2">
                 <Label>{t('تصفية باللغة', 'Filter by Language')}</Label>
                 <Select value={previewFilterLang} onValueChange={(v) => { setPreviewFilterLang(v); setPreviewResult(null); }}>
@@ -545,7 +716,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                   {t('إنشاء المعاينة', 'Generate Preview')}
                 </Button>
               </div>
-            </div>
+            </div>}
 
             {previewResult && (
               <div className="space-y-6 border-t pt-6">
@@ -561,7 +732,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                       <div className="mt-2 text-xs text-left space-y-1">
                         {Object.entries(previewResult.exclusionReasons).map(([k, v]) => (
                           <div key={k} className="flex justify-between border-t pt-1 border-border/50">
-                            <span className="text-muted-foreground">{k}</span>
+                             <span className="text-muted-foreground">{exclusionLabel(k)}</span>
                             <span>{v as number}</span>
                           </div>
                         ))}
@@ -611,7 +782,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                   </TabsContent>
                 </Tabs>
 
-                <div className="p-4 border rounded-md bg-muted/20 space-y-4">
+                {!ownerQaMode && <div className="p-4 border rounded-md bg-muted/20 space-y-4">
                   <div className="flex items-center gap-2">
                     <Mail className="w-5 h-5 text-primary" />
                     <h3 className="font-semibold">{t('اختبار الإرسال (لنفسك)', 'Self-Test Send')}</h3>
@@ -632,7 +803,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                       {t('إرسال اختبار', 'Send Test')}
                     </Button>
                   </div>
-                </div>
+                </div>}
               </div>
             )}
           </div>
@@ -644,7 +815,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
               <Button 
                 variant="default" 
                 className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                disabled={!hasTested || previewResult.recipientCount === 0 || approveCampaign.isPending}
+                disabled={(!hasTested && !ownerQaMode) || previewResult.recipientCount === 0 || (ownerQaMode && previewResult.recipientCount !== 1) || approveCampaign.isPending}
                 onClick={() => setConfirmApproveOpen(true)}
               >
                 {approveCampaign.isPending ? <Loader2 className="w-4 h-4 animate-spin me-2" /> : <CheckCircle className="w-4 h-4 me-2" />}
@@ -653,7 +824,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
             )}
 
             {permissions.send && previewResult && (
-              <Button variant="destructive" onClick={() => { setSendLawfulBasisConfirmed(false); setConfirmSendOpen(true); }} disabled={!hasTested || !previewResult.recipientCount || sendCampaign.isPending}>
+              <Button variant="destructive" onClick={() => { setSendLawfulBasisConfirmed(false); setConfirmSendOpen(true); }} disabled={ownerQaMode ? campaignStatus !== 'approved' || previewResult.recipientCount !== 1 || sendCampaign.isPending : !hasTested || !previewResult.recipientCount || sendCampaign.isPending}>
                 {sendCampaign.isPending ? <Loader2 className="w-4 h-4 animate-spin me-2" /> : <Send className="w-4 h-4 me-2" />}
                 {t('إرسال الحملة', 'Queue campaign')}
               </Button>
@@ -696,13 +867,15 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
               {t('سيتم قفل الحملة لمنع التعديل. سيعتمد هذا الإجراء المعاينة الحالية.', 'The campaign will be locked to prevent edits. This action will approve the current preview.')}
               <br />
               <strong className="text-destructive mt-2 inline-block">
-                {t('ملاحظة: الإرسال الفعلي معطل حالياً وسيتم لاحقاً.', 'Note: Actual sending is currently locked and deferred for later.')}
+                {ownerQaMode
+                  ? t('هذا اعتماد فقط. لن يبدأ الإرسال حتى تؤكد لاحقاً وضع مستلم واحد في القائمة.', 'Approval only. Sending will not start until you separately confirm queueing one recipient.')
+                  : t('هذا اعتماد فقط ولا يبدأ الإرسال تلقائياً.', 'Approval alone does not start sending.')}
               </strong>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={approveCampaign.isPending}>{t('إلغاء', 'Cancel')}</AlertDialogCancel>
-            <AlertDialogAction onClick={(e) => { e.preventDefault(); handleApprove(); }} className="bg-emerald-600 hover:bg-emerald-700" disabled={!hasTested || !previewResult?.recipientCount || approveCampaign.isPending}>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); handleApprove(); }} className="bg-emerald-600 hover:bg-emerald-700" disabled={(!hasTested && !ownerQaMode) || !previewResult?.recipientCount || (ownerQaMode && previewResult.recipientCount !== 1) || approveCampaign.isPending}>
               {approveCampaign.isPending ? <Loader2 className="w-4 h-4 animate-spin me-2" /> : null}
               {t('تأكيد الاعتماد', 'Confirm Approval')}
             </AlertDialogAction>
@@ -734,7 +907,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={sendCampaign.isPending}>{t('إلغاء', 'Cancel')}</AlertDialogCancel>
-            <AlertDialogAction onClick={(event) => { event.preventDefault(); if (!previewResult?.previewId || (hasCsvRecipients && !sendLawfulBasisConfirmed)) return; sendCampaign.mutate({ previewId: previewResult.previewId, confirm: true, ...(hasCsvRecipients && sendLawfulBasisConfirmed ? { lawfulBasisConfirmed: true as const } : {}) }, { onSuccess: (result) => { setCampaignStatus('queued'); setFinalRecipientCount(result.recipientCount); setConfirmSendOpen(false); toast({ title: t(`تم وضع ${result.recipientCount} مستلم في القائمة`, `${result.recipientCount} recipients queued`) }); }, onError: () => toast({ title: t('فشل بدء الإرسال', 'Could not queue campaign'), variant: 'destructive' }) }); }} disabled={sendCampaign.isPending || (hasCsvRecipients && !sendLawfulBasisConfirmed)}>
+            <AlertDialogAction onClick={(event) => { event.preventDefault(); if (!previewResult?.previewId || (ownerQaMode && previewResult.recipientCount !== 1) || (hasCsvRecipients && !sendLawfulBasisConfirmed)) return; sendCampaign.mutate({ previewId: previewResult.previewId, confirm: true, ...(hasCsvRecipients && sendLawfulBasisConfirmed ? { lawfulBasisConfirmed: true as const } : {}) }, { onSuccess: (result) => { setCampaignStatus('queued'); setFinalRecipientCount(result.recipientCount); setConfirmSendOpen(false); toast({ title: t(`تم وضع ${result.recipientCount} مستلم في القائمة`, `${result.recipientCount} recipients queued`) }); }, onError: (error) => toast({ title: t('فشل بدء الإرسال', 'Could not queue campaign'), description: userErrorMessage(error, appLang), variant: 'destructive' }) }); }} disabled={sendCampaign.isPending || (ownerQaMode && previewResult?.recipientCount !== 1) || (hasCsvRecipients && !sendLawfulBasisConfirmed)}>
               {sendCampaign.isPending && <Loader2 className="w-4 h-4 animate-spin me-2" />}{t('تأكيد الإرسال', 'Confirm queue')}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -770,6 +943,46 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
             >
               {retryCampaign.isPending && <Loader2 className="w-4 h-4 animate-spin me-2" />}
               {t('تأكيد إعادة المحاولة', 'Confirm retry')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmCleanupQaOpen} onOpenChange={setConfirmCleanupQaOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('تنظيف بيانات CSV الاختبارية الآمنة', 'Clean up safe synthetic CSV QA data')}</AlertDialogTitle>
+            <AlertDialogDescription className="text-foreground">
+              {t(
+                'سيطلب هذا الإجراء من الخادم حذف سجلات CSV التي أنشأتها أنت فقط، ولم تُرسل، وتنتهي عناوينها بـ @example.test أو @invalid. لن تُحذف سجلات الإرسال أو العناوين الحقيقية أو المشتركين أو حالات الحظر. يتحقق الخادم نهائياً من أهلية كل سجل.',
+                'This asks the server to delete only your own unsent CSV records ending in @example.test or @invalid. Sent records, real-domain addresses, subscribers, and suppressions are preserved. The server authoritatively verifies every eligible record.',
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={cleanupCampaignQa.isPending}>{t('إلغاء', 'Cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                cleanupCampaignQa.mutate(undefined, {
+                  onSuccess: (result) => {
+                    setConfirmCleanupQaOpen(false);
+                    setCsvPreview(null);
+                    toast({
+                      title: t('اكتمل تنظيف بيانات الاختبار', 'Synthetic QA cleanup completed'),
+                      description: t(
+                        `حُذف ${result.deletedRecipients} مستلم و${result.deletedImports} سجل استيراد آمن.`,
+                        `${result.deletedRecipients} recipients and ${result.deletedImports} safe import records deleted.`,
+                      ),
+                    });
+                  },
+                  onError: (error) => toast({ title: t('تعذر تنظيف بيانات الاختبار', 'Could not clean up synthetic QA data'), description: userErrorMessage(error, appLang), variant: 'destructive' }),
+                });
+              }}
+              disabled={cleanupCampaignQa.isPending}
+            >
+              {cleanupCampaignQa.isPending && <Loader2 className="w-4 h-4 animate-spin me-2" />}
+              {t('تأكيد التنظيف الآمن', 'Confirm safe cleanup')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

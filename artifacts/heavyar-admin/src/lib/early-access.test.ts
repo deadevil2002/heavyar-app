@@ -90,4 +90,30 @@ describe('Early Access API Payload Contract', () => {
     expect(earlyAccess.buildRetryPayload(['r1', 'r2'])).toEqual({ recipientIds: ['r1', 'r2'] });
     expect(earlyAccess.buildRetryPayload([], true)).toEqual({ allEligible: true });
   });
+
+  it('builds the exact restricted owner QA snapshot payload', () => {
+    expect(earlyAccess.buildOwnerQaSnapshotPayload('ar')).toEqual({ confirm: true, language: 'ar' });
+    expect(earlyAccess.buildOwnerQaSnapshotPayload('en')).toEqual({ confirm: true, language: 'en' });
+  });
+
+  it('requires explicit confirmation for synthetic CSV QA cleanup', () => {
+    expect(earlyAccess.buildCleanupQaPayload()).toEqual({ confirm: true });
+  });
+
+  it('normalizes all CSV preview counters without inventing unavailable suppression data', () => {
+    expect(earlyAccess.csvPreviewCounts({
+      headers: ['email'],
+      contacts: [{ email: 'owner@example.com' }],
+      rejected: [],
+      totalRows: 4,
+      counts: { validEmail: 2, missingEmail: 1, invalidEmail: 1, duplicateFile: 0, campaignDuplicate: 0, suppressed: 1, finalEligible: 1 },
+    })).toEqual({ total: 4, valid: 2, missing: 1, invalid: 1, duplicate: 0, suppressed: 1, eligible: 1 });
+    expect(earlyAccess.csvPreviewCounts(null).suppressed).toBeUndefined();
+  });
+
+  it('localizes allowlisted delivery reasons and never leaks unknown Worker codes', () => {
+    expect(earlyAccess.safeDeliveryReason('global_suppression', 'en')).toBe('Excluded by the global suppression list');
+    expect(earlyAccess.safeDeliveryReason('INTERNAL_PROVIDER_CODE', 'en')).toBe('Delivery could not be completed');
+    expect(earlyAccess.safeDeliveryReason('INTERNAL_PROVIDER_CODE', 'ar')).toBe('تعذر إكمال التسليم');
+  });
 });

@@ -1,7 +1,8 @@
-import { EA, body, configValue, countryCodes, facetKey, fail, nowIso, permissions, safeId, selectedRecords, text, type EarlyAccessStore } from './early-access-model';
+import { EA, OWNER_QA_EMAIL, body, configValue, countryCodes, facetKey, fail, nowIso, permissions, safeId, selectedRecords, text, type EarlyAccessStore } from './early-access-model';
 import { suppress } from './early-access-public';
 import { campaignAction } from './early-access-campaigns';
-import { campaignProgress, campaignRecipients, parseCampaignCsv, retryCampaignRecipients, snapshotCampaignRecipients } from './early-access-campaign-delivery';
+import { campaignProgress, campaignRecipients, ownerQaSnapshot, retryCampaignRecipients, snapshotCampaignRecipients } from './early-access-campaign-delivery';
+import { cleanupCampaignCsvQa, importCampaignCsv, previewCampaignCsv } from './early-access-csv-qa';
 
 const value = (s: string) => ({ stringValue: s });
 const encode = (v: any) => btoa(JSON.stringify(v)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -84,9 +85,17 @@ export async function handleEarlyAccessAdmin(req: Request, store: EarlyAccessSto
     return { success: true };
   }
   if (path === '/api/admin/early-access/campaigns' && req.method === 'GET') return page(store, EA.campaigns, url);
-  const campaignMatch = /^\/api\/admin\/early-access\/campaigns\/([^/]+)\/(recipients|import|snapshot|retry|progress)$/.exec(path);
+  const campaignMatch = /^\/api\/admin\/early-access\/campaigns\/([^/]+)\/(recipients|import|snapshot|owner-qa-snapshot|retry|progress|cleanup-qa)$/.exec(path);
   if (campaignMatch) {
     const campaignId = safeId(campaignMatch[1]), operation = campaignMatch[2];
+    if (operation === 'owner-qa-snapshot') {
+      if (req.method !== 'POST') fail('NOT_FOUND', 404);
+      if (!['owner', 'super_admin'].includes(actor.role || '') || await store.ownEmail() !== OWNER_QA_EMAIL) fail('FORBIDDEN', 403);
+      const value = await body(req, ['confirm', 'language']);
+      if (value.confirm !== true) fail('CONFIRMATION_REQUIRED');
+      if (!['ar', 'en'].includes(value.language)) fail('INVALID_LANGUAGE');
+      return ownerQaSnapshot(store, campaignId, actor.uid, value.language);
+    }
     if (operation === 'retry') {
       if (!allowed.send) fail('FORBIDDEN', 403);
       if (req.method !== 'POST') fail('NOT_FOUND', 404);
@@ -95,6 +104,13 @@ export async function handleEarlyAccessAdmin(req: Request, store: EarlyAccessSto
       const recipientIds = Array.isArray(value.recipientIds) ? [...new Set(value.recipientIds.map((id: string) => safeId(id)))] : undefined;
       if (value.allEligible !== undefined && typeof value.allEligible !== 'boolean') fail('INVALID_SELECTION');
       return retryCampaignRecipients(store, campaignId, actor.uid, recipientIds, value.allEligible === true);
+    }
+    if (operation === 'cleanup-qa') {
+      if (req.method !== 'POST') fail('NOT_FOUND', 404);
+      if (!['owner', 'super_admin'].includes(actor.role || '')) fail('FORBIDDEN', 403);
+      const value = await body(req, ['confirm']);
+      if (value.confirm !== true) fail('CONFIRMATION_REQUIRED');
+      return cleanupCampaignCsvQa(store, campaignId, actor.uid);
     }
     if (!allowed.manage) fail('FORBIDDEN', 403);
     if (!await store.read(EA.campaigns, campaignId)) fail('NOT_FOUND', 404);
@@ -109,16 +125,9 @@ export async function handleEarlyAccessAdmin(req: Request, store: EarlyAccessSto
       let input: any;
       try { input = JSON.parse(raw); } catch { fail('INVALID_JSON'); }
       if (!input || typeof input.csv !== 'string' || Object.keys(input).some(key => !['csv', 'filename', 'confirm', 'lawfulBasisConfirmed'].includes(key))) fail('INVALID_FIELDS');
-      const parsed = parseCampaignCsv(input.csv), importId = crypto.randomUUID();
-      if (input.confirm !== true) return { importId, preview: parsed };
+      if (input.confirm !== true) return { importId: crypto.randomUUID(), preview: await previewCampaignCsv(store, campaignId, actor.uid, input.csv) };
       if (input.lawfulBasisConfirmed !== true) fail('LAWFUL_BASIS_REQUIRED', 409);
-      const timestamp = nowIso();
-      await store.save([{ collection: EA.imports, id: importId, prior: null, data: {
-        campaignId, filename: typeof input.filename === 'string' ? input.filename.slice(0, 200) : 'audience.csv',
-        importedAt: timestamp, importedBy: actor.uid, source: 'csv_import', totalRows: parsed.totalRows,
-         acceptedRows: parsed.contacts.length, rejectedRows: parsed.rejected.length, lawfulBasisConfirmed: true,
-      } }], 'early_access_csv_imported', campaignId);
-       return { importId, preview: parsed, snapshot: await snapshotCampaignRecipients(store, campaignId, actor.uid, parsed.contacts.map(contact => ({ ...contact, lawfulBasisConfirmed: true })), 'csv_import') };
+      return importCampaignCsv(store, campaignId, actor.uid, input.csv, typeof input.filename === 'string' ? input.filename : 'audience.csv');
     }
     if (operation === 'snapshot' && req.method === 'POST') {
       const raw = await req.text();

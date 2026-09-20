@@ -246,8 +246,8 @@ async function resendWebhook(req: Request, env: Env) {
       if (!terminalSubscriberEvent && (status === 'accepted' && priorIsFinal || Number.isFinite(priorEventTime) && parsedEventTime < priorEventTime)) continue;
       const fields = { deliveryStatus: { stringValue: status }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() }, deliveryEventAt: { timestampValue: eventAt },
         ...(collection === 'earlyAccessDeliveries' && status === 'failed' ? {
-          retryEligible: { booleanValue: Number(prior.attempts || 0) < 3 },
-          nextAttemptAt: Number(prior.attempts || 0) < 3 ? { timestampValue: new Date().toISOString() } : { nullValue: null },
+          retryEligible: { booleanValue: prior.source !== 'owner_qa' && Number(prior.attempts || 0) < 3 },
+          nextAttemptAt: prior.source !== 'owner_qa' && Number(prior.attempts || 0) < 3 ? { timestampValue: new Date().toISOString() } : { nullValue: null },
         } : {}),
         ...(collection === 'earlyAccessDeliveries' ? earlyAccessDeliveryProof(prior, status) : {}) };
       writes.push({ update: { name: row.document.name, fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: row.document.updateTime ? { updateTime: row.document.updateTime } : undefined });

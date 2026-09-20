@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { __adminTest, earlyAccessStore, handleAdmin } from './admin';
+import { __adminTest, earlyAccessStore, handleAdmin, processScheduledEarlyAccessCampaigns } from './admin';
 import worker, { __test, type Env } from './index';
 import { EA } from './early-access-model';
 import { QuotaBusyError } from './quota-policy';
@@ -142,6 +142,19 @@ describe('Early Access real adapter, signed shared webhook and REST precondition
     expect([...docs.keys()].filter(name => name.includes(`/${EA.suppression}/`)).length).toBe(suppressionsBeforeFailure);
     expect((await campaignEvent('bounced', 'campaign-failed-bounce', 'message-3')).status).toBe(200);
     expect([...docs.keys()].filter(name => name.includes(`/${EA.suppression}/`)).length).toBe(suppressionsBeforeFailure + 1);
+    put(EA.deliveries, 'owner-qa-failed', { campaignId: 'owner-qa', source: 'owner_qa', normalizedEmail: 'heavyar.official@gmail.com', providerMessageId: 'owner-qa-message', deliveryStatus: 'accepted', attempts: 1 });
+    expect((await campaignEvent('failed', 'owner-qa-failed-event', 'owner-qa-message')).status).toBe(200);
+    expect(docs.get(`${prefix}${EA.deliveries}/owner-qa-failed`).fields.retryEligible.booleanValue).toBe(false);
+    expect(docs.get(`${prefix}${EA.deliveries}/owner-qa-failed`).fields.nextAttemptAt.nullValue).toBe(null);
+  });
+
+  test('scheduled campaign adapter forwards rendered plain text to Resend', async () => {
+    put(EA.campaigns, 'scheduled-text', { status: 'queued', subjectAr: 'عنوان', subjectEn: 'Subject', bodyAr: 'محتوى', bodyEn: 'Plain body' });
+    put(EA.deliveries, 'scheduled-recipient', { campaignId: 'scheduled-text', email: 'recipient@example.test', normalizedEmail: 'recipient@example.test', language: 'en', deliveryStatus: 'queued', attempts: 0 });
+    expect((await processScheduledEarlyAccessCampaigns(env)).processed).toBe(1);
+    expect(sends.length).toBe(1);
+    expect(sends[0].text.includes('Plain body')).toBe(true);
+    expect(sends[0].text.includes('Visit heavyar.com')).toBe(true);
   });
 
   test('adapter never overwrites without a version and reconciles early webhook delivery', async () => {

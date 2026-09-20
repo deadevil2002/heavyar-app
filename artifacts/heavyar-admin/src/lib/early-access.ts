@@ -51,6 +51,10 @@ export type Campaign = {
   status?: string;
   revision?: number;
   previewId?: string;
+  createdBy?: string;
+  ownerQa?: boolean;
+  ownerQaRecipientId?: string;
+  ownerQaSnapshotId?: string;
 };
 
 export type CampaignRecipient = {
@@ -64,6 +68,14 @@ export type CampaignRecipient = {
   deliveryStatus: 'not_sent' | 'queued' | 'accepted' | 'delivered' | 'failed' | 'bounced' | 'complained' | 'suppressed' | 'skipped' | string;
   attempts?: number;
   providerMessageId?: string | null;
+  queuedAt?: string | null;
+  lastAttemptAt?: string | null;
+  sentAt?: string | null;
+  acceptedAt?: string | null;
+  deliveredAt?: string | null;
+  failedAt?: string | null;
+  failureReason?: string | null;
+  suppressionReason?: string | null;
   retryEligible?: boolean;
   lawfulBasisConfirmed?: boolean | null;
   updatedAt?: string;
@@ -94,6 +106,15 @@ export type CsvPreview = {
   contacts: Array<Record<string, string>>;
   rejected: Array<{ row?: number; reason: string; email?: string }>;
   totalRows: number;
+  counts?: {
+    validEmail?: number;
+    missingEmail?: number;
+    invalidEmail?: number;
+    duplicateFile?: number;
+    suppressed?: number;
+    campaignDuplicate?: number;
+    finalEligible?: number;
+  };
   snapshot?: { added: number; duplicate: number };
 };
 
@@ -201,6 +222,46 @@ export function buildRetryPayload(recipientIds: string[] = [], allEligible = fal
   return { recipientIds };
 }
 
+export function buildOwnerQaSnapshotPayload(language: 'ar' | 'en') {
+  return { confirm: true as const, language };
+}
+
+export function buildCleanupQaPayload() {
+  return { confirm: true as const };
+}
+
+export function csvPreviewCounts(preview?: CsvPreview | null) {
+  const counts = preview?.counts || {};
+  const valid = counts.validEmail ?? preview?.contacts?.length ?? 0;
+  const missing = counts.missingEmail ?? 0;
+  const invalid = counts.invalidEmail ?? 0;
+  const duplicate = (counts.duplicateFile ?? 0) + (counts.campaignDuplicate ?? 0);
+  const suppressed = counts.suppressed;
+  return {
+    total: preview?.totalRows ?? 0,
+    valid,
+    missing,
+    invalid,
+    duplicate,
+    suppressed,
+    eligible: counts.finalEligible ?? (suppressed === undefined ? undefined : Math.max(0, valid - suppressed)),
+  };
+}
+
+export function safeDeliveryReason(reason: string | null | undefined, language: 'ar' | 'en') {
+  if (!reason) return '—';
+  const labels: Record<string, [string, string]> = {
+    global_suppression: ['محظور وفق قائمة الاستبعاد العامة', 'Excluded by the global suppression list'],
+    unsubscribe: ['ألغى المستلم الاشتراك', 'Recipient unsubscribed'],
+    provider_rejected: ['رفض مزود البريد الرسالة', 'Email provider rejected the message'],
+    bounced: ['تعذر تسليم الرسالة إلى البريد', 'The email could not be delivered'],
+    complained: ['أبلغ المستلم عن الرسالة', 'Recipient reported the message'],
+    max_attempts: ['تعذر الإرسال بعد المحاولات المسموحة', 'Sending failed after the allowed attempts'],
+  };
+  const label = labels[reason];
+  return label ? label[language === 'ar' ? 0 : 1] : language === 'ar' ? 'تعذر إكمال التسليم' : 'Delivery could not be completed';
+}
+
 export function useEarlyAccessSubscribers(params: Record<string, any> = {}) {
   return useQuery({
     queryKey: ['early-access', 'subscribers', params],
@@ -280,13 +341,44 @@ export function useTestCampaign() {
 export function useApproveCampaign() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, previewId, confirm }: { id: string; previewId: string; confirm: boolean }) =>
+    mutationFn: ({ id, previewId, confirm, confirmOwnerQa }: { id: string; previewId: string; confirm: boolean; confirmOwnerQa?: true }) =>
       fetchApi<{ campaign: Campaign }>(`/early-access/campaigns/${id}/approve`, {
         method: 'POST',
-        body: JSON.stringify({ previewId, confirm }),
+        body: JSON.stringify({ previewId, confirm, ...(confirmOwnerQa ? { confirmOwnerQa } : {}) }),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['early-access', 'campaigns'] });
+    },
+  });
+}
+
+export function useOwnerQaSnapshot(campaignId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: ReturnType<typeof buildOwnerQaSnapshotPayload>) =>
+      fetchApi<{ previewId: string; recipientCount: 1; language: 'ar' | 'en'; expiresAt: string }>(
+        `/early-access/campaigns/${campaignId}/owner-qa-snapshot`,
+        { method: 'POST', body: JSON.stringify(data) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['early-access', 'campaign', campaignId, 'recipients'] });
+      queryClient.invalidateQueries({ queryKey: ['early-access', 'campaign', campaignId, 'progress'] });
+      queryClient.invalidateQueries({ queryKey: ['early-access', 'campaigns'] });
+    },
+  });
+}
+
+export function useCleanupCampaignQa(campaignId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      fetchApi<{ deletedRecipients: number; deletedImports: number }>(
+        `/early-access/campaigns/${campaignId}/cleanup-qa`,
+        { method: 'POST', body: JSON.stringify(buildCleanupQaPayload()) },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['early-access', 'campaign', campaignId, 'recipients'] });
+      queryClient.invalidateQueries({ queryKey: ['early-access', 'campaign', campaignId, 'progress'] });
     },
   });
 }
@@ -299,7 +391,10 @@ export function useImportCampaign(campaignId: string) {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['early-access', 'campaigns', campaignId] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['early-access', 'campaign', campaignId, 'recipients'] });
+      queryClient.invalidateQueries({ queryKey: ['early-access', 'campaign', campaignId, 'progress'] });
+    },
   });
 }
 
@@ -332,7 +427,9 @@ export function useCampaignProgress(campaignId: string) {
     queryFn: () => fetchApi<CampaignProgress>(`/early-access/campaigns/${campaignId}/progress`),
     refetchInterval: (query) => {
       const progress = query.state.data;
-      return progress?.status === 'queued' ? 30000 : false;
+      return progress && (progress.status === 'queued' || progress.queued > 0 || progress.accepted > 0)
+        ? 15000
+        : false;
     },
   });
 }

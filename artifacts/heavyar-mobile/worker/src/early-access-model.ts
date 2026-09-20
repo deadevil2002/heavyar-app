@@ -3,14 +3,17 @@ export const EA = {
   config: 'earlyAccessConfig', subscribers: 'earlyAccessSubscribers', suppression: 'earlyAccessSuppression',
   tokens: 'earlyAccessTokens', rates: 'earlyAccessRateLimits', campaigns: 'earlyAccessCampaigns',
   previews: 'earlyAccessPreviews', deliveries: 'earlyAccessDeliveries',
-  imports: 'earlyAccessImports',
+  imports: 'earlyAccessImports', ownerQa: 'earlyAccessOwnerQa',
 } as const;
+export const OWNER_QA_EMAIL = 'heavyar.official@gmail.com';
 export type RecordVersion = { data: Record<string, any>; updateTime?: string; name?: string } | null;
 export type Change = { collection: string; id: string; data: Record<string, any>; prior: RecordVersion };
+export type DeleteRecord = { collection: string; id: string; prior: NonNullable<RecordVersion> };
 export interface EarlyAccessStore {
   read(collection: string, id: string): Promise<RecordVersion>;
   readMany?(references: Array<{ collection: string; id: string }>): Promise<RecordVersion[]>;
   save(changes: Change[], action: string, target: string, reason?: string): Promise<void>;
+  delete?(records: DeleteRecord[], action: string, target: string, reason?: string, guards?: Change[]): Promise<void>;
   query(collection: string, query: any): Promise<NonNullable<RecordVersion>[]>;
   ownEmail(): Promise<string | null>;
   send(to: string, subject: string, html: string, key: string, text?: string): Promise<{ delivered: boolean; messageId?: string }>;

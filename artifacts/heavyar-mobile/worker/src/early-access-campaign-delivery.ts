@@ -1,4 +1,4 @@
-import { EA, EarlyAccessError, eligible, fail, hash, nowIso, opaqueToken, renderCampaign, type EarlyAccessStore } from './early-access-model';
+import { EA, OWNER_QA_EMAIL, EarlyAccessError, eligible, fail, hash, nowIso, opaqueToken, renderCampaign, type EarlyAccessStore } from './early-access-model';
 
 export const campaignDeliveryStatuses = ['not_sent', 'queued', 'accepted', 'delivered', 'failed', 'bounced', 'complained', 'suppressed', 'skipped'] as const;
 export type CampaignDeliveryStatus = typeof campaignDeliveryStatuses[number];
@@ -51,6 +51,7 @@ export function parseCampaignCsv(input: string) {
 
 export async function snapshotCampaignRecipients(store: EarlyAccessStore, campaignId: string, actorUid: string, contacts: any[], source: 'subscriber' | 'csv_import') {
   if (!contacts.length || contacts.length > 500) fail('INVALID_SELECTION');
+  if ((await store.read(EA.campaigns, campaignId))?.data.ownerQa === true) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
   const timestamp = nowIso(), changes: any[] = [], selectedIds: string[] = [];
   for (const contact of contacts) {
     const email = normalizeCampaignEmail(contact.email);
@@ -77,9 +78,44 @@ export async function snapshotCampaignRecipients(store: EarlyAccessStore, campai
   return { added: changes.length, duplicate: contacts.length - changes.length, recipientIds: selectedIds };
 }
 
+export async function ownerQaSnapshot(store: EarlyAccessStore, campaignId: string, actorUid: string, language: 'ar' | 'en') {
+  const campaign = await store.read(EA.campaigns, campaignId);
+  if (!campaign) fail('NOT_FOUND', 404);
+  if (campaign.data.status !== 'draft' || campaign.data.ownerQa === true) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
+  const existing = await store.query(EA.deliveries, {
+    from: [{ collectionId: EA.deliveries }],
+    where: { fieldFilter: { field: { fieldPath: 'campaignId' }, op: 'EQUAL', value: { stringValue: campaignId } } },
+    limit: 2,
+  });
+  if (existing.length) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
+  const suppressionId = await hash(`early-access-email:${OWNER_QA_EMAIL}`);
+  if ((await store.read(EA.suppression, suppressionId))?.data.suppressed === true) fail('OWNER_QA_SUPPRESSED', 409);
+  const recipientId = await hash(`early-access-owner-qa:${campaignId}:${OWNER_QA_EMAIL}`);
+  const previewId = crypto.randomUUID(), timestamp = nowIso();
+  const expiresAt = new Date(Date.now() + 15 * 60000).toISOString();
+  const recipient = {
+    campaignId, campaignRecipientId: recipientId, normalizedEmail: OWNER_QA_EMAIL, email: OWNER_QA_EMAIL,
+    name: 'Heavyar Owner', businessName: 'Heavyar', language, country: null, source: 'owner_qa',
+    subscriberId: null, lawfulBasisConfirmed: null, deliveryStatus: 'not_sent', suppressionReason: null,
+    attempts: 0, createdAt: timestamp, updatedAt: timestamp, createdBy: actorUid, retryEligible: false, ownerQa: true,
+  };
+  const preview = {
+    campaignId, campaignRevision: campaign.data.revision, actorUid, recipientCount: 1, excludedCount: 0,
+    byLanguage: { [language]: 1 }, byCountry: { unknown: 1 }, exclusionReasons: {}, expiresAt,
+    subscriberIds: [], recipientIds: [recipientId], language, country: null, ownerQa: true,
+  };
+  const campaignData = { ...campaign.data, ownerQa: true, ownerQaRecipientId: recipientId, ownerQaSnapshotId: previewId };
+  await store.save([
+    { collection: EA.campaigns, id: campaignId, prior: campaign, data: campaignData },
+    { collection: EA.deliveries, id: recipientId, prior: null, data: recipient },
+    { collection: EA.previews, id: previewId, prior: null, data: preview },
+  ], 'early_access_owner_qa_snapshot_created', campaignId);
+  return { previewId, recipientCount: 1, language, expiresAt };
+}
+
 export async function campaignRecipients(store: EarlyAccessStore, campaignId: string, limit = 50, cursor?: string, filters: { status?: string; source?: string; country?: string; language?: string } = {}) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) fail('INVALID_LIMIT');
-  const allowedStatuses = new Set(campaignDeliveryStatuses), allowedSources = new Set(['subscriber', 'csv_import']);
+  const allowedStatuses = new Set(campaignDeliveryStatuses), allowedSources = new Set(['subscriber', 'csv_import', 'owner_qa']);
   if (filters.status && !allowedStatuses.has(filters.status as CampaignDeliveryStatus)) fail('INVALID_FILTER');
   if (filters.source && !allowedSources.has(filters.source)) fail('INVALID_FILTER');
   if (filters.country && !/^[A-Z]{2}$/.test(filters.country)) fail('INVALID_FILTER');
@@ -111,6 +147,16 @@ export async function queueCampaign(store: EarlyAccessStore, campaignId: string,
   if (!recipients.length || recipients.length > 500) fail('EMPTY_AUDIENCE', 409);
   const campaign = await store.read(EA.campaigns, campaignId);
   if (!campaign || campaign.data.status !== 'approved' || campaign.data.previewId !== previewId) fail('CAMPAIGN_NOT_APPROVED', 409);
+  if (campaign.data.ownerQa === true) {
+    const unique = [...new Set(recipients)];
+    const recipient = unique.length === 1 ? await store.read(EA.deliveries, unique[0]) : null;
+    if (unique[0] !== campaign.data.ownerQaRecipientId || !recipient || recipient.data.campaignId !== campaignId ||
+      recipient.data.source !== 'owner_qa' || recipient.data.email !== OWNER_QA_EMAIL ||
+      recipient.data.normalizedEmail !== OWNER_QA_EMAIL || recipient.data.ownerQa !== true) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
+  } else {
+    const selected = await Promise.all([...new Set(recipients)].map(recipientId => store.read(EA.deliveries, recipientId)));
+    if (selected.some(recipient => recipient?.data.source === 'owner_qa')) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
+  }
   const changes: any[] = [], skipped: string[] = [];
   for (const recipientId of [...new Set(recipients)]) {
     const recipient = await store.read(EA.deliveries, recipientId);
@@ -151,7 +197,7 @@ export async function retryCampaignRecipients(store: EarlyAccessStore, campaignI
   const changes: any[] = [];
   let queued = 0, skipped = 0;
   for (const candidate of candidates) {
-    if (!candidate || candidate.data.campaignId !== campaignId || candidate.data.deliveryStatus !== 'failed' || candidate.data.retryEligible !== true) { skipped++; continue; }
+    if (!candidate || candidate.data.campaignId !== campaignId || candidate.data.source === 'owner_qa' || candidate.data.ownerQa === true || candidate.data.deliveryStatus !== 'failed' || candidate.data.retryEligible !== true) { skipped++; continue; }
     const id = String(candidate.name || '').split('/').pop();
     if (!id) { skipped++; continue; }
     changes.push({ collection: EA.deliveries, id, prior: candidate, data: {
@@ -218,7 +264,16 @@ export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send:
       where: { fieldFilter: { field: { fieldPath: 'campaignId' }, op: 'EQUAL', value: { stringValue: id } } },
       limit: 501,
     });
-    const recipients = rows.filter(row => (row.data.deliveryStatus === 'queued' || row.data.retryEligible === true) && (!row.data.leaseUntil || Date.parse(row.data.leaseUntil) <= now) && (!row.data.nextAttemptAt || Date.parse(row.data.nextAttemptAt) <= now)).slice(0, 50);
+    const ownerQa = campaign.data.ownerQa === true;
+    const ownerQaShapeValid = !ownerQa || rows.length === 1 && Array.isArray(campaign.data.finalRecipientIds) &&
+      campaign.data.finalRecipientIds.length === 1 && campaign.data.finalRecipientIds[0] === campaign.data.ownerQaRecipientId &&
+      String(rows[0]?.name || '').split('/').pop() === campaign.data.ownerQaRecipientId &&
+      rows[0]?.data.source === 'owner_qa' && rows[0]?.data.ownerQa === true &&
+      rows[0]?.data.email === OWNER_QA_EMAIL && rows[0]?.data.normalizedEmail === OWNER_QA_EMAIL;
+    const recipients = (ownerQaShapeValid ? rows : []).filter(row =>
+      (row.data.deliveryStatus === 'queued' || !ownerQa && row.data.retryEligible === true) &&
+      (!row.data.leaseUntil || Date.parse(row.data.leaseUntil) <= now) &&
+      (!row.data.nextAttemptAt || Date.parse(row.data.nextAttemptAt) <= now)).slice(0, 50);
     for (const recipient of recipients) {
       const rid = String(recipient.name || '').split('/').pop()!, attempt = Number(recipient.data.attempts || 0) + 1;
       if (recipient.data.suppressionReason) continue;
@@ -236,10 +291,30 @@ export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send:
       }
       const unsubscribeToken = opaqueToken(), unsubscribeId = await hash(unsubscribeToken);
       const unsubscribeUrl = `https://heavyar.com/api/early-access/unsubscribe?token=${unsubscribeToken}`;
-      await store.save([
+      const reservation: any[] = [
         { collection: EA.tokens, id: unsubscribeId, prior: null, data: { kind: 'campaign_unsubscribe', recipientId: rid, subscriberId: recipient.data.subscriberId || null, emailHash: await hash(`early-access-email:${recipient.data.email}`), expiresAt: new Date(now + 365 * 86400000).toISOString() } },
         { collection: EA.deliveries, id: rid, prior: claimed, data: { ...claimed.data, unsubscribeTokenId: unsubscribeId, deliveryStatus: 'queued', updatedAt: nowIso() } },
-      ], 'early_access_campaign_delivery_reserved', id);
+      ];
+      if (ownerQa) {
+        const guard = await store.read(EA.ownerQa, 'provider-attempt');
+        if (guard) {
+          await store.save([{ collection: EA.deliveries, id: rid, prior: claimed, data: { ...claimed.data, deliveryStatus: 'skipped', suppressionReason: 'owner_qa_already_attempted', retryEligible: false, leaseToken: null, leaseUntil: null, updatedAt: nowIso() } }], 'early_access_owner_qa_duplicate_blocked', id);
+          continue;
+        }
+        reservation.push({ collection: EA.ownerQa, id: 'provider-attempt', prior: null, data: { campaignId: id, recipientId: rid, email: OWNER_QA_EMAIL, reservedAt: nowIso() } });
+      }
+      try {
+        await store.save(reservation, ownerQa ? 'early_access_owner_qa_provider_attempt_reserved' : 'early_access_campaign_delivery_reserved', id);
+      } catch (error) {
+        if (!ownerQa) throw error;
+        const current = await store.read(EA.deliveries, rid);
+        if (current) {
+          try {
+            await store.save([{ collection: EA.deliveries, id: rid, prior: current, data: { ...current.data, deliveryStatus: 'skipped', suppressionReason: 'owner_qa_already_attempted', retryEligible: false, leaseToken: null, leaseUntil: null, updatedAt: nowIso() } }], 'early_access_owner_qa_duplicate_blocked', id);
+          } catch { /* concurrent owner-QA winner owns the only attempt */ }
+        }
+        continue;
+      }
       let result: { delivered: boolean; messageId?: string };
       try {
         const language = recipient.data.language === 'en' ? 'en' : 'ar';
@@ -249,7 +324,7 @@ export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send:
       catch { result = { delivered: false }; }
       const accepted = result.delivered === true;
       const reserved = await store.read(EA.deliveries, rid);
-      if (reserved?.data.leaseToken === leaseToken) await store.save([{ collection: EA.deliveries, id: rid, prior: reserved, data: { ...reserved.data, deliveryStatus: accepted ? 'accepted' : 'failed', providerMessageId: result.messageId || null, attempts: attempt, retryEligible: !accepted && attempt < 3, nextAttemptAt: !accepted && attempt < 3 ? new Date(now + 2 ** attempt * 60000).toISOString() : null, leaseToken: null, leaseUntil: null, updatedAt: nowIso() } }], accepted ? 'early_access_campaign_email_accepted' : 'early_access_campaign_email_failed', id);
+      if (reserved?.data.leaseToken === leaseToken) await store.save([{ collection: EA.deliveries, id: rid, prior: reserved, data: { ...reserved.data, deliveryStatus: accepted ? 'accepted' : 'failed', providerMessageId: result.messageId || null, attempts: attempt, retryEligible: !ownerQa && !accepted && attempt < 3, nextAttemptAt: !ownerQa && !accepted && attempt < 3 ? new Date(now + 2 ** attempt * 60000).toISOString() : null, leaseToken: null, leaseUntil: null, updatedAt: nowIso() } }], accepted ? 'early_access_campaign_email_accepted' : 'early_access_campaign_email_failed', id);
       processed++;
     }
     const current = await store.query(EA.deliveries, { from: [{ collectionId: EA.deliveries }], where: { fieldFilter: { field: { fieldPath: 'campaignId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 501 });

@@ -24,6 +24,13 @@ interface CampaignsTabProps {
 export function CampaignsTab({ permissions, selectedIds }: CampaignsTabProps) {
   const { language: appLang } = useAppState();
   const t = (ar: string, en: string) => (appLang === 'ar' ? ar : en);
+  const statusLabel = (status?: string) => ({
+    draft: t('مسودة', 'Draft'),
+    approved: t('معتمدة', 'Approved'),
+    queued: t('في قائمة الإرسال', 'Queued'),
+    sending: t('جارٍ الإرسال', 'Sending'),
+    sent: t('اكتمل الإرسال', 'Send completed'),
+  }[status || 'draft'] || t('حالة غير معروفة', 'Unknown status'));
   const { toast } = useToast();
 
   const [cursorHistory, setCursorHistory] = useState<string[]>([]);
@@ -163,7 +170,7 @@ export function CampaignsTab({ permissions, selectedIds }: CampaignsTabProps) {
                     <TableCell className="font-medium">{campaign.name}</TableCell>
                     <TableCell>
                       <Badge variant={campaign.status === 'approved' ? 'default' : 'secondary'}>
-                        {campaign.status || 'draft'}
+                        {statusLabel(campaign.status)}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
@@ -201,7 +208,7 @@ export function CampaignsTab({ permissions, selectedIds }: CampaignsTabProps) {
                   <div className="flex justify-between items-start">
                     <div className="font-semibold text-base">{campaign.name}</div>
                     <Badge variant={campaign.status === 'approved' ? 'default' : 'secondary'}>
-                      {campaign.status || 'draft'}
+                      {statusLabel(campaign.status)}
                     </Badge>
                   </div>
                   <div className="text-sm text-muted-foreground grid grid-cols-2 gap-2">
