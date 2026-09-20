@@ -81,7 +81,11 @@ export async function snapshotCampaignRecipients(store: EarlyAccessStore, campai
 export async function ownerQaSnapshot(store: EarlyAccessStore, campaignId: string, actorUid: string, language: 'ar' | 'en') {
   const campaign = await store.read(EA.campaigns, campaignId);
   if (!campaign) fail('NOT_FOUND', 404);
-  if (campaign.data.status !== 'draft' || campaign.data.ownerQa === true) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
+  if (campaign.data.ownerQa === true) {
+    await store.save([], 'early_access_owner_qa_duplicate_refused', campaignId, actorUid);
+    fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
+  }
+  if (campaign.data.status !== 'draft') fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
   const existing = await store.query(EA.deliveries, {
     from: [{ collectionId: EA.deliveries }],
     where: { fieldFilter: { field: { fieldPath: 'campaignId' }, op: 'EQUAL', value: { stringValue: campaignId } } },
@@ -115,12 +119,13 @@ export async function ownerQaSnapshot(store: EarlyAccessStore, campaignId: strin
 
 export async function campaignRecipients(store: EarlyAccessStore, campaignId: string, limit = 50, cursor?: string, filters: { status?: string; source?: string; country?: string; language?: string } = {}) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) fail('INVALID_LIMIT');
+  const normalizedFilters = Object.fromEntries(Object.entries(filters).filter(([, value]) => value !== undefined && value !== null && value !== '')) as typeof filters;
   const allowedStatuses = new Set(campaignDeliveryStatuses), allowedSources = new Set(['subscriber', 'csv_import', 'owner_qa']);
-  if (filters.status && !allowedStatuses.has(filters.status as CampaignDeliveryStatus)) fail('INVALID_FILTER');
-  if (filters.source && !allowedSources.has(filters.source)) fail('INVALID_FILTER');
-  if (filters.country && !/^[A-Z]{2}$/.test(filters.country)) fail('INVALID_FILTER');
-  if (filters.language && !['ar', 'en'].includes(filters.language)) fail('INVALID_FILTER');
-  const fingerprint = `campaign:${campaignId}:${JSON.stringify(filters)}`, query: any = {
+  if (normalizedFilters.status && !allowedStatuses.has(normalizedFilters.status as CampaignDeliveryStatus)) fail('INVALID_FILTER');
+  if (normalizedFilters.source && !allowedSources.has(normalizedFilters.source)) fail('INVALID_FILTER');
+  if (normalizedFilters.country && !/^[A-Z]{2}$/.test(normalizedFilters.country)) fail('INVALID_FILTER');
+  if (normalizedFilters.language && !['ar', 'en'].includes(normalizedFilters.language)) fail('INVALID_FILTER');
+  const fingerprint = `campaign:${campaignId}:${JSON.stringify(normalizedFilters)}`, query: any = {
     from: [{ collectionId: EA.deliveries }],
     where: { fieldFilter: { field: { fieldPath: 'campaignId' }, op: 'EQUAL', value: { stringValue: campaignId } } },
     orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
@@ -135,7 +140,8 @@ export async function campaignRecipients(store: EarlyAccessStore, campaignId: st
     } catch (error) { if (error instanceof EarlyAccessError) throw error; fail('INVALID_CURSOR'); }
   }
   const rows = await store.query(EA.deliveries, query);
-  const matching = rows.filter(row => Object.entries(filters).every(([field, value]) => String(row.data[field]) === value));
+  const matching = rows.filter(row => Object.entries(normalizedFilters).every(([field, value]) =>
+    String(row.data[field === 'status' ? 'deliveryStatus' : field]) === value));
   const candidates = matching.slice(0, limit);
   const items = candidates.map(row => ({ id: row.name?.split('/').pop(), ...row.data, email: row.data.email, normalizedEmail: undefined, lastAttemptAt: row.data.lastAttemptAt || null }));
   const last = candidates[candidates.length - 1];

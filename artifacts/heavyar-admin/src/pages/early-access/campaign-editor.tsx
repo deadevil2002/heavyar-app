@@ -98,9 +98,8 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
   const ownerQaMode = persistedOwnerQa;
   const csvCounts = csvPreviewCounts(csvPreview?.preview);
   const progress = useCampaignProgress(campaignId);
-  const activeCampaign = progress.data
-    ? progress.data.status === 'queued' || progress.data.queued > 0 || progress.data.accepted > 0
-    : campaignStatus === 'queued';
+  const activeCampaign = campaignStatus === 'queued' ||
+    progress.data?.status === 'queued' || (progress.data?.queued ?? 0) > 0 || (progress.data?.accepted ?? 0) > 0;
   const recipientFilters = {
     ...(recipientStatus !== 'all' ? { status: recipientStatus } : {}),
     ...(recipientSource !== 'all' ? { source: recipientSource } : {}),
@@ -209,6 +208,10 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
     setRecipientCursor(undefined);
     setRecipientCursorHistory([]);
   }, [recipientStatus, recipientSource, recipientCountry, recipientLanguage]);
+
+  useEffect(() => {
+    if (progress.data?.status) setCampaignStatus(progress.data.status);
+  }, [progress.data?.status]);
 
   const handleCsv = async (file?: File) => {
     if (!file) return;

@@ -100,6 +100,19 @@ describe('Early Access API Payload Contract', () => {
     expect(earlyAccess.buildCleanupQaPayload()).toEqual({ confirm: true });
   });
 
+  it('invalidates the exact recipient, progress, and campaign keys after queue success', async () => {
+    expect(earlyAccess.campaignSendInvalidationKeys('campaign-qa')).toEqual([
+      ['early-access', 'campaign', 'campaign-qa', 'recipients'],
+      ['early-access', 'campaign', 'campaign-qa', 'progress'],
+      ['early-access', 'campaigns'],
+    ]);
+    const calls: unknown[] = [];
+    await earlyAccess.invalidateCampaignSendQueries({
+      invalidateQueries: async ({ queryKey }: any) => { calls.push(queryKey); },
+    } as any, 'campaign-qa');
+    expect(calls).toEqual(earlyAccess.campaignSendInvalidationKeys('campaign-qa'));
+  });
+
   it('normalizes all CSV preview counters without inventing unavailable suppression data', () => {
     expect(earlyAccess.csvPreviewCounts({
       headers: ['email'],

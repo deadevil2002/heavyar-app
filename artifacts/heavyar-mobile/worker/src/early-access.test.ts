@@ -3,7 +3,7 @@ import { EA, EarlyAccessError, eligible, hash, permissions, registration, render
 import { handleEarlyAccessPublic, suppress } from './early-access-public';
 import { handleEarlyAccessAdmin, page } from './early-access-admin';
 import { dailyEarlyAccessRetention, retainEarlyAccess } from './early-access-retention';
-import { campaignProgress, campaignRecipients, parseCampaignCsv, processEarlyAccessCampaigns, queueCampaign, retryCampaignRecipients, snapshotCampaignRecipients } from './early-access-campaign-delivery';
+import { campaignDeliveryStatuses, campaignProgress, campaignRecipients, parseCampaignCsv, processEarlyAccessCampaigns, queueCampaign, retryCampaignRecipients, snapshotCampaignRecipients } from './early-access-campaign-delivery';
 
 function memoryStore() {
   const docs = new Map<string, NonNullable<RecordVersion>>(), sent: any[] = [], audit: any[] = [], queries: any[] = [];
@@ -136,6 +136,52 @@ describe('Early Access privacy and races', () => {
     expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(0);
   });
 
+  test('opaque campaign unsubscribe is canonical, idempotent, tamper-safe, and blocks future campaign selection', async () => {
+    const m = memoryStore(), email = 'lead@example.com';
+    m.put(EA.campaigns, 'sent-campaign', { status: 'queued', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    m.put(EA.deliveries, 'sent-recipient', { campaignId: 'sent-campaign', email, normalizedEmail: email, language: 'en', source: 'csv_import', deliveryStatus: 'queued', attempts: 0 });
+    await processEarlyAccessCampaigns(m.store, m.store.send);
+    const token = m.token('unsubscribe');
+    expect(token).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify([...m.docs.values()])).not.toContain(token!);
+    expect(m.docs.get(`${EA.tokens}/${await hash(token!)}`)!.data.kind).toBe('campaign_unsubscribe');
+
+    await handleEarlyAccessPublic(request(`/api/early-access/unsubscribe?token=${token}`, {}), m.store);
+    const suppressionId = await hash(`early-access-email:${email}`);
+    expect(m.docs.get(`${EA.suppression}/${suppressionId}`)!.data.suppressed).toBe(true);
+    expect(m.docs.get(`${EA.deliveries}/sent-recipient`)!.data).toMatchObject({
+      deliveryStatus: 'suppressed',
+      suppressionReason: 'unsubscribe',
+      retryEligible: false,
+    });
+
+    m.put(EA.campaigns, 'future-campaign', { status: 'draft' });
+    const future = await snapshotCampaignRecipients(m.store, 'future-campaign', actor.uid, [{ email, lawfulBasisConfirmed: true }], 'csv_import');
+    expect(m.docs.get(`${EA.deliveries}/${future.recipientIds[0]}`)!.data).toMatchObject({
+      deliveryStatus: 'suppressed',
+      suppressionReason: 'global_suppression',
+    });
+    m.put(EA.campaigns, 'future-campaign', { status: 'approved', previewId: 'future-preview' });
+    expect(await errorCode(() => queueCampaign(m.store, 'future-campaign', actor.uid, 'future-preview', future.recipientIds))).toBe('EMPTY_AUDIENCE');
+
+    const deliveryAfterFirstPost = structuredClone(m.docs.get(`${EA.deliveries}/sent-recipient`));
+    const suppressionAfterFirstPost = structuredClone(m.docs.get(`${EA.suppression}/${suppressionId}`));
+    const progressAfterFirstPost = await campaignProgress(m.store, 'sent-campaign');
+    const auditCountAfterFirstPost = m.audit.length;
+    await handleEarlyAccessPublic(request(`/api/early-access/unsubscribe?token=${token}`, {}), m.store);
+    expect(m.docs.get(`${EA.deliveries}/sent-recipient`)).toEqual(deliveryAfterFirstPost);
+    expect(m.docs.get(`${EA.suppression}/${suppressionId}`)).toEqual(suppressionAfterFirstPost);
+    expect(await campaignProgress(m.store, 'sent-campaign')).toEqual(progressAfterFirstPost);
+    expect(m.audit).toHaveLength(auditCountAfterFirstPost);
+
+    const modifiedToken = `${token!.slice(0, -1)}${token!.endsWith('0') ? '1' : '0'}`;
+    expect(await errorCode(() => handleEarlyAccessPublic(request(`/api/early-access/unsubscribe?token=${modifiedToken}`, {}), m.store))).toBe('LINK_EXPIRED');
+    expect(m.docs.get(`${EA.deliveries}/sent-recipient`)).toEqual(deliveryAfterFirstPost);
+    expect(m.docs.get(`${EA.suppression}/${suppressionId}`)).toEqual(suppressionAfterFirstPost);
+    expect(await campaignProgress(m.store, 'sent-campaign')).toEqual(progressAfterFirstPost);
+    expect(m.audit).toHaveLength(auditCountAfterFirstPost);
+  });
+
   test('scheduler sends at most 50 per tick and resumes without premature completion', async () => {
     const m = memoryStore();
     m.put(EA.campaigns, 'batch-campaign', { status: 'queued', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
@@ -170,6 +216,37 @@ describe('Early Access privacy and races', () => {
     expect(m.docs.get(`${EA.previews}/${preview.previewId}`)!.data.recipientIds).toEqual(['ar-one']);
     const page = await campaignRecipients(m.store, campaignId, 1, undefined, { source: 'csv_import', language: 'ar' });
     expect(page.items.map(item => item.id)).toEqual(['ar-one']);
+  });
+
+  test('admin recipient GET ignores empty filters and maps every status plus source, country and language', async () => {
+    const m = memoryStore(), campaignId = 'recipient-api';
+    m.put(EA.campaigns, campaignId, { status: 'draft', revision: 1 });
+    for (const [index, status] of campaignDeliveryStatuses.entries()) {
+      m.put(EA.deliveries, `status-${status}`, {
+        campaignId, deliveryStatus: status, source: index % 2 ? 'csv_import' : 'subscriber',
+        country: index % 2 ? 'AE' : 'SA', language: index % 2 ? 'en' : 'ar',
+        email: `${status}@example.com`, createdAt: `2026-01-01T00:00:${String(index).padStart(2, '0')}.000Z`,
+      });
+    }
+    m.put(EA.deliveries, 'owner-source', { campaignId, deliveryStatus: 'not_sent', source: 'owner_qa', country: null, language: 'ar', email: 'heavyar.official@gmail.com', createdAt: '2026-01-01T00:01:00.000Z' });
+    const endpoint = `/api/admin/early-access/campaigns/${campaignId}/recipients`;
+    const all: any = await handleEarlyAccessAdmin(request(endpoint), m.store, actor);
+    expect(all.items.length).toBe(campaignDeliveryStatuses.length + 1);
+    for (const status of campaignDeliveryStatuses) {
+      const result: any = await handleEarlyAccessAdmin(request(`${endpoint}?status=${status}`), m.store, actor);
+      expect(result.items.some((item: any) => item.deliveryStatus === status)).toBe(true);
+      expect(result.items.every((item: any) => item.deliveryStatus === status)).toBe(true);
+    }
+    for (const source of ['subscriber', 'csv_import', 'owner_qa']) {
+      const result: any = await handleEarlyAccessAdmin(request(`${endpoint}?source=${source}`), m.store, actor);
+      expect(result.items.length > 0).toBe(true);
+      expect(result.items.every((item: any) => item.source === source)).toBe(true);
+    }
+    for (const [field, expected] of [['country', 'SA'], ['language', 'en']] as const) {
+      const result: any = await handleEarlyAccessAdmin(request(`${endpoint}?${field}=${expected}`), m.store, actor);
+      expect(result.items.length > 0).toBe(true);
+      expect(result.items.every((item: any) => item[field] === expected)).toBe(true);
+    }
   });
 
   test('campaign recipient reads and completion are campaign-scoped, bounded, and cursor-paginated', async () => {
@@ -404,6 +481,41 @@ describe('Early Access privileged campaign foundation', () => {
     expect(await errorCode(approve)).toBe('SUCCESSFUL_TEST_REQUIRED');
     expect(await errorCode(() => handleEarlyAccessAdmin(request('/api/admin/early-access/campaigns/campaign/approve', { previewId: 'preview', confirm: true, confirmOwnerQa: true }), m.store, actor))).toBe('OWNER_QA_AUDIENCE_MISMATCH');
   });
+  test('normal campaign cannot use confirmOwnerQa to bypass its mandatory successful test', async () => {
+    const m = memoryStore();
+    m.setOwnEmail('heavyar.official@gmail.com');
+    m.put(EA.campaigns, 'normal-campaign', { ...campaign, status: 'draft', revision: 1 });
+    m.put(EA.deliveries, 'normal-recipient', {
+      campaignId: 'normal-campaign',
+      email: 'recipient@example.com',
+      normalizedEmail: 'recipient@example.com',
+      source: 'csv_import',
+      deliveryStatus: 'not_sent',
+    });
+    m.put(EA.previews, 'normal-preview', {
+      campaignId: 'normal-campaign',
+      campaignRevision: 1,
+      actorUid: actor.uid,
+      expiresAt: '2099-01-01',
+      recipientCount: 1,
+      recipientIds: ['normal-recipient'],
+    });
+    const campaignBefore = structuredClone(m.docs.get(`${EA.campaigns}/normal-campaign`));
+    const auditCountBefore = m.audit.length;
+    expect(await errorCode(() => handleEarlyAccessAdmin(request('/api/admin/early-access/campaigns/normal-campaign/approve', {
+      previewId: 'normal-preview',
+      confirm: true,
+      confirmOwnerQa: true,
+    }), m.store, actor))).toBe('OWNER_QA_AUDIENCE_MISMATCH');
+    expect(m.docs.get(`${EA.campaigns}/normal-campaign`)).toEqual(campaignBefore);
+    expect(m.audit).toHaveLength(auditCountBefore);
+    expect(await errorCode(() => handleEarlyAccessAdmin(request('/api/admin/early-access/campaigns/normal-campaign/approve', {
+      previewId: 'normal-preview',
+      confirm: true,
+    }), m.store, actor))).toBe('SUCCESSFUL_TEST_REQUIRED');
+    expect(m.docs.get(`${EA.campaigns}/normal-campaign`)).toEqual(campaignBefore);
+    expect(m.audit).toHaveLength(auditCountBefore);
+  });
   test('owner QA snapshot requires authoritative exact owner and rejects mixed or suppressed audiences', async () => {
     const path = '/api/admin/early-access/campaigns/owner-qa/owner-qa-snapshot';
     const unauthorized = memoryStore();
@@ -444,6 +556,8 @@ describe('Early Access privileged campaign foundation', () => {
     expect(m.sent[0].to).toBe('heavyar.official@gmail.com');
     expect(m.docs.get(`${EA.deliveries}/${firstRecipient}`)!.data.retryEligible).toBe(false);
     expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(0);
+    expect(await errorCode(() => handleEarlyAccessAdmin(request('/api/admin/early-access/campaigns/owner-qa-one/owner-qa-snapshot', { confirm: true, language: 'ar' }), m.store, actor))).toBe('OWNER_QA_AUDIENCE_MISMATCH');
+    expect(m.audit.some(item => item.action === 'early_access_owner_qa_duplicate_refused' && item.target === 'owner-qa-one')).toBe(true);
     await prepare('owner-qa-two');
     expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(0);
     expect(m.sent).toHaveLength(1);

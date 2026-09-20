@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { fetchApi, PaginatedResponse } from './api';
 
 export type EarlyAccessConfig = {
@@ -230,6 +230,23 @@ export function buildCleanupQaPayload() {
   return { confirm: true as const };
 }
 
+export function campaignSendInvalidationKeys(campaignId: string) {
+  return [
+    ['early-access', 'campaign', campaignId, 'recipients'],
+    ['early-access', 'campaign', campaignId, 'progress'],
+    ['early-access', 'campaigns'],
+  ] as const;
+}
+
+export async function invalidateCampaignSendQueries(
+  queryClient: Pick<QueryClient, 'invalidateQueries'>,
+  campaignId: string,
+) {
+  await Promise.all(campaignSendInvalidationKeys(campaignId).map(queryKey =>
+    queryClient.invalidateQueries({ queryKey }),
+  ));
+}
+
 export function csvPreviewCounts(preview?: CsvPreview | null) {
   const counts = preview?.counts || {};
   const valid = counts.validEmail ?? preview?.contacts?.length ?? 0;
@@ -417,7 +434,7 @@ export function useCampaignRecipients(campaignId: string, params: Record<string,
       `/early-access/campaigns/${campaignId}/recipients?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)]))}`,
     ),
     enabled: true,
-    refetchInterval: poll ? 30000 : false,
+    refetchInterval: poll ? 15000 : false,
   });
 }
 
@@ -442,7 +459,9 @@ export function useSendCampaign(campaignId: string) {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['early-access', 'campaigns'] }),
+    onSuccess: async () => {
+      await invalidateCampaignSendQueries(queryClient, campaignId);
+    },
   });
 }
 

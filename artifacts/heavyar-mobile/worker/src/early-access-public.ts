@@ -97,9 +97,14 @@ export async function handleEarlyAccessPublic(req: Request, store: EarlyAccessSt
         if (recipient) {
           const suppressionId = record.data.subscriberId || await hash(`early-access-email:${recipient.data.email}`);
           const suppression = await store.read(EA.suppression, suppressionId);
+          if (suppression?.data.suppressed === true && recipient.data.deliveryStatus === 'suppressed' &&
+              recipient.data.suppressionReason === 'unsubscribe' && recipient.data.retryEligible === false) {
+            return completed(req, 'unsubscribe');
+          }
+          const timestamp = nowIso();
           await store.save([
-            { collection: EA.suppression, id: suppressionId, prior: suppression, data: { suppressed: true, updatedAt: nowIso() } },
-            { collection: EA.deliveries, id: record.data.recipientId, prior: recipient, data: { ...recipient.data, deliveryStatus: 'suppressed', suppressionReason: 'unsubscribe', retryEligible: false, updatedAt: nowIso() } },
+            { collection: EA.suppression, id: suppressionId, prior: suppression, data: { suppressed: true, updatedAt: suppression?.data.updatedAt || timestamp } },
+            { collection: EA.deliveries, id: record.data.recipientId, prior: recipient, data: { ...recipient.data, deliveryStatus: 'suppressed', suppressionReason: 'unsubscribe', retryEligible: false, updatedAt: timestamp } },
           ], 'early_access_campaign_unsubscribed', record.data.recipientId);
         }
         return completed(req, 'unsubscribe');
