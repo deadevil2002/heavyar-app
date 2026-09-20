@@ -143,7 +143,11 @@ export async function campaignRecipients(store: EarlyAccessStore, campaignId: st
   const matching = rows.filter(row => Object.entries(normalizedFilters).every(([field, value]) =>
     String(row.data[field === 'status' ? 'deliveryStatus' : field]) === value));
   const candidates = matching.slice(0, limit);
-  const items = candidates.map(row => ({ id: row.name?.split('/').pop(), ...row.data, email: row.data.email, normalizedEmail: undefined, lastAttemptAt: row.data.lastAttemptAt || null }));
+  const items = candidates.map(row => ({
+    id: row.name?.split('/').pop(), ...row.data, email: row.data.email, normalizedEmail: undefined,
+    lastAttemptAt: row.data.lastAttemptAt || null, sentAt: row.data.sentAt || null, acceptedAt: row.data.acceptedAt || null,
+    deliveredAt: row.data.deliveredAt || (row.data.deliveryStatus === 'delivered' ? row.data.deliveryEventAt || null : null),
+  }));
   const last = candidates[candidates.length - 1];
   const nextCursor = matching.length > limit && last?.name ? btoa(JSON.stringify({ fingerprint, name: last.name })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') : null;
   return { items, nextCursor };
@@ -330,7 +334,10 @@ export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send:
       catch { result = { delivered: false }; }
       const accepted = result.delivered === true;
       const reserved = await store.read(EA.deliveries, rid);
-      if (reserved?.data.leaseToken === leaseToken) await store.save([{ collection: EA.deliveries, id: rid, prior: reserved, data: { ...reserved.data, deliveryStatus: accepted ? 'accepted' : 'failed', providerMessageId: result.messageId || null, attempts: attempt, retryEligible: !ownerQa && !accepted && attempt < 3, nextAttemptAt: !ownerQa && !accepted && attempt < 3 ? new Date(now + 2 ** attempt * 60000).toISOString() : null, leaseToken: null, leaseUntil: null, updatedAt: nowIso() } }], accepted ? 'early_access_campaign_email_accepted' : 'early_access_campaign_email_failed', id);
+      if (reserved?.data.leaseToken === leaseToken) {
+        const outcomeAt = nowIso();
+        await store.save([{ collection: EA.deliveries, id: rid, prior: reserved, data: { ...reserved.data, deliveryStatus: accepted ? 'accepted' : 'failed', providerMessageId: result.messageId || null, attempts: attempt, acceptedAt: accepted ? reserved.data.acceptedAt || outcomeAt : reserved.data.acceptedAt || null, retryEligible: !ownerQa && !accepted && attempt < 3, nextAttemptAt: !ownerQa && !accepted && attempt < 3 ? new Date(now + 2 ** attempt * 60000).toISOString() : null, leaseToken: null, leaseUntil: null, updatedAt: outcomeAt } }], accepted ? 'early_access_campaign_email_accepted' : 'early_access_campaign_email_failed', id);
+      }
       processed++;
     }
     const current = await store.query(EA.deliveries, { from: [{ collectionId: EA.deliveries }], where: { fieldFilter: { field: { fieldPath: 'campaignId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 501 });

@@ -128,8 +128,8 @@ describe('Early Access real adapter, signed shared webhook and REST precondition
       expect(preview.recipientCount).toBe(count);
       if (count === 0) expect(preview.exclusionReasons.delivery_failed).toBe(1);
     }
-    const campaignEvent = async (type: string, eventId: string, message = 'message-2') => {
-      const timestamp = String(Math.floor(Date.now() / 1000)), payload = JSON.stringify({ type: `email.${type}`, data: { email_id: message } });
+    const campaignEvent = async (type: string, eventId: string, message = 'message-2', createdAt?: string) => {
+      const timestamp = String(Math.floor(Date.now() / 1000)), payload = JSON.stringify({ type: `email.${type}`, data: { email_id: message }, ...(createdAt ? { created_at: createdAt } : {}) });
       const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${eventId}.${timestamp}.${payload}`)))));
       return worker.fetch(new Request('https://worker.test/api/webhooks/resend', { method: 'POST', headers: { 'svix-id': eventId, 'svix-timestamp': timestamp, 'svix-signature': `v1,${signature}` }, body: payload }), { ...env, RESEND_WEBHOOK_SECRET: `whsec_${secret}` });
     };
@@ -157,6 +157,20 @@ describe('Early Access real adapter, signed shared webhook and REST precondition
     expect((await campaignEvent('failed', 'owner-qa-failed-event', 'owner-qa-message')).status).toBe(200);
     expect(docs.get(`${prefix}${EA.deliveries}/owner-qa-failed`).fields.retryEligible.booleanValue).toBe(false);
     expect(docs.get(`${prefix}${EA.deliveries}/owner-qa-failed`).fields.nextAttemptAt.nullValue).toBe(null);
+    const acceptedAt = '2026-09-20T14:20:00.000Z', deliveredAt = '2026-09-20T14:20:17.626Z';
+    put(EA.deliveries, 'timeline', { campaignId: 'campaign', normalizedEmail: 'timeline@example.test', providerMessageId: 'timeline-message', deliveryStatus: 'pending', attempts: 1 });
+    expect((await campaignEvent('sent', 'timeline-sent', 'timeline-message', acceptedAt)).status).toBe(200);
+    expect(docs.get(`${prefix}${EA.deliveries}/timeline`).fields.sentAt.timestampValue).toBe(acceptedAt);
+    expect(docs.get(`${prefix}${EA.deliveries}/timeline`).fields.acceptedAt.timestampValue).toBe(acceptedAt);
+    expect((await campaignEvent('delivered', 'timeline-delivered', 'timeline-message', deliveredAt)).status).toBe(200);
+    expect(docs.get(`${prefix}${EA.deliveries}/timeline`).fields.deliveredAt.timestampValue).toBe(deliveredAt);
+    const commitsBeforeReplay = commits.length;
+    expect((await campaignEvent('delivered', 'timeline-delivered', 'timeline-message', deliveredAt)).status).toBe(200);
+    expect(commits.length).toBe(commitsBeforeReplay);
+    expect((await campaignEvent('sent', 'timeline-reordered', 'timeline-message', '2026-09-20T14:19:00.000Z')).status).toBe(200);
+    expect(docs.get(`${prefix}${EA.deliveries}/timeline`).fields.sentAt.timestampValue).toBe(acceptedAt);
+    expect(docs.get(`${prefix}${EA.deliveries}/timeline`).fields.acceptedAt.timestampValue).toBe(acceptedAt);
+    expect(docs.get(`${prefix}${EA.deliveries}/timeline`).fields.deliveredAt.timestampValue).toBe(deliveredAt);
   });
 
   test('scheduled campaign adapter forwards rendered plain text to Resend', async () => {
@@ -181,6 +195,17 @@ describe('Early Access real adapter, signed shared webhook and REST precondition
     expect(docs.get(`${prefix}${EA.deliveries}/delivery`).fields.expiresAt.nullValue).toBe(null);
     const reconcile = commits.at(-1)![0];
     expect(reconcile.currentDocument.updateTime === prior!.updateTime).toBe(false);
+    const deliveredAt = '2026-09-20T14:20:17.626Z';
+    const sentAt = '2026-09-20T14:20:00.000Z';
+    put(EA.deliveries, 'delivered-race', { deliveryStatus: 'pending', createdAt: new Date().toISOString() });
+    put('resendWebhookEvents', 'sent-early', { providerMessageId: 'message-race', status: 'accepted', eventAt: sentAt, processedAt: '2026-09-20T14:20:01.000Z' });
+    put('resendWebhookEvents', 'delivered-early', { providerMessageId: 'message-race', status: 'delivered', eventAt: deliveredAt, processedAt: '2026-09-20T14:20:18.000Z' });
+    const racePrior = await store.read(EA.deliveries, 'delivered-race');
+    await store.save([{ collection: EA.deliveries, id: 'delivered-race', prior: racePrior, data: { ...racePrior!.data, providerMessageId: 'message-race', deliveryStatus: 'accepted' } }], 'early_access_email_accepted', 'delivered-race');
+    expect(docs.get(`${prefix}${EA.deliveries}/delivered-race`).fields.deliveryStatus.stringValue).toBe('delivered');
+    expect(docs.get(`${prefix}${EA.deliveries}/delivered-race`).fields.sentAt.timestampValue).toBe(sentAt);
+    expect(docs.get(`${prefix}${EA.deliveries}/delivered-race`).fields.acceptedAt.timestampValue).toBe(sentAt);
+    expect(docs.get(`${prefix}${EA.deliveries}/delivered-race`).fields.deliveredAt.timestampValue).toBe(deliveredAt);
   });
   test('terminal subscriber proof survives TTL, missing proof fails closed, and old-generation events never suppress fresh verified generation', async () => {
     const oldExpiry = '2020-01-01T00:00:00.000Z';

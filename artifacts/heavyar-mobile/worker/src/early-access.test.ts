@@ -130,6 +130,7 @@ describe('Early Access privacy and races', () => {
     expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(1);
     const recipient = m.docs.get(`${EA.deliveries}/recipient-1`)!;
     expect(recipient.data.deliveryStatus).toBe('accepted');
+    expect(recipient.data.acceptedAt).toBeString();
     expect(m.docs.get(`${EA.campaigns}/campaign-1`)!.data.status).toBe('sent');
     expect(m.sent[0].html).toContain('unsubscribe?token=');
     recipient.data.deliveryStatus = 'delivered'; m.put(EA.deliveries, 'recipient-1', recipient.data);
@@ -226,12 +227,16 @@ describe('Early Access privacy and races', () => {
         campaignId, deliveryStatus: status, source: index % 2 ? 'csv_import' : 'subscriber',
         country: index % 2 ? 'AE' : 'SA', language: index % 2 ? 'en' : 'ar',
         email: `${status}@example.com`, createdAt: `2026-01-01T00:00:${String(index).padStart(2, '0')}.000Z`,
+        ...(status === 'delivered' ? { deliveryEventAt: '2026-09-20T14:20:17.626Z' } : {}),
       });
     }
     m.put(EA.deliveries, 'owner-source', { campaignId, deliveryStatus: 'not_sent', source: 'owner_qa', country: null, language: 'ar', email: 'heavyar.official@gmail.com', createdAt: '2026-01-01T00:01:00.000Z' });
     const endpoint = `/api/admin/early-access/campaigns/${campaignId}/recipients`;
     const all: any = await handleEarlyAccessAdmin(request(endpoint), m.store, actor);
     expect(all.items.length).toBe(campaignDeliveryStatuses.length + 1);
+    expect(all.items.find((item: any) => item.id === 'status-delivered').deliveredAt).toBe('2026-09-20T14:20:17.626Z');
+    expect(m.docs.get(`${EA.deliveries}/status-delivered`)!.data.deliveredAt).toBe(undefined);
+    expect(all.items.find((item: any) => item.id === 'status-accepted').deliveredAt).toBe(null);
     for (const status of campaignDeliveryStatuses) {
       const result: any = await handleEarlyAccessAdmin(request(`${endpoint}?status=${status}`), m.store, actor);
       expect(result.items.some((item: any) => item.deliveryStatus === status)).toBe(true);

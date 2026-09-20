@@ -15,3 +15,13 @@ export function earlyAccessDeliveryProof(data: Record<string, any>, status: stri
     expiresAt: { nullValue: null },
   } : {};
 }
+
+/** Canonical provider-state times. Existing evidence is immutable. */
+export function earlyAccessStateTimestamps(data: Record<string, any>, status: string, eventAt: string): Record<string, string> {
+  if (status === 'accepted') return {
+    ...(data.sentAt ? {} : { sentAt: eventAt }),
+    ...(data.acceptedAt ? {} : { acceptedAt: eventAt }),
+  };
+  if (status === 'delivered' && !data.deliveredAt) return { deliveredAt: eventAt };
+  return {};
+}

@@ -8,7 +8,7 @@ import { PUBLIC_IDENTIFIER_COUNTER_IDS, PUBLIC_IDENTIFIER_FIELDS, formatPublicId
 import { isPublicRentableListing, legacyProviderReady, listingVisibilityForOwnerActive, requiresListingRereview } from './moderation';
 import { createInvoicePdfService, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
 import { quotaFetch, isQuotaError, quotaResponse, quotaBlocked } from './quota-policy';
-import { earlyAccessDeliveryProof } from './early-access-delivery';
+import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-access-delivery';
 import { hash } from './early-access-model';
 import { evaluateCanonicalCompleteness, isOperationallyBlocked, isSecuritySuspended, isStoreReviewAccount } from './integrity';
 
@@ -245,6 +245,7 @@ async function resendWebhook(req: Request, env: Env) {
       }
       if (!terminalSubscriberEvent && (status === 'accepted' && priorIsFinal || Number.isFinite(priorEventTime) && parsedEventTime < priorEventTime)) continue;
       const fields = { deliveryStatus: { stringValue: status }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() }, deliveryEventAt: { timestampValue: eventAt },
+        ...(collection === 'earlyAccessDeliveries' ? Object.fromEntries(Object.entries(earlyAccessStateTimestamps(prior, status, eventAt)).map(([field, timestamp]) => [field, { timestampValue: timestamp }])) : {}),
         ...(collection === 'earlyAccessDeliveries' && status === 'failed' ? {
           retryEligible: { booleanValue: prior.source !== 'owner_qa' && Number(prior.attempts || 0) < 3 },
           nextAttemptAt: prior.source !== 'owner_qa' && Number(prior.attempts || 0) < 3 ? { timestampValue: new Date().toISOString() } : { nullValue: null },

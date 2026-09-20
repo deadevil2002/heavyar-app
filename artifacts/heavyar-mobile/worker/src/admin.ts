@@ -18,7 +18,7 @@ import { handleEarlyAccessAdmin } from './early-access-admin';
 import { handleEarlyAccessPublic } from './early-access-public';
 import { EarlyAccessError, subscriberFacets, type EarlyAccessStore } from './early-access-model';
 import { dailyEarlyAccessRetention } from './early-access-retention';
-import { earlyAccessDeliveryProof } from './early-access-delivery';
+import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-access-delivery';
 import { processEarlyAccessCampaigns } from './early-access-campaign-delivery';
 
 export type AdminRole = 'super_admin' | 'admin';
@@ -142,16 +142,26 @@ async function priorResendEvent(env: Env, providerMessageId: string, retainSubsc
     limit: 20,
   } }) }) as any[] || [];
   const allowed = new Set(['accepted', 'delivered', 'bounced', 'complained', 'failed']);
-  return rows.flatMap(row => row.document ? [decode(row.document)] : [])
-    .filter(event => event.providerMessageId === providerMessageId && allowed.has(String(event.status)))
-    .sort((a, b) => {
+  const events = rows.flatMap(row => row.document ? [decode(row.document)] : [])
+    .filter(event => event.providerMessageId === providerMessageId && allowed.has(String(event.status)));
+  const selected = events.sort((a, b) => {
       if (retainSubscriberSuppression) {
         const rank = (status: string) => status === 'complained' ? 2 : status === 'bounced' ? 1 : 0;
         const terminal = rank(b.status) - rank(a.status);
         if (terminal) return terminal;
       }
       return Date.parse(String(b.eventAt || b.processedAt || '')) - Date.parse(String(a.eventAt || a.processedAt || ''));
-    })[0] || null;
+    })[0];
+  if (!selected) return null;
+  const originalByState = [...events].sort((a, b) =>
+    Date.parse(String(a.processedAt || a.eventAt || '')) - Date.parse(String(b.processedAt || b.eventAt || '')));
+  const accepted = originalByState.find(event => event.status === 'accepted');
+  const delivered = originalByState.find(event => event.status === 'delivered');
+  const stateTimestamps = {
+    ...(accepted ? { sentAt: accepted.eventAt || accepted.processedAt, acceptedAt: accepted.eventAt || accepted.processedAt } : {}),
+    ...(delivered ? { deliveredAt: delivered.eventAt || delivered.processedAt } : {}),
+  };
+  return { ...selected, stateTimestamps };
 }
 
 async function reconcileResendProjection(env: Env, collection: 'emailVerificationRateLimits' | 'staffInvitations' | 'earlyAccessDeliveries', id: string, providerMessageId: string) {
@@ -166,7 +176,12 @@ async function reconcileResendProjection(env: Env, collection: 'emailVerificatio
     const terminalSubscriberEvent = collection === 'earlyAccessDeliveries' && record.data.subscriberId && ['bounced', 'complained'].includes(event.status);
     if (!Number.isFinite(eventTime) || !terminalSubscriberEvent && (Number.isFinite(projectedTime) && (eventTime < projectedTime || eventTime === projectedTime && event.status === record.data.deliveryStatus) ||
         event.status === 'accepted' && projectedFinal)) return record.data.deliveryStatus || null;
-    const fields = { deliveryStatus: jsonValue(event.status), deliveryEventAt: { timestampValue: new Date(eventTime).toISOString() }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() },
+    const canonicalEventAt = new Date(eventTime).toISOString();
+    const stateTimestamps = collection === 'earlyAccessDeliveries'
+      ? { ...(event.stateTimestamps || {}), ...earlyAccessStateTimestamps(record.data, event.status, canonicalEventAt) }
+      : {};
+    const fields = { deliveryStatus: jsonValue(event.status), deliveryEventAt: { timestampValue: canonicalEventAt }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() },
+      ...Object.fromEntries(Object.entries(stateTimestamps).filter(([field, timestamp]) => !record.data[field] && typeof timestamp === 'string' && Number.isFinite(Date.parse(timestamp))).map(([field, timestamp]) => [field, { timestampValue: timestamp }])),
       ...(collection === 'earlyAccessDeliveries' ? earlyAccessDeliveryProof(record.data, event.status) : {}) };
     try {
       await commit(env, [{ update: { name: fullName(env, `${collection}/${id}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: record.updateTime } }]);
