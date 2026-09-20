@@ -109,6 +109,7 @@ describe('Early Access real adapter, signed shared webhook and REST precondition
 
   test('shared signed webhook accepted/delivered/bounced/complained/failed projects then preview excludes failures; replay safe', async () => {
     put(EA.deliveries, 'delivery', { providerMessageId: 'message-1', deliveryStatus: 'pending' });
+    put(EA.deliveries, 'campaign-delivery', { campaignId: 'campaign', providerMessageId: 'message-2', deliveryStatus: 'accepted', attempts: 1, lastAttemptAt: new Date().toISOString() });
     put(EA.subscribers, 'subscriber', { email: 'recipient@example.test', consentMarketing: true, verified: true, status: 'active', language: 'ar', country: 'SA', deliveryStatus: 'pending', deliveryId: 'delivery' });
     put(EA.campaigns, 'campaign', { name: 'Launch', revision: 1, subjectAr: 'عربي', subjectEn: 'English', bodyAr: 'عربي', bodyEn: 'English' });
     const secretBytes = new TextEncoder().encode('local-svix-contract-key'), secret = btoa(String.fromCharCode(...secretBytes));
@@ -126,6 +127,21 @@ describe('Early Access real adapter, signed shared webhook and REST precondition
       expect(preview.recipientCount).toBe(count);
       if (count === 0) expect(preview.exclusionReasons.delivery_failed).toBe(1);
     }
+    const campaignEvent = async (type: string, eventId: string, message = 'message-2') => {
+      const timestamp = String(Math.floor(Date.now() / 1000)), payload = JSON.stringify({ type: `email.${type}`, data: { email_id: message } });
+      const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${eventId}.${timestamp}.${payload}`)))));
+      return worker.fetch(new Request('https://worker.test/api/webhooks/resend', { method: 'POST', headers: { 'svix-id': eventId, 'svix-timestamp': timestamp, 'svix-signature': `v1,${signature}` }, body: payload }), { ...env, RESEND_WEBHOOK_SECRET: `whsec_${secret}` });
+    };
+    expect((await campaignEvent('delivered', 'campaign-delivered')).status).toBe(200);
+    expect(docs.get(`${prefix}${EA.deliveries}/campaign-delivery`).fields.deliveryStatus.stringValue).toBe('delivered');
+    expect((await campaignEvent('sent', 'campaign-sent-late')).status).toBe(200);
+    expect(docs.get(`${prefix}${EA.deliveries}/campaign-delivery`).fields.deliveryStatus.stringValue).toBe('delivered');
+    put(EA.deliveries, 'campaign-failed', { campaignId: 'campaign', normalizedEmail: 'failed@example.test', providerMessageId: 'message-3', deliveryStatus: 'accepted', attempts: 1 });
+    const suppressionsBeforeFailure = [...docs.keys()].filter(name => name.includes(`/${EA.suppression}/`)).length;
+    expect((await campaignEvent('failed', 'campaign-failed-event', 'message-3')).status).toBe(200);
+    expect([...docs.keys()].filter(name => name.includes(`/${EA.suppression}/`)).length).toBe(suppressionsBeforeFailure);
+    expect((await campaignEvent('bounced', 'campaign-failed-bounce', 'message-3')).status).toBe(200);
+    expect([...docs.keys()].filter(name => name.includes(`/${EA.suppression}/`)).length).toBe(suppressionsBeforeFailure + 1);
   });
 
   test('adapter never overwrites without a version and reconciles early webhook delivery', async () => {
@@ -183,7 +199,7 @@ describe('Early Access real adapter, signed shared webhook and REST precondition
     put(EA.subscribers, 'subscriber', { verified: true, consentMarketing: true, status: 'active', deliveryId: 'fresh', language: 'ar', country: 'SA' });
     await event('complained', 'old-message');
     expect(docs.get(`${prefix}${EA.deliveries}/old`).fields.deliveryStatus.stringValue).toBe('complained');
-    expect(await preview()).toBe(1);
+    expect(await preview()).toBe(0);
     expect(docs.get(`${prefix}${EA.deliveries}/fresh`).fields.deliveryStatus.stringValue).toBe('accepted');
   });
   test('inner public/Admin quota errors preserve shared HTTP cooldown and safe storage failures do not leak', async () => {

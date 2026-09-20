@@ -25,7 +25,12 @@ describe('Early Access API Payload Contract', () => {
     const selected = new Set(['id-1', 'id-2']);
     const payload = earlyAccess.buildPreviewPayload('camp-1', selected, 'ar', 'SA');
     expect(payload.subscriberIds).toEqual(['id-1', 'id-2']);
+    expect(payload.recipientIds).toEqual([]);
     expect(payload.language).toBe('ar');
+    expect(earlyAccess.buildPreviewPayload('camp-1', new Set(), undefined, undefined, new Set(), true, { status: 'not_sent', source: 'csv_import' })).toMatchObject({
+      selectAllRecipients: true,
+      recipientFilters: { status: 'not_sent', source: 'csv_import' },
+    });
   });
 
   it('buildTestPayload appends language to base idempotency key', () => {
@@ -48,5 +53,41 @@ describe('Early Access API Payload Contract', () => {
       verified: true
     };
     expect(mockSubscriber.email).toBe('test@example.com');
+  });
+
+  it('builds bounded server-side snapshot payloads without scanning the browser', () => {
+    expect(earlyAccess.buildSnapshotPayload(new Set(['a', 'b']))).toEqual({ subscriberIds: ['a', 'b'] });
+    expect(earlyAccess.buildSnapshotPayload(new Set(), { source: 'csv_import' }, true)).toEqual({
+      selectAll: true,
+      filters: { source: 'csv_import' },
+    });
+  });
+
+  it('keeps CSV preview/import explicit and capped at the Worker contract boundary', () => {
+    expect(earlyAccess.buildImportPayload('email\\na@example.com', 'leads.csv')).toEqual({
+      csv: 'email\\na@example.com',
+      filename: 'leads.csv',
+      confirm: false,
+    });
+    expect(earlyAccess.buildImportPayload('email\\na@example.com', 'leads.csv', true).confirm).toBe(true);
+    expect(earlyAccess.buildImportPayload('email\\na@example.com', 'leads.csv', true, true).lawfulBasisConfirmed).toBe(true);
+  });
+
+  it('preserves accepted versus delivered as separate delivery states', () => {
+    const accepted: earlyAccess.CampaignRecipient = {
+      id: 'r1', email: 'a@example.com', source: 'subscriber', deliveryStatus: 'accepted',
+    };
+    const delivered: earlyAccess.CampaignRecipient = {
+      id: 'r2', email: 'b@example.com', source: 'csv_import', deliveryStatus: 'delivered',
+    };
+    expect(accepted.deliveryStatus).not.toBe(delivered.deliveryStatus);
+    expect(({
+      id: 'r3', email: 'c@example.com', source: 'subscriber', deliveryStatus: 'not_sent',
+    } satisfies earlyAccess.CampaignRecipient).deliveryStatus).toBe('not_sent');
+  });
+
+  it('builds only the two exact retry request shapes', () => {
+    expect(earlyAccess.buildRetryPayload(['r1', 'r2'])).toEqual({ recipientIds: ['r1', 'r2'] });
+    expect(earlyAccess.buildRetryPayload([], true)).toEqual({ allEligible: true });
   });
 });

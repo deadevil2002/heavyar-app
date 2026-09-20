@@ -1,6 +1,6 @@
 import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
 import { buildLegacyCatalog, calculateCommercial, majorToMinor, minorToMajor, resolveRule, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
-import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
+import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
 import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry } from './completion';
@@ -9,6 +9,7 @@ import { isPublicRentableListing, legacyProviderReady, listingVisibilityForOwner
 import { createInvoicePdfService, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
 import { quotaFetch, isQuotaError, quotaResponse, quotaBlocked } from './quota-policy';
 import { earlyAccessDeliveryProof } from './early-access-delivery';
+import { hash } from './early-access-model';
 import { evaluateCanonicalCompleteness, isOperationallyBlocked, isSecuritySuspended, isStoreReviewAccount } from './integrity';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
@@ -223,18 +224,36 @@ async function resendWebhook(req: Request, env: Env) {
   if (await fs(env, markerPath)) return out(env, req, { success: true, duplicate: true });
 
   const writes: any[] = [];
+  const suppressionWrites = new Map<string, any>();
   for (const collection of ['emailVerificationRateLimits', 'staffInvitations', 'earlyAccessDeliveries']) {
     const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where: { fieldFilter: { field: { fieldPath: 'providerMessageId' }, op: 'EQUAL', value: { stringValue: providerMessageId } } }, limit: 20 } }) }) as any[] || [];
     for (const row of rows.filter((item: any) => item.document && decode(item.document).providerMessageId === providerMessageId)) {
       const prior = decode(row.document), priorStatus = String(prior.deliveryStatus || ''), priorEventTime = Date.parse(String(prior.deliveryEventAt || ''));
       const priorIsFinal = ['delivered', 'bounced', 'failed', 'complained'].includes(priorStatus);
       const terminalSubscriberEvent = collection === 'earlyAccessDeliveries' && prior.subscriberId && ['bounced', 'complained'].includes(status);
+      if (collection === 'earlyAccessDeliveries' && ['bounced', 'complained'].includes(status)) {
+        const suppressionId = prior.subscriberId || await hash(`early-access-email:${String(prior.normalizedEmail || prior.email || '').trim().toLowerCase()}`);
+        if (suppressionId && !suppressionWrites.has(suppressionId)) {
+          const existing = await fs(env, `earlyAccessSuppression/${suppressionId}`);
+          suppressionWrites.set(suppressionId, {
+            update: { name: fullName(env, `earlyAccessSuppression/${suppressionId}`), fields: {
+              suppressed: { booleanValue: true }, updatedAt: { timestampValue: new Date().toISOString() }, reason: { stringValue: status },
+            } },
+            currentDocument: existing?.updateTime ? { updateTime: existing.updateTime } : { exists: false },
+          });
+        }
+      }
       if (!terminalSubscriberEvent && (status === 'accepted' && priorIsFinal || Number.isFinite(priorEventTime) && parsedEventTime < priorEventTime)) continue;
       const fields = { deliveryStatus: { stringValue: status }, deliveryUpdatedAt: { timestampValue: new Date().toISOString() }, deliveryEventAt: { timestampValue: eventAt },
+        ...(collection === 'earlyAccessDeliveries' && status === 'failed' ? {
+          retryEligible: { booleanValue: Number(prior.attempts || 0) < 3 },
+          nextAttemptAt: Number(prior.attempts || 0) < 3 ? { timestampValue: new Date().toISOString() } : { nullValue: null },
+        } : {}),
         ...(collection === 'earlyAccessDeliveries' ? earlyAccessDeliveryProof(prior, status) : {}) };
       writes.push({ update: { name: row.document.name, fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: row.document.updateTime ? { updateTime: row.document.updateTime } : undefined });
     }
   }
+  writes.push(...suppressionWrites.values());
   const processedAt = new Date().toISOString();
   writes.push({ update: { name: markerName, fields: { status: { stringValue: status }, eventType: { stringValue: type }, providerMessageId: { stringValue: providerMessageId }, processed: { booleanValue: true }, processedAt: { timestampValue: processedAt }, receivedAt: { timestampValue: processedAt }, eventAt: { timestampValue: eventAt } } }, currentDocument: { exists: false } });
   try {
@@ -2854,7 +2873,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     let processorFailed = false;
     // Sequence processors so exhaustion in one prevents the next scan. Existing
     // per-record leases/idempotency remain unchanged; future ticks can recover.
-    for (const processor of [processPendingNotificationOutbox, processScheduledCampaigns,
+    for (const processor of [processPendingNotificationOutbox, processScheduledCampaigns, processScheduledEarlyAccessCampaigns,
       processStaffClaimSync, processDeletionJobs, retryDueNotificationDeliveries, pollNotificationReceipts, processEarlyAccessRetention]) {
       if (quotaBlocked()) break;
       try { await processor(requestEnv); }

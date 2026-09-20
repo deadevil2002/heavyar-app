@@ -19,6 +19,7 @@ import { handleEarlyAccessPublic } from './early-access-public';
 import { EarlyAccessError, subscriberFacets, type EarlyAccessStore } from './early-access-model';
 import { dailyEarlyAccessRetention } from './early-access-retention';
 import { earlyAccessDeliveryProof } from './early-access-delivery';
+import { processEarlyAccessCampaigns } from './early-access-campaign-delivery';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
@@ -2327,6 +2328,9 @@ export async function handlePublicEarlyAccess(req: Request, env: Env) {
 }
 export async function processEarlyAccessRetention(env: Env) {
   return dailyEarlyAccessRetention(earlyAccessStore(env));
+}
+export async function processScheduledEarlyAccessCampaigns(env: Env) {
+  return processEarlyAccessCampaigns(earlyAccessStore(env), (to, subject, html, key) => sendResend(env, to, subject, html, key));
 }
 
 type StoreReviewRole = 'customer' | 'provider' | 'driver';

@@ -1,13 +1,55 @@
 import { EA, body, countryCodes, eligible, fail, hash, nowIso, safeId, selectedRecords, template, text, type EarlyAccessStore } from './early-access-model';
 import { deliver, rateLimit } from './early-access-public';
+import { campaignDeliveryStatuses, snapshotCampaignRecipients, queueCampaign } from './early-access-campaign-delivery';
 
 export function campaignFields(value: Record<string, any>) {
   return { name: text(value.name, 100), subjectAr: text(value.subjectAr, 200), subjectEn: text(value.subjectEn, 200), bodyAr: text(value.bodyAr, 8000), bodyEn: text(value.bodyEn, 8000) };
 }
-export async function campaignAction(req: Request, store: EarlyAccessStore, actorUid: string, allowed: { manage: boolean; testSend: boolean; approve: boolean }) {
+async function subscriberPairs(store: EarlyAccessStore, ids: string[]) {
+  const records: any[] = [];
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const batch = ids.slice(offset, offset + 100);
+    records.push(...await Promise.all(batch.map(async subscriberId => {
+      const [subscriber, suppression] = await Promise.all([store.read(EA.subscribers, subscriberId), store.read(EA.suppression, subscriberId)]);
+      return [subscriber, suppression];
+    })));
+  }
+  return records.flat();
+}
+async function readReferences(store: EarlyAccessStore, references: Array<{ collection: string; id: string }>) {
+  const records: any[] = [];
+  for (let offset = 0; offset < references.length; offset += 100) {
+    const batch = references.slice(offset, offset + 100);
+    records.push(...(store.readMany ? await store.readMany(batch) : await Promise.all(batch.map(reference => store.read(reference.collection, reference.id)))));
+  }
+  return records;
+}
+export async function campaignAction(req: Request, store: EarlyAccessStore, actorUid: string, allowed: { manage: boolean; testSend: boolean; approve: boolean; send?: boolean }) {
   const url = new URL(req.url), segments = url.pathname.split('/'), id = segments[5] ? safeId(segments[5]) : crypto.randomUUID(), action = segments[6];
   if (segments.length > 7) fail('NOT_FOUND', 404);
-  if (action === 'send') fail('PRODUCTION_SEND_DEFERRED', 403); // No flag, approval, or role can bypass this.
+  if (action === 'send') {
+    if (!allowed.send) fail('FORBIDDEN', 403);
+    const value = await body(req, ['previewId', 'confirm', 'lawfulBasisConfirmed']);
+    if (value.confirm !== true || typeof value.previewId !== 'string') fail('CONFIRMATION_REQUIRED');
+    const preview = await store.read(EA.previews, safeId(value.previewId)), campaign = await store.read(EA.campaigns, id);
+    if (!preview || !campaign || preview.data.campaignId !== id || preview.data.actorUid !== actorUid || preview.data.campaignRevision !== campaign.data.revision || Date.parse(preview.data.expiresAt) <= Date.now()) fail('PREVIEW_EXPIRED', 409);
+    const subscriberIds = Array.isArray(preview.data.subscriberIds) ? preview.data.subscriberIds : [];
+    const approvedRecipientIds = Array.isArray(preview.data.recipientIds) ? preview.data.recipientIds : [];
+    let finalRecipientIds: string[] = [...approvedRecipientIds];
+    if (subscriberIds.length) {
+      const records = await subscriberPairs(store, subscriberIds);
+      const contacts = subscriberIds.map((subscriberId: string, index: number) => {
+        const subscriber = records[index * 2], suppression = records[index * 2 + 1];
+        return subscriber ? { ...subscriber.data, id: subscriberId, suppression } : null;
+      }).filter(Boolean);
+      const snapshot = await snapshotCampaignRecipients(store, id, actorUid, contacts, 'subscriber');
+      finalRecipientIds = [...finalRecipientIds, ...snapshot.recipientIds];
+    }
+    const selectedRecords = await readReferences(store, [...new Set(finalRecipientIds)].map(recipientId => ({ collection: EA.deliveries, id: recipientId })));
+    const hasCsvRecipient = selectedRecords.some(record => record?.data.campaignId === id && record.data.source === 'csv_import');
+    if (hasCsvRecipient && value.lawfulBasisConfirmed !== true) fail('LAWFUL_BASIS_REQUIRED', 409);
+    return queueCampaign(store, id, actorUid, value.previewId, [...new Set(finalRecipientIds)], hasCsvRecipient ? { lawfulBasisConfirmedBy: actorUid, lawfulBasisConfirmedAt: nowIso() } : undefined);
+  }
   if (!allowed.manage) fail('FORBIDDEN', 403);
   if (!action && ['POST', 'PATCH'].includes(req.method)) {
     const value = campaignFields(await body(req, ['name', 'subjectAr', 'subjectEn', 'bodyAr', 'bodyEn']));
@@ -22,17 +64,37 @@ export async function campaignAction(req: Request, store: EarlyAccessStore, acto
   const campaign = await store.read(EA.campaigns, id);
   if (!campaign) fail('NOT_FOUND', 404);
   if (action === 'preview') {
-    const value = await body(req, ['subscriberIds', 'language', 'country']);
-    if (!Array.isArray(value.subscriberIds) || value.subscriberIds.length < 1 || value.subscriberIds.length > 100 || value.subscriberIds.some((v: any) => typeof v !== 'string')) fail('INVALID_SELECTION');
-    const ids: string[] = [...new Set<string>(value.subscriberIds.map((v: string) => safeId(v)))];
+    const value = await body(req, ['subscriberIds', 'language', 'country', 'recipientIds', 'selectAllRecipients', 'recipientFilters']);
+    if (value.subscriberIds !== undefined && (!Array.isArray(value.subscriberIds) || value.subscriberIds.length > 500 || value.subscriberIds.some((v: any) => typeof v !== 'string'))) fail('INVALID_SELECTION');
+    const ids: string[] = Array.isArray(value.subscriberIds) ? [...new Set<string>(value.subscriberIds.map((v: string) => safeId(v)))] : [];
+    let recipientIds: string[] = Array.isArray(value.recipientIds) ? [...new Set(value.recipientIds.map((v: any) => safeId(String(v))))] : [];
+    if (recipientIds.length > 500 || ids.length + recipientIds.length > 500) fail('INVALID_SELECTION');
+    if (value.selectAllRecipients === true) {
+      if (recipientIds.length || value.recipientFilters === undefined || !value.recipientFilters || typeof value.recipientFilters !== 'object' || Array.isArray(value.recipientFilters)) fail('INVALID_SELECTION');
+      const allowed = new Set(['status', 'source', 'country', 'language']);
+      if (Object.keys(value.recipientFilters).some(key => !allowed.has(key))) fail('INVALID_FILTER');
+      const filters = value.recipientFilters;
+      if (filters.status !== undefined && !campaignDeliveryStatuses.includes(filters.status)) fail('INVALID_FILTER');
+      if (filters.source !== undefined && !['subscriber', 'csv_import'].includes(filters.source)) fail('INVALID_FILTER');
+      if (filters.language !== undefined && !['ar', 'en'].includes(filters.language)) fail('INVALID_FILTER');
+      if (filters.country !== undefined && !countryCodes.includes(filters.country)) fail('INVALID_FILTER');
+      const rows = await store.query(EA.deliveries, {
+        from: [{ collectionId: EA.deliveries }],
+        where: { fieldFilter: { field: { fieldPath: 'campaignId' }, op: 'EQUAL', value: { stringValue: id } } },
+        limit: 501,
+      });
+      if (rows.length > 500) fail('AUDIENCE_TOO_LARGE', 413);
+      recipientIds = rows.filter(row => Object.entries(filters).every(([field, filterValue]) => String(row.data[field]) === String(filterValue))).map(row => String(row.name || '').split('/').pop()).filter((recipientId): recipientId is string => Boolean(recipientId));
+    }
+    if (!ids.length && !recipientIds.length) fail('INVALID_SELECTION');
     if (value.language !== undefined && !['ar', 'en'].includes(value.language)) fail('INVALID_LANGUAGE');
     if (value.country !== undefined && !countryCodes.includes(value.country)) fail('INVALID_COUNTRY');
     const byLanguage: Record<string, number> = {}, byCountry: Record<string, number> = {}, exclusionReasons: Record<string, number> = {};
     let recipientCount = 0;
     // Explicit selection only. Never query or scan for an audience.
-    const selected = await selectedRecords(store, ids.flatMap(subscriberId => [{ collection: EA.subscribers, id: subscriberId }, { collection: EA.suppression, id: subscriberId }]));
+    const selected = await subscriberPairs(store, ids);
     const deliveryIds = [...new Set(selected.filter((_, i) => i % 2 === 0).flatMap(record => record?.data.deliveryId ? [String(record.data.deliveryId)] : []))];
-    const deliveries = await selectedRecords(store, deliveryIds.map(deliveryId => ({ collection: EA.deliveries, id: deliveryId })));
+    const deliveries = await readReferences(store, deliveryIds.map(deliveryId => ({ collection: EA.deliveries, id: deliveryId })));
     const deliveryMap = new Map(deliveryIds.map((deliveryId, index) => [deliveryId, deliveries[index]]));
     for (let i = 0; i < ids.length; i++) {
       const subscriber = selected[i * 2], suppression = selected[i * 2 + 1];
@@ -47,10 +109,19 @@ export async function campaignAction(req: Request, store: EarlyAccessStore, acto
       byLanguage[language || 'ar'] = (byLanguage[language || 'ar'] || 0) + 1;
       byCountry[country || 'unknown'] = (byCountry[country || 'unknown'] || 0) + 1;
     }
+    const selectedCampaignRecipients = recipientIds.length ? await readReferences(store, recipientIds.map(recipientId => ({ collection: EA.deliveries, id: recipientId }))) : [];
+    for (const recipient of selectedCampaignRecipients) {
+      if (!recipient || recipient.data.campaignId !== id || recipient.data.deliveryStatus !== 'not_sent') { exclusionReasons.suppressed = (exclusionReasons.suppressed || 0) + 1; continue; }
+      recipientCount++;
+      byLanguage[recipient.data.language || 'ar'] = (byLanguage[recipient.data.language || 'ar'] || 0) + 1;
+      byCountry[recipient.data.country || 'unknown'] = (byCountry[recipient.data.country || 'unknown'] || 0) + 1;
+    }
     const previewId = crypto.randomUUID(), expiresAt = new Date(Date.now() + 15 * 60000).toISOString();
-    const summary = { recipientCount, excludedCount: ids.length - recipientCount, byLanguage, byCountry, exclusionReasons, expiresAt };
-    await store.save([{ collection: EA.previews, id: previewId, prior: null, data: { ...summary, campaignId: id, campaignRevision: campaign!.data.revision, actorUid, subscriberIds: ids, language: value.language || null, country: value.country || null } }], 'early_access_campaign_previewed', id);
-    return { previewId, ...summary, htmlAr: template(campaign!.data.subjectAr, campaign!.data.bodyAr, 'ar'), htmlEn: template(campaign!.data.subjectEn, campaign!.data.bodyEn, 'en') };
+    const summary = { recipientCount, excludedCount: ids.length + recipientIds.length - recipientCount, byLanguage, byCountry, exclusionReasons, expiresAt };
+    const totalSelected = ids.length + recipientIds.length;
+    const finalSummary = { ...summary, excludedCount: totalSelected - recipientCount };
+    await store.save([{ collection: EA.previews, id: previewId, prior: null, data: { ...finalSummary, campaignId: id, campaignRevision: campaign!.data.revision, actorUid, subscriberIds: ids, recipientIds, language: value.language || null, country: value.country || null } }], 'early_access_campaign_previewed', id);
+    return { previewId, ...finalSummary, htmlAr: template(campaign!.data.subjectAr, campaign!.data.bodyAr, 'ar'), htmlEn: template(campaign!.data.subjectEn, campaign!.data.bodyEn, 'en') };
   }
   if (action === 'test' || action === 'approve') {
     if (!(action === 'test' ? allowed.testSend : allowed.approve)) fail('FORBIDDEN', 403);

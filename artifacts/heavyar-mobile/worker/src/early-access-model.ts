@@ -3,6 +3,7 @@ export const EA = {
   config: 'earlyAccessConfig', subscribers: 'earlyAccessSubscribers', suppression: 'earlyAccessSuppression',
   tokens: 'earlyAccessTokens', rates: 'earlyAccessRateLimits', campaigns: 'earlyAccessCampaigns',
   previews: 'earlyAccessPreviews', deliveries: 'earlyAccessDeliveries',
+  imports: 'earlyAccessImports',
 } as const;
 export type RecordVersion = { data: Record<string, any>; updateTime?: string; name?: string } | null;
 export type Change = { collection: string; id: string; data: Record<string, any>; prior: RecordVersion };
@@ -41,7 +42,7 @@ export const configValue = (record: RecordVersion) => ({
 export function permissions(role?: string) {
   const privileged = ['owner', 'super_admin'].includes(role || '');
   const manage = privileged || role === 'marketing';
-  return { read: manage || ['admin', 'auditor'].includes(role || ''), manage, configure: privileged, testSend: manage, approve: privileged };
+  return { read: manage || ['admin', 'auditor'].includes(role || ''), manage, configure: privileged, testSend: manage, approve: privileged, send: privileged };
 }
 export async function hash(value: string) {
   const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));

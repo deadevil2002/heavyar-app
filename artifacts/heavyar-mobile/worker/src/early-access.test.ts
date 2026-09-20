@@ -3,12 +3,13 @@ import { EA, EarlyAccessError, eligible, hash, permissions, registration, subscr
 import { handleEarlyAccessPublic, suppress } from './early-access-public';
 import { handleEarlyAccessAdmin, page } from './early-access-admin';
 import { dailyEarlyAccessRetention, retainEarlyAccess } from './early-access-retention';
+import { campaignProgress, campaignRecipients, parseCampaignCsv, processEarlyAccessCampaigns, queueCampaign, retryCampaignRecipients, snapshotCampaignRecipients } from './early-access-campaign-delivery';
 
 function memoryStore() {
   const docs = new Map<string, NonNullable<RecordVersion>>(), sent: any[] = [], audit: any[] = [], queries: any[] = [];
   let version = 0;
   const put = (collection: string, id: string, data: any) => docs.set(`${collection}/${id}`, { data: structuredClone(data), updateTime: String(++version), name: `projects/demo-early/databases/(default)/documents/${collection}/${id}` });
-  const store: EarlyAccessStore = {
+    const store: EarlyAccessStore = {
     read: async (c, id) => structuredClone(docs.get(`${c}/${id}`) || null),
     save: async (changes, action, target) => {
       for (const c of changes) if (docs.get(`${c.collection}/${c.id}`)?.updateTime !== c.prior?.updateTime) throw new EarlyAccessError('CONCURRENT_UPDATE', 409);
@@ -17,7 +18,24 @@ function memoryStore() {
     },
     send: async (to, subject, html, key) => { sent.push({ to, subject, html, key }); return { delivered: true, messageId: 'provider-id' }; },
     ownEmail: async () => 'actor@example.com',
-    query: async (collection, query) => { queries.push(query); return [...docs.values()].filter(d => d.name!.includes(`/${collection}/`)).slice(0, query.limit); },
+    query: async (collection, query) => {
+      queries.push(query);
+      let rows = [...docs.values()].filter(d => d.name!.includes(`/${collection}/`));
+      const filter = query.where?.fieldFilter;
+      if (filter) rows = rows.filter(row => {
+        const actual = row.data[filter.field.fieldPath], expected = filter.value.stringValue || filter.value.timestampValue;
+        return filter.op === 'EQUAL' ? String(actual) === String(expected) : filter.op === 'LESS_THAN_OR_EQUAL' ? String(actual) <= String(expected) : filter.op === 'LESS_THAN' ? String(actual) < String(expected) : String(actual) >= String(expected);
+      });
+      if (query.startAt?.values) {
+        const values = query.startAt.values;
+        if (values.length === 1) rows = rows.filter(row => row.name! > values[0].referenceValue);
+        else {
+          const [createdAt, reference] = values;
+          rows = rows.filter(row => row.data.createdAt > createdAt.timestampValue || row.data.createdAt === createdAt.timestampValue && row.name! > reference.referenceValue);
+        }
+      }
+      return rows.sort((a, b) => query.orderBy?.[0]?.field?.fieldPath === '__name__' ? a.name!.localeCompare(b.name!) : (a.data.createdAt || '').localeCompare(b.data.createdAt || '') || a.name!.localeCompare(b.name!)).slice(0, query.limit);
+    },
   };
   const token = (kind: string) => sent.at(-1)?.html.match(new RegExp(`/${kind}\\?token=([a-f0-9]{64})`))?.[1];
   return { store, docs, sent, audit, put, token, queries };
@@ -30,6 +48,172 @@ async function errorCode(fn: () => Promise<unknown>) { try { await fn(); return 
 function enabled(m: ReturnType<typeof memoryStore>) { m.put(EA.config, 'default', { enabled: true, revision: 1 }); }
 
 describe('Early Access privacy and races', () => {
+  test('CSV preview bounds rows, normalizes email, rejects duplicates, and neutralizes formulas', () => {
+    const result = parseCampaignCsv('email,business_name\nA@Example.com,=SUM(1+1)\na@example.com,Duplicate\nbad,No email\n,Missing');
+    expect(result.contacts).toHaveLength(1);
+    expect(result.contacts[0].email).toBe('a@example.com');
+    expect(result.contacts[0].businessName).toBe("'=SUM(1+1)");
+    expect(result.rejected.map(row => row.reason)).toEqual(['duplicate_file', 'invalid_email', 'missing_email']);
+    expect(result.counts).toEqual({ validEmail: 1, missingEmail: 1, invalidEmail: 1, duplicateFile: 1 });
+  });
+
+  test('campaign snapshot is idempotent and applies canonical suppression to CSV contacts', async () => {
+    const m = memoryStore();
+    const campaignId = 'campaign-1', suppressionId = await hash('early-access-email:csv@example.com');
+    m.put(EA.campaigns, campaignId, { status: 'draft' });
+    m.put(EA.suppression, suppressionId, { suppressed: true });
+    const result = await snapshotCampaignRecipients(m.store, campaignId, 'owner', [{ email: 'CSV@Example.com', businessName: 'CSV lead', language: 'en' }], 'csv_import');
+    expect(result.added).toBe(1);
+    const recipient = [...m.docs.values()].find(row => row.data.campaignId === campaignId)!;
+    expect(recipient.data.deliveryStatus).toBe('suppressed');
+    expect((await snapshotCampaignRecipients(m.store, campaignId, 'owner', [{ email: 'csv@example.com' }], 'csv_import')).duplicate).toBe(1);
+  });
+
+  test('Admin CSV flow previews before import and records csv_import source', async () => {
+    const m = memoryStore();
+    m.put(EA.campaigns, 'campaign-1', { status: 'draft', revision: 1 });
+    const path = '/api/admin/early-access/campaigns/campaign-1/import';
+    const preview: any = await handleEarlyAccessAdmin(request(path, { csv: 'email,business_name\nlead@example.com,Lead', filename: 'leads.csv' }), m.store, actor);
+    expect(preview.preview.contacts).toHaveLength(1);
+    expect(m.docs.has(`${EA.imports}/${preview.importId}`)).toBe(false);
+    const imported: any = await handleEarlyAccessAdmin(request(path, { csv: 'email,business_name\nlead@example.com,Lead', filename: 'leads.csv', confirm: true, lawfulBasisConfirmed: true }), m.store, actor);
+    expect(imported.snapshot.added).toBe(1);
+    expect(m.docs.get(`${EA.imports}/${imported.importId}`)!.data.source).toBe('csv_import');
+    expect(m.docs.get(`${EA.deliveries}/${imported.snapshot.recipientIds[0]}`)!.data.deliveryStatus).toBe('not_sent');
+    expect(await errorCode(() => handleEarlyAccessAdmin(request(path, { csv: 'email\nother@example.com', confirm: true }), m.store, actor))).toBe('LAWFUL_BASIS_REQUIRED');
+  });
+
+  test('final queue is exact-selection only and subscriber eligibility is rechecked at queue time', async () => {
+    const m = memoryStore(), campaignId = 'selected-campaign';
+    m.put(EA.campaigns, campaignId, { status: 'approved', previewId: 'preview-1', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    m.put(EA.deliveries, 'selected', { campaignId, source: 'csv_import', lawfulBasisConfirmed: true, email: 'selected@example.com', deliveryStatus: 'not_sent' });
+    m.put(EA.deliveries, 'unselected', { campaignId, source: 'csv_import', lawfulBasisConfirmed: true, email: 'unselected@example.com', deliveryStatus: 'not_sent' });
+    const queued = await queueCampaign(m.store, campaignId, 'owner', 'preview-1', ['selected']);
+    expect(queued.queued).toBe(1);
+    expect(m.docs.get(`${EA.deliveries}/selected`)!.data.deliveryStatus).toBe('queued');
+    expect(m.docs.get(`${EA.deliveries}/unselected`)!.data.deliveryStatus).toBe('not_sent');
+    m.put(EA.campaigns, campaignId, { status: 'approved', previewId: 'preview-1', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    m.put(EA.deliveries, 'lawful-missing', { campaignId, source: 'csv_import', email: 'missing-lawful@example.com', deliveryStatus: 'not_sent', lawfulBasisConfirmed: false });
+    expect(await errorCode(() => queueCampaign(m.store, campaignId, 'owner', 'preview-1', ['lawful-missing']))).toBe('LAWFUL_BASIS_REQUIRED');
+    m.put(EA.campaigns, campaignId, { status: 'approved', previewId: 'preview-1', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    m.put(EA.subscribers, 'subscriber', { email: 'subscriber@example.com', status: 'active', verified: true, consentMarketing: true, language: 'en', country: 'SA', deliveryStatus: 'not_sent' });
+    const snap = await snapshotCampaignRecipients(m.store, campaignId, 'owner', [{ id: 'subscriber', email: 'subscriber@example.com', status: 'active', verified: true, consentMarketing: true, language: 'en', country: 'SA' }], 'subscriber');
+    expect(snap.added).toBe(1);
+    const subscriberRecipient = m.docs.get(`${EA.deliveries}/${snap.recipientIds[0]}`)!;
+    m.put(EA.subscribers, 'subscriber', { email: 'subscriber@example.com', status: 'unsubscribed', verified: true, consentMarketing: false, language: 'en', country: 'SA', deliveryStatus: 'not_sent' });
+    const blocked = await queueCampaign(m.store, campaignId, 'owner', 'preview-1', [snap.recipientIds[0]]).catch(error => error);
+    expect((blocked as EarlyAccessError).code).toBe('EMPTY_AUDIENCE');
+    expect(subscriberRecipient.data.deliveryStatus).toBe('not_sent');
+  });
+
+  test('scheduler marks accepted, adds signed unsubscribe, and does not resend delivered rows', async () => {
+    const m = memoryStore();
+    m.put(EA.campaigns, 'campaign-1', { status: 'queued', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    m.put(EA.deliveries, 'recipient-1', { campaignId: 'campaign-1', email: 'lead@example.com', language: 'en', deliveryStatus: 'queued', attempts: 0 });
+    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(1);
+    const recipient = m.docs.get(`${EA.deliveries}/recipient-1`)!;
+    expect(recipient.data.deliveryStatus).toBe('accepted');
+    expect(m.docs.get(`${EA.campaigns}/campaign-1`)!.data.status).toBe('sent');
+    expect(m.sent[0].html).toContain('unsubscribe?token=');
+    recipient.data.deliveryStatus = 'delivered'; m.put(EA.deliveries, 'recipient-1', recipient.data);
+    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(0);
+  });
+
+  test('scheduler sends at most 50 per tick and resumes without premature completion', async () => {
+    const m = memoryStore();
+    m.put(EA.campaigns, 'batch-campaign', { status: 'queued', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    for (let i = 0; i < 60; i++) m.put(EA.deliveries, `batch-${i}`, { campaignId: 'batch-campaign', email: `batch-${i}@example.com`, language: 'en', deliveryStatus: 'queued', attempts: 0, createdAt: `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z` });
+    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(50);
+    expect(m.sent).toHaveLength(50);
+    expect(m.docs.get(`${EA.campaigns}/batch-campaign`)!.data.status).toBe('queued');
+    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(10);
+    expect(m.docs.get(`${EA.campaigns}/batch-campaign`)!.data.status).toBe('sent');
+  });
+
+  test('progress remaining counts only immutable final selection, not unselected audience', async () => {
+    const m = memoryStore();
+    m.put(EA.campaigns, 'progress-campaign', { status: 'sent', finalRecipientIds: ['selected'], finalRecipientCount: 1, sendStartedAt: '2026-01-01T00:00:00.000Z', completedAt: '2026-01-01T00:01:00.000Z' });
+    m.put(EA.deliveries, 'selected', { campaignId: 'progress-campaign', deliveryStatus: 'delivered' });
+    m.put(EA.deliveries, 'unselected', { campaignId: 'progress-campaign', deliveryStatus: 'not_sent' });
+    const progress = await campaignProgress(m.store, 'progress-campaign');
+    expect(progress.audience).toBe(2);
+    expect(progress.notSent).toBe(1);
+    expect(progress.selected).toBe(1);
+    expect(progress.remaining).toBe(0);
+  });
+
+  test('select-all filtered preview and recipient status filters stay campaign-scoped and paginated', async () => {
+    const m = memoryStore(), campaignId = 'filter-campaign';
+    m.put(EA.campaigns, campaignId, { status: 'draft', revision: 1, subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    m.put(EA.deliveries, 'ar-one', { campaignId, source: 'csv_import', country: 'SA', language: 'ar', deliveryStatus: 'not_sent', email: 'ar@example.com' });
+    m.put(EA.deliveries, 'en-two', { campaignId, source: 'csv_import', country: 'SA', language: 'en', deliveryStatus: 'not_sent', email: 'en@example.com' });
+    m.put(EA.deliveries, 'other', { campaignId: 'other', source: 'csv_import', country: 'SA', language: 'ar', deliveryStatus: 'not_sent' });
+    const preview: any = await handleEarlyAccessAdmin(request(`/api/admin/early-access/campaigns/${campaignId}/preview`, { selectAllRecipients: true, recipientFilters: { source: 'csv_import', language: 'ar' } }), m.store, actor);
+    expect(preview.recipientCount).toBe(1);
+    expect(m.docs.get(`${EA.previews}/${preview.previewId}`)!.data.recipientIds).toEqual(['ar-one']);
+    const page = await campaignRecipients(m.store, campaignId, 1, undefined, { source: 'csv_import', language: 'ar' });
+    expect(page.items.map(item => item.id)).toEqual(['ar-one']);
+  });
+
+  test('campaign recipient reads and completion are campaign-scoped, bounded, and cursor-paginated', async () => {
+    const m = memoryStore(), base = '2026-01-01T00:00:00.000Z';
+    for (let i = 0; i < 501; i++) m.put(EA.deliveries, `other-${i}`, { campaignId: 'other', deliveryStatus: 'queued', createdAt: base });
+    for (let i = 0; i < 3; i++) m.put(EA.deliveries, `target-${i}`, { campaignId: 'target', email: `target-${i}@example.com`, deliveryStatus: 'delivered', createdAt: `2026-01-01T00:00:0${i}.000Z` });
+    const first = await campaignRecipients(m.store, 'target', 2);
+    expect(first.items.map(item => item.id)).toEqual(['target-0', 'target-1']);
+    expect(first.nextCursor).toBeString();
+    const second = await campaignRecipients(m.store, 'target', 2, first.nextCursor!);
+    expect(second.items.map(item => item.id)).toEqual(['target-2']);
+    const campaignQuery = m.queries.find(query => query.where?.fieldFilter?.field?.fieldPath === 'campaignId');
+    expect(campaignQuery.limit).toBe(501);
+    m.put(EA.campaigns, 'target', { status: 'queued', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    m.put(EA.deliveries, 'target-0', { campaignId: 'target', email: 'target-0@example.com', language: 'en', deliveryStatus: 'queued', attempts: 0, createdAt: base });
+    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(1);
+    expect(m.docs.get(`${EA.deliveries}/target-0`)!.data.deliveryStatus).toBe('accepted');
+  });
+
+  test('per-recipient lease prevents overlapping sends and recovers after expiry', async () => {
+    const m = memoryStore();
+    m.put(EA.campaigns, 'lease-campaign', { status: 'queued', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    m.put(EA.deliveries, 'lease-recipient', { campaignId: 'lease-campaign', email: 'lease@example.com', language: 'en', deliveryStatus: 'queued', attempts: 0, createdAt: '2026-01-01T00:00:00.000Z' });
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }), sends = [];
+    const send = async (...args: any[]) => { sends.push(args); await gate; return { delivered: true, messageId: 'lease-message' }; };
+    const first = processEarlyAccessCampaigns(m.store, send, Date.parse('2026-01-01T00:00:00.000Z'));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const second = processEarlyAccessCampaigns(m.store, send, Date.parse('2026-01-01T00:00:01.000Z'));
+    release();
+    await Promise.all([first, second]);
+    expect(sends).toHaveLength(1);
+    const saved = m.docs.get(`${EA.deliveries}/lease-recipient`)!;
+    expect(saved.data.leaseToken).toBe(null);
+    expect(saved.data.lastAttemptAt).toBeString();
+    m.put(EA.deliveries, 'lease-recipient', { ...saved.data, deliveryStatus: 'failed', retryEligible: true, leaseToken: 'expired', leaseUntil: '2025-12-31T00:00:00.000Z' });
+    m.put(EA.campaigns, 'lease-campaign', { ...m.docs.get(`${EA.campaigns}/lease-campaign`)!.data, status: 'queued' });
+    await processEarlyAccessCampaigns(m.store, async () => ({ delivered: true, messageId: 'recovered' }), Date.parse('2026-01-01T00:01:00.000Z'));
+    expect(m.docs.get(`${EA.deliveries}/lease-recipient`)!.data.providerMessageId).toBe('recovered');
+  });
+
+  test('manual retry is owner-only, failed-only, idempotent, and bounded', async () => {
+    const m = memoryStore(), campaignId = 'retry-campaign';
+    m.put(EA.campaigns, campaignId, { status: 'sent' });
+    m.put(EA.deliveries, 'failed', { campaignId, deliveryStatus: 'failed', retryEligible: true });
+    m.put(EA.deliveries, 'delivered', { campaignId, deliveryStatus: 'delivered', retryEligible: false });
+    m.put(EA.deliveries, 'bounced', { campaignId, deliveryStatus: 'bounced', retryEligible: false });
+    m.put(EA.deliveries, 'not-eligible', { campaignId, deliveryStatus: 'failed', retryEligible: false });
+    const first = await retryCampaignRecipients(m.store, campaignId, 'owner', ['failed', 'delivered', 'bounced', 'not-eligible']);
+    expect(first).toEqual({ selected: 4, queued: 1, skipped: 3 });
+    expect(m.docs.get(`${EA.deliveries}/delivered`)!.data.deliveryStatus).toBe('delivered');
+    const duplicate = await retryCampaignRecipients(m.store, campaignId, 'owner', ['failed']);
+    expect(duplicate).toEqual({ selected: 1, queued: 0, skipped: 1 });
+    expect(m.audit.filter(item => item.action === 'early_access_campaign_manual_retry')).toHaveLength(2);
+    m.put(EA.deliveries, 'route-failed', { campaignId, deliveryStatus: 'failed', retryEligible: true });
+    expect(await handleEarlyAccessAdmin(request(`/api/admin/early-access/campaigns/${campaignId}/retry`, { recipientIds: ['route-failed'] }), m.store, actor)).toEqual({ selected: 1, queued: 1, skipped: 0 });
+    const denied = await errorCode(() => handleEarlyAccessAdmin(request(`/api/admin/early-access/campaigns/${campaignId}/retry`, { allEligible: true }), m.store, { uid: 'marketing', role: 'marketing' }));
+    expect(denied).toBe('FORBIDDEN');
+    for (let i = 0; i < 501; i++) m.put(EA.deliveries, `too-many-${i}`, { campaignId, deliveryStatus: 'failed', retryEligible: true });
+    expect(await errorCode(() => retryCampaignRecipients(m.store, campaignId, 'owner', undefined, true))).toBe('AUDIENCE_TOO_LARGE');
+  });
+
   test('OFF by default and config reveals only enabled; no email or mutation while closed', async () => {
     const m = memoryStore();
     expect(JSON.stringify(await handleEarlyAccessPublic(request('/api/early-access/config'), m.store))).toBe('{"enabled":false}');
@@ -172,9 +356,9 @@ describe('Early Access privileged campaign foundation', () => {
     expect(m.sent.length).toBe(1); expect(m.sent[0].to).toBe('actor@example.com');
     expect(await errorCode(() => handleEarlyAccessAdmin(request(`${prefix}/test`, { ...testBody, to: 'victim@example.com' }), m.store, actor))).toBe('INVALID_FIELDS');
     await handleEarlyAccessAdmin(request(`${prefix}/approve`, { previewId: preview.previewId, confirm: true }), m.store, actor);
-    expect(await errorCode(() => handleEarlyAccessAdmin(request(`${prefix}/send`, { confirm: true }), m.store, actor))).toBe('PRODUCTION_SEND_DEFERRED');
+    expect(await errorCode(() => handleEarlyAccessAdmin(request(`${prefix}/send`, { confirm: true }), m.store, actor))).toBe('CONFIRMATION_REQUIRED');
     expect(template('<script>', '<img src=x onerror=alert(1)>', 'ar').includes('<img')).toBe(false);
-    expect(await errorCode(() => handleEarlyAccessAdmin(request(`${prefix}/preview`, { subscriberIds: Array(101).fill('yes') }), m.store, actor))).toBe('INVALID_SELECTION');
+    expect(await errorCode(() => handleEarlyAccessAdmin(request(`${prefix}/preview`, { subscriberIds: Array(501).fill('yes') }), m.store, actor))).toBe('INVALID_SELECTION');
     await handleEarlyAccessAdmin(request(prefix, campaign, 'PATCH'), m.store, actor);
     expect(await errorCode(() => handleEarlyAccessAdmin(request(`${prefix}/approve`, { previewId: preview.previewId, confirm: true }), m.store, actor))).toBe('PREVIEW_EXPIRED');
   });

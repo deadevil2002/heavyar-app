@@ -90,8 +90,20 @@ export async function handleEarlyAccessPublic(req: Request, store: EarlyAccessSt
     if (req.method === 'GET') return confirmationPage(route!, token);
     await rateLimit(req, store, 'link', 60);
     const id = await hash(token), record = await store.read(EA.tokens, id);
-    if (!record || record.data.kind !== route || Date.parse(record.data.expiresAt) <= Date.now()) fail('LINK_EXPIRED');
+    if (!record || (route === 'unsubscribe' ? !['unsubscribe', 'campaign_unsubscribe'].includes(record.data.kind) : record.data.kind !== route) || Date.parse(record.data.expiresAt) <= Date.now()) fail('LINK_EXPIRED');
     if (route === 'unsubscribe') {
+      if (record.data.kind === 'campaign_unsubscribe') {
+        const recipient = await store.read(EA.deliveries, record.data.recipientId);
+        if (recipient) {
+          const suppressionId = record.data.subscriberId || await hash(`early-access-email:${recipient.data.email}`);
+          const suppression = await store.read(EA.suppression, suppressionId);
+          await store.save([
+            { collection: EA.suppression, id: suppressionId, prior: suppression, data: { suppressed: true, updatedAt: nowIso() } },
+            { collection: EA.deliveries, id: record.data.recipientId, prior: recipient, data: { ...recipient.data, deliveryStatus: 'suppressed', suppressionReason: 'unsubscribe', retryEligible: false, updatedAt: nowIso() } },
+          ], 'early_access_campaign_unsubscribed', record.data.recipientId);
+        }
+        return completed(req, 'unsubscribe');
+      }
       await suppress(store, record.data.subscriberId, false, 'early_access_unsubscribed');
       return completed(req, 'unsubscribe');
     }

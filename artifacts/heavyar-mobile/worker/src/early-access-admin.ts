@@ -1,6 +1,7 @@
 import { EA, body, configValue, countryCodes, facetKey, fail, nowIso, permissions, safeId, selectedRecords, text, type EarlyAccessStore } from './early-access-model';
 import { suppress } from './early-access-public';
 import { campaignAction } from './early-access-campaigns';
+import { campaignProgress, campaignRecipients, parseCampaignCsv, retryCampaignRecipients, snapshotCampaignRecipients } from './early-access-campaign-delivery';
 
 const value = (s: string) => ({ stringValue: s });
 const encode = (v: any) => btoa(JSON.stringify(v)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -83,6 +84,71 @@ export async function handleEarlyAccessAdmin(req: Request, store: EarlyAccessSto
     return { success: true };
   }
   if (path === '/api/admin/early-access/campaigns' && req.method === 'GET') return page(store, EA.campaigns, url);
+  const campaignMatch = /^\/api\/admin\/early-access\/campaigns\/([^/]+)\/(recipients|import|snapshot|retry|progress)$/.exec(path);
+  if (campaignMatch) {
+    const campaignId = safeId(campaignMatch[1]), operation = campaignMatch[2];
+    if (operation === 'retry') {
+      if (!allowed.send) fail('FORBIDDEN', 403);
+      if (req.method !== 'POST') fail('NOT_FOUND', 404);
+      const value = await body(req, ['recipientIds', 'allEligible']);
+      if (value.recipientIds !== undefined && (!Array.isArray(value.recipientIds) || value.recipientIds.some((id: any) => typeof id !== 'string'))) fail('INVALID_SELECTION');
+      const recipientIds = Array.isArray(value.recipientIds) ? [...new Set(value.recipientIds.map((id: string) => safeId(id)))] : undefined;
+      if (value.allEligible !== undefined && typeof value.allEligible !== 'boolean') fail('INVALID_SELECTION');
+      return retryCampaignRecipients(store, campaignId, actor.uid, recipientIds, value.allEligible === true);
+    }
+    if (!allowed.manage) fail('FORBIDDEN', 403);
+    if (!await store.read(EA.campaigns, campaignId)) fail('NOT_FOUND', 404);
+    if (operation === 'progress' && req.method === 'GET') return campaignProgress(store, campaignId);
+    if (operation === 'recipients' && req.method === 'GET') return campaignRecipients(store, campaignId, Math.min(50, Number(url.searchParams.get('limit') || 20)), url.searchParams.get('cursor') || undefined, {
+      status: url.searchParams.get('status') || undefined, source: url.searchParams.get('source') || undefined,
+      country: url.searchParams.get('country') || undefined, language: url.searchParams.get('language') || undefined,
+    });
+    if (operation === 'import' && req.method === 'POST') {
+      const raw = await req.text();
+      if (new TextEncoder().encode(raw).byteLength > 540000) fail('CSV_TOO_LARGE', 413);
+      let input: any;
+      try { input = JSON.parse(raw); } catch { fail('INVALID_JSON'); }
+      if (!input || typeof input.csv !== 'string' || Object.keys(input).some(key => !['csv', 'filename', 'confirm', 'lawfulBasisConfirmed'].includes(key))) fail('INVALID_FIELDS');
+      const parsed = parseCampaignCsv(input.csv), importId = crypto.randomUUID();
+      if (input.confirm !== true) return { importId, preview: parsed };
+      if (input.lawfulBasisConfirmed !== true) fail('LAWFUL_BASIS_REQUIRED', 409);
+      const timestamp = nowIso();
+      await store.save([{ collection: EA.imports, id: importId, prior: null, data: {
+        campaignId, filename: typeof input.filename === 'string' ? input.filename.slice(0, 200) : 'audience.csv',
+        importedAt: timestamp, importedBy: actor.uid, source: 'csv_import', totalRows: parsed.totalRows,
+         acceptedRows: parsed.contacts.length, rejectedRows: parsed.rejected.length, lawfulBasisConfirmed: true,
+      } }], 'early_access_csv_imported', campaignId);
+       return { importId, preview: parsed, snapshot: await snapshotCampaignRecipients(store, campaignId, actor.uid, parsed.contacts.map(contact => ({ ...contact, lawfulBasisConfirmed: true })), 'csv_import') };
+    }
+    if (operation === 'snapshot' && req.method === 'POST') {
+      const raw = await req.text();
+      if (new TextEncoder().encode(raw).byteLength > 24000) fail('PAYLOAD_TOO_LARGE', 413);
+      let input: any;
+      try { input = JSON.parse(raw); } catch { fail('INVALID_JSON'); }
+      if (!input || Object.keys(input).some(key => !['subscriberIds', 'selectAll', 'filters'].includes(key))) fail('INVALID_FIELDS');
+      let ids: string[] = Array.isArray(input.subscriberIds) ? [...new Set(input.subscriberIds.map((id: any) => safeId(String(id))))] as string[] : [];
+      if (input.selectAll === true) {
+        const rows = await store.query(EA.subscribers, { from: [{ collectionId: EA.subscribers }], orderBy: [{ field: { fieldPath: 'normalizedEmail' }, direction: 'ASCENDING' }], limit: 501 });
+        if (rows.length > 500) fail('AUDIENCE_TOO_LARGE', 413);
+        const filters = input.filters && typeof input.filters === 'object' ? input.filters : {};
+        ids = rows.filter(row => Object.entries(filters).every(([key, value]) => String(row.data[key]) === String(value))).map(row => String(row.name || '').split('/').pop()).filter((value): value is string => Boolean(value));
+      }
+      if (!ids.length || ids.length > 500) fail('INVALID_SELECTION');
+       const records: any[] = [];
+       for (let offset = 0; offset < ids.length; offset += 100) {
+         const batch = ids.slice(offset, offset + 100);
+         const subscribers = store.readMany
+           ? await store.readMany(batch.map(id => ({ collection: EA.subscribers, id })))
+           : await Promise.all(batch.map(id => store.read(EA.subscribers, id)));
+         const suppressions = store.readMany
+           ? await store.readMany(batch.map(id => ({ collection: EA.suppression, id })))
+           : await Promise.all(batch.map(id => store.read(EA.suppression, id)));
+         records.push(...subscribers.map((subscriber, index) => subscriber ? { ...subscriber.data, id: batch[index], suppression: suppressions[index] } : null));
+       }
+       const contacts = records.filter(Boolean);
+      return { snapshot: await snapshotCampaignRecipients(store, campaignId, actor.uid, contacts, 'subscriber') };
+    }
+  }
   if (path === '/api/admin/early-access/campaigns' || path.startsWith('/api/admin/early-access/campaigns/')) return campaignAction(req, store, actor.uid, allowed);
   fail('NOT_FOUND', 404);
 }

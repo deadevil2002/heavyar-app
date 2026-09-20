@@ -1,6 +1,6 @@
 # Early Access foundation
 
-This is a Worker/Admin foundation, not a website launch. Registration defaults **OFF**. Real campaign delivery is **hard-disabled in code** at every `/campaigns/:id/send` request, including approved campaigns and owner requests. No Firebase account is created or linked. Country expresses interest, not market availability. The existing SEO page key is `early-access`; no SEO publication, website HTML, sitemap or robots changes are made.
+This is a Worker/Admin campaign-delivery foundation, not a website launch. Registration defaults **OFF**. Real campaign delivery is available only to owner/super-admin actors after preview, verified self-test, approval, and explicit final confirmation. No Firebase account is created or linked. Country expresses interest, not market availability. The existing SEO page key is `early-access`; no SEO publication, website HTML, sitemap or robots changes are made.
 
 ## API contract
 
@@ -20,9 +20,14 @@ Firestore quota exceptions propagate to the existing Worker quota response: `SER
 | `POST /campaigns/:id/preview` | `{subscriberIds:string[],language?:'ar'|'en',country?:'SA'|'AE'|'KW'|'QA'|'BH'|'OM'}` → `{previewId,recipientCount,excludedCount,exclusionReasons,byLanguage,byCountry,htmlAr,htmlEn,expiresAt}` |
 | `POST /campaigns/:id/test` | `{previewId,idempotencyKey,confirm:true,language:'ar'|'en'}` → `{success,deliveryStatus}` |
 | `POST /campaigns/:id/approve` | `{previewId,confirm:true}` → `{campaign}`. Positive audience and accepted/delivered self-test on the same actor, preview and campaign revision are mandatory. |
-| `POST /campaigns/:id/send` | Always 403 `PRODUCTION_SEND_DEFERRED`; no delivery path exists. |
+| `POST /campaigns/:id/import` | JSON `{csv,filename?,confirm,lawfulBasisConfirmed}` → bounded validation preview; final import requires both `confirm:true` and `lawfulBasisConfirmed:true`, stores a `csv_import` audience snapshot as `not_sent` without creating Early Access subscribers. |
+| `POST /campaigns/:id/snapshot` | `{subscriberIds?:string[],selectAll?:boolean,filters?:object}` → bounded server-side recipient snapshot. |
+| `GET /campaigns/:id/recipients` | Paginated per-campaign recipient snapshot/status records. Optional exact filters: `status`, `source` (`subscriber|csv_import`), `country`, `language`; cursors include the filter fingerprint. |
+| `POST /campaigns/:id/send` | Owner/super-admin only; `{previewId,confirm:true,lawfulBasisConfirmed?:true}` → queues only the exact approved preview IDs. If any selected recipient is `csv_import`, `lawfulBasisConfirmed:true` is mandatory and server-recorded with actor/time. |
+| `POST /campaigns/:id/retry` | Owner/super-admin only; `{recipientIds?:string[],allEligible?:true}` retries only failed, retry-eligible recipients and returns `{selected,queued,skipped}`. Selection is bounded to 500. |
+| `GET /campaigns/:id/progress` | Bounded campaign aggregate: `{audience,notSent,queued,accepted,delivered,failed,bounced,complained,suppressed,skipped,selected,selectedNotSent,selectedQueued,selectedAccepted,remaining}` plus final-selection and send lifecycle metadata. `remaining` counts only immutable final selection, not unselected audience records. |
 
-Subscriber response fields: `id,email,name,country,language,status,consentMarketing,consentAt,consentSource,createdAt,updatedAt,verified,deliveryStatus,unsubscribedAt`. Status is only `active|unsubscribed|anonymized`; `verified` and `consentMarketing` are booleans. Delivery values are `not_sent|pending|accepted|delivered|bounced|complained|failed`. Provider acceptance never claims delivery.
+Subscriber response fields: `id,email,name,country,language,status,consentMarketing,consentAt,consentSource,createdAt,updatedAt,verified,deliveryStatus,unsubscribedAt`. Status is only `active|unsubscribed|anonymized`; `verified` and `consentMarketing` are booleans. Subscriber delivery values are `not_sent|pending|accepted|delivered|bounced|complained|failed`. Campaign recipient values additionally include `queued|suppressed|skipped`; campaign snapshots begin at `not_sent`. Provider acceptance never claims delivery.
 
 Public routes:
 
@@ -37,7 +42,7 @@ All public responses are `no-store`, `no-referrer`, and `noindex,nofollow`. Conf
 
 ## Authority and data integrity
 
-Owner/super-admin: read, manage, configure, test, approve. Marketing: read, subscriber management, drafts, preview, own-email test. Admin/auditor: read only. Support and other roles: no Early Access access. The existing authoritative staff resolver runs before this matrix; browser claims or request fields cannot supply an audit actor. Direct Firestore client reads, lists and writes are denied for every new collection, including users with privileged custom claims.
+Owner/super-admin: read, manage, configure, test, approve, production send, manual retry, CSV import and snapshot. Marketing: read, subscriber management, drafts, preview, own-email test and CSV preview/import, but no production send or manual retry. Admin/auditor: read only. Support and other roles: no Early Access access. The existing authoritative staff resolver runs before this matrix; browser claims or request fields cannot supply an audit actor. Direct Firestore client reads, lists and writes are denied for every new collection, including users with privileged custom claims.
 
 The physical subscriber ID is SHA-256 of a domain-separated normalized email. It is pseudonymous, **not anonymous** (email dictionaries can be guessed); it is never a bearer credential. Email uniqueness is protected by create-only/version-precondition writes, not a query. Tokens use 256 bits of randomness and only their SHA-256 hashes are stored. Tokens contain subscriber reference/generation/kind/expiry, never a copy of email/name.
 
@@ -59,7 +64,11 @@ Other queries use built-in single-field indexes (`normalizedEmail`, `retentionAt
 
 Ordinary subscriber page reads at most **21 subscriber documents plus up to 20 current delivery documents** for default limit 20. No count/total query. Maximum page is 51 + up to 50 enrichment reads. Campaign pages are page+1 only. UI selection must accumulate explicit IDs across cursor pages with a hard 100 cap.
 
-Campaign preview accepts 1–100 explicit IDs and no full-collection audience query. It reads at most 100 subscribers + 100 suppression records + up to 100 canonical delivery projections, using two targeted REST batchGet calls rather than per-recipient HTTP/authentication round trips. It excludes missing/nonactive/suppressed, unverified, no-consent, failed/bounced/complained and nonmatching segmentation. Counts/reasons are a preview snapshot, not authorization to send; actual launch send remains unavailable. Previews expire after 15 minutes and are bound to actor and campaign revision.
+Campaign preview accepts up to 500 explicit subscriber/recipient IDs, or server-side `{selectAllRecipients:true,recipientFilters:{status,source,country,language}}`; the latter queries only the campaign's bounded recipient snapshot and stores the exact matching IDs in the preview. It reads in bounded batches rather than per-recipient HTTP/authentication round trips. It excludes missing/nonactive/suppressed, unverified, no-consent, failed/bounced/complained and nonmatching segmentation. Counts/reasons are a preview snapshot; final send queues only the exact approved recipient IDs after a second eligibility/suppression check. Previews expire after 15 minutes and are bound to actor and campaign revision. Campaign snapshots/imports are `not_sent` audience records, not scheduler work; the final queue stores immutable recipient IDs/count and lifecycle timestamps.
+
+The five-minute scheduler queries at most 501 campaign recipients for bounded completeness but submits at most 50 sends per campaign tick. It leaves the campaign queued while any queued/retry-eligible recipient remains, including recipients beyond the current 50-send batch.
+
+CSV imports are bounded to 512 KiB, 500 data rows, 40 columns, 500 characters per field, and 254 characters per email. A confirmed import must include `lawfulBasisConfirmed:true`; this is an auditable campaign-import assertion and never creates subscriber consent. Subscriber snapshots are bounded to 500 records and use canonical active/verified/affirmative-consent eligibility both at snapshot and immediately before queueing. Campaign aggregate progress is available at `GET /campaigns/:id/progress` and reports audience, `notSent`, `queued`, `accepted`, `delivered`, `failed`, `bounced`, `complained`, `suppressed`, `skipped`, `remaining`, final selection, and send lifecycle metadata.
 
 ## Resend and abuse controls
 
