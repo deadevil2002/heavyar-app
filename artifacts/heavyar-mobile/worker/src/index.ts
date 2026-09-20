@@ -1879,9 +1879,9 @@ async function resendSenderReady(env: Env) {
   if (!resendSenderDomainValid(resendFrom(env))) { resendLastOutcome = 'sender_rejected'; return false; }
   return true;
 }
-export async function sendResend(env: Env, to: string, subject: string, html: string, idempotencyKey?: string): Promise<EmailDeliveryResult> {
+export async function sendResend(env: Env, to: string, subject: string, html: string, idempotencyKey?: string, text?: string): Promise<EmailDeliveryResult> {
   if (!await resendSenderReady(env)) return { delivered: false, provider: 'none', outcome: resendLastOutcome };
-  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) }, body: JSON.stringify({ from: resendFrom(env), to: [to], subject, html }) });
+  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) }, body: JSON.stringify({ from: resendFrom(env), to: [to], subject, html, ...(text ? { text } : {}) }) });
   const result: any = await response.json().catch(() => null);
   resendLastOutcome = response.ok ? 'accepted' : response.status === 401 || response.status === 403 ? 'auth_failed' : response.status === 429 ? 'rate_limited' : response.status === 400 && /sender|domain|from/i.test(String(result?.name || result?.message || '')) ? 'sender_rejected' : 'provider_error';
   resendLastDeliverySucceeded = response.ok;

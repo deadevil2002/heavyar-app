@@ -1,4 +1,4 @@
-import { EA, EarlyAccessError, eligible, fail, hash, nowIso, opaqueToken, template, type EarlyAccessStore } from './early-access-model';
+import { EA, EarlyAccessError, eligible, fail, hash, nowIso, opaqueToken, renderCampaign, type EarlyAccessStore } from './early-access-model';
 
 export const campaignDeliveryStatuses = ['not_sent', 'queued', 'accepted', 'delivered', 'failed', 'bounced', 'complained', 'suppressed', 'skipped'] as const;
 export type CampaignDeliveryStatus = typeof campaignDeliveryStatuses[number];
@@ -209,7 +209,7 @@ export async function campaignProgress(store: EarlyAccessStore, campaignId: stri
   };
 }
 
-export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send: (to: string, subject: string, html: string, key: string) => Promise<{ delivered: boolean; messageId?: string }>, now = Date.now()) {
+export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send: (to: string, subject: string, html: string, key: string, text?: string) => Promise<{ delivered: boolean; messageId?: string }>, now = Date.now()) {
   const campaigns = await store.query(EA.campaigns, { from: [{ collectionId: EA.campaigns }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: { stringValue: 'queued' } } }, limit: 5 });
   let processed = 0;
   for (const campaign of campaigns) {
@@ -241,7 +241,11 @@ export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send:
         { collection: EA.deliveries, id: rid, prior: claimed, data: { ...claimed.data, unsubscribeTokenId: unsubscribeId, deliveryStatus: 'queued', updatedAt: nowIso() } },
       ], 'early_access_campaign_delivery_reserved', id);
       let result: { delivered: boolean; messageId?: string };
-      try { result = await send(recipient.data.email, campaign.data[recipient.data.language === 'en' ? 'subjectEn' : 'subjectAr'], template(campaign.data[recipient.data.language === 'en' ? 'subjectEn' : 'subjectAr'], campaign.data[recipient.data.language === 'en' ? 'bodyEn' : 'bodyAr'], recipient.data.language === 'en' ? 'en' : 'ar', unsubscribeUrl), `early-access-campaign-${id}-${rid}`); }
+      try {
+        const language = recipient.data.language === 'en' ? 'en' : 'ar';
+        const rendered = renderCampaign(campaign.data[language === 'en' ? 'subjectEn' : 'subjectAr'], campaign.data[language === 'en' ? 'bodyEn' : 'bodyAr'], language, { name: recipient.data.name, business_name: recipient.data.businessName }, unsubscribeUrl);
+        result = await send(recipient.data.email, rendered.subject, rendered.html, `early-access-campaign-${id}-${rid}`, rendered.text);
+      }
       catch { result = { delivered: false }; }
       const accepted = result.delivered === true;
       const reserved = await store.read(EA.deliveries, rid);

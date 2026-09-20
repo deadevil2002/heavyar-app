@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { EA, EarlyAccessError, eligible, hash, permissions, registration, subscriberFacets, template, type Change, type EarlyAccessStore, type RecordVersion } from './early-access-model';
+import { EA, EarlyAccessError, eligible, hash, permissions, registration, renderCampaign, subscriberFacets, template, type Change, type EarlyAccessStore, type RecordVersion } from './early-access-model';
 import { handleEarlyAccessPublic, suppress } from './early-access-public';
 import { handleEarlyAccessAdmin, page } from './early-access-admin';
 import { dailyEarlyAccessRetention, retainEarlyAccess } from './early-access-retention';
@@ -16,7 +16,7 @@ function memoryStore() {
       for (const c of changes) put(c.collection, c.id, c.data);
       if (action) audit.push({ action, target });
     },
-    send: async (to, subject, html, key) => { sent.push({ to, subject, html, key }); return { delivered: true, messageId: 'provider-id' }; },
+    send: async (to, subject, html, key, text) => { sent.push({ to, subject, html, key, text }); return { delivered: true, messageId: 'provider-id' }; },
     ownEmail: async () => 'actor@example.com',
     query: async (collection, query) => {
       queries.push(query);
@@ -48,6 +48,23 @@ async function errorCode(fn: () => Promise<unknown>) { try { await fn(); return 
 function enabled(m: ReturnType<typeof memoryStore>) { m.put(EA.config, 'default', { enabled: true, revision: 1 }); }
 
 describe('Early Access privacy and races', () => {
+  test('campaign renderer personalizes safely with neutral fallbacks and equivalent plain text', () => {
+    const rendered = renderCampaign('Hello {{name}} at {{business_name}}', 'Welcome {{name}} <script>alert(1)</script>', 'en', { name: '<Ana>', business_name: '' }, 'https://heavyar.com/unsubscribe?x=1');
+    expect(rendered.subject).toBe('Hello <Ana> at your business');
+    expect(rendered.html).toContain('dir="ltr"');
+    expect(rendered.html).toContain('Hello &lt;Ana&gt; at your business');
+    expect(rendered.html).not.toContain('<script>');
+    expect(rendered.html).toContain('display:none');
+    expect(rendered.html).toContain('https://heavyar.com');
+    expect(rendered.html).toContain('Unsubscribe');
+    expect(rendered.text).toContain('Welcome <Ana> <script>alert(1)</script>');
+    expect(rendered.text).toContain('https://heavyar.com/unsubscribe?x=1');
+    const arabic = renderCampaign('{{name}}', '{{business_name}}', 'ar');
+    expect(arabic.html).toContain('dir="rtl"');
+    expect(arabic.html).not.toContain('{{');
+    expect(arabic.text).toContain('عميلنا العزيز');
+  });
+
   test('CSV preview bounds rows, normalizes email, rejects duplicates, and neutralizes formulas', () => {
     const result = parseCampaignCsv('email,business_name\nA@Example.com,=SUM(1+1)\na@example.com,Duplicate\nbad,No email\n,Missing');
     expect(result.contacts).toHaveLength(1);

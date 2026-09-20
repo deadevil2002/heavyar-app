@@ -13,7 +13,7 @@ export interface EarlyAccessStore {
   save(changes: Change[], action: string, target: string, reason?: string): Promise<void>;
   query(collection: string, query: any): Promise<NonNullable<RecordVersion>[]>;
   ownEmail(): Promise<string | null>;
-  send(to: string, subject: string, html: string, key: string): Promise<{ delivered: boolean; messageId?: string }>;
+  send(to: string, subject: string, html: string, key: string, text?: string): Promise<{ delivered: boolean; messageId?: string }>;
 }
 export async function selectedRecords(store: EarlyAccessStore, references: Array<{ collection: string; id: string }>) {
   if (references.length > 200) fail('INVALID_SELECTION');
@@ -88,8 +88,22 @@ export function registration(value: Record<string, any>) {
   return { email, normalizedEmail: email, name: text(value.name, 100, true), country, language, consentMarketing: value.consentMarketing };
 }
 export const escapeHtml = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+function personalize(value: string, language: string, vars: { name?: unknown; business_name?: unknown } = {}) {
+  const fallbackName = language === 'ar' ? 'عميلنا العزيز' : 'there';
+  const fallbackBusiness = language === 'ar' ? 'نشاطك التجاري' : 'your business';
+  const name = String(vars.name || '').trim() || fallbackName;
+  const business = String(vars.business_name || '').trim() || fallbackBusiness;
+  return value.replace(/\{\{\s*name\s*\}\}/gi, name).replace(/\{\{\s*business_name\s*\}\}/gi, business).replace(/\{\{[^{}]+\}\}/g, '');
+}
+export function renderCampaign(subject: string, content: string, language: string, vars: { name?: unknown; business_name?: unknown } = {}, unsubscribe?: string) {
+  const ar = language === 'ar', dir = ar ? 'rtl' : 'ltr', safeSubject = escapeHtml(personalize(subject, language, vars)), safeContent = escapeHtml(personalize(content, language, vars));
+  const cta = 'https://heavyar.com', unsubscribeText = unsubscribe ? (ar ? 'إلغاء الاشتراك' : 'Unsubscribe') : (ar ? 'المعاينة فقط — سيُضاف رابط إلغاء الاشتراك عند الإرسال' : 'Preview only — unsubscribe is added when sent');
+  const html = `<!doctype html><html lang="${ar ? 'ar' : 'en'}" dir="${dir}"><head><meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light"><style>body{margin:0;background:#f3f6f8;font-family:Arial,sans-serif;color:#17323a} .wrap{max-width:640px;margin:auto;padding:24px} .card{background:#fff;border-radius:12px;padding:32px;border:1px solid #e4ecef} a{color:#087f8c}</style></head><body><div style="display:none;max-height:0;overflow:hidden">${safeSubject}</div><div class="wrap"><main class="card"><div style="font-size:24px;font-weight:700;color:#087f8c">Heavyar</div><h1 style="font-size:24px">${safeSubject}</h1><div style="font-size:16px;line-height:1.8;white-space:pre-wrap">${safeContent}</div><p style="margin-top:28px"><a href="${cta}" style="display:inline-block;background:#087f8c;color:#fff;padding:12px 22px;border-radius:6px;text-decoration:none">${ar ? 'زيارة heavyar.com' : 'Visit heavyar.com'}</a></p><hr style="border:0;border-top:1px solid #e4ecef"><p style="font-size:13px;color:#60747b">${ar ? 'Heavyar — حلول نمو موثوقة لنشاطك التجاري.' : 'Heavyar — trusted growth solutions for your business.'}<br><a href="mailto:noreply@mail.heavyar.com">noreply@mail.heavyar.com</a><br>${unsubscribe ? `<a href="${escapeHtml(unsubscribe)}">${unsubscribeText}</a>` : unsubscribeText}</p></main></div></body></html>`;
+  const text = `${personalize(subject, language, vars)}\n\n${personalize(content, language, vars)}\n\n${ar ? 'زيارة heavyar.com' : 'Visit heavyar.com'}: ${cta}\n\n${ar ? 'Heavyar — حلول نمو موثوقة لنشاطك التجاري.' : 'Heavyar — trusted growth solutions for your business.'}\n${unsubscribe ? `${unsubscribeText}: ${unsubscribe}` : unsubscribeText}`;
+  return { subject: personalize(subject, language, vars), html, text };
+}
 export function template(subject: string, content: string, language: string, unsubscribe?: string) {
-  return `<!doctype html><html lang="${language}" dir="${language === 'ar' ? 'rtl' : 'ltr'}"><body style="font-family:Arial,sans-serif;background:#f5f7f8;padding:24px"><main style="max-width:600px;margin:auto;background:white;padding:32px"><h1>Heavyar</h1><h2>${escapeHtml(subject)}</h2><p style="white-space:pre-wrap">${escapeHtml(content)}</p><p>Heavyar is preparing for launch. نحن نستعد للإطلاق.</p><p>Store links are not available yet. روابط المتاجر غير متاحة بعد.</p><p><a href="mailto:support@mail.heavyar.com">Support / الدعم</a></p>${unsubscribe ? `<p><a href="${escapeHtml(unsubscribe)}">Unsubscribe / إلغاء الاشتراك</a></p>` : '<p>Preview only / معاينة فقط — unsubscribe link is added to recipient emails.</p>'}</main></body></html>`;
+  return renderCampaign(subject, content, language, {}, unsubscribe).html;
 }
 export function eligible(record: RecordVersion, suppression: RecordVersion, language?: string, country?: string) {
   if (!record) return 'missing';

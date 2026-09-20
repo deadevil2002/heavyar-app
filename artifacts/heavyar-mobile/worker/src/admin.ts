@@ -2283,7 +2283,7 @@ export function earlyAccessStore(env: Env, user: AdminUser = { uid: 'system', ad
       return documents.map(name => found.get(name) || null);
     },
     ownEmail: () => verifiedIdentityEmail(env, user),
-    send: (to, subject, html, key) => sendResend(env, to, subject, html, key),
+    send: (to, subject, html, key, text) => sendResend(env, to, subject, html, key, text),
     query: async (collection, structuredQuery) => {
       const cursorReference = structuredQuery.startAt?.values?.find((value: any) => value.referenceValue)?.referenceValue;
       if (cursorReference && !cursorReference.startsWith(fullName(env, `${collection}/`))) throw new EarlyAccessError('INVALID_CURSOR');
