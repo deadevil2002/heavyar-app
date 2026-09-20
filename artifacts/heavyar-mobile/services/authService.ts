@@ -323,6 +323,8 @@ export type AccountProfileStatus = {
   role: 'customer' | 'provider' | 'driver' | null;
   missingFields: string[];
   accountStatus?: string | null;
+  accountPurpose?: 'store_review' | null;
+  reviewAccess?: boolean;
 };
 
 export async function fetchAccountProfileStatus(): Promise<AccountProfileStatus> {
@@ -411,6 +413,7 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
       phoneVerified: data.phoneVerified === true,
       accountStatus: typeof data.accountStatus === 'string' ? data.accountStatus : undefined,
       suspensionStatus: typeof data.suspensionStatus === 'string' ? data.suspensionStatus : undefined,
+      accountPurpose: data.accountPurpose === 'store_review' ? 'store_review' : undefined,
       countryCode: data.countryCode,
       nativeCurrency: data.nativeCurrency || data.currency || 'SAR',
       displayCurrency: data.displayCurrency || data.nativeCurrency || data.currency || 'SAR',

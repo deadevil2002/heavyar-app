@@ -1,5 +1,5 @@
 import { listFirebaseAuthIdentities, type Env } from './index';
-import { evaluateCanonicalCompleteness, STORE_REVIEW_PURPOSE, isStoreReviewAccount } from './integrity';
+import { evaluateCanonicalCompleteness, SECURITY_SUSPENSION_STATUSES, STORE_REVIEW_PURPOSE, isOperationallyBlocked, isStoreReviewAccount } from './integrity';
 import { canTransitionManualReview, deriveProviderTrust, isProviderComponentName, normalizeRequiredProviderComponents, providerComponentNames, providerVerificationFor, verificationStatuses } from './verification';
 import { defaultVerificationPolicy, normalizeVerificationPolicy } from './verification';
 import { notificationWrite } from './notifications';
@@ -46,8 +46,7 @@ export function evaluateLegacyEquipment(
   if (!owner) reasons.push('owner_missing');
   if (owner?.role !== 'provider') reasons.push('owner_not_provider');
   if (listing.countryCode && owner?.countryCode && String(listing.countryCode).toUpperCase() !== String(owner.countryCode).toUpperCase()) reasons.push('country_mismatch');
-  if (['temporarily_suspended', 'permanently_suspended'].includes(String(owner?.suspensionStatus))
-    || owner?.accountStatus === 'deletion_requested' || owner?.accountStatus === 'restricted') reasons.push('owner_restricted');
+  if (isOperationallyBlocked(owner)) reasons.push('owner_restricted');
   if (!onboarding) reasons.push('provider_onboarding_incomplete');
   if (!countryEnabled) reasons.push('country_unavailable');
   if (!['titleEn', 'titleAr', 'pricePerDay'].every(field => listing[field] !== undefined && listing[field] !== null && String(listing[field]).trim() !== '')
@@ -2713,7 +2712,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
       financeVisible ? countCollection(env, 'payments') : Promise.resolve(null),
       financeVisible ? countCollection(env, 'invoices') : Promise.resolve(null),
       countCollection(env, 'complaints', { field: 'status', value: 'open' }),
-      Promise.all(['temporarily_suspended', 'permanently_suspended'].map(status => countOperationalUsers(env, { field: 'suspensionStatus', value: status }))),
+      Promise.all([...SECURITY_SUSPENSION_STATUSES].map(status => countOperationalUsers(env, { field: 'suspensionStatus', value: status }))),
       financeVisible ? aggregateCollection(env, 'payments', { field: 'state', value: 'paid' }, 'amount') : Promise.resolve(null),
       financeVisible ? aggregateCollection(env, 'payments', { field: 'state', value: 'pending' }, 'amount') : Promise.resolve(null),
       financeVisible ? countCollection(env, 'payments', { field: 'state', value: 'failed' }) : Promise.resolve(null),

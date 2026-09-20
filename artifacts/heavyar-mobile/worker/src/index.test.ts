@@ -92,6 +92,98 @@ describe('worker security boundary', () => {
     expect((await worker.fetch(request('/api/account/deletion-request', { confirmation: 'DELETE_MY_ACCOUNT' }), env)).status).toBe(401);
   });
 
+  test('complete active Store Review profiles receive narrow review access', async () => {
+    __test.setAuth({ uid: 'review-provider', email: 'heavyar.official+review.provider@gmail.com', emailVerified: true, admin: false });
+    __test.setFirestore((collection) => collection === 'users' ? {
+      uid: 'review-provider',
+      email: 'heavyar.official+review.provider@gmail.com',
+      emailVerified: true,
+      accountPurpose: 'store_review',
+      accountStatus: 'active',
+      suspensionStatus: 'active',
+      role: 'provider',
+      nameEn: 'Review Provider',
+      countryCode: 'SA',
+      region: 'riyadh',
+      city: 'riyadh',
+      providerType: 'individual',
+      providerOnboardingCompleted: true,
+    } : null);
+    const response = await worker.fetch(new Request('https://worker.test/api/account/profile-status', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(response.status).toBe(200);
+    const result: any = await response.json();
+    expect(result.state).toBe('authenticated_complete');
+    expect(result.accountStatus).toBe('active');
+    expect(result.accountPurpose).toBe('store_review');
+    expect(result.reviewAccess).toBe(true);
+  });
+
+  test('Store Review access never overrides security suspension or deletion', async () => {
+    __test.setAuth({ uid: 'review-driver', email: 'heavyar.official+review.driver@gmail.com', emailVerified: true, admin: false });
+    const profile = {
+      uid: 'review-driver',
+      email: 'heavyar.official+review.driver@gmail.com',
+      emailVerified: true,
+      accountPurpose: 'store_review',
+      accountStatus: 'active',
+      suspensionStatus: 'temporarily_suspended',
+      role: 'driver',
+      nameEn: 'Review Driver',
+      countryCode: 'SA',
+      region: 'riyadh',
+      city: 'riyadh',
+    };
+    __test.setFirestore((collection) => collection === 'users' ? profile
+      : collection === 'driverProfiles' ? { uid: profile.uid }
+      : null);
+    const suspended = await worker.fetch(new Request('https://worker.test/api/account/profile-status', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect((await suspended.json() as any).reviewAccess).toBe(false);
+
+    __test.setFirestore((collection) => collection === 'users' ? { ...profile, suspensionStatus: 'active' }
+      : collection === 'driverProfiles' ? { uid: profile.uid }
+      : collection === 'deletionRequests' ? { status: 'pending' }
+      : null);
+    const deletion = await worker.fetch(new Request('https://worker.test/api/account/profile-status', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect((await deletion.json() as any).reviewAccess).toBe(false);
+  });
+
+  test('Store Review access uses Firebase Auth email verification, not the profile mirror', async () => {
+    __test.setAuth({ uid: 'review-customer', email: 'heavyar.official+review.customer@gmail.com', emailVerified: false, admin: false });
+    __test.setFirestore((collection) => collection === 'users' ? {
+      uid: 'review-customer',
+      email: 'heavyar.official+review.customer@gmail.com',
+      emailVerified: true,
+      accountPurpose: 'store_review',
+      accountStatus: 'active',
+      suspensionStatus: 'active',
+      role: 'customer',
+      nameEn: 'Review Customer',
+      countryCode: 'SA',
+      region: 'riyadh',
+      city: 'riyadh',
+    } : null);
+    const response = await worker.fetch(new Request('https://worker.test/api/account/profile-status', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect((await response.json() as any).reviewAccess).toBe(false);
+  });
+
+  test('literal suspended status blocks protected Worker endpoints', async () => {
+    __test.setAuth({ uid: 'suspended-user', emailVerified: true, admin: false });
+    __test.setFirestore((collection) => collection === 'users'
+      ? { uid: 'suspended-user', accountStatus: 'active', suspensionStatus: 'suspended', role: 'customer' }
+      : null);
+    const response = await worker.fetch(request('/api/requests', { equipmentId: 'eq' }, { Authorization: 'Bearer test' }), env);
+    expect(response.status).toBe(403);
+    expect((await response.json() as any).error).toBe('Account suspended');
+  });
+
   test('explicitly disabled Tap TEST gateway blocks payment creation', async () => {
     __test.setAuth({ uid: 'customer-1', admin: false });
     __test.setFirestore((collection) => collection === 'equipmentRequests' ? paidFixture

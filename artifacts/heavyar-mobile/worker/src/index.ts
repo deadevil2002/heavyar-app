@@ -9,7 +9,7 @@ import { isPublicRentableListing, legacyProviderReady, listingVisibilityForOwner
 import { createInvoicePdfService, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
 import { quotaFetch, isQuotaError, quotaResponse, quotaBlocked } from './quota-policy';
 import { earlyAccessDeliveryProof } from './early-access-delivery';
-import { evaluateCanonicalCompleteness, isStoreReviewAccount, type CompletenessResult } from './integrity';
+import { evaluateCanonicalCompleteness, isOperationallyBlocked, isSecuritySuspended, isStoreReviewAccount } from './integrity';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -108,8 +108,7 @@ async function authenticatedUser(req: Request, env: Env, allowAccountManagement 
     const roleProfile = profile.role === 'driver' ? await getDoc(env, 'driverProfiles', user.uid) : null;
     if (evaluateCanonicalCompleteness(user, profile, roleProfile).state !== 'authenticated_complete') err('ACCOUNT_PROVISIONING_INCOMPLETE');
   }
-  if (profile?.accountStatus === 'deletion_requested' || profile?.accountStatus === 'restricted' ||
-      profile?.suspensionStatus === 'temporarily_suspended' || profile?.suspensionStatus === 'permanently_suspended') {
+  if (isOperationallyBlocked(profile)) {
     err(profile.accountStatus === 'deletion_requested' ? 'ACCOUNT_DELETION_REQUESTED' : 'ACCOUNT_SUSPENDED');
   }
   return user;
@@ -383,13 +382,28 @@ async function destroyOwnedCloudinaryAsset(env: Env, publicId: string, uid: stri
   const form = new FormData(); form.append('public_id', publicId); form.append('timestamp', timestamp); form.append('api_key', env.CLOUDINARY_API_KEY); form.append('signature', signature);
   return (await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`, { method: 'POST', body: form })).ok;
 }
-async function identityStatus(env: Env, u: User): Promise<CompletenessResult> {
-  const profile = await getDoc(env, 'users', u.uid);
-  return evaluateCanonicalCompleteness(u, profile, profile?.role === 'driver' ? await getDoc(env, 'driverProfiles', u.uid) : null);
-}
 async function accountProfileStatus(req: Request, env: Env, u: User) {
-  const result = await identityStatus(env, u);
-  return out(env, req, { success: true, ...result, accountStatus: (await getDoc(env, 'users', u.uid))?.accountStatus || null });
+  const profile = await getDoc(env, 'users', u.uid);
+  const roleProfile = profile?.role === 'driver' ? await getDoc(env, 'driverProfiles', u.uid) : null;
+  const result = evaluateCanonicalCompleteness(u, profile, roleProfile);
+  const accountStatus = profile?.accountStatus || null;
+  const deletionRequest = await getDoc(env, 'deletionRequests', u.uid);
+  const deletionPending = profile?.deletionRequested === true
+    || accountStatus === 'deletion_requested'
+    || (deletionRequest && !['cancelled', 'completed'].includes(String(deletionRequest.status || '')));
+  const securityRestricted = accountStatus === 'restricted' || isSecuritySuspended(profile);
+  const reviewAccess = isStoreReviewAccount(profile)
+    && result.state === 'authenticated_complete'
+    && u.emailVerified === true
+    && !securityRestricted
+    && !deletionPending;
+  return out(env, req, {
+    success: true,
+    ...result,
+    accountStatus,
+    accountPurpose: isStoreReviewAccount(profile) ? 'store_review' : null,
+    reviewAccess,
+  });
 }
 async function identityOnlyDeletion(req: Request, env: Env, u: User) {
   const body: any = await req.json().catch(() => null);
@@ -890,7 +904,7 @@ async function enforceOperationalAccess(env: Env, u: User, equipment?: any) {
   if (!u.admin) {
     const profile = await getDoc(env, 'users', u.uid);
     if (profile?.accountStatus === 'deletion_requested') err('ACCOUNT_DELETION_REQUESTED');
-    if (profile?.suspensionStatus === 'temporarily_suspended' || profile?.suspensionStatus === 'permanently_suspended') err('ACCOUNT_SUSPENDED');
+    if (isSecuritySuspended(profile)) err('ACCOUNT_SUSPENDED');
   }
   // Existing rentals remain operational after a listing is hidden or sent
   // back for review. Public-rentability is enforced at request creation.
@@ -1119,7 +1133,7 @@ async function startVerification(req: Request, env: Env, u: User) {
 async function enforceTrustForCustomerAction(env: Env, customerUid: string, request: any, equipment: any) {
   const [profile, storedPolicy, account] = await Promise.all([getDoc(env, 'verificationProfiles', customerUid), getDoc(env, 'verificationPolicies', 'default'), getDoc(env, 'users', customerUid)]);
   const policy = normalizeVerificationPolicy(storedPolicy) || defaultVerificationPolicy();
-  const suspension = account?.suspensionStatus === 'temporarily_suspended' || account?.suspensionStatus === 'permanently_suspended';
+  const suspension = isSecuritySuspended(account);
   const outcome = evaluateRisk({ suspended: suspension, identityStatus: profile?.identity?.status, manualReviewStatus: profile?.manualReview?.status, policy, amount: Number(request?.finalAmount ?? request?.amount), highRiskEquipment: equipment?.highRisk === true, requestType: request?.requestMode, verificationFailures: Number(profile?.verificationFailures || 0) });
   if (outcome !== 'allow') {
     if (outcome === 'require_verification') {
@@ -1191,8 +1205,7 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
   if (!raw?.updateTime || !r) return out(env, req, { success: false, error: 'Not found' }, 404);
   await enforceOperationalAccess(env, u, await getDoc(env, 'equipment', r.equipmentId));
   const [customerAccount, providerAccount] = await Promise.all([getDoc(env, 'users', r.customerUid), getDoc(env, 'users', r.providerUid)]);
-  const blocked = (account: any) => account?.suspensionStatus === 'temporarily_suspended' || account?.suspensionStatus === 'permanently_suspended' || account?.accountStatus === 'restricted' || account?.accountStatus === 'deletion_requested';
-  if (blocked(customerAccount) || blocked(providerAccount)) return out(env, req, { success: false, error: 'ACCOUNT_SUSPENDED' }, 403);
+  if (isOperationallyBlocked(customerAccount) || isOperationallyBlocked(providerAccount)) return out(env, req, { success: false, error: 'ACCOUNT_SUSPENDED' }, 403);
   const provider = r.providerUid === u.uid || u.admin, customer = r.customerUid === u.uid;
   const allowed = action === 'cancel' ? customer : action === 'accept' || action === 'reject' || action === 'start' ? provider : action === 'request_completion' ? provider : action === 'complete' ? customer : false;
   if (!allowed) return out(env, req, { success: false, error: 'Forbidden' }, 403);
@@ -1774,7 +1787,7 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
   const declaredLength = Number(req.headers.get('Content-Length') || 0);
   if (!declaredLength || declaredLength > 10 * 1024 * 1024 + 65536) return out(env, req, { success: false, error: 'Upload too large' }, 413);
   const account = await getDoc(env, 'users', u.uid);
-  if (!u.admin && (account?.suspensionStatus === 'temporarily_suspended' || account?.suspensionStatus === 'permanently_suspended' || account?.accountStatus === 'restricted')) {
+  if (!u.admin && isOperationallyBlocked(account)) {
     return out(env, req, { success: false, error: 'ACCOUNT_SUSPENDED' }, 403);
   }
   const roleProfile = account?.role === 'driver' ? await getDoc(env, 'driverProfiles', u.uid) : null;
@@ -2047,7 +2060,7 @@ async function phonePasswordLogin(req: Request, env: Env) {
     const user = await getDoc(env, 'users', lookupUid);
     const validStatus = !!user && String(user.uid || ownerUid) === ownerUid && user.deleted !== true && user.disabled !== true &&
         user.accountStatus !== 'deletion_requested' && user.accountStatus !== 'restricted' &&
-        !['temporarily_suspended', 'permanently_suspended', 'suspended'].includes(String(user.suspensionStatus)) &&
+        !isSecuritySuspended(user) &&
         user.status !== 'disabled' && user.status !== 'deleted';
     const expectedUid = ownerUid;
     const email = validStatus && typeof user?.email === 'string' ? user.email : validStatus && typeof user?.emailLower === 'string' ? user.emailLower : '';
@@ -2279,7 +2292,7 @@ async function listingCreate(req: Request, env: Env, u: User) {
     || legacyProviderProfileComplete;
   if (!profile || profile.role !== 'provider' || profile.accountStatus === 'deletion_requested'
       || profile.accountStatus === 'restricted'
-      || ['temporarily_suspended', 'permanently_suspended'].includes(String(profile.suspensionStatus))
+      || isSecuritySuspended(profile)
       || !onboardingComplete) return out(env, req, { success: false, error: 'Provider onboarding required' }, 403);
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing' }, 400);
@@ -2448,7 +2461,7 @@ async function resolveDriverPublicId(env: Env, publicId: string): Promise<{ uid:
 
 function eligibleAccount(account: any, role: 'driver' | 'requester'): boolean {
   if (!account || isStoreReviewAccount(account) || (account.accountStatus !== undefined && account.accountStatus !== 'active') || account.isActive === false ||
-      ['temporarily_suspended', 'permanently_suspended', 'suspended'].includes(String(account.suspensionStatus || '')) ||
+      isSecuritySuspended(account) ||
       ['restricted', 'deletion_requested', 'suspended'].includes(String(account.accountStatus || ''))) return false;
   return role === 'driver' ? account.role === 'driver' : ['customer', 'provider'].includes(String(account.role));
 }

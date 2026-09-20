@@ -47,6 +47,8 @@ export interface User {
   phoneVerified?: boolean;
   accountStatus?: string;
   suspensionStatus?: string;
+  accountPurpose?: 'store_review';
+  reviewAccess?: boolean;
 }
 
 export interface CloudinaryImage {

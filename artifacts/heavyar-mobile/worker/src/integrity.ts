@@ -5,6 +5,18 @@ export type CompletenessResult = {
   profilePresent: boolean; roleProfilePresent: boolean;
 };
 export const STORE_REVIEW_PURPOSE = 'store_review' as const;
+export const SECURITY_SUSPENSION_STATUSES = new Set(['temporarily_suspended', 'permanently_suspended', 'suspended']);
+
+export function isSecuritySuspended(account: any): boolean {
+  return SECURITY_SUSPENSION_STATUSES.has(String(account?.suspensionStatus || ''));
+}
+
+export function isOperationallyBlocked(account: any): boolean {
+  return isSecuritySuspended(account)
+    || account?.accountStatus === 'restricted'
+    || account?.accountStatus === 'deletion_requested';
+}
+
 export function isStoreReviewAccount(value: Record<string, any> | null | undefined): boolean {
   return value?.accountPurpose === STORE_REVIEW_PURPOSE;
 }

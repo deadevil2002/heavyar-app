@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import type { AccountState } from '@/types';
+import { publicSupportUrl } from '@/services/accountAccess';
 
 export default function ProvisioningRecoveryScreen({ state = 'provisioning_incomplete' }: { state?: AccountState }) {
   const { isRTL, localizedText } = useLanguage();
@@ -25,7 +26,7 @@ export default function ProvisioningRecoveryScreen({ state = 'provisioning_incom
       <Text style={styles.body}>{incomplete ? copy('تم إنشاء بيانات تسجيل الدخول، لكن إعداد حساب Heavyar لم يكتمل. يمكنك استكمال التسجيل باستخدام نفس الهوية دون إنشاء حساب جديد.', 'Your sign-in identity was created, but your Heavyar profile was not completed. You can resume registration with this same identity without creating a second account.') : copy('لا يمكن استخدام ميزات الحساب حالياً. تواصل مع الدعم لمراجعة الحالة.', 'Account features are unavailable right now. Contact support to review the account status.')}</Text>
       {!!identityEmail && <Text style={styles.email}>{identityEmail}</Text>}
       {incomplete && <Pressable style={styles.primary} onPress={() => { beginRecoveryRegistration(); router.push('/register?recovery=1'); }}><Text style={styles.primaryText}>{copy('استكمال إنشاء الحساب', 'Resume registration')}</Text></Pressable>}
-      <Pressable style={styles.secondary} onPress={() => router.push('/settings')}><Text style={styles.secondaryText}>{copy('التواصل مع الدعم', 'Contact support')}</Text></Pressable>
+      <Pressable style={styles.secondary} onPress={() => void Linking.openURL(publicSupportUrl())}><Text style={styles.secondaryText}>{copy('التواصل مع الدعم', 'Contact support')}</Text></Pressable>
       <Pressable style={styles.link} onPress={() => void logout()}><Text style={styles.linkText}>{copy('تسجيل الخروج', 'Sign out')}</Text></Pressable>
       {incomplete && <Pressable style={styles.link} onPress={remove} disabled={busy}>{busy ? <ActivityIndicator color={Colors.error} /> : <Text style={styles.deleteText}>{copy('حذف الحساب غير المكتمل', 'Delete incomplete account')}</Text>}</Pressable>}
     </View>

@@ -19,6 +19,7 @@ import {
   fetchEmailVerificationStatus,
   AuthPolicy,
 } from '@/services/authService';
+import { resolveAccountState } from '@/services/accountAccess';
 import { isGccPhone } from '@/constants/gcc';
 import { useLanguage } from './LanguageContext';
 import { registrationErrorMessage } from '@/services/registrationErrors';
@@ -104,11 +105,20 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
           ]);
           if (isStale()) return;
           if (profile && canonicalStatus.state === 'authenticated_complete') {
-            setUser(profile);
+            const authorizedProfile: User = {
+              ...profile,
+              accountPurpose: canonicalStatus.accountPurpose === 'store_review' ? 'store_review' : profile.accountPurpose,
+              reviewAccess: canonicalStatus.reviewAccess === true,
+            };
+            setUser(authorizedProfile);
             setIsAuthenticated(true);
             const status = canonicalStatus.accountStatus || profile.accountStatus;
-            setAccountState(status === 'deletion_requested' ? 'deletion_requested' : status === 'restricted' ? 'restricted' : profile.suspensionStatus ? 'suspended' : 'authenticated_complete');
-            await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
+            setAccountState(resolveAccountState({
+              canonicalState: canonicalStatus.state,
+              accountStatus: status,
+              suspensionStatus: profile.suspensionStatus,
+            }));
+            await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(authorizedProfile));
             try {
               await registerCurrentDevice();
             } catch {

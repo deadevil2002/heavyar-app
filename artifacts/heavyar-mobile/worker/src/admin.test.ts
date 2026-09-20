@@ -50,6 +50,7 @@ describe('admin authorization and operational boundary', () => {
     expect(evaluateLegacyEquipment(legacyListing(), legacyOwner, null, [{ action: 'rereview_listing', automated: false }]).eligible).toBe(false);
     expect(evaluateLegacyEquipment(legacyListing('rejected'), legacyOwner, null).eligible).toBe(false);
     expect(evaluateLegacyEquipment(legacyListing('suspended'), legacyOwner, null).eligible).toBe(false);
+    expect(evaluateLegacyEquipment(legacyListing(), { ...legacyOwner, suspensionStatus: 'suspended' }, null).eligible).toBe(false);
     expect(evaluateLegacyEquipment(legacyListing(), { ...legacyOwner, termsAccepted: false }, null).eligible).toBe(false);
     expect(evaluateLegacyEquipment({ ...legacyListing(), countryCode: 'AE' }, legacyOwner, null).eligible).toBe(false);
   });
