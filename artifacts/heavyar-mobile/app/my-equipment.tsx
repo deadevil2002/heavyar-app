@@ -7,7 +7,7 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchEquipmentByOwner } from '@/services/firestoreService';
+import { fetchEquipmentByOwner, FirestoreCursor } from '@/services/firestoreService';
 import EmptyState from '@/components/EmptyState';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
@@ -27,6 +27,9 @@ export default function MyEquipmentScreen() {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<FirestoreCursor | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
   useEffect(() => {
@@ -37,9 +40,11 @@ export default function MyEquipmentScreen() {
         return;
       }
       try {
-        const items = await fetchEquipmentByOwner(currentUid);
+        const page = await fetchEquipmentByOwner(currentUid);
         if (mounted) {
-          setMyEquipment(items);
+          setMyEquipment(page.items);
+          setCursor(page.cursor);
+          setHasMore(page.hasMore);
           setLoadError(null);
         }
       } catch (e) {
@@ -54,6 +59,24 @@ export default function MyEquipmentScreen() {
   }, [currentUid]);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
+
+  const loadMore = useCallback(async () => {
+    if (!cursor || !hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchEquipmentByOwner(currentUid, cursor);
+      setMyEquipment(previous => {
+        const seen = new Set(previous.map(item => item.id));
+        return [...previous, ...page.items.filter(item => !seen.has(item.id))];
+      });
+      setCursor(page.cursor);
+      setHasMore(page.hasMore);
+    } catch (e) {
+      setLoadError(String(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [cursor, currentUid, hasMore, loadingMore]);
 
 
   const handleDelete = useCallback((item: Equipment) => {
@@ -213,6 +236,13 @@ export default function MyEquipmentScreen() {
             contentContainerStyle={styles.list}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={<EmptyState title={loadError ? t('error_occurred') : t('no_equipment')} />}
+            ListFooterComponent={hasMore ? (
+              <Pressable style={styles.loadMoreButton} onPress={() => void loadMore()} disabled={loadingMore}>
+                {loadingMore
+                  ? <ActivityIndicator size="small" color={Colors.primary} />
+                  : <Text style={styles.loadMoreText}>{isRTL ? 'تحميل المزيد' : 'Load more'}</Text>}
+              </Pressable>
+            ) : null}
           />
         )}
       </SafeAreaView>
@@ -262,4 +292,6 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 60 },
   cardDeleting: { opacity: 0.5 },
   deleteButtonDisabled: { opacity: 0.6 },
+  loadMoreButton: { alignSelf: 'center', backgroundColor: Colors.gold, borderRadius: 12, paddingHorizontal: 22, paddingVertical: 11, marginVertical: 8 },
+  loadMoreText: { color: Colors.primary, fontSize: 14, fontWeight: '700' },
 });

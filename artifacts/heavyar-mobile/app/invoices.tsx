@@ -6,7 +6,7 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchUserInvoices } from '@/services/firestoreService';
+import { fetchUserInvoices, FirestoreCursor } from '@/services/firestoreService';
 import { Invoice } from '@/types';
 import EmptyState from '@/components/EmptyState';
 import StatusBadge from '@/components/StatusBadge';
@@ -19,6 +19,9 @@ export default function InvoicesScreen() {
   const [tab, setTab] = useState<'customer' | 'provider'>('customer');
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [cursor, setCursor] = useState<FirestoreCursor | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
@@ -26,14 +29,32 @@ export default function InvoicesScreen() {
     if (!user?.uid) return;
     setLoading(true);
     try {
-      const items = await fetchUserInvoices(user.uid, tab);
-      setInvoices(items);
+      const page = await fetchUserInvoices(user.uid, tab);
+      setInvoices(page.items);
+      setCursor(page.cursor);
+      setHasMore(page.hasMore);
     } catch (e) {
       setInvoices([]);
     } finally {
       setLoading(false);
     }
   }, [user?.uid, tab]);
+
+  const loadMore = useCallback(async () => {
+    if (!user?.uid || !cursor || !hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchUserInvoices(user.uid, tab, cursor);
+      setInvoices(previous => {
+        const seen = new Set(previous.map(item => item.id));
+        return [...previous, ...page.items.filter(item => !seen.has(item.id))];
+      });
+      setCursor(page.cursor);
+      setHasMore(page.hasMore);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [cursor, hasMore, loadingMore, tab, user?.uid]);
 
   useEffect(() => {
     void loadInvoices();
@@ -139,6 +160,13 @@ export default function InvoicesScreen() {
                 title={t('no_invoices')}
               />
             }
+            ListFooterComponent={hasMore ? (
+              <Pressable style={styles.loadMoreButton} onPress={() => void loadMore()} disabled={loadingMore}>
+                {loadingMore
+                  ? <ActivityIndicator size="small" color={Colors.primary} />
+                  : <Text style={styles.loadMoreText}>{isRTL ? 'تحميل المزيد' : 'Load more'}</Text>}
+              </Pressable>
+            ) : null}
           />
         )}
       </SafeAreaView>
@@ -248,4 +276,6 @@ const styles = StyleSheet.create({
   },
   refLabel: { color: Colors.textMuted, fontSize: 11 },
   refValue: { color: Colors.textSecondary, fontSize: 11, flex: 1 },
+  loadMoreButton: { alignSelf: 'center', backgroundColor: Colors.gold, borderRadius: 12, paddingHorizontal: 22, paddingVertical: 11, marginVertical: 8 },
+  loadMoreText: { color: Colors.primary, fontSize: 14, fontWeight: '700' },
 });

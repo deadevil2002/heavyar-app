@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -24,6 +24,8 @@ export default function RequestDetailScreen() {
   const [equipment, setEquipment] = useState<Equipment | null>(null);
   const [otherUserPublic, setOtherUserPublic] = useState<PublicUserSnapshot | null>(null);
   const [_loading, setLoading] = useState<boolean>(true);
+  const equipmentRef = useRef<Equipment | null>(null);
+  const fetchedEquipmentIdRef = useRef<string | null>(null);
   const currentUid = user?.uid || '';
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
@@ -35,8 +37,13 @@ export default function RequestDetailScreen() {
       setRequest(req);
       if (req) {
         try {
-          const eq = await fetchEquipmentById(req.equipmentId);
-          setEquipment(eq);
+          let eq = equipmentRef.current;
+          if (fetchedEquipmentIdRef.current !== req.equipmentId) {
+            fetchedEquipmentIdRef.current = req.equipmentId;
+            eq = await fetchEquipmentById(req.equipmentId);
+            equipmentRef.current = eq;
+            setEquipment(eq);
+          }
           const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
 
           if (user && currentUid === req.customerUid && !req.customerPublic) {

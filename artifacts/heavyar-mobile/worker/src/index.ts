@@ -11,6 +11,7 @@ import { quotaFetch, isQuotaError, quotaResponse, quotaBlocked } from './quota-p
 import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-access-delivery';
 import { hash } from './early-access-model';
 import { evaluateCanonicalCompleteness, isOperationallyBlocked, isSecuritySuspended, isStoreReviewAccount } from './integrity';
+import { searchPublicEquipment, type FirestoreQuery, type EquipmentSearchRow } from './equipment-search';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -25,8 +26,23 @@ export interface Env {
   VERIFICATION_RETENTION_DAYS?: string;
   FIREBASE_MESSAGING_SENDER_ID?: string;
   __executionCtx?: { waitUntil(promise: Promise<unknown>): void };
+  __diagnostics?: RequestDiagnostics;
 }
-type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true };
+type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; roleProfileRaw?: { data: any; updateTime?: string } | null };
+type RequestDiagnostics = {
+  requestId: string;
+  startedAt: number;
+  firestoreReads: number;
+  firestoreWrites: number;
+  firestoreRequests: number;
+  firestoreDurationMs: number;
+  firestoreLastOperation?: string;
+  firestoreFailure?: { operation: string; status: number; code?: string };
+  upstreamDurationMs: number;
+  upstream?: { service: string; operation: string; status: number; ok: boolean };
+  cas?: 'not_used' | 'succeeded' | 'conflict' | 'failed';
+  quota: { checked: boolean; blocked: boolean; exhausted: boolean };
+};
 let authOverride: User | undefined;
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let assetOwnedOverride: boolean | undefined;
@@ -42,8 +58,10 @@ let customTokenOverride: ((uid: string) => Promise<string>) | undefined;
 let phoneLoginLimiterOverride: ((phoneHash: string, ipHash: string) => Promise<boolean | null>) | undefined;
 let publicDriverLimiterOverride: ((scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) | undefined;
 let capturedDriverQueries: any[] | undefined;
+let publicEquipmentLimiterOverride: ((ipHash: string) => Promise<boolean | null>) | undefined;
+let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
-  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource };
+  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationWindows.clear(); }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -51,9 +69,48 @@ const b64u = (v: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Ui
 const cors = (env: Env, origin: string | null) => {
   const allow = ['https://heavyar.com', ...(env.CORS_ORIGINS || 'https://heavyar.app,https://www.heavyar.app,https://heavyar-app.web.app,https://heavyar-app.firebaseapp.com').split(',').map(x => x.trim())];
   const trustedExpoPreview = /^https:\/\/[a-z0-9-]+(?:\.expo)?\.sisko\.replit\.dev$/i.test(origin || '');
-  return { 'Access-Control-Allow-Origin': allow.includes(origin || '') || trustedExpoPreview ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Correlation-ID', Vary: 'Origin' };
+  return { 'Access-Control-Allow-Origin': allow.includes(origin || '') || trustedExpoPreview ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Correlation-ID', 'Access-Control-Expose-Headers': 'X-Request-ID', Vary: 'Origin' };
 };
-const out = (env: Env, req: Request, value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', ...cors(env, req.headers.get('Origin')) } });
+function importantMutation(req: Request): boolean {
+  const path = new URL(req.url).pathname;
+  return req.method !== 'GET' && (path === '/api/listings' || path === '/api/drivers/profile' || path === '/cloudinary/upload' || path === '/cloudinary/delete');
+}
+function diagnosticOperation(req: Request): boolean {
+  return importantMutation(req) || (req.method === 'GET' && new URL(req.url).pathname === '/api/equipment/search');
+}
+function out(env: Env, req: Request, value: unknown, status = 200) {
+  const diagnostics = env.__diagnostics;
+  let body = value;
+  if (diagnostics && importantMutation(req) && status >= 400 && value && typeof value === 'object' && !Array.isArray(value)) {
+    const source = value as Record<string, unknown>;
+    body = { ...source, errorCode: typeof source.errorCode === 'string' ? source.errorCode : typeof source.code === 'string' ? source.code : status >= 500 ? 'INTERNAL_SERVICE_ERROR' : 'REQUEST_FAILED', requestId: diagnostics.requestId, supportCode: diagnostics.requestId };
+  }
+  const response = new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...cors(env, req.headers.get('Origin')) } });
+  if (diagnostics) response.headers.set('X-Request-ID', diagnostics.requestId);
+  if (diagnostics && diagnosticOperation(req)) {
+    console.log(JSON.stringify({
+      event: importantMutation(req) ? 'important_mutation' : 'public_equipment_search',
+      requestId: diagnostics.requestId,
+      method: req.method,
+      path: new URL(req.url).pathname,
+      status,
+      durationMs: Date.now() - diagnostics.startedAt,
+      firestore: {
+        reads: diagnostics.firestoreReads,
+        writes: diagnostics.firestoreWrites,
+        requests: diagnostics.firestoreRequests,
+        durationMs: diagnostics.firestoreDurationMs,
+        lastOperation: diagnostics.firestoreLastOperation,
+        failure: diagnostics.firestoreFailure,
+      },
+      upstream: diagnostics.upstream,
+      upstreamDurationMs: diagnostics.upstreamDurationMs,
+      cas: diagnostics.cas || 'not_used',
+      quota: diagnostics.quota,
+    }));
+  }
+  return response;
+}
 const err = (message: string): never => { throw new Error(message); };
 const authErr = (): never => { throw new Error('AUTH_REQUIRED'); };
 
@@ -103,10 +160,14 @@ async function authenticatedUser(req: Request, env: Env, allowAccountManagement 
   // Test authentication is intentionally injectable; preserve unit tests that
   // exercise downstream validation without a Firestore fixture.
   if (authOverride && !firestoreOverride) return user;
-  const profile = await getDoc(env, 'users', user.uid);
+  const profileRaw = await getRawDoc(env, 'users', user.uid);
+  const profile = profileRaw?.data || null;
+  user.accountProfile = profile;
   if (!user.testInjected) {
     if (!profile) err('ACCOUNT_PROVISIONING_INCOMPLETE');
-    const roleProfile = profile.role === 'driver' ? await getDoc(env, 'driverProfiles', user.uid) : null;
+    const roleProfileRaw = profile.role === 'driver' ? await getRawDoc(env, 'driverProfiles', user.uid) : null;
+    const roleProfile = roleProfileRaw?.data || null;
+    user.roleProfileRaw = roleProfileRaw;
     if (evaluateCanonicalCompleteness(user, profile, roleProfile).state !== 'authenticated_complete') err('ACCOUNT_PROVISIONING_INCOMPLETE');
   }
   if (isOperationallyBlocked(profile)) {
@@ -114,15 +175,23 @@ async function authenticatedUser(req: Request, env: Env, allowAccountManagement 
   }
   return user;
 }
+const googleTokenCache = new Map<string, { token: string; expiresAt: number }>();
 async function googleToken(env: Env, scope = 'https://www.googleapis.com/auth/datastore'): Promise<string> {
   if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) err('Firestore unavailable');
+  const cacheKey = `${env.FIREBASE_PROJECT_ID}:${env.FIREBASE_CLIENT_EMAIL}:${scope}`;
+  const cached = googleTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
   const privateKey = env.FIREBASE_PRIVATE_KEY as string;
   const now = Math.floor(Date.now() / 1000), h = b64u(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
   const p = b64u(enc.encode(JSON.stringify({ iss: env.FIREBASE_CLIENT_EMAIL, scope, aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })));
   const key = await crypto.subtle.importKey('pkcs8', b64(privateKey.replace(/\\n/g, '\n').replace(/-----[^-]+-----/g, '').replace(/\s/g, '')), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
   const jwt = `${h}.${p}.${b64u(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(`${h}.${p}`)))}`;
   const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}` });
-  if (!r.ok) err('Firestore unavailable'); return (await r.json() as { access_token: string }).access_token;
+  if (!r.ok) err('Firestore unavailable');
+  const result = await r.json() as { access_token: string; expires_in?: number };
+  const expiresIn = Math.max(60, Math.min(3600, Number(result.expires_in || 3600)));
+  googleTokenCache.set(cacheKey, { token: result.access_token, expiresAt: Date.now() + expiresIn * 1000 });
+  return result.access_token;
 }
 export async function listFirebaseAuthIdentities(env: Env, limit = 50, pageToken?: string) {
   const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
@@ -158,8 +227,48 @@ async function commitWrites(env: Env, writes: unknown[], transaction?: string) {
   }
 }
 async function fs(env: Env, path: string, init?: RequestInit): Promise<any> {
-  const r = await quotaFetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${await googleToken(env)}`, 'Content-Type': 'application/json', ...(init?.headers || {}) } });
-  if (r.status === 404) return null; if (!r.ok) err('Firestore unavailable'); return r.status === 204 ? null : r.json();
+  const diagnostics = env.__diagnostics;
+  const method = String(init?.method || 'GET').toUpperCase();
+  const operation = path.startsWith(':') ? path.slice(1) : `${method} document`;
+  const startedAt = Date.now();
+  diagnostics && (diagnostics.firestoreRequests += 1);
+  diagnostics && (diagnostics.firestoreLastOperation = operation);
+  if (diagnostics) {
+    diagnostics.quota.checked = true;
+    diagnostics.quota.blocked ||= quotaBlocked();
+  }
+  let r: Response;
+  try {
+    r = await quotaFetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${await googleToken(env)}`, 'Content-Type': 'application/json', ...(init?.headers || {}) } });
+  } catch (error) {
+    if (diagnostics && isQuotaError(error)) diagnostics.quota.exhausted = true;
+    throw error;
+  } finally {
+    if (diagnostics) diagnostics.firestoreDurationMs += Date.now() - startedAt;
+  }
+  if (r.status === 404) {
+    if (diagnostics && method === 'GET') diagnostics.firestoreReads += 1;
+    return null;
+  }
+  const result = r.status === 204 ? null : await r.json().catch(() => null);
+  if (!r.ok) {
+    const code = typeof (result as any)?.error?.status === 'string' ? (result as any).error.status : undefined;
+    if (diagnostics) diagnostics.firestoreFailure = { operation, status: r.status, ...(code ? { code } : {}) };
+    if (code === 'FAILED_PRECONDITION' || r.status === 409) throw new Error('precondition failed');
+    err('Firestore unavailable');
+  }
+  if (diagnostics) {
+    if (method === 'GET') diagnostics.firestoreReads += 1;
+    else if (path === ':runQuery') diagnostics.firestoreReads += (Array.isArray(result) ? result.filter((row: any) => row?.document).length : 0);
+    else if (path === ':batchGet') {
+      try { diagnostics.firestoreReads += (JSON.parse(String(init?.body || '{}')).documents || []).length; }
+      catch { diagnostics.firestoreReads += (Array.isArray(result) ? result.length : 0); }
+    }
+    else if (path === ':commit') {
+      try { diagnostics.firestoreWrites += (JSON.parse(String(init?.body || '{}')).writes || []).length; } catch { /* diagnostic count remains zero */ }
+    } else if (method === 'PATCH' || method === 'DELETE') diagnostics.firestoreWrites += 1;
+  }
+  return result;
 }
 async function beginTransaction(env: Env): Promise<string | undefined> {
   if (firestoreWrites || capturedCommits || firestoreOverride) return undefined;
@@ -328,6 +437,53 @@ async function publicDriverRateLimit(req: Request, env: Env, scope: 'search' | '
   } catch { return null; }
   return null;
 }
+async function publicEquipmentRateLimit(req: Request, env: Env): Promise<boolean | null> {
+  const address = (req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For')?.split(',')[0] || 'unknown').trim().slice(0, 128);
+  const bucket = Math.floor(Date.now() / 60000), ipHash = await hashedId(`public-equipment-ip:${address}`);
+  if (publicEquipmentLimiterOverride) return publicEquipmentLimiterOverride(ipHash);
+  if (firestoreOverride) return true;
+  if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) return null;
+  const key = await hashedId(`search:${ipHash}:${bucket}`), name = fullName(env, `publicEquipmentRateLimits/${key}`);
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      if (!transaction) return null;
+      const result = await fs(env, ':batchGet', { method: 'POST', body: JSON.stringify({ documents: [name], transaction }) });
+      const found = (result || []).find((row: any) => row.found)?.found;
+      const count = Number(found ? decode(found).count : 0);
+      if (count >= 60) return false;
+      const write = { update: { name, fields: {
+        scope: { stringValue: 'search' }, bucket: { integerValue: String(bucket) }, count: { integerValue: String(count + 1) },
+        expiresAt: { timestampValue: new Date((bucket + 2) * 60000).toISOString() },
+      } }, ...(found ? { updateMask: { fieldPaths: ['scope', 'bucket', 'count', 'expiresAt'] } } : {}), currentDocument: found ? undefined : { exists: false } };
+      try {
+        await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes: [write], transaction }) });
+        return true;
+      } catch (error) {
+        if (attempt === 2) throw error;
+      }
+    }
+  } catch { return null; }
+  return null;
+}
+
+const authenticatedMutationWindows = new Map<string, { startedAt: number; count: number }>();
+async function allowAuthenticatedMutation(uid: string, scope: 'listing_create' | 'driver_profile_save'): Promise<boolean> {
+  const now = Date.now(), windowMs = scope === 'listing_create' ? 10 * 60_000 : 60_000, limit = scope === 'listing_create' ? 10 : 30;
+  const key = `${scope}:${await hashedId(uid)}`;
+  if (authenticatedMutationWindows.size >= 5000) {
+    for (const [key, value] of authenticatedMutationWindows) if (now - value.startedAt >= 10 * 60_000) authenticatedMutationWindows.delete(key);
+    if (authenticatedMutationWindows.size >= 5000 && !authenticatedMutationWindows.has(key)) return false;
+  }
+  const prior = authenticatedMutationWindows.get(key);
+  if (!prior || now - prior.startedAt >= windowMs) {
+    authenticatedMutationWindows.set(key, { startedAt: now, count: 1 });
+    return true;
+  }
+  if (prior.count >= limit) return false;
+  prior.count += 1;
+  return true;
+}
 export type GccCountryCode = 'SA' | 'AE' | 'KW' | 'QA' | 'BH' | 'OM';
 export const GCC_COUNTRIES: Readonly<Record<GccCountryCode, {
   code: GccCountryCode; nameEn: string; nameAr: string; dialCode: string; currency: string; enabled: boolean;
@@ -470,10 +626,17 @@ async function patchDoc(env: Env, path: string, fields: Record<string, unknown>)
   return fs(env, `${path}?${mask}`, { method: 'PATCH', body: JSON.stringify({ fields }) });
 }
 async function compareAndSwap(env: Env, path: string, updateTime: string, fields: Record<string, unknown>) {
-  if (reservationConflict) throw new Error('precondition failed');
-  if (firestoreWrites) { firestoreWrites.push({ path, fields }); return null; }
+  if (reservationConflict) { if (env.__diagnostics) env.__diagnostics.cas = 'conflict'; throw new Error('precondition failed'); }
+  if (firestoreWrites) { firestoreWrites.push({ path, fields }); if (env.__diagnostics) env.__diagnostics.cas = 'succeeded'; return null; }
   const mask = Object.keys(fields).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&') + `&currentDocument.updateTime=${encodeURIComponent(updateTime)}`;
-  return fs(env, `${path}?${mask}`, { method: 'PATCH', body: JSON.stringify({ fields }) });
+  try {
+    const result = await fs(env, `${path}?${mask}`, { method: 'PATCH', body: JSON.stringify({ fields }) });
+    if (env.__diagnostics) env.__diagnostics.cas = 'succeeded';
+    return result;
+  } catch (error) {
+    if (env.__diagnostics) env.__diagnostics.cas = env.__diagnostics.firestoreFailure?.status === 409 ? 'conflict' : 'failed';
+    throw error;
+  }
 }
 function safeNotificationId(id: string) { return /^[A-Za-z0-9:_-]{3,180}$/.test(id); }
 function notificationCursor(value: string | null) {
@@ -1806,7 +1969,7 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
   if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return out(env, req, { success: false, error: 'Asset service unavailable', errorCode: 'ASSET_SERVICE_UNAVAILABLE' }, 503);
   const declaredLength = Number(req.headers.get('Content-Length') || 0);
   if (!declaredLength || declaredLength > 10 * 1024 * 1024 + 65536) return out(env, req, { success: false, error: 'Upload too large' }, 413);
-  const account = await getDoc(env, 'users', u.uid);
+  const account = u.accountProfile || await getDoc(env, 'users', u.uid);
   if (!u.admin && isOperationallyBlocked(account)) {
     return out(env, req, { success: false, error: 'ACCOUNT_SUSPENDED' }, 403);
   }
@@ -1832,7 +1995,13 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
   const digest = await crypto.subtle.digest('SHA-1', enc.encode(`folder=${folder}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`));
   const signature = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join('');
   const upload = new FormData(); upload.append('file', file); upload.append('folder', folder); upload.append('timestamp', timestamp); upload.append('api_key', env.CLOUDINARY_API_KEY); upload.append('signature', signature);
+  const upstreamStartedAt = Date.now();
   const response = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/upload`, { method: 'POST', body: upload });
+  if (env.__diagnostics) {
+    const duration = Date.now() - upstreamStartedAt;
+    env.__diagnostics.upstreamDurationMs += duration;
+    env.__diagnostics.upstream = { service: 'cloudinary', operation: 'image_upload', status: response.status, ok: response.ok };
+  }
   const result: any = await response.json().catch(() => ({}));
   if (!response.ok || typeof result.public_id !== 'string' || typeof result.secure_url !== 'string' || !result.public_id.startsWith(`${folder}/`)) return out(env, req, { success: false, error: 'Upload failed' }, 502);
   return out(env, req, { success: true, url: result.secure_url, publicId: result.public_id });
@@ -2297,9 +2466,46 @@ async function listingAvailability(req: Request, env: Env, u: User, id: string) 
   const rentals = (result || []).map((x: any) => decode(x.document || x)).filter((x: any) => ['pending', 'accepted', 'in_progress', 'completion_requested'].includes(String(x.status)) || x.paymentState === 'paid');
   return out(env, req, { success: true, listingId: id, availability: listing.availability || null, activeRentals: rentals.map((x: any) => ({ from: x.startDate, until: x.endDate, status: x.status })) });
 }
+async function equipmentSearchRows(env: Env, structuredQuery: FirestoreQuery): Promise<EquipmentSearchRow[]> {
+  capturedEquipmentQueries?.push(structuredQuery);
+  if (firestoreOverride) {
+    const injected = firestoreOverride('__queries', 'equipment');
+    let rows = (Array.isArray(injected) ? injected : []).map((item: any) => ({
+      name: item.name || fullName(env, `equipment/${encodeURIComponent(String(item.id || 'test'))}`),
+      data: item.data || item,
+    })).sort((a: EquipmentSearchRow, b: EquipmentSearchRow) => a.name.localeCompare(b.name));
+    const query: any = structuredQuery;
+    const filters = query?.where?.compositeFilter?.filters || (query?.where?.fieldFilter ? [query.where] : []);
+    rows = rows.filter((row: EquipmentSearchRow) => filters.every((filter: any) => {
+      const rule = filter.fieldFilter, field = rule?.field?.fieldPath, expected = val(rule?.value);
+      return !rule || (rule.op === 'EQUAL' && row.data[field] === expected);
+    }));
+    const start = query?.startAt?.values?.[0]?.referenceValue;
+    if (start) rows = rows.filter((row: EquipmentSearchRow) => row.name > start);
+    return rows.slice(0, Number(query?.limit || rows.length));
+  }
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) });
+  return (result || []).filter((item: any) => item.document).map((item: any) => ({
+    name: String(item.document.name || ''),
+    data: decode(item.document),
+  }));
+}
+async function equipmentSearch(req: Request, env: Env) {
+  const result = await searchPublicEquipment(req, {
+    projectId: String(env.FIREBASE_PROJECT_ID || ''),
+    allowRequest: request => publicEquipmentRateLimit(request, env),
+    isMarketplaceEnabled: async countryCode => {
+      const market = await countrySettings(env, countryCode);
+      return market.enabled === true && market.marketplaceAvailable === true;
+    },
+    runQuery: query => equipmentSearchRows(env, query),
+  });
+  return out(env, req, result.body, result.status);
+}
 async function listingCreate(req: Request, env: Env, u: User) {
+  if (!await allowAuthenticatedMutation(u.uid, 'listing_create')) return out(env, req, { success: false, error: 'Too many listing submissions', errorCode: 'RATE_LIMITED' }, 429);
   try { await enforceEmailVerified(env, u, 'listing'); } catch (error) { if (error instanceof Error && error.message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403); throw error; }
-  const profile = await getDoc(env, 'users', u.uid);
+  const profile = u.accountProfile || await getDoc(env, 'users', u.uid);
   // Publication eligibility is account/onboarding policy, not identity
   // verification.  Keep aliases here for providers created by older
   // registration versions, while never consulting isVerified/crVerified.
@@ -2316,7 +2522,9 @@ async function listingCreate(req: Request, env: Env, u: User) {
       || !onboardingComplete) return out(env, req, { success: false, error: 'Provider onboarding required' }, 403);
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing' }, 400);
-  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'images', 'dailyPrice', 'pricePerDay', 'category', 'countryCode', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'availability'];
+  // Currency fields are accepted for compatibility with the current Add form,
+  // but ignored: country configuration remains authoritative for stored price.
+  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'images', 'dailyPrice', 'pricePerDay', 'category', 'countryCode', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'availability', 'nativeCurrency', 'nativePricePerDay', 'displayCurrency'];
   const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'isActive', 'adminHidden', 'createdAt', 'updatedAt'];
   if (Object.keys(body).some((key) => forbidden.includes(key) || !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported listing field' }, 400);
   const titleEn = String(body.titleEn || body.title || '').trim(), titleAr = String(body.titleAr || body.title || '').trim();
@@ -2350,7 +2558,9 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing update' }, 400);
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
-  const rentals = (result || []).map((x: any) => decode(x.document || x));
+  // Firestore may append a readTime-only terminal row to runQuery responses.
+  // It is not a document and must not turn a never-rented listing into history.
+  const rentals = (result || []).filter((x: any) => x.document).map((x: any) => decode(x.document));
   if (hasActiveRental(rentals)) return out(env, req, { success: false, error: 'LISTING_EDIT_LOCKED' }, 409);
   const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'category', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'dailyPrice', 'pricePerDay', 'images', 'availability', 'isActive'];
   const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'adminHidden', 'createdAt', 'updatedAt'];
@@ -2388,7 +2598,9 @@ async function listingLifecycle(req: Request, env: Env, u: User, id: string, arc
   const raw = await getRawDoc(env, 'equipment', id);
   if (!raw?.data || raw.data.ownerUid !== u.uid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
-  const rentals = (result || []).map((x: any) => decode(x.document || x));
+  // Firestore may append a readTime-only terminal row to runQuery responses.
+  // Only actual request documents count as preserved rental history.
+  const rentals = (result || []).filter((x: any) => x.document).map((x: any) => decode(x.document));
   if (hasActiveRental(rentals)) return out(env, req, { success: false, error: 'LISTING_LIFECYCLE_LOCKED' }, 409);
   const now = new Date().toISOString(), history = rentals.length > 0;
   const writes: any[] = archive || history
@@ -2444,6 +2656,12 @@ async function driverQueryRows(env: Env, structuredQuery: any): Promise<Array<{ 
       name: item.name || fullName(env, `driverProfiles/${encodeURIComponent(String(item.id || 'test'))}`),
       data: item.data || item,
     })).sort((a: any, b: any) => a.name.localeCompare(b.name));
+    for (const row of rows) {
+      if (!row.data.publicId) {
+        const uid = decodeURIComponent(row.name.split('/').pop() || '');
+        row.data = { ...row.data, publicId: await canonicalDriverPublicId(uid) };
+      }
+    }
     const filters = structuredQuery?.where?.compositeFilter?.filters || (structuredQuery?.where?.fieldFilter ? [structuredQuery.where] : []);
     rows = rows.filter((row: any) => filters.every((filter: any) => {
       const rule = filter.fieldFilter, field = rule?.field?.fieldPath, expected = val(rule?.value);
@@ -2455,6 +2673,20 @@ async function driverQueryRows(env: Env, structuredQuery: any): Promise<Array<{ 
   }
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) });
   return (result || []).filter((item: any) => item.document).map((item: any) => driverDocument(item.document.name, item.document));
+}
+
+async function driverAccounts(env: Env, uids: string[]): Promise<Map<string, any>> {
+  const unique = [...new Set(uids)].slice(0, 100);
+  if (firestoreOverride) return new Map(unique.map(uid => [uid, firestoreOverride!('users', uid)]).filter((entry): entry is [string, any] => !!entry[1]));
+  if (!unique.length) return new Map();
+  // Firestore JSON resource names use opaque document IDs directly. URI
+  // escaping applies only to HTTP path segments, not batchGet names.
+  const documents = unique.map(uid => fullName(env, `users/${uid}`));
+  const result = await fs(env, ':batchGet', { method: 'POST', body: JSON.stringify({ documents }) });
+  return new Map((result || []).filter((row: any) => row.found).map((row: any) => {
+    const document = row.found, uid = String(document.name || '').split('/').pop() || '';
+    return [uid, decode(document)];
+  }));
 }
 
 async function ensureDriverPublicId(env: Env, uid: string, profile: any): Promise<string> {
@@ -2479,8 +2711,8 @@ async function resolveDriverPublicId(env: Env, publicId: string): Promise<{ uid:
   return { uid: decodeURIComponent(matching[0].name.split('/').pop() || ''), profile: matching[0].data };
 }
 
-function eligibleAccount(account: any, role: 'driver' | 'requester'): boolean {
-  if (!account || isStoreReviewAccount(account) || (account.accountStatus !== undefined && account.accountStatus !== 'active') || account.isActive === false ||
+function eligibleAccount(account: any, role: 'driver' | 'requester', allowStoreReview = false): boolean {
+  if (!account || (!allowStoreReview && isStoreReviewAccount(account)) || (account.accountStatus !== undefined && account.accountStatus !== 'active') || account.isActive === false ||
       isSecuritySuspended(account) ||
       ['restricted', 'deletion_requested', 'suspended'].includes(String(account.accountStatus || ''))) return false;
   return role === 'driver' ? account.role === 'driver' : ['customer', 'provider'].includes(String(account.role));
@@ -2506,16 +2738,17 @@ async function ownerDriverProfile(env: Env, uid: string, profile: any) {
 }
 
 async function driverProfile(req: Request, env: Env, u: User) {
-  const id = u.uid, raw = await getRawDoc(env, 'driverProfiles', id);
-  const account = await getDoc(env, 'users', id);
+  const id = u.uid, raw = u.roleProfileRaw === undefined ? await getRawDoc(env, 'driverProfiles', id) : u.roleProfileRaw;
+  const account = u.accountProfile || await getDoc(env, 'users', id);
   if (!u.admin && account?.role !== 'driver') return out(env, req, { success: false, error: 'Driver profile unavailable for this account' }, 403);
   if (req.method === 'GET') return out(env, req, { success: true, profile: raw ? await ownerDriverProfile(env, id, raw.data) : null });
+  if (!await allowAuthenticatedMutation(u.uid, 'driver_profile_save')) return out(env, req, { success: false, error: 'Too many profile updates', errorCode: 'RATE_LIMITED' }, 429);
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid driver profile' }, 400);
   if (raw && ['suspended', 'rejected'].includes(String(raw.data.moderationStatus)) && !u.admin) return out(env, req, { success: false, error: 'DRIVER_MODERATION_LOCKED' }, 403);
   const allowed = ['displayName', 'photoUrl', 'countryCode', 'region', 'city', 'equipmentTypes', 'yearsExperience', 'description', 'availabilityStatus', 'availableFrom', 'availableUntil'];
   if (Object.keys(body).some((key) => !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported driver profile field' }, 400);
-  if (!u.admin && !eligibleAccount(account, 'driver')) return out(env, req, { success: false, error: 'Driver profile unavailable for this account' }, 403);
+  if (!u.admin && !eligibleAccount(account, 'driver', true)) return out(env, req, { success: false, error: 'Driver profile unavailable for this account' }, 403);
   const country = await countrySettings(env, String(body.countryCode || account?.countryCode || raw?.data?.countryCode || 'SA'));
   if (!country.enabled || !country.providerOnboardingAvailable) return out(env, req, { success: false, error: 'Country driver onboarding unavailable' }, 400);
   if ((raw?.data?.moderationStatus === 'approved' || body.availabilityStatus === 'available') && !u.admin) {
@@ -2569,50 +2802,45 @@ async function driverSearch(req: Request, env: Env) {
   if (!dateOnly(requestedFrom) || !dateOnly(requestedUntil) || (requestedFrom && requestedUntil && requestedFrom > requestedUntil)) return out(env, req, { success: false, error: 'Invalid availability range' }, 400);
   const market = await countrySettings(env, countryCode);
   if (!market.enabled || !market.marketplaceAvailable) return out(env, req, { success: true, drivers: [], nextCursor: undefined });
+  const verificationPolicy = await emailVerificationPolicy(env);
   let cursorReference: string | undefined;
   if (cursor) {
     const resolved = await resolveDriverPublicId(env, cursor);
     if (!resolved) return out(env, req, { success: false, error: 'Invalid cursor' }, 400);
     cursorReference = fullName(env, `driverProfiles/${encodeURIComponent(resolved.uid)}`);
   }
+  const query: any = { from: [{ collectionId: 'driverProfiles' }],
+    where: { fieldFilter: { field: { fieldPath: 'active' }, op: 'EQUAL', value: { booleanValue: true } } },
+    orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 100 };
+  if (cursorReference) query.startAt = { before: false, values: [{ referenceValue: cursorReference }] };
+  const rows = await driverQueryRows(env, query);
+  const identified = rows.map(row => ({ row, uid: decodeURIComponent(row.name.split('/').pop() || '') }));
+  const accounts = await driverAccounts(env, identified.map(item => item.uid));
   const drivers: any[] = [];
-  let pagesScanned = 0, lastBatchFull = false, lastScanned: { uid: string; profile: any } | undefined;
-  for (let page = 0; page < 20 && drivers.length <= limit; page += 1) {
-    const query: any = { from: [{ collectionId: 'driverProfiles' }],
-      where: { fieldFilter: { field: { fieldPath: 'active' }, op: 'EQUAL', value: { booleanValue: true } } },
-      orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 50 };
-    if (cursorReference) query.startAt = { before: false, values: [{ referenceValue: cursorReference }] };
-    const rows = await driverQueryRows(env, query);
-    if (!rows.length) break;
-    pagesScanned += 1;
-    lastBatchFull = rows.length === 50;
-    for (const row of rows) {
-      const uid = decodeURIComponent(row.name.split('/').pop() || ''), raw = row.data, types = Array.isArray(raw.equipmentTypes) ? raw.equipmentTypes : [];
-      cursorReference = row.name;
-      lastScanned = { uid, profile: raw };
-      const matches = raw.countryCode === countryCode && (!region || raw.region === region) && (!city || raw.city === city) &&
-        (!q || String(raw.displayName || '').toLocaleLowerCase().includes(q.toLocaleLowerCase())) &&
-        (!equipmentType || types.includes(equipmentType)) && (!availabilityStatus || raw.availabilityStatus === availabilityStatus) &&
-        (!trustStatus || raw.trustStatus === trustStatus) &&
-        (!requestedFrom || (raw.availableFrom && String(raw.availableFrom) <= requestedFrom)) &&
-        (!requestedUntil || (raw.availableUntil && String(raw.availableUntil) >= requestedUntil));
-      if (matches && await eligibleDriver(env, uid, raw)) {
-        const id = await ensureDriverPublicId(env, uid, raw);
-        drivers.push(publicDriverProfile({ ...raw, id }));
-        if (drivers.length > limit) break;
-      }
+  let lastScanned: { uid: string; profile: any } | undefined, stoppedEarly = false;
+  for (let index = 0; index < identified.length; index += 1) {
+    const { row, uid } = identified[index], raw = row.data, account = accounts.get(uid);
+    const types = Array.isArray(raw.equipmentTypes) ? raw.equipmentTypes : [];
+    lastScanned = { uid, profile: raw };
+    const matches = raw.countryCode === countryCode && (!region || raw.region === region) && (!city || raw.city === city) &&
+      (!q || String(raw.displayName || '').toLocaleLowerCase().includes(q.toLocaleLowerCase())) &&
+      (!equipmentType || types.includes(equipmentType)) && (!availabilityStatus || raw.availabilityStatus === availabilityStatus) &&
+      (!trustStatus || raw.trustStatus === trustStatus) &&
+      (!requestedFrom || (raw.availableFrom && String(raw.availableFrom) <= requestedFrom)) &&
+      (!requestedUntil || (raw.availableUntil && String(raw.availableUntil) >= requestedUntil));
+    const emailAllowed = !verificationPolicy.enabled || !verificationPolicy.requireBeforeDriverActivation || account?.emailVerified === true;
+    const eligible = raw.active === true && raw.moderationStatus === 'approved' && eligibleAccount(account, 'driver') && emailAllowed;
+    if (matches && eligible) {
+      const id = await canonicalDriverPublicId(uid);
+      drivers.push(publicDriverProfile({ ...raw, id }));
+      if (drivers.length === limit) { stoppedEarly = index < identified.length - 1; break; }
     }
-    if (rows.length < 50) break;
   }
-  const hasMore = drivers.length > limit;
-  const visible = drivers.slice(0, limit);
-  const budgetExhausted = pagesScanned === 20 && lastBatchFull && !hasMore;
-  const continuation = hasMore
-    ? String(visible[visible.length - 1]?.id)
-    : budgetExhausted && lastScanned
-      ? await ensureDriverPublicId(env, lastScanned.uid, lastScanned.profile)
-      : undefined;
-  return out(env, req, { success: true, drivers: visible, nextCursor: continuation });
+  const budgetExhausted = rows.length === 100;
+  const continuation = (stoppedEarly || budgetExhausted) && lastScanned
+    ? await canonicalDriverPublicId(lastScanned.uid)
+    : undefined;
+  return out(env, req, { success: true, drivers, nextCursor: continuation });
 }
 
 async function publicDriverDetail(req: Request, env: Env, id: string) {
@@ -2728,7 +2956,17 @@ async function driverRequest(req: Request, env: Env, u: User, id?: string) {
   return out(env, req, { success: true, requestId, status: 'open' }, 201);
 }
 export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
-  env = { ...env, __executionCtx: executionCtx };
+  env = { ...env, __executionCtx: executionCtx, __diagnostics: {
+    requestId: crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase(),
+    startedAt: Date.now(),
+    firestoreReads: 0,
+    firestoreWrites: 0,
+    firestoreRequests: 0,
+    firestoreDurationMs: 0,
+    upstreamDurationMs: 0,
+    cas: 'not_used',
+    quota: { checked: false, blocked: false, exhausted: false },
+  } };
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(env, req.headers.get('Origin')) });
   const path = new URL(req.url).pathname;
   try {
@@ -2767,6 +3005,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (path === '/api/verification/policy' && req.method === 'GET') return await verificationPolicy(req, env, await authenticatedUser(req, env));
      if (path === '/api/verification/attempts' && req.method === 'POST') return await startVerification(req, env, await authenticatedUser(req, env));
      if (path === '/api/requests' && req.method === 'POST') return await createRequest(req, env, await authenticatedUser(req, env));
+      if (path === '/api/equipment/search' && req.method === 'GET') return await equipmentSearch(req, env);
       const listingMatch = path.match(/^\/api\/listings\/([^/]+)\/availability$/);
       if (listingMatch && req.method === 'GET') return await listingAvailability(req, env, await authenticatedUser(req, env), decodeURIComponent(listingMatch[1]));
       if (path === '/api/listings' && req.method === 'POST') return await listingCreate(req, env, await authenticatedUser(req, env));
@@ -2854,10 +3093,18 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     return out(env, req, { success: false, error: 'Not found' }, 404);
   } catch (e) {
     if (isQuotaError(e)) {
-      const response = quotaResponse(req, e);
-      for (const [name, value] of Object.entries(cors(env, req.headers.get('Origin')))) response.headers.set(name, value);
-      response.headers.set('Access-Control-Expose-Headers', 'Retry-After');
-      return response;
+      const quota = quotaResponse(req, e);
+      if (importantMutation(req)) {
+        const payload = await quota.clone().json().catch(() => ({ success: false, errorCode: 'SERVICE_TEMPORARILY_BUSY' }));
+        const response = out(env, req, payload, quota.status);
+        const retryAfter = quota.headers.get('Retry-After');
+        if (retryAfter) response.headers.set('Retry-After', retryAfter);
+        return response;
+      }
+      for (const [name, value] of Object.entries(cors(env, req.headers.get('Origin')))) quota.headers.set(name, value);
+      quota.headers.set('Access-Control-Expose-Headers', 'Retry-After');
+      if (env.__diagnostics) quota.headers.set('X-Request-ID', env.__diagnostics.requestId);
+      return quota;
     }
     if (e instanceof AdminDocumentUnavailableError) {
       return out(env, req, { success: false, error: e.message, code: e.code }, e.status);

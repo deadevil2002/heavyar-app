@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { ArrowLeft, ArrowRight, MapPin, Star, Calendar, Share2, Heart, Lock } from 'lucide-react-native';
@@ -8,7 +8,7 @@ import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
-import { fetchEquipmentById, createRequest, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
+import { fetchEquipmentByOwnerId, createRequest, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
 import { Equipment } from '@/types';
 import { getImageUrl } from '@/utils/imageHelpers';
 import AppDialog from '@/components/AppDialog';
@@ -17,6 +17,8 @@ import RentalRequestModal, { RentalRequestDraft } from '@/components/RentalReque
 import { checkListingAvailability, WorkerError } from '@/services/workerClient';
 import { nativePrice, formatListingDailyPrice, listingCurrency } from '@/services/currency';
 import { safeErrorMessage } from '@/services/errorMessages';
+import { fetchPublicEquipmentById } from '@/services/equipmentSearchService';
+import { ownerEquipmentFallbackUid } from '@/services/equipmentDetailAccess';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -28,28 +30,34 @@ export default function EquipmentDetailScreen() {
   const [currentImage, setCurrentImage] = useState<number>(0);
   const [liked, setLiked] = useState<boolean>(false);
   const [equipment, setEquipment] = useState<Equipment | null>(null);
-  const [_loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [loadFailed, setLoadFailed] = useState<boolean>(false);
   const [requestModalVisible, setRequestModalVisible] = useState<boolean>(false);
   const scrollRef = useRef<ScrollView>(null);
   const { dialog, showDialog, hideDialog } = useAppDialog();
+  const fallbackOwnerUid = ownerEquipmentFallbackUid(currentUser);
 
   useEffect(() => {
     let mounted = true;
     const load = async () => {
       try {
         if (!id) return;
-        const eq = await fetchEquipmentById(id);
+        setLoading(true);
+        setLoadFailed(false);
+        const publicEquipment = await fetchPublicEquipmentById(id);
+        const eq = publicEquipment || (fallbackOwnerUid ? await fetchEquipmentByOwnerId(id, fallbackOwnerUid) : null);
         if (mounted && eq) {
           setEquipment(eq);
         }
       } catch (e) {
+        if (mounted) setLoadFailed(true);
       } finally {
         if (mounted) setLoading(false);
       }
     };
     void load();
     return () => { mounted = false; };
-  }, [id]);
+  }, [fallbackOwnerUid, id]);
 
   useEffect(() => {
     if (!equipment || !currentUser) return;
@@ -68,11 +76,21 @@ export default function EquipmentDetailScreen() {
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <SafeAreaView edges={['top']} style={styles.safeArea}>
+          <ActivityIndicator size="large" color={Colors.gold} />
+        </SafeAreaView>
+      </View>
+    );
+  }
+
   if (!equipment) {
     return (
       <View style={styles.container}>
         <SafeAreaView edges={['top']} style={styles.safeArea}>
-          <Text style={styles.errorText}>{t('error_occurred')}</Text>
+          <Text style={styles.errorText}>{loadFailed ? t('error_occurred') : t('no_equipment')}</Text>
         </SafeAreaView>
       </View>
     );
@@ -173,7 +191,6 @@ export default function EquipmentDetailScreen() {
       const requestPayload = {
         equipmentId: equipment.id,
         customerUid: currentUser.uid,
-        providerUid: equipment.ownerUid,
         requestMode: draft.requestMode,
         ...(draft.requestMode === 'fixed_days' ? { numberOfDays: draft.numberOfDays } : {}),
       };

@@ -2,7 +2,7 @@ import React, { useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Animated, ActivityIndicator, RefreshControl, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Search, Bell, Globe, ChevronLeft, ChevronRight } from 'lucide-react-native';
+import { Search, Bell, Globe, ChevronLeft, ChevronRight, Package, PlusCircle, Inbox, Activity, UserSearch } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -21,7 +21,7 @@ export default function HomeScreen() {
   const { user, isAuthenticated } = useAuth();
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
-  const { equipment: filteredEquipment, filters, markets, setFilter, resetFilters, loading, refreshing, error, refresh, hasFilters } = useDiscovery();
+  const { equipment: filteredEquipment, filters, markets, setFilter, resetFilters, loading, refreshing, error, refresh, hasFilters, loadMore, hasMore, loadingMore } = useDiscovery();
   const [showFilters, setShowFilters] = useState(false);
   const selectedCategory = filters.category;
   const scrollAnim = useRef(new Animated.Value(0)).current;
@@ -82,6 +82,31 @@ export default function HomeScreen() {
               <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
             </View>
           </View>
+
+          {user?.role === 'provider' && (
+            <View style={styles.providerOperations}>
+              <Text style={[styles.sectionTitle, { textAlign: isRTL ? 'right' : 'left' }]}>
+                {isRTL ? 'إدارة عملياتك' : 'Run your operations'}
+              </Text>
+              <View style={[styles.providerActionGrid, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                {[
+                  { label: isRTL ? 'معداتي' : 'My Equipment', icon: Package, route: '/my-equipment' as const },
+                  { label: isRTL ? 'إضافة معدة' : 'Add Equipment', icon: PlusCircle, route: '/(tabs)/add' as const },
+                  { label: isRTL ? 'الطلبات الواردة' : 'Incoming Requests', icon: Inbox, route: '/(tabs)/requests' as const },
+                  { label: isRTL ? 'الإيجارات النشطة' : 'Active Rentals', icon: Activity, route: '/(tabs)/requests?status=active' as const },
+                  { label: isRTL ? 'البحث عن سائق' : 'Find Driver', icon: UserSearch, route: '/(tabs)/search?mode=drivers' as const },
+                ].map(action => (
+                  <Pressable key={action.label} accessibilityRole="button" onPress={() => router.push(action.route)} style={styles.providerAction}>
+                    <action.icon size={21} color={Colors.gold} />
+                    <Text style={styles.providerActionText}>{action.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Pressable accessibilityRole="button" onPress={handleSearch} style={styles.marketLink}>
+                <Text style={styles.seeAll}>{isRTL ? 'تصفح سوق المعدات' : 'Browse equipment market'}</Text>
+              </Pressable>
+            </View>
+          )}
 
           <View style={[styles.searchBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <Search size={20} color={Colors.textMuted} />
@@ -175,6 +200,11 @@ export default function HomeScreen() {
                   {filteredEquipment.map(eq => (
                     <EquipmentCard key={eq.id} equipment={eq} />
                   ))}
+                    {loadingMore ? <ActivityIndicator size="small" color={Colors.gold} /> : hasMore ? (
+                      <Pressable accessibilityRole="button" testID="home-equipment-load-more" onPress={loadMore} style={styles.loadMoreButton}>
+                        <Text style={styles.seeAll}>{isRTL ? 'تحميل المزيد' : 'Load more'}</Text>
+                      </Pressable>
+                    ) : null}
                 </View>
               </View>
             </>
@@ -262,6 +292,31 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
+  providerOperations: {
+    marginHorizontal: 20,
+    marginTop: 16,
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: 14,
+  },
+  providerActionGrid: { flexWrap: 'wrap', gap: 10 },
+  providerAction: {
+    width: '47%',
+    minHeight: 74,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: Colors.inputBg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+  },
+  providerActionText: { color: Colors.textPrimary, fontSize: 12, fontWeight: '600', textAlign: 'center' },
+  marketLink: { alignSelf: 'center', paddingVertical: 4 },
   searchText: {
     flex: 1,
     color: Colors.textMuted,
@@ -362,6 +417,7 @@ const styles = StyleSheet.create({
   recentList: {
     paddingHorizontal: 20,
   },
+  loadMoreButton: { alignSelf: 'center', paddingHorizontal: 20, paddingVertical: 12, marginVertical: 8 },
   bottomPadding: {
     height: 20,
   },

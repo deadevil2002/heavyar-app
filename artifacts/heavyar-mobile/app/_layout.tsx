@@ -22,7 +22,7 @@ const queryClient = new QueryClient();
 function RootLayoutNav() {
   const { accountState, recoveryRegistrationOpen, registrationTransaction } = useAuth();
   const segments = useSegments();
-  const onRegistrationRoute = segments.includes('register');
+  const onRegistrationRoute = segments.some(segment => segment === 'register');
   const registrationOwnsTransition = registrationTransaction !== 'idle' || onRegistrationRoute;
   if (accountState && accountState !== 'authenticated_complete' && !registrationOwnsTransition && !(accountState === 'provisioning_incomplete' && recoveryRegistrationOpen)) return <ProvisioningRecoveryScreen state={accountState} />;
   return (

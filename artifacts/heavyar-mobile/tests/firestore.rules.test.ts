@@ -4,7 +4,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, getDocs, serverTimestamp, documentId, orderBy, limit } from 'firebase/firestore';
 import type { Firestore } from 'firebase/firestore';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
@@ -109,6 +109,37 @@ beforeEach(async () => {
 afterAll(async () => env?.cleanup());
 
 describe('Firestore authorization baseline', () => {
+  it('allows rule-constrained equipment enrichment batches and rejects an ID-only batch query', async () => {
+    const provider = authed('provider-1');
+    const customer = authed('customer-1');
+    const ids = ['equipment-1', 'equipment-2', 'hidden-listing'];
+    await assertFails(getDocs(query(
+      collection(customer, 'equipment'),
+      where(documentId(), 'in', ids),
+      limit(30)
+    )));
+    const publicResults = await assertSucceeds(getDocs(query(
+      collection(provider, 'equipment'),
+      where('isActive', '==', true),
+      where('visibility', '==', 'visible'),
+      where('moderationStatus', '==', 'approved'),
+      where(documentId(), 'in', ids),
+      orderBy('createdAt', 'desc'),
+      orderBy(documentId(), 'desc'),
+      limit(30)
+    )));
+    expect(publicResults.docs.map(item => item.id).sort()).toEqual(['equipment-1', 'equipment-2']);
+    const ownerResults = await assertSucceeds(getDocs(query(
+      collection(provider, 'equipment'),
+      where('ownerUid', '==', 'provider-1'),
+      where(documentId(), 'in', ids),
+      orderBy('createdAt', 'desc'),
+      orderBy(documentId(), 'desc'),
+      limit(30)
+    )));
+    expect(ownerResults.docs.map(item => item.id).sort()).toEqual(['equipment-1', 'hidden-listing']);
+  });
+
   it('denies all direct Early Access reads, queries and writes, even privileged Firebase claims', async () => {
     const collections = ['earlyAccessConfig', 'earlyAccessSubscribers', 'earlyAccessSuppression', 'earlyAccessTokens', 'earlyAccessRateLimits', 'earlyAccessCampaigns', 'earlyAccessPreviews', 'earlyAccessDeliveries'];
     for (const db of [

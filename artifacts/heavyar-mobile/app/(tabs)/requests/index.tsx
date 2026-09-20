@@ -1,22 +1,39 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable } from 'react-native';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Lock } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { subscribeToUserRequests } from '@/services/firestoreService';
+import {
+  fetchEquipmentByIds,
+  fetchUserRequests,
+  FirestoreCursor,
+  subscribeToUserRequests,
+} from '@/services/firestoreService';
 import RequestCard from '@/components/RequestCard';
 import EmptyState from '@/components/EmptyState';
-import { EquipmentRequest } from '@/types';
+import { Equipment, EquipmentRequest } from '@/types';
 import { hasCapability } from '@/services/roleCapabilities';
 
 export default function RequestsScreen() {
   const { isRTL, t } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
+  const { status } = useLocalSearchParams<{ status?: string }>();
   const [requests, setRequests] = useState<EquipmentRequest[]>([]);
+  const [equipmentById, setEquipmentById] = useState<Map<string, Equipment>>(new Map());
+  const [cursor, setCursor] = useState<FirestoreCursor | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasOlderPages, setHasOlderPages] = useState(false);
+  const firstPageCursorRef = useRef<FirestoreCursor | null>(null);
+  const firstPageHasMoreRef = useRef(false);
+  const hasOlderPagesRef = useRef(false);
+  const visibleRequests = status === 'active'
+    ? requests.filter(item => ['accepted', 'in_progress', 'completion_requested'].includes(item.status))
+    : requests;
 
   const currentUid = user?.uid || '';
   const requestPerspective = user?.role === 'provider' ? 'provider' : 'customer';
@@ -31,15 +48,56 @@ export default function RequestsScreen() {
       setRequests([]);
       return;
     }
-    const unsub = subscribeToUserRequests(currentUid, requestPerspective, (items) => {
-      setRequests(items);
+    const unsub = subscribeToUserRequests(currentUid, requestPerspective, (page) => {
+      setRequests((previous) => {
+        const older = previous.slice(20);
+        const liveIds = new Set(page.items.map(item => item.id));
+        return [...page.items, ...older.filter(item => !liveIds.has(item.id))];
+      });
+      firstPageCursorRef.current = page.cursor;
+      firstPageHasMoreRef.current = page.hasMore;
+      if (!hasOlderPagesRef.current) {
+        setCursor(page.cursor);
+        setHasMore(page.hasMore);
+      }
+      void fetchEquipmentByIds(page.items.map(item => item.equipmentId)).then((equipment) => {
+        setEquipmentById(previous => new Map([...previous, ...equipment]));
+      });
     });
     return () => unsub();
   }, [canViewDriverRequests, currentUid, requestPerspective]);
 
   const renderItem = useCallback(({ item }: { item: EquipmentRequest }) => (
-    <RequestCard request={item} />
-  ), []);
+    <RequestCard request={item} equipment={equipmentById.get(item.equipmentId)} />
+  ), [equipmentById]);
+
+  const loadMore = useCallback(async () => {
+    if (!cursor || !hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchUserRequests(currentUid, requestPerspective, cursor);
+      const equipment = await fetchEquipmentByIds(page.items.map(item => item.equipmentId));
+      setEquipmentById(previous => new Map([...previous, ...equipment]));
+      setRequests(previous => {
+        const seen = new Set(previous.map(item => item.id));
+        return [...previous, ...page.items.filter(item => !seen.has(item.id))];
+      });
+      setCursor(page.cursor);
+      setHasMore(page.hasMore);
+      setHasOlderPages(true);
+      hasOlderPagesRef.current = true;
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [cursor, currentUid, hasMore, loadingMore, requestPerspective]);
+
+  const refreshOlder = useCallback(() => {
+    setRequests(previous => previous.slice(0, 20));
+    setHasOlderPages(false);
+    hasOlderPagesRef.current = false;
+    setCursor(firstPageCursorRef.current);
+    setHasMore(firstPageHasMoreRef.current);
+  }, []);
 
   if (!user) {
     return (
@@ -74,12 +132,30 @@ export default function RequestsScreen() {
             <Text style={styles.driverRequestsText}>{isRTL ? 'طلبات السائقين' : 'Driver Requests'}</Text>
           </Pressable>
         ) : <FlatList
-          data={requests}
+          data={visibleRequests}
           renderItem={renderItem}
           keyExtractor={item => item.id}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={<EmptyState title={t('no_requests')} />}
+          ListFooterComponent={requests.length || hasMore ? (
+            <View style={styles.paginationFooter}>
+              {hasOlderPages ? (
+                <Pressable onPress={refreshOlder}>
+                  <Text style={styles.staleText}>
+                    {isRTL ? 'الطلبات الأقدم ليست مباشرة — تجاهل وإعادة تحميل' : 'Older requests are not live — discard and reload'}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {hasMore ? (
+                <Pressable style={styles.loadMoreButton} onPress={() => void loadMore()} disabled={loadingMore}>
+                  {loadingMore
+                    ? <ActivityIndicator size="small" color={Colors.primary} />
+                    : <Text style={styles.loadMoreText}>{isRTL ? 'تحميل المزيد' : 'Load more'}</Text>}
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
         />}
       </SafeAreaView>
     </View>
@@ -192,4 +268,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 20,
   },
+  paginationFooter: { alignItems: 'center', gap: 10, paddingVertical: 8 },
+  staleText: { color: Colors.textMuted, fontSize: 12, textDecorationLine: 'underline' },
+  loadMoreButton: { backgroundColor: Colors.gold, borderRadius: 12, paddingHorizontal: 22, paddingVertical: 11 },
+  loadMoreText: { color: Colors.primary, fontSize: 14, fontWeight: '700' },
 });

@@ -4,6 +4,7 @@ import { listingLifecyclePath } from './listingContracts';
 import { sanitizeCreateListingPayload, sanitizeListingPayload } from './listingPayload';
 import { driverRequestActions } from './driverRequestContract';
 import type { GccCountryCode } from '@/constants/gcc';
+import { invalidatePublicEquipment } from './discoveryInvalidation';
 export { driverRequestActions } from './driverRequestContract';
 
 export type AvailabilityRange = { from: string; until?: string };
@@ -126,16 +127,20 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
   return body as T;
 }
 
-export function updateListing(id: string, patch: Record<string, unknown>) {
-  return request<{ success: true; listingId: string; listing?: Record<string, unknown> }>(
+export async function updateListing(id: string, patch: Record<string, unknown>) {
+  const result = await request<{ success: true; listingId: string; listing?: Record<string, unknown> }>(
     `/api/listings/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(sanitizeListingPayload(patch)) },
   );
+  invalidatePublicEquipment();
+  return result;
 }
 
-export function createListing(payload: Record<string, unknown>) {
-  return request<{ success: true; id: string; listing?: Record<string, unknown> }>(
+export async function createListing(payload: Record<string, unknown>) {
+  const result = await request<{ success: true; id: string; listing?: Record<string, unknown> }>(
     '/api/listings', { method: 'POST', body: JSON.stringify(sanitizeCreateListingPayload(payload)) },
   );
+  invalidatePublicEquipment();
+  return result;
 }
 
 export function getListingAvailability(id: string) {
@@ -150,16 +155,20 @@ export function setListingControls(id: string, action: 'hide' | 'show' | 'archiv
   return action === 'archive' ? archiveListing(id) : deleteListing(id);
 }
 
-export function archiveListing(id: string) {
-  return request<{ success: true; listingId: string; action: 'archived'; preservedRentalHistory: boolean }>(
+export async function archiveListing(id: string) {
+  const result = await request<{ success: true; listingId: string; action: 'archived'; preservedRentalHistory: boolean }>(
     listingLifecyclePath(id, 'archive'), { method: 'POST' },
   );
+  invalidatePublicEquipment();
+  return result;
 }
 
-export function deleteListing(id: string) {
-  return request<{ success: true; listingId: string; action: 'deleted' | 'archived'; preservedRentalHistory: boolean }>(
+export async function deleteListing(id: string) {
+  const result = await request<{ success: true; listingId: string; action: 'deleted' | 'archived'; preservedRentalHistory: boolean }>(
     listingLifecyclePath(id, 'delete'), { method: 'DELETE' },
   );
+  invalidatePublicEquipment();
+  return result;
 }
 
 export function checkListingAvailability(id: string, requested: AvailabilityRange) {

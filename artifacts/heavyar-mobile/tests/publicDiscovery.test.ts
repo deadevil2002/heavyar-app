@@ -122,19 +122,30 @@ describe('canonical mobile public discovery', () => {
     }
     const context = source('../contexts/DiscoveryContext.tsx');
     expect(context).toContain('useFocusEffect');
-    expect(context).toContain('refetchInterval: 30_000');
-    expect(context).toContain('selectPublicEquipment');
+    expect(context).not.toContain('refetchInterval');
+    expect(context).toContain('useInfiniteQuery');
+    expect(context).toContain('refreshIfStale');
+    expect(context).toContain('MARKET_STALE_MS');
+    expect(context).toContain('INVENTORY_STALE_MS');
     expect(source('../app/(tabs)/(home)/index.tsx')).toContain("router.push('/(tabs)/search?mode=equipment')");
     expect(source('../app/(tabs)/search/index.tsx')).toContain("router.setParams({ mode: 'equipment' })");
     expect(source('../app/(tabs)/search/index.tsx')).toContain("router.setParams({ mode: 'drivers' })");
   });
-  it('keeps the Firestore query canonical without a createdAt existence restriction', () => {
+  it('uses bounded Worker discovery instead of direct public Firestore collection reads', () => {
     const service = source('../services/firestoreService.ts');
-    const query = service.split('export async function fetchEquipmentList()')[1].split('export async function fetchEquipmentById')[0];
-    expect(query).toContain("where('isActive', '==', true)");
-    expect(query).toContain("where('visibility', '==', 'visible')");
-    expect(query).toContain("where('moderationStatus', '==', 'approved')");
-    expect(query).not.toContain("orderBy('createdAt'");
+    expect(service).not.toContain('export async function fetchEquipmentList()');
+    const searchService = source('../services/equipmentSearchService.ts');
+    expect(searchService).toContain('/api/equipment/search');
+    expect(searchService).toContain('limit = 20');
+    expect(source('../app/(tabs)/search/index.tsx')).toContain('equipment-load-more');
+    expect(source('../app/(tabs)/(home)/index.tsx')).toContain('home-equipment-load-more');
+  });
+
+  it('removes permanent Driver Search polling and keeps stale-on-focus plus manual refresh', () => {
+    const driverSearch = source('../components/DriverSearchTab.tsx');
+    expect(driverSearch).not.toContain('setInterval');
+    expect(driverSearch).toContain('DRIVER_SEARCH_STALE_MS');
+    expect(driverSearch).toContain('onRefresh');
   });
   it('keeps horizontal Home scrolling but hides web and native indicators', () => {
     const home = source('../app/(tabs)/(home)/index.tsx');

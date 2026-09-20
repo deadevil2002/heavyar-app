@@ -1,12 +1,20 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, TextInput, Pressable, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TextInput, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, Send, Lock } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { subscribeToMessages, subscribeToRequest, sendMessage, fetchEquipmentById, tryBackfillRequestPublicSnapshots } from '@/services/firestoreService';
+import {
+  fetchEquipmentById,
+  fetchOlderMessages,
+  FirestoreCursor,
+  sendMessage,
+  subscribeToMessages,
+  subscribeToRequest,
+  tryBackfillRequestPublicSnapshots,
+} from '@/services/firestoreService';
 import { EquipmentRequest, ChatMessage, PublicUserSnapshot } from '@/types';
 
 export default function ChatScreen() {
@@ -17,6 +25,12 @@ export default function ChatScreen() {
   const [message, setMessage] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [request, setRequest] = useState<EquipmentRequest | null>(null);
+  const [messageCursor, setMessageCursor] = useState<FirestoreCursor | null>(null);
+  const [hasOlder, setHasOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const olderMessagesRef = useRef<ChatMessage[]>([]);
+  const loadedOlderRef = useRef(false);
+  const enrichedEquipmentIdRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
 
   const currentUid = user?.uid || '';
@@ -53,7 +67,8 @@ export default function ChatScreen() {
             avatar: user.avatar,
           };
         }
-        if (!req.providerPublic) {
+        if (!req.providerPublic && enrichedEquipmentIdRef.current !== req.equipmentId) {
+          enrichedEquipmentIdRef.current = req.equipmentId;
           try {
             const eq = await fetchEquipmentById(req.equipmentId);
             if (eq?.ownerPublic && eq.ownerUid === req.providerUid) {
@@ -71,14 +86,43 @@ export default function ChatScreen() {
 
   useEffect(() => {
     if (!requestId) return;
-    const unsub = subscribeToMessages(requestId, (msgs) => {
-      setMessages(msgs);
+    olderMessagesRef.current = [];
+    loadedOlderRef.current = false;
+    const unsub = subscribeToMessages(requestId, (page) => {
+      const latestIds = new Set(page.items.map(item => item.id));
+      setMessages([...olderMessagesRef.current.filter(item => !latestIds.has(item.id)), ...page.items]);
+      if (!loadedOlderRef.current) {
+        setMessageCursor(page.cursor);
+        setHasOlder(page.hasMore);
+      }
       setTimeout(() => {
         flatListRef.current?.scrollToEnd({ animated: true });
       }, 100);
     });
     return () => unsub();
   }, [requestId]);
+
+  const loadOlder = useCallback(async () => {
+    if (!requestId || !messageCursor || !hasOlder || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await fetchOlderMessages(requestId, messageCursor);
+      const currentIds = new Set(messages.map(item => item.id));
+      olderMessagesRef.current = [
+        ...page.items.filter(item => !currentIds.has(item.id)),
+        ...olderMessagesRef.current,
+      ];
+      loadedOlderRef.current = true;
+      setMessages(previous => {
+        const seen = new Set(previous.map(item => item.id));
+        return [...page.items.filter(item => !seen.has(item.id)), ...previous];
+      });
+      setMessageCursor(page.cursor);
+      setHasOlder(page.hasMore);
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [hasOlder, loadingOlder, messageCursor, messages, requestId]);
 
   const handleSend = useCallback(async () => {
     if (!message.trim() || !requestId) return;
@@ -125,7 +169,13 @@ export default function ChatScreen() {
           keyExtractor={item => item.id}
           contentContainerStyle={styles.messagesList}
           showsVerticalScrollIndicator={false}
-          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
+          ListHeaderComponent={hasOlder ? (
+            <Pressable style={styles.olderButton} onPress={() => void loadOlder()} disabled={loadingOlder}>
+              {loadingOlder
+                ? <ActivityIndicator size="small" color={Colors.gold} />
+                : <Text style={styles.olderText}>{isRTL ? 'تحميل رسائل أقدم' : 'Load older messages'}</Text>}
+            </Pressable>
+          ) : null}
         />
 
         <SafeAreaView edges={['bottom']} style={{ backgroundColor: Colors.card }}>
@@ -239,4 +289,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.card,
   },
   closedText: { color: Colors.textMuted, fontSize: 14, fontWeight: '500' as const },
+  olderButton: { alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 8, marginBottom: 10 },
+  olderText: { color: Colors.gold, fontSize: 13, fontWeight: '600' },
 });

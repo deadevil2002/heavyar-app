@@ -6,9 +6,9 @@ import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { fetchRequestById, fetchUserById, submitRating } from '@/services/firestoreService';
+import { fetchRequestById, submitRating } from '@/services/firestoreService';
 import { useAuth } from '@/contexts/AuthContext';
-import { EquipmentRequest, User } from '@/types';
+import { EquipmentRequest, PublicUserSnapshot } from '@/types';
 import RatingStars from '@/components/RatingStars';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
@@ -21,7 +21,7 @@ export default function RatingScreen() {
   const [rating, setRating] = useState<number>(0);
   const [review, setReview] = useState<string>('');
   const [request, setRequest] = useState<EquipmentRequest | null>(null);
-  const [provider, setProvider] = useState<User | null>(null);
+  const [provider, setProvider] = useState<PublicUserSnapshot | null>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
@@ -33,8 +33,7 @@ export default function RatingScreen() {
         const req = await fetchRequestById(requestId);
         if (mounted && req) {
           setRequest(req);
-          const prov = await fetchUserById(req.providerUid);
-          if (mounted) setProvider(prov);
+          setProvider(req.providerPublic || null);
         }
       } catch (e) {
       }

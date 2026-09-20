@@ -18,7 +18,7 @@ export default function SearchScreen() {
   const { isRTL, t } = useLanguage();
   const params = useLocalSearchParams();
   const router = useRouter();
-  const { equipment: filteredEquipment, filters, markets, setFilter, resetFilters, hasFilters, loading, refreshing, error, refresh } = useDiscovery();
+  const { equipment: filteredEquipment, filters, markets, setFilter, resetFilters, hasFilters, loading, refreshing, error, refresh, loadMore, hasMore, loadingMore } = useDiscovery();
   const query = filters.text;
   const setQuery = (text: string) => setFilter('text', text);
   const [showFilters, setShowFilters] = useState<boolean>(false);
@@ -114,6 +114,15 @@ export default function SearchScreen() {
           showsVerticalScrollIndicator={false}
           refreshing={refreshing && !loading}
           onRefresh={refresh}
+          onEndReached={() => { if (filteredEquipment.length > 0) loadMore(); }}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={loadingMore
+            ? <ActivityIndicator size="small" color={Colors.gold} />
+            : hasMore
+              ? <Pressable accessibilityRole="button" accessibilityLabel={isRTL ? 'تحميل المزيد' : 'Load more'} testID="equipment-load-more" onPress={loadMore} style={styles.loadMoreButton}>
+                  <Text style={styles.loadMoreText}>{isRTL ? 'تحميل المزيد' : 'Load more'}</Text>
+                </Pressable>
+              : null}
           ListEmptyComponent={loading ? <ActivityIndicator size="large" color={Colors.gold} /> : error ? <View>
             <EmptyState title={t('discovery_load_error')} />
             <Pressable accessibilityRole="button" onPress={refresh} style={styles.clearButton}><Text style={styles.clearText}>{t('discovery_retry')}</Text></Pressable>
@@ -294,4 +303,6 @@ const styles = StyleSheet.create({
     maxWidth: '50%',
     paddingHorizontal: 4,
   },
+  loadMoreButton: { alignSelf: 'center', paddingHorizontal: 20, paddingVertical: 12, marginVertical: 12 },
+  loadMoreText: { color: Colors.gold, fontSize: 14, fontWeight: '700' },
 });

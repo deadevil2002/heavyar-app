@@ -13,7 +13,9 @@ import { regionsForCountry, citiesForLocation } from '@/services/locationHierarc
 import { isMarketEnabled } from '@/services/locationHierarchy';
 import { mockCategories } from '@/mocks/categories';
 import { defaultDriverCountry, resetDriverSearchFilters } from '@/services/driverUtils';
-import { LatestRequestGuard, mergeUniqueById, refreshLoadedPages } from '@/services/driverLiveSync';
+import { LatestRequestGuard, mergeUniqueById } from '@/services/driverLiveSync';
+
+const DRIVER_SEARCH_STALE_MS = 2 * 60_000;
 
 export default function DriverSearchTab() {
   const { isRTL, t } = useLanguage();
@@ -35,8 +37,10 @@ export default function DriverSearchTab() {
   const [nextCursor, setNextCursor] = useState<string | undefined>();
   const nextCursorRef = useRef<string | undefined>(undefined);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const loadedPagesRef = useRef(1);
   const queryKeyRef = useRef('');
+  const lastFetchedAtRef = useRef(0);
   const guardRef = useRef(new LatestRequestGuard());
   const loadingMoreRef = useRef(false);
 
@@ -70,7 +74,8 @@ export default function DriverSearchTab() {
     } else {
       loadingMoreRef.current = false;
       setLoadingMore(false);
-      if (!silent) setLoading(true);
+      if (silent) setRefreshing(true);
+      else setLoading(true);
     }
     setError(false);
 
@@ -85,17 +90,14 @@ export default function DriverSearchTab() {
         nextCursorRef.current = result.nextCursor;
         setNextCursor(result.nextCursor);
       } else {
-        const pagesToRefresh = queryKeyRef.current === queryKey ? loadedPagesRef.current : 1;
-        const result = await refreshLoadedPages(pagesToRefresh, async cursor => {
-          const page = await searchDrivers({ ...params, cursor }, request.signal);
-          return { items: page.drivers, nextCursor: page.nextCursor };
-        });
+        const page = await searchDrivers(params, request.signal);
         if (!guardRef.current.isCurrent(request.generation)) return;
-        setDrivers(mergeUniqueById([], result.items));
+        setDrivers(mergeUniqueById([], page.drivers));
         queryKeyRef.current = queryKey;
-        loadedPagesRef.current = result.pagesFetched;
-        nextCursorRef.current = result.nextCursor;
-        setNextCursor(result.nextCursor);
+        loadedPagesRef.current = 1;
+        nextCursorRef.current = page.nextCursor;
+        setNextCursor(page.nextCursor);
+        lastFetchedAtRef.current = Date.now();
       }
     } catch (e: unknown) {
       if (!guardRef.current.isCurrent(request.generation)) return;
@@ -108,6 +110,7 @@ export default function DriverSearchTab() {
       if (guardRef.current.isCurrent(request.generation)) {
         setLoading(false);
         setLoadingMore(false);
+        setRefreshing(false);
         loadingMoreRef.current = false;
       }
     }
@@ -115,21 +118,15 @@ export default function DriverSearchTab() {
 
   useFocusEffect(
     useCallback(() => {
-      let active = true;
-      const doFetch = async () => {
-         if (active) await fetchDrivers(false);
-      };
-      doFetch();
-      const interval = setInterval(() => {
-        if (active) void fetchDrivers(false, true);
-      }, 15000);
+       const params = JSON.stringify({ q: debouncedQ, countryCode, region, city, equipment, availabilityStatus: availability, limit: 20 });
+       if (queryKeyRef.current !== params || Date.now() - lastFetchedAtRef.current >= DRIVER_SEARCH_STALE_MS) {
+         void fetchDrivers(false, drivers.length > 0);
+       }
       return () => {
-        active = false;
-        clearInterval(interval);
         guardRef.current.cancel();
         loadingMoreRef.current = false;
       };
-    }, [fetchDrivers])
+    }, [availability, city, countryCode, debouncedQ, drivers.length, equipment, fetchDrivers, region])
   );
 
   const renderFilterChips = (items: {id: string, nameAr: string, nameEn: string, disabled?: boolean}[], selected: string, onSelect: (id: string) => void) => (
@@ -209,10 +206,12 @@ export default function DriverSearchTab() {
         contentContainerStyle={styles.listContent}
         onEndReached={() => { if (drivers.length > 0) void fetchDrivers(true); }}
         onEndReachedThreshold={0.5}
+        refreshing={refreshing}
+        onRefresh={() => void fetchDrivers(false, true)}
         ListFooterComponent={loadingMore
           ? <ActivityIndicator size="small" color={Colors.gold} style={{marginVertical: 20}} />
           : nextCursor
-            ? <Pressable onPress={() => void fetchDrivers(true)} style={styles.loadMoreButton}><Text style={styles.loadMoreText}>{isRTL ? 'تحميل المزيد' : 'Load more'}</Text></Pressable>
+            ? <Pressable accessibilityRole="button" accessibilityLabel={isRTL ? 'تحميل المزيد من السائقين' : 'Load more drivers'} onPress={() => void fetchDrivers(true)} style={styles.loadMoreButton}><Text style={styles.loadMoreText}>{isRTL ? 'تحميل المزيد' : 'Load more'}</Text></Pressable>
             : null}
         ListEmptyComponent={
           loading ? <ActivityIndicator size="large" color={Colors.gold} style={{marginTop: 40}} /> :

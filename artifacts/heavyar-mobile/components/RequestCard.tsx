@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useEffect } from 'react';
+import React, { useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { Image } from 'expo-image';
 import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react-native';
@@ -6,34 +6,17 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { EquipmentRequest, Equipment } from '@/types';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { fetchEquipmentById } from '@/services/firestoreService';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 import StatusBadge from './StatusBadge';
 
 interface RequestCardProps {
   request: EquipmentRequest;
+  equipment?: Equipment | null;
 }
 
-export default React.memo(function RequestCard({ request }: RequestCardProps) {
+export default React.memo(function RequestCard({ request, equipment = null }: RequestCardProps) {
   const { isRTL, t, localizedText } = useLanguage();
   const router = useRouter();
-  const [equipment, setEquipment] = useState<Equipment | null>(null);
-
-  useEffect(() => {
-    let mounted = true;
-    const load = async () => {
-      try {
-        const eq = await fetchEquipmentById(request.equipmentId);
-        if (mounted) setEquipment(eq);
-      } catch (e) {
-      }
-    };
-    if (request.equipmentId) {
-      void load();
-    }
-    return () => { mounted = false; };
-  }, [request.equipmentId]);
-
   const handlePress = useCallback(() => {
     router.push(`/request/${request.id}`);
   }, [request.id, router]);

@@ -66,7 +66,7 @@ export default function ProfileScreen() {
     let cancelled = false;
     void (async () => {
       try {
-        const list = await fetchEquipmentByOwner(user.uid);
+        const { items: list } = await fetchEquipmentByOwner(user.uid);
         if (cancelled) return;
         const snapshot = {
           uid: user.uid,

@@ -32,8 +32,8 @@ const tapTransaction = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('worker security boundary', () => {
-  beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.captureDriverQueries(undefined); });
-  afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.captureDriverQueries(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setReservationConflict(false); });
+  beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.setPublicEquipmentLimiter(undefined); __test.captureDriverQueries(undefined); __test.captureEquipmentQueries(undefined); __test.resetMutationLimits(); });
+  afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.setPublicEquipmentLimiter(undefined); __test.captureDriverQueries(undefined); __test.captureEquipmentQueries(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setReservationConflict(false); __test.resetMutationLimits(); });
 
   test('Firestore RPC URLs use the documents colon endpoint form', () => {
     const firestoreEnv = { ...env, FIREBASE_PROJECT_ID: 'project-id' } as Env;
@@ -1023,10 +1023,85 @@ describe('worker security boundary', () => {
     }
   });
 
+  test('public equipment route uses the bounded override adapter and fails closed when its limiter is unavailable', async () => {
+    const queries: any[] = [];
+    __test.captureEquipmentQueries(queries);
+    __test.setFirestore((collection, id) => {
+      if (collection === '__queries' && id === 'equipment') return [
+        { id: 'public-1', titleEn: 'Excavator', countryCode: 'SA', isActive: true, visibility: 'visible', moderationStatus: 'approved', ownerUid: 'private', ownerPublic: { uid: 'private', nameEn: 'Owner' } },
+        { id: 'hidden-1', titleEn: 'Hidden', countryCode: 'SA', isActive: true, visibility: 'hidden', moderationStatus: 'approved' },
+      ];
+      return null;
+    });
+    __test.setPublicEquipmentLimiter(async () => null);
+    const unavailable = await worker.fetch(new Request('https://worker.test/api/equipment/search?country=SA'), env);
+    expect(unavailable.status).toBe(503);
+    expect((await unavailable.json() as any).errorCode).toBe('RATE_LIMIT_UNAVAILABLE');
+
+    __test.setPublicEquipmentLimiter(async ipHash => {
+      expect(ipHash).not.toContain('198.51.100.44');
+      return true;
+    });
+    const response = await worker.fetch(new Request('https://worker.test/api/equipment/search?country=SA&limit=20', {
+      headers: { 'CF-Connecting-IP': '198.51.100.44' },
+    }), env);
+    const body: any = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.equipment.map((item: any) => item.id)).toEqual(['public-1']);
+    expect(body.equipment[0].ownerUid).toBe(undefined);
+    expect(body.equipment[0].ownerPublic.uid).toBe(undefined);
+    expect(queries).toHaveLength(1);
+    expect(queries[0].limit <= 51).toBe(true);
+  });
+
+  test('production equipment adapter persists the per-IP minute guard and decodes only Firestore documents', async () => {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const runtimeEnv = {
+      ...env, FIREBASE_PROJECT_ID: 'equipment-project', FIREBASE_CLIENT_EMAIL: 'equipment@project.iam.gserviceaccount.com',
+      FIREBASE_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+    } as Env;
+    const calls: Array<{ url: string; body: any }> = [], oldFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      let body: any;
+      try { body = init?.body ? JSON.parse(String(init.body)) : undefined; } catch { body = undefined; }
+      calls.push({ url, body });
+      if (url.includes('oauth2.googleapis.com/token')) return new Response(JSON.stringify({ access_token: 'equipment-token', expires_in: 3600 }));
+      if (url.includes(':beginTransaction')) return new Response(JSON.stringify({ transaction: 'equipment-rate-transaction' }));
+      if (url.includes(':batchGet')) return new Response(JSON.stringify([{ missing: body.documents[0] }]));
+      if (url.includes(':commit')) return new Response(JSON.stringify({}));
+      if (url.includes('/countryConfigs/SA')) return new Response('', { status: 404 });
+      if (url.includes(':runQuery')) return new Response(JSON.stringify([
+        { document: { name: 'projects/equipment-project/databases/(default)/documents/equipment/eq-1', fields: {
+          titleEn: { stringValue: 'Excavator' }, countryCode: { stringValue: 'SA' }, isActive: { booleanValue: true },
+          visibility: { stringValue: 'visible' }, moderationStatus: { stringValue: 'approved' },
+        } } },
+        { readTime: new Date().toISOString() },
+      ]));
+      return new Response('', { status: 404 });
+    }) as typeof fetch;
+    try {
+      const response = await worker.fetch(new Request('https://worker.test/api/equipment/search?country=SA', {
+        headers: { 'CF-Connecting-IP': '203.0.113.88' },
+      }), runtimeEnv);
+      const body: any = await response.json();
+      expect(response.status).toBe(200);
+      expect(body.equipment.map((item: any) => item.id)).toEqual(['eq-1']);
+      const batch = calls.find(call => call.url.includes(':batchGet'));
+      expect(JSON.stringify(batch?.body)).toContain('/publicEquipmentRateLimits/');
+      expect(JSON.stringify(batch?.body)).not.toContain('203.0.113.88');
+      const query = calls.find(call => call.url.includes(':runQuery'))?.body.structuredQuery;
+      expect(query.from[0].collectionId).toBe('equipment');
+      expect(query.limit <= 51).toBe(true);
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
+  });
+
   test('driver scan-budget exhaustion returns an opaque resumable cursor without losing later matches', async () => {
-    const profiles = Array.from({ length: 1001 }, (_, index) => ({
+    const profiles = Array.from({ length: 151 }, (_, index) => ({
       id: `driver-${String(index).padStart(4, '0')}`,
-      displayName: index === 1000 ? 'Needle Driver' : `Other ${index}`,
+      displayName: index === 150 ? 'Needle Driver' : `Other ${index}`,
       countryCode: 'SA', active: true, moderationStatus: 'approved',
     }));
     __test.setFirestore((collection, id) => {
@@ -1037,7 +1112,7 @@ describe('worker security boundary', () => {
     const first: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&q=Needle'), env)).json();
     expect(first.drivers.length).toBe(0);
     expect(first.nextCursor.startsWith('drv_')).toBe(true);
-    expect(first.nextCursor.includes('driver-0999')).toBe(false);
+    expect(first.nextCursor.includes('driver-0099')).toBe(false);
     const second: any = await (await worker.fetch(new Request(`https://worker.test/api/drivers/search?countryCode=SA&q=Needle&cursor=${encodeURIComponent(first.nextCursor)}`), env)).json();
     expect(second.drivers.length).toBe(1);
     expect(second.drivers[0].displayName).toBe('Needle Driver');
@@ -1205,7 +1280,10 @@ describe('worker security boundary', () => {
     __test.captureCommits(commits);
     const created = await worker.fetch(request('/api/listings', {
       titleAr: 'حفار', titleEn: 'Excavator', descriptionAr: 'وصف', descriptionEn: 'Description',
-      pricePerDay: 500, images: [], availability: { from: '2026-01-01' },
+      pricePerDay: 500, countryCode: 'SA', nativeCurrency: 'SAR', nativePricePerDay: 500, displayCurrency: 'USD',
+      category: 'excavators', customCategory: '', region: 'riyadh', city: 'riyadh', customCity: '', district: '',
+      location: { lat: 0, lng: 0 }, images: [{ url: 'https://res.cloudinary.com/demo/image/upload/x.png', publicId: 'heavyar/provider-1/x' }],
+      availability: { from: '2026-01-01', temporarilyUnavailable: false },
     }, { Authorization: 'Bearer test' }), env);
     const createdBody: any = await created.json();
     expect(created.status).toBe(201);
@@ -1214,6 +1292,9 @@ describe('worker security boundary', () => {
     const listingWrite = (commits[0] as any[]).find(write => String(write.update?.name).includes('/equipment/'));
     expect(listingWrite.update.fields.moderationStatus.stringValue).toBe('approved');
     expect(listingWrite.update.fields.visibility.stringValue).toBe('visible');
+    expect(listingWrite.update.fields.nativeCurrency.stringValue).toBe('SAR');
+    expect(listingWrite.update.fields.nativePricePerDay.doubleValue).toBe(500);
+    expect(listingWrite.update.fields.displayCurrency).toBe(undefined);
 
     __test.setAuth({ uid: 'customer-1', admin: false });
     __test.setFirestore((collection) => collection === 'equipment'
@@ -1266,6 +1347,36 @@ describe('worker security boundary', () => {
       body: JSON.stringify({ city: 'Jeddah' }),
     }), env);
     expect(stale.status).toBe(409);
+  });
+
+  test('approved Store Review driver can save an owner profile and failed mutations return support IDs', async () => {
+    __test.setAuth({ uid: 'review-driver', admin: false, emailVerified: true });
+    __test.setFirestore((collection) => collection === 'users'
+      ? { role: 'driver', accountStatus: 'active', accountPurpose: 'store_review', reviewAccess: true, emailVerified: true, countryCode: 'SA', nameEn: 'Review Driver' }
+      : collection === 'driverProfiles' ? {
+        displayName: 'Review Driver', countryCode: 'SA', region: 'riyadh', city: 'riyadh',
+        equipmentTypes: ['crane'], active: true, moderationStatus: 'approved',
+      } : null);
+    const writes: Array<{ path: string; fields: Record<string, unknown> }> = [];
+    __test.captureWrites(writes);
+    const saved = await worker.fetch(new Request('https://worker.test/api/drivers/profile', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
+      body: JSON.stringify({ availabilityStatus: 'available' }),
+    }), env);
+    expect(saved.status).toBe(200);
+    expect(writes.some(write => write.path.startsWith('driverProfiles/review-driver'))).toBe(true);
+    expect(saved.headers.get('X-Request-ID')).toMatch(/^[A-F0-9]{10}$/);
+
+    const failed = await worker.fetch(new Request('https://worker.test/api/drivers/profile', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
+      body: JSON.stringify({ unsupported: true }),
+    }), env);
+    const failedBody: any = await failed.json();
+    expect(failed.status).toBe(400);
+    expect(failedBody.errorCode).toBe('REQUEST_FAILED');
+    expect(failedBody.requestId).toMatch(/^[A-F0-9]{10}$/);
+    expect(failedBody.supportCode).toBe(failedBody.requestId);
+    expect(failed.headers.get('X-Request-ID')).toBe(failedBody.requestId);
   });
 
   test('self-service invoice PDF is available only to canonical request participants', async () => {

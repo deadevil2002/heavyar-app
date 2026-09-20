@@ -14,6 +14,10 @@ import {
   Timestamp,
   Unsubscribe,
   limit,
+  startAfter,
+  documentId,
+  QueryDocumentSnapshot,
+  DocumentData,
 } from 'firebase/firestore';
 import { getFirebaseAuth, getFirebaseDb } from './firebaseConfig';
 import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice, PublicUserSnapshot } from '@/types';
@@ -23,6 +27,26 @@ import { WORKER_BASE_URL } from '@/constants/worker';
 import { listingCountryCode } from './locationHierarchy';
 
 const loggedIndexFallbacks = new Set<string>();
+
+export const OWNER_EQUIPMENT_PAGE_SIZE = 20;
+export const REQUESTS_PAGE_SIZE = 20;
+export const CHAT_PAGE_SIZE = 50;
+export const INVOICES_PAGE_SIZE = 20;
+export const RATINGS_PAGE_SIZE = 20;
+
+export type FirestoreCursor = QueryDocumentSnapshot<DocumentData>;
+
+export interface FirestorePage<T> {
+  items: T[];
+  cursor: FirestoreCursor | null;
+  hasMore: boolean;
+}
+
+function boundedPageSize(value: number | undefined, defaultSize: number, maximum = 50): number {
+  if (value === undefined) return defaultSize;
+  if (!Number.isFinite(value)) return defaultSize;
+  return Math.max(1, Math.min(maximum, Math.trunc(value)));
+}
 
 function isMissingIndexError(error: unknown): boolean {
   const code = (error as { code?: unknown } | undefined)?.code;
@@ -217,21 +241,6 @@ function parseRating(id: string, data: Record<string, unknown>): Rating {
   };
 }
 
-export async function fetchEquipmentList(): Promise<Equipment[]> {
-  const db = getFirebaseDb();
-  // Firestore orderBy also requires field existence. A missing createdAt must
-  // not exclude otherwise eligible public equipment; sort after eligibility.
-  const publicQuery = query(
-    collection(db, 'equipment'),
-    where('isActive', '==', true),
-    where('visibility', '==', 'visible'),
-    where('moderationStatus', '==', 'approved'),
-  );
-  const snap = await getDocs(publicQuery);
-  return snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-}
-
 export async function fetchEquipmentById(id: string): Promise<Equipment | null> {
   const db = getFirebaseDb();
   const snap = await getDoc(doc(db, 'equipment', id));
@@ -241,39 +250,78 @@ export async function fetchEquipmentById(id: string): Promise<Equipment | null> 
   return null;
 }
 
-export async function fetchEquipmentByOwner(ownerUid: string): Promise<Equipment[]> {
+export async function fetchEquipmentByOwnerId(id: string, ownerUid: string): Promise<Equipment | null> {
+  if (!/^[A-Za-z0-9_-]{1,150}$/.test(id) || !ownerUid) return null;
   const db = getFirebaseDb();
-  try {
-    const q = query(
-      collection(db, 'equipment'),
-      where('ownerUid', '==', ownerUid),
-      orderBy('createdAt', 'desc')
-    );
-    const snap = await getDocs(q);
-    return snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
-  } catch (indexError: unknown) {
-    if (isMissingIndexError(indexError)) {
-      warnIndexFallbackOnce('equipment:ownerUid+createdAt', indexError);
-    } else {
-    }
-    try {
-      const fallbackQ = query(
+  const snap = await getDocs(query(
+    collection(db, 'equipment'),
+    where('ownerUid', '==', ownerUid),
+    where(documentId(), '==', id),
+    limit(1),
+  ));
+  const owned = snap.docs[0];
+  return owned ? parseEquipment(owned.id, owned.data() as Record<string, unknown>) : null;
+}
+
+export async function fetchEquipmentByOwner(
+  ownerUid: string,
+  cursor?: FirestoreCursor | null,
+  pageSize = OWNER_EQUIPMENT_PAGE_SIZE
+): Promise<FirestorePage<Equipment>> {
+  const db = getFirebaseDb();
+  const size = boundedPageSize(pageSize, OWNER_EQUIPMENT_PAGE_SIZE);
+  const constraints = [
+    where('ownerUid', '==', ownerUid),
+    orderBy('createdAt', 'desc'),
+    orderBy(documentId(), 'desc'),
+    ...(cursor ? [startAfter(cursor)] : []),
+    limit(size),
+  ];
+  const snap = await getDocs(query(collection(db, 'equipment'), ...constraints));
+  return {
+    items: snap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>)),
+    cursor: snap.docs.at(-1) || null,
+    hasMore: snap.size === size,
+  };
+}
+
+export async function fetchEquipmentByIds(ids: string[]): Promise<Map<string, Equipment>> {
+  const db = getFirebaseDb();
+  const currentUid = getFirebaseAuth().currentUser?.uid;
+  if (!currentUid) throw new Error('AUTH_REQUIRED');
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  const equipment = new Map<string, Equipment>();
+  for (let offset = 0; offset < uniqueIds.length; offset += 30) {
+    const batch = uniqueIds.slice(offset, offset + 30);
+    if (!batch.length) continue;
+    // Rules are not filters: an ID-only collection query cannot prove that
+    // every possible result is readable. These two bounded queries mirror the
+    // existing public-listing and owner read predicates instead.
+    const [publicSnap, ownedSnap] = await Promise.all([
+      getDocs(query(
         collection(db, 'equipment'),
-        where('ownerUid', '==', ownerUid)
-      );
-      const fallbackSnap = await getDocs(fallbackQ);
-      const items = fallbackSnap.docs.map(d => parseEquipment(d.id, d.data() as Record<string, unknown>));
-      items.sort((a, b) => {
-        if (!a.createdAt && !b.createdAt) return 0;
-        if (!a.createdAt) return 1;
-        if (!b.createdAt) return -1;
-        return b.createdAt.localeCompare(a.createdAt);
-      });
-      return items;
-    } catch (fallbackError) {
-      throw fallbackError;
-    }
+        where('isActive', '==', true),
+        where('visibility', '==', 'visible'),
+        where('moderationStatus', '==', 'approved'),
+        where(documentId(), 'in', batch),
+        orderBy('createdAt', 'desc'),
+        orderBy(documentId(), 'desc'),
+        limit(batch.length)
+      )),
+      getDocs(query(
+        collection(db, 'equipment'),
+        where('ownerUid', '==', currentUid),
+        where(documentId(), 'in', batch),
+        orderBy('createdAt', 'desc'),
+        orderBy(documentId(), 'desc'),
+        limit(batch.length)
+      )),
+    ]);
+    [...publicSnap.docs, ...ownedSnap.docs].forEach(d => {
+      equipment.set(d.id, parseEquipment(d.id, d.data() as Record<string, unknown>));
+    });
   }
+  return equipment;
 }
 
 export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
@@ -379,32 +427,28 @@ export async function deleteEquipment(id: string): Promise<void> {
   await workerRequest(`/api/listings/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-export async function fetchUserRequests(uid: string, role: 'customer' | 'provider'): Promise<EquipmentRequest[]> {
+export async function fetchUserRequests(
+  uid: string,
+  role: 'customer' | 'provider',
+  cursor?: FirestoreCursor | null,
+  pageSize = REQUESTS_PAGE_SIZE
+): Promise<FirestorePage<EquipmentRequest>> {
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerUid' : 'providerUid';
-  try {
-    const q = query(
-      collection(db, 'equipmentRequests'),
-      where(field, '==', uid),
-      orderBy('createdAt', 'desc')
-    );
-    const snap = await getDocs(q);
-    const items = snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
-    return items;
-  } catch (indexError) {
-    if (isMissingIndexError(indexError)) {
-      warnIndexFallbackOnce(`equipmentRequests:${field}+createdAt`, indexError);
-    } else {
-    }
-    const fallbackQ = query(
-      collection(db, 'equipmentRequests'),
-      where(field, '==', uid)
-    );
-    const fallbackSnap = await getDocs(fallbackQ);
-    const items = fallbackSnap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>));
-    items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return items;
-  }
+  const size = boundedPageSize(pageSize, REQUESTS_PAGE_SIZE);
+  const snap = await getDocs(query(
+    collection(db, 'equipmentRequests'),
+    where(field, '==', uid),
+    orderBy('createdAt', 'desc'),
+    orderBy(documentId(), 'desc'),
+    ...(cursor ? [startAfter(cursor)] : []),
+    limit(size)
+  ));
+  return {
+    items: snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>)),
+    cursor: snap.docs.at(-1) || null,
+    hasMore: snap.size === size,
+  };
 }
 
 export async function fetchRequestById(id: string): Promise<EquipmentRequest | null> {
@@ -416,13 +460,9 @@ export async function fetchRequestById(id: string): Promise<EquipmentRequest | n
   return null;
 }
 
-export async function createRequest(data: Pick<EquipmentRequest, 'equipmentId' | 'customerUid' | 'providerUid' | 'requestMode' | 'numberOfDays'>): Promise<string> {
-  if (!data.equipmentId || !data.customerUid || !data.providerUid) {
+export async function createRequest(data: Pick<EquipmentRequest, 'equipmentId' | 'customerUid' | 'requestMode' | 'numberOfDays'>): Promise<string> {
+  if (!data.equipmentId || !data.customerUid) {
     throw new Error('Missing required fields for request creation');
-  }
-
-  if (data.customerUid === data.providerUid) {
-    throw new Error('Cannot request your own equipment');
   }
 
   const requestMode: EquipmentRequest['requestMode'] = data.requestMode || 'fixed_days';
@@ -507,63 +547,63 @@ export function subscribeToRequest(requestId: string, callback: (req: EquipmentR
 export function subscribeToUserRequests(
   uid: string,
   role: 'customer' | 'provider',
-  callback: (requests: EquipmentRequest[]) => void
+  callback: (page: FirestorePage<EquipmentRequest>) => void
 ): Unsubscribe {
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerUid' : 'providerUid';
   const indexedQ = query(
     collection(db, 'equipmentRequests'),
     where(field, '==', uid),
-    orderBy('createdAt', 'desc')
+    orderBy('createdAt', 'desc'),
+    orderBy(documentId(), 'desc'),
+    limit(REQUESTS_PAGE_SIZE)
   );
-  const fallbackQ = query(
-    collection(db, 'equipmentRequests'),
-    where(field, '==', uid)
-  );
-
-  let usingFallback = false;
-  let unsub: Unsubscribe = () => {};
-
-  const subscribe = (q: unknown, isFallback: boolean) => {
-    usingFallback = isFallback;
-    unsub = onSnapshot(
-      q as never,
-      (snap: unknown) => {
-        const qs = snap as { docs: { id: string; data: () => unknown }[] };
-        const items: EquipmentRequest[] = qs.docs.map((d) => parseRequest(d.id, d.data() as Record<string, unknown>));
-        if (usingFallback) items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-        callback(items);
-      },
-      (error) => {
-        const code = (error as { code?: string } | undefined)?.code;
-        if (!usingFallback && code === 'failed-precondition') {
-          warnIndexFallbackOnce(`equipmentRequests:${field}+createdAt(realtime)`, error);
-          try {
-            unsub();
-          } catch {}
-          subscribe(fallbackQ, true);
-        }
-      }
-    );
-  };
-
-  subscribe(indexedQ, false);
-  return () => unsub();
+  return onSnapshot(indexedQ, (snap) => callback({
+    items: snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>)),
+    cursor: snap.docs.at(-1) || null,
+    hasMore: snap.size === REQUESTS_PAGE_SIZE,
+  }));
 }
 
 export function subscribeToMessages(
   requestId: string,
-  callback: (messages: ChatMessage[]) => void
+  callback: (page: FirestorePage<ChatMessage>) => void
 ): Unsubscribe {
   const db = getFirebaseDb();
   const q = query(
     collection(db, 'equipmentRequests', requestId, 'messages'),
-    orderBy('createdAt', 'asc')
+    orderBy('createdAt', 'desc'),
+    orderBy(documentId(), 'desc'),
+    limit(CHAT_PAGE_SIZE)
   );
   return onSnapshot(q, (snap) => {
-    const msgs = snap.docs.map(d => parseMessage(d.id, d.data() as Record<string, unknown>));
-    callback(msgs);
+    callback({
+      items: snap.docs.map(d => parseMessage(d.id, d.data() as Record<string, unknown>)).reverse(),
+      cursor: snap.docs.at(-1) || null,
+      hasMore: snap.size === CHAT_PAGE_SIZE,
+    });
   });
+}
+
+export async function fetchOlderMessages(
+  requestId: string,
+  cursor: FirestoreCursor,
+  pageSize = CHAT_PAGE_SIZE
+): Promise<FirestorePage<ChatMessage>> {
+  const db = getFirebaseDb();
+  const size = boundedPageSize(pageSize, CHAT_PAGE_SIZE);
+  const snap = await getDocs(query(
+    collection(db, 'equipmentRequests', requestId, 'messages'),
+    orderBy('createdAt', 'desc'),
+    orderBy(documentId(), 'desc'),
+    startAfter(cursor),
+    limit(size)
+  ));
+  return {
+    items: snap.docs.map(d => parseMessage(d.id, d.data() as Record<string, unknown>)).reverse(),
+    cursor: snap.docs.at(-1) || null,
+    hasMore: snap.size === size,
+  };
 }
 
 export async function sendMessage(
@@ -618,7 +658,8 @@ export async function submitRating(data: Omit<Rating, 'id' | 'createdAt'>): Prom
       warnIndexFallbackOnce('ratings:requestId+fromUid', indexError);
       const fallbackQ = query(
         collection(db, 'ratings'),
-        where('requestId', '==', data.requestId)
+        where('requestId', '==', data.requestId),
+        limit(10)
       );
       const fallbackSnap = await getDocs(fallbackQ);
       const alreadyRated = fallbackSnap.docs.some(d => (d.data() as Record<string, unknown>).fromUid === data.fromUid);
@@ -637,30 +678,26 @@ export async function submitRating(data: Omit<Rating, 'id' | 'createdAt'>): Prom
   return docRef.id;
 }
 
-export async function fetchRatingsForUser(toUid: string): Promise<Rating[]> {
+export async function fetchRatingsForUser(
+  toUid: string,
+  cursor?: FirestoreCursor | null,
+  pageSize = RATINGS_PAGE_SIZE
+): Promise<FirestorePage<Rating>> {
   const db = getFirebaseDb();
-  try {
-    const q = query(
-      collection(db, 'ratings'),
-      where('toUid', '==', toUid),
-      orderBy('createdAt', 'desc')
-    );
-    const snap = await getDocs(q);
-    return snap.docs.map(d => parseRating(d.id, d.data() as Record<string, unknown>));
-  } catch (indexError) {
-    if (isMissingIndexError(indexError)) {
-      warnIndexFallbackOnce('ratings:toUid+createdAt', indexError);
-      const fallbackQ = query(
-        collection(db, 'ratings'),
-        where('toUid', '==', toUid)
-      );
-      const snap = await getDocs(fallbackQ);
-      const items = snap.docs.map(d => parseRating(d.id, d.data() as Record<string, unknown>));
-      items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      return items;
-    }
-    throw indexError;
-  }
+  const size = boundedPageSize(pageSize, RATINGS_PAGE_SIZE);
+  const snap = await getDocs(query(
+    collection(db, 'ratings'),
+    where('toUid', '==', toUid),
+    orderBy('createdAt', 'desc'),
+    orderBy(documentId(), 'desc'),
+    ...(cursor ? [startAfter(cursor)] : []),
+    limit(size)
+  ));
+  return {
+    items: snap.docs.map(d => parseRating(d.id, d.data() as Record<string, unknown>)),
+    cursor: snap.docs.at(-1) || null,
+    hasMore: snap.size === size,
+  };
 }
 
 function parseInvoice(id: string, data: Record<string, unknown>): Invoice {
@@ -717,36 +754,28 @@ export async function generateInvoiceNumber(): Promise<string> {
   }
 }
 
-export async function fetchUserInvoices(uid: string, role: 'customer' | 'provider'): Promise<Invoice[]> {
+export async function fetchUserInvoices(
+  uid: string,
+  role: 'customer' | 'provider',
+  cursor?: FirestoreCursor | null,
+  pageSize = INVOICES_PAGE_SIZE
+): Promise<FirestorePage<Invoice>> {
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerId' : 'providerId';
-  try {
-    const q = query(
-      collection(db, 'invoices'),
-      where(field, '==', uid),
-      orderBy('createdAt', 'desc')
-    );
-    const snap = await getDocs(q);
-    const items = snap.docs.map(d => parseInvoice(d.id, d.data() as Record<string, unknown>));
-    return items;
-  } catch (indexError) {
-    if (isMissingIndexError(indexError)) {
-      warnIndexFallbackOnce(`invoices:${field}+createdAt`, indexError);
-    } else {
-    }
-    try {
-      const fallbackQ = query(
-        collection(db, 'invoices'),
-        where(field, '==', uid)
-      );
-      const fallbackSnap = await getDocs(fallbackQ);
-      const items = fallbackSnap.docs.map(d => parseInvoice(d.id, d.data() as Record<string, unknown>));
-      items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      return items;
-    } catch (e2) {
-      throw e2;
-    }
-  }
+  const size = boundedPageSize(pageSize, INVOICES_PAGE_SIZE);
+  const snap = await getDocs(query(
+    collection(db, 'invoices'),
+    where(field, '==', uid),
+    orderBy('createdAt', 'desc'),
+    orderBy(documentId(), 'desc'),
+    ...(cursor ? [startAfter(cursor)] : []),
+    limit(size)
+  ));
+  return {
+    items: snap.docs.map(d => parseInvoice(d.id, d.data() as Record<string, unknown>)),
+    cursor: snap.docs.at(-1) || null,
+    hasMore: snap.size === size,
+  };
 }
 
 export async function fetchInvoiceByRequestId(requestId: string): Promise<Invoice | null> {
