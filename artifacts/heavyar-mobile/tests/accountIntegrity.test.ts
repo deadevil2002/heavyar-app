@@ -12,7 +12,8 @@ describe('mobile account integrity boundaries', () => {
   });
   it('maps overlap errors without exposing raw codes', () => {
     expect(safeErrorMessage({ errorCode: 'ACTIVE_RENTAL_OVERLAP' }, 'ar')).not.toContain('ACTIVE_RENTAL_OVERLAP');
-    expect(safeErrorMessage({ errorCode: 'ACTIVE_RENTAL_OVERLAP' }, 'en')).toContain('active request');
+    expect(safeErrorMessage({ errorCode: 'ACTIVE_RENTAL_OVERLAP' }, 'en')).toBe('The equipment is not available for the full selected period. Choose another time or date.');
+    expect(safeErrorMessage({ errorCode: 'ACTIVE_RENTAL_OVERLAP' }, 'ar')).toBe('المعدة غير متاحة خلال كامل الفترة المحددة. اختر وقتًا أو تاريخًا آخر.');
     expect(safeErrorMessage({ errorCode: 'UNKNOWN' }, 'en')).not.toContain('UNKNOWN');
   });
 });

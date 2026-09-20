@@ -8,6 +8,7 @@ import { EquipmentRequest, Equipment } from '@/types';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 import StatusBadge from './StatusBadge';
+import { formatMinorAmount } from '@/services/rentalV2';
 
 interface RequestCardProps {
   request: EquipmentRequest;
@@ -24,13 +25,19 @@ export default React.memo(function RequestCard({ request, equipment = null }: Re
   const title = equipment ? localizedText(equipment.titleAr, equipment.titleEn) : '...';
   const imageUrl = equipment ? getFirstImageUrl(equipment.images) : '';
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
-  const requestMode = request.requestMode || 'fixed_days';
+  const requestMode = request.pricingModelVersion === 2 ? request.rentalMode : (request.requestMode || 'fixed_days');
   const isOpenEnded = requestMode === 'open_ended';
 
   const formatDate = (dateStr: string) => {
     try {
       const d = new Date(dateStr);
-      return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' });
+      return new Intl.DateTimeFormat(isRTL ? 'ar-SA' : 'en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        ...(request.pricingModelVersion === 2 && request.rentalMode !== 'daily' ? { hour: '2-digit', minute: '2-digit' } : {}),
+        timeZone: request.pricingSnapshot?.marketTimezone,
+      }).format(d);
     } catch {
       return dateStr;
     }
@@ -49,14 +56,18 @@ export default React.memo(function RequestCard({ request, equipment = null }: Re
           <View style={[styles.dateRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <Calendar size={14} color={Colors.textMuted} />
             {isOpenEnded ? (
-              <Text style={styles.dateText}>{formatDate(request.startDate)} - {t('until_work_completion')}</Text>
+               <Text style={styles.dateText}>{formatDate(request.requestedStartAt || request.startDate)} — {t('until_work_completion')}</Text>
             ) : (
-              <Text style={styles.dateText}>{formatDate(request.startDate)} - {formatDate(request.endDate)}</Text>
+               <Text style={styles.dateText}>{formatDate(request.requestedStartAt || request.startDate)} — {formatDate(request.requestedEndAt || request.endDate)}</Text>
             )}
           </View>
           <View style={[styles.bottomRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <StatusBadge status={request.status} />
-            <Text style={styles.amount}>{request.amount.toLocaleString()} {t('sar')}</Text>
+            <Text style={styles.amount}>
+              {request.pricingModelVersion === 2 && request.pricingSnapshot
+                ? formatMinorAmount(request.pricingSnapshot.baseAmountMinor as number || request.pricingSnapshot.rateAmountMinor, request.pricingSnapshot.currency, isRTL ? 'ar' : 'en')
+                : `${request.amount.toLocaleString()} ${request.currency || t('sar')}`}
+            </Text>
           </View>
         </View>
         <ChevronIcon size={20} color={Colors.textMuted} />

@@ -1,7 +1,7 @@
 import type { Language } from '@/types';
 const messages: Record<Language, Record<string, string>> = {
   ar: {
-    ACTIVE_RENTAL_OVERLAP: 'يوجد طلب أو تأجير نشط يتعارض مع الفترة المحددة. راجع طلباتك الحالية أو اختر فترة أخرى.',
+    ACTIVE_RENTAL_OVERLAP: 'المعدة غير متاحة خلال كامل الفترة المحددة. اختر وقتًا أو تاريخًا آخر.',
     BOOKING_CONFLICT: 'هذه الفترة لم تعد متاحة. اختر فترة أخرى.', AVAILABILITY_CONFLICT: 'المعدة غير متاحة في الفترة المحددة.',
     EMAIL_VERIFICATION_REQUIRED: 'يرجى توثيق بريدك الإلكتروني قبل تنفيذ هذا الإجراء.', AUTH_REQUIRED: 'يرجى تسجيل الدخول للمتابعة.',
     ACCOUNT_SUSPENDED: 'هذا الحساب موقوف مؤقتاً. تواصل مع الدعم للمساعدة.', ACCOUNT_DELETION_REQUESTED: 'تم طلب حذف الحساب ولا يمكن تنفيذ هذا الإجراء حالياً.',
@@ -25,9 +25,20 @@ const messages: Record<Language, Record<string, string>> = {
     'auth/user-not-found': 'البريد الإلكتروني أو كلمة المرور غير صحيحة.', 'auth/wrong-password': 'البريد الإلكتروني أو كلمة المرور غير صحيحة.',
     'auth/invalid-credential': 'بيانات الدخول غير صحيحة.', 'auth/invalid-email': 'البريد الإلكتروني غير صالح.',
     'auth/too-many-requests': 'محاولات كثيرة. حاول لاحقاً.',
+    RATE_CHANGED: 'تم تحديث سعر المعدة قبل تثبيت الطلب. راجع التقدير الجديد ثم أرسل الطلب مجددًا.',
+    INVALID_RENTAL_REQUEST: 'تحقق من نوع الإيجار والتاريخ والوقت المحدد.',
+    DAILY_RENTAL_UNAVAILABLE: 'التأجير اليومي غير متاح لهذه المعدة.',
+    HOURLY_RENTAL_UNAVAILABLE: 'التأجير بالساعة غير متاح لهذه المعدة.',
+    INVALID_TRANSITION: 'لا يمكن تنفيذ هذا الإجراء في حالة الطلب الحالية.',
+    INVALID_START_TIME: 'لا يمكن بدء الإيجار قبل وقت البدء المتفق عليه.',
+    AVAILABILITY_CAP_EXHAUSTED: 'تعذر التحقق من التوفر حاليًا. حاول مرة أخرى بعد قليل.',
+    PAST_START_TIME: 'اختر وقت بدء لاحقًا من الوقت الحالي.',
+    INVALID_RENTAL_INTERVAL: 'وقت الانتهاء يجب أن يكون بعد وقت البدء.',
+    RENTAL_UNIT_UNAVAILABLE: 'وحدة التأجير المحددة غير متاحة لهذه المعدة.',
+    REQUEST_CHANGED: 'تم تحديث الطلب. راجع التفاصيل الحالية وحاول مجددًا.',
   },
   en: {
-    ACTIVE_RENTAL_OVERLAP: 'You already have an active request or rental that overlaps this period. Review your current requests or choose different dates.',
+    ACTIVE_RENTAL_OVERLAP: 'The equipment is not available for the full selected period. Choose another time or date.',
     BOOKING_CONFLICT: 'This period is no longer available. Choose different dates.', AVAILABILITY_CONFLICT: 'The equipment is unavailable for the selected period.',
     EMAIL_VERIFICATION_REQUIRED: 'Please verify your email before continuing.', AUTH_REQUIRED: 'Please sign in to continue.',
     ACCOUNT_SUSPENDED: 'This account is suspended. Contact support for help.', ACCOUNT_DELETION_REQUESTED: 'Account deletion has been requested and this action is unavailable.',
@@ -51,6 +62,17 @@ const messages: Record<Language, Record<string, string>> = {
     'auth/user-not-found': 'The email or password is incorrect.', 'auth/wrong-password': 'The email or password is incorrect.',
     'auth/invalid-credential': 'The sign-in details are incorrect.', 'auth/invalid-email': 'Enter a valid email address.',
     'auth/too-many-requests': 'Too many attempts. Please try again later.',
+    RATE_CHANGED: 'The listing rate changed before the request was locked. Review the new estimate and submit again.',
+    INVALID_RENTAL_REQUEST: 'Check the rental type and selected date and time.',
+    DAILY_RENTAL_UNAVAILABLE: 'Daily rental is unavailable for this equipment.',
+    HOURLY_RENTAL_UNAVAILABLE: 'Hourly rental is unavailable for this equipment.',
+    INVALID_TRANSITION: 'This action is unavailable in the request’s current state.',
+    INVALID_START_TIME: 'The rental cannot start before the agreed start time.',
+    AVAILABILITY_CAP_EXHAUSTED: 'Availability cannot be verified right now. Please try again shortly.',
+    PAST_START_TIME: 'Choose a start time later than the current time.',
+    INVALID_RENTAL_INTERVAL: 'The end time must be after the start time.',
+    RENTAL_UNIT_UNAVAILABLE: 'The selected rental unit is unavailable for this equipment.',
+    REQUEST_CHANGED: 'The request has changed. Review its current details and try again.',
   },
 };
 export function safeErrorMessage(error: unknown, language: Language) {

@@ -1,3 +1,5 @@
+import { legacyMarketProjection, legacyPricingProjection } from './rental-v2';
+
 export type FirestoreQuery = Record<string, unknown>;
 
 export type EquipmentSearchRow = {
@@ -102,13 +104,24 @@ function publicProjection(id: string, data: Record<string, unknown>): Record<str
   const fields = [
     'publicEquipmentNumber', 'titleAr', 'titleEn', 'descriptionAr', 'descriptionEn',
     'category', 'customCategory', 'countryCode', 'region', 'city', 'customCity',
-    'district', 'pricePerDay', 'nativeCurrency', 'nativePricePerDay', 'images',
+    'district', 'pricePerDay', 'nativeCurrency', 'nativePricePerDay',
+    'pricingModelVersion', 'pricing', 'images',
     'availability', 'isActive', 'visibility', 'moderationStatus', 'createdAt', 'updatedAt',
   ] as const;
   const projected: Record<string, unknown> = { id };
   for (const field of fields) if (data[field] !== undefined) projected[field] = data[field];
   const owner = publicOwner(data.ownerPublic);
   if (owner) projected.ownerPublic = owner;
+  if (data.pricingModelVersion !== 2) {
+    try {
+      const market = legacyMarketProjection(data as Record<string, any>);
+      const legacy = legacyPricingProjection(data as Record<string, any>);
+      projected.countryCode = market.countryCode;
+      projected.nativeCurrency = market.nativeCurrency;
+      projected.pricingModelVersion = legacy.pricingModelVersion;
+      projected.pricing = legacy.pricing;
+    } catch { /* malformed legacy prices retain their historical projection */ }
+  }
   return projected;
 }
 

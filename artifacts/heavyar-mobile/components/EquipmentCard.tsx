@@ -9,7 +9,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { mockUsers } from '@/mocks/users';
 import { findCityById } from '@/mocks/saudiRegions';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
-import { formatNativeAmount } from '@/services/currency';
+import ListingPriceDisplay from '@/components/ListingPriceDisplay';
 
 interface EquipmentCardProps {
   equipment: Equipment;
@@ -39,9 +39,12 @@ export default React.memo(function EquipmentCard({ equipment, compact }: Equipme
             <MapPin size={12} color={Colors.textMuted} />
             <Text style={styles.locationText}>{cityName}</Text>
           </View>
-          <Text style={[styles.compactPrice, { textAlign: isRTL ? 'right' : 'left' }]}>
-            {formatNativeAmount(equipment.pricePerDay, equipment.nativeCurrency, equipment.countryCode)} {t('per_day')}
-          </Text>
+          <ListingPriceDisplay
+            listing={equipment as unknown as import('@/services/listingPricing').ListingPricingSource}
+            isRTL={isRTL}
+            compact
+            style={styles.compactPrice}
+          />
         </View>
       </Pressable>
     );
@@ -57,7 +60,12 @@ export default React.memo(function EquipmentCard({ equipment, compact }: Equipme
           </View>
         )}
         <View style={styles.priceBadge}>
-            <Text style={styles.priceText}>{formatNativeAmount(equipment.pricePerDay, equipment.nativeCurrency, equipment.countryCode)} {t('per_day')}</Text>
+          <ListingPriceDisplay
+            listing={equipment as unknown as import('@/services/listingPricing').ListingPricingSource}
+            isRTL={isRTL}
+            compact
+            textStyle={styles.priceText}
+          />
         </View>
       </View>
       <View style={styles.info}>
@@ -177,9 +185,6 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   compactPrice: {
-    color: Colors.gold,
-    fontSize: 13,
-    fontWeight: '700' as const,
     marginTop: 4,
   },
 });

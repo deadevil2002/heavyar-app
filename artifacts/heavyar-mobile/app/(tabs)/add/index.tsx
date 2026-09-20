@@ -16,6 +16,11 @@ import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { preferredDisplayCurrency } from '@/services/currency';
 import { safeErrorMessage } from '@/services/errorMessages';
+import ListingPricingFields from '@/components/ListingPricingFields';
+import {
+  buildListingPricing,
+  ListingPricingInput,
+} from '@/services/listingPricing';
 
 export default function AddEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -34,7 +39,12 @@ export default function AddEquipmentScreen() {
   const [district, setDistrict] = useState<string>('');
   const [showRegionPicker, setShowRegionPicker] = useState<boolean>(false);
   const [citySearch, setCitySearch] = useState<string>('');
-  const [price, setPrice] = useState<string>('');
+  const [pricingInput, setPricingInput] = useState<ListingPricingInput>({
+    hourlyEnabled: false,
+    hourlyAmount: '',
+    dailyEnabled: true,
+    dailyAmount: '',
+  });
   const [images, setImages] = useState<string[]>([]);
   const [showCategoryPicker, setShowCategoryPicker] = useState<boolean>(false);
   const [showCityPicker, setShowCityPicker] = useState<boolean>(false);
@@ -96,9 +106,13 @@ export default function AddEquipmentScreen() {
       showDialog(t('validation_error'), t('validation_city_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
-    const parsedPrice = parseFloat(price);
-    if (!price.trim() || isNaN(parsedPrice) || parsedPrice <= 0) {
-      showDialog(t('validation_error'), t('validation_price_required'), [{ text: t('ok'), style: 'default' }]);
+    const currency = user.nativeCurrency || 'SAR';
+    const pricingResult = buildListingPricing(pricingInput, currency);
+    if (!pricingResult.ok) {
+      const message = pricingResult.reason === 'RATE_REQUIRED'
+        ? (isRTL ? 'فعّل سعراً واحداً على الأقل.' : 'Enable at least one rental rate.')
+        : (isRTL ? 'أدخل سعراً موجباً صالحاً بدقة العملة المحددة.' : 'Enter a valid positive rate using the currency precision shown.');
+      showDialog(t('validation_error'), message, [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (images.length === 0) {
@@ -131,10 +145,10 @@ export default function AddEquipmentScreen() {
         customCity,
         district,
         location: { lat: 0, lng: 0 },
-        pricePerDay: parsedPrice,
+        pricingModelVersion: pricingResult.pricingModelVersion,
+        pricing: pricingResult.pricing,
         countryCode: user.countryCode || 'SA',
         nativeCurrency: user.nativeCurrency || 'SAR',
-        nativePricePerDay: parsedPrice,
         displayCurrency: preferredDisplayCurrency(user.countryCode, user.displayCurrency),
         images: uploadedImages,
         availability: { from: new Date().toISOString().slice(0, 10), temporarilyUnavailable: false },
@@ -150,7 +164,7 @@ export default function AddEquipmentScreen() {
       setCity('');
       setCustomCity('');
       setDistrict('');
-      setPrice('');
+      setPricingInput({ hourlyEnabled: false, hourlyAmount: '', dailyEnabled: true, dailyAmount: '' });
       setImages([]);
     } catch (e) {
       await Promise.all(uploadedImages.map(image => deleteCloudinaryImage(image.publicId)));
@@ -160,7 +174,7 @@ export default function AddEquipmentScreen() {
       setUploading(false);
       setUploadProgress('');
     }
-  }, [titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, price, images, user, t, showDialog, requiresEmailVerification]);
+  }, [titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, pricingInput, images, user, t, showDialog, requiresEmailVerification, isRTL]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 
@@ -398,17 +412,13 @@ export default function AddEquipmentScreen() {
               />
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('price_per_day')}</Text>
-              <TextInput
-                style={[styles.textInput, { textAlign: isRTL ? 'right' : 'left' }]}
-                value={price}
-                onChangeText={setPrice}
-                placeholder="0"
-                placeholderTextColor={Colors.textMuted}
-                keyboardType="numeric"
-              />
-            </View>
+            <ListingPricingFields
+              value={pricingInput}
+              onChange={setPricingInput}
+              currency={user.nativeCurrency || 'SAR'}
+              isRTL={isRTL}
+              disabled={publishing}
+            />
 
             <Pressable
               style={[styles.publishButton, publishing && styles.publishButtonDisabled]}

@@ -8,24 +8,24 @@ import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
-import { fetchEquipmentByOwnerId, createRequest, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
+import { fetchEquipmentByOwnerId, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
 import { Equipment } from '@/types';
 import { getImageUrl } from '@/utils/imageHelpers';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import RentalRequestModal, { RentalRequestDraft } from '@/components/RentalRequestModal';
-import { checkListingAvailability, WorkerError } from '@/services/workerClient';
-import { nativePrice, formatListingDailyPrice, listingCurrency } from '@/services/currency';
+import { createRentalRequest, WorkerError } from '@/services/workerClient';
 import { safeErrorMessage } from '@/services/errorMessages';
 import { fetchPublicEquipmentById } from '@/services/equipmentSearchService';
 import { ownerEquipmentFallbackUid } from '@/services/equipmentDetailAccess';
+import ListingPriceDisplay from '@/components/ListingPriceDisplay';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function EquipmentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { isRTL, t, localizedText } = useLanguage();
-  const { user: currentUser, isAuthenticated, requiresEmailVerification } = useAuth();
+  const { user: currentUser, isAuthenticated, isLoading: authLoading, requiresEmailVerification } = useAuth();
   const router = useRouter();
   const [currentImage, setCurrentImage] = useState<number>(0);
   const [liked, setLiked] = useState<boolean>(false);
@@ -110,10 +110,6 @@ export default function EquipmentDetailScreen() {
   } : undefined);
   const ownerLive = currentUser?.uid === equipment.ownerUid ? currentUser : null;
   const ownerName = ownerPublic ? localizedText(ownerPublic.nameAr, ownerPublic.nameEn) : '';
-  const displayPrice = nativePrice(
-    equipment.nativePricePerDay ?? equipment.pricePerDay,
-    listingCurrency(equipment.nativeCurrency, equipment.countryCode),
-  );
   const canShowOwner = Boolean(ownerPublic && (ownerPublic.nameAr || ownerPublic.nameEn || ownerPublic.avatar));
   const isEligibleRequester = Boolean(
     isAuthenticated &&
@@ -123,6 +119,7 @@ export default function EquipmentDetailScreen() {
   );
 
   const handleRequestRental = () => {
+    if (authLoading) return;
     if (!isAuthenticated || !currentUser) {
       showDialog(
         t('login_required'),
@@ -166,36 +163,7 @@ export default function EquipmentDetailScreen() {
   const handleSubmitRequest = async (draft: RentalRequestDraft) => {
     if (!equipment || !currentUser) return;
     try {
-      const start = new Date();
-      const startDate = start.toISOString().slice(0, 10);
-
-      let endDate = '';
-
-      if (draft.requestMode === 'fixed_days') {
-        const days = draft.numberOfDays || 0;
-        endDate = new Date(start.getTime() + days * 86400000).toISOString().slice(0, 10);
-      }
-
-      const availability = await checkListingAvailability(equipment.id, { from: startDate, ...(endDate ? { until: endDate } : {}) });
-      if (!availability.available) {
-        showDialog(
-          t('error_title'),
-          availability.reason
-            ? safeErrorMessage({ errorCode: availability.reason }, isRTL ? 'ar' : 'en')
-            : t('listing_unavailable_dates'),
-          [{ text: t('ok'), style: 'default' }],
-        );
-        return;
-      }
-
-      const requestPayload = {
-        equipmentId: equipment.id,
-        customerUid: currentUser.uid,
-        requestMode: draft.requestMode,
-        ...(draft.requestMode === 'fixed_days' ? { numberOfDays: draft.numberOfDays } : {}),
-      };
-
-      await createRequest(requestPayload);
+      await createRentalRequest(draft);
 
       showDialog(
         t('success'),
@@ -285,8 +253,7 @@ export default function EquipmentDetailScreen() {
               <Text style={[styles.categoryText, { textAlign: isRTL ? 'right' : 'left' }]}>{categoryName}</Text>
             </View>
             <View style={styles.priceTag}>
-              <Text style={styles.priceValue}>{formatListingDailyPrice(equipment.pricePerDay, equipment)}</Text>
-              <Text style={styles.priceUnit}>{t('per_day')}</Text>
+              <ListingPriceDisplay listing={equipment} isRTL={isRTL} textStyle={styles.priceValue} />
             </View>
           </View>
 
@@ -339,13 +306,11 @@ export default function EquipmentDetailScreen() {
           <SafeAreaView edges={['bottom']}>
             <View style={[styles.bottomContent, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               <View>
-                <Text style={styles.bottomPrice}>{formatListingDailyPrice(displayPrice.amount, { nativeCurrency: displayPrice.currency, countryCode: equipment.countryCode })}</Text>
-                {displayPrice.isApproximate && <Text style={styles.bottomPerDay}>{t('approximate_display_price')}</Text>}
-                <Text style={styles.bottomPerDay}>{t('per_day')}</Text>
+                <ListingPriceDisplay listing={equipment} isRTL={isRTL} textStyle={styles.bottomPrice} />
               </View>
-              <Pressable style={[styles.requestButton, !isEligibleRequester && styles.requestButtonDisabled]} onPress={handleRequestRental}>
-                <Calendar size={18} color={Colors.primary} />
-                <Text style={styles.requestButtonText}>{t('request_rental')}</Text>
+              <Pressable style={[styles.requestButton, (authLoading || !isEligibleRequester) && styles.requestButtonDisabled]} onPress={handleRequestRental} disabled={authLoading}>
+                {authLoading ? <ActivityIndicator size="small" color={Colors.primary} /> : <Calendar size={18} color={Colors.primary} />}
+                <Text style={styles.requestButtonText}>{authLoading ? t('loading') : t('request_rental')}</Text>
               </Pressable>
             </View>
           </SafeAreaView>
@@ -362,6 +327,7 @@ export default function EquipmentDetailScreen() {
 
       <RentalRequestModal
         visible={requestModalVisible}
+        equipment={equipment}
         onClose={() => setRequestModalVisible(false)}
         onSubmit={handleSubmitRequest}
       />

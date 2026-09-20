@@ -14,7 +14,7 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 import { Equipment } from '@/types';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 import { setListingControls, archiveListing, deleteListing, WorkerError } from '@/services/workerClient';
-import { formatNativeAmount } from '@/services/currency';
+import ListingPriceDisplay from '@/components/ListingPriceDisplay';
 
 export default function MyEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -153,7 +153,11 @@ export default function MyEquipmentScreen() {
           <Image source={{ uri: getFirstImageUrl(item.images) }} style={styles.image} contentFit="cover" />
           <View style={[styles.info, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
             <Text style={[styles.itemTitle, { textAlign: isRTL ? 'right' : 'left' }]} numberOfLines={1}>{title}</Text>
-            <Text style={styles.price}>{formatNativeAmount(item.pricePerDay, item.nativeCurrency, item.countryCode)} {t('per_day')}</Text>
+            <ListingPriceDisplay
+              listing={item as unknown as import('@/services/listingPricing').ListingPricingSource}
+              isRTL={isRTL}
+              compact
+            />
             <View style={[styles.statusRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               {item.isActive ? <Eye size={14} color={Colors.success} /> : <EyeOff size={14} color={Colors.textMuted} />}
               <Text style={[styles.statusText, { color: item.isActive ? Colors.success : Colors.textMuted }]}>

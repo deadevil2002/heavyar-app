@@ -5,6 +5,8 @@ import { sanitizeCreateListingPayload, sanitizeListingPayload } from './listingP
 import { driverRequestActions } from './driverRequestContract';
 import type { GccCountryCode } from '@/constants/gcc';
 import { invalidatePublicEquipment } from './discoveryInvalidation';
+import type { RentalEstimate, RentalSummary } from '@/types';
+import { buildRentalRequestPayload, normalizeEstimate, type RentalRequestInput } from './rentalV2';
 export { driverRequestActions } from './driverRequestContract';
 
 export type AvailabilityRange = { from: string; until?: string };
@@ -175,6 +177,47 @@ export function checkListingAvailability(id: string, requested: AvailabilityRang
   return request<{ success: true; available: boolean; reason?: string }>(
     `/api/listings/${encodeURIComponent(id)}/availability/check`,
     { method: 'POST', body: JSON.stringify(requested) },
+  );
+}
+
+export async function estimateRentalRequest(input: RentalRequestInput): Promise<RentalEstimate> {
+  const payload = buildRentalRequestPayload(input);
+  const result = await request<RentalEstimate | { success: true; serverNow: string; estimate: RentalEstimate }>(
+    '/api/requests/estimate',
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+  return normalizeEstimate(result as RentalEstimate | { estimate: RentalEstimate; serverNow?: string });
+}
+
+export async function createRentalRequest(input: RentalRequestInput): Promise<string> {
+  const payload = buildRentalRequestPayload(input);
+  const result = await request<{ success: true; requestId?: string; id?: string; request?: { id?: string } }>(
+    '/api/requests',
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+  const id = result.requestId || result.request?.id || result.id;
+  if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new WorkerError('Invalid request response', 502, 'INVALID_RESPONSE');
+  return id;
+}
+
+export async function getRentalSummary(requestId: string): Promise<RentalSummary> {
+  const result = await request<RentalSummary | { success: true; serverNow: string; summary: RentalSummary }>(
+    `/api/requests/${encodeURIComponent(requestId)}/rental-summary`,
+  );
+  return 'summary' in result ? { ...result.summary, serverNow: result.serverNow } : result;
+}
+
+export function transitionRentalRequest(
+  requestId: string,
+  action: 'accept' | 'reject' | 'start' | 'request_completion' | 'complete' | 'cancel',
+  reason?: string,
+) {
+  return request<{ success: true; request?: Record<string, unknown> }>(
+    `/api/requests/${encodeURIComponent(requestId)}/transition`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ action, ...(reason?.trim() ? { reason: reason.trim() } : {}) }),
+    },
   );
 }
 

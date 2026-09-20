@@ -20,7 +20,7 @@ import {
   DocumentData,
 } from 'firebase/firestore';
 import { getFirebaseAuth, getFirebaseDb } from './firebaseConfig';
-import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice, PublicUserSnapshot } from '@/types';
+import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice, PublicUserSnapshot, ListingPricingV2 } from '@/types';
 import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
 import { WORKER_BASE_URL } from '@/constants/worker';
@@ -138,6 +138,11 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
     }) as Equipment['countryCode'],
     nativeCurrency: typeof data.nativeCurrency === 'string' ? data.nativeCurrency : (typeof data.currency === 'string' ? data.currency : 'SAR'),
     nativePricePerDay: typeof data.nativePricePerDay === 'number' ? data.nativePricePerDay : ((data.pricePerDay as number) || 0),
+    pricingModelVersion: data.pricingModelVersion === 2 ? 2 : undefined,
+    pricing: data.pricingModelVersion === 2 && data.pricing && typeof data.pricing === 'object'
+      ? data.pricing as ListingPricingV2
+      : undefined,
+    marketTimezone: typeof data.marketTimezone === 'string' ? data.marketTimezone : undefined,
     displayCurrency: typeof data.displayCurrency === 'string' ? data.displayCurrency : undefined,
     displayPricePerDay: typeof data.displayPricePerDay === 'number' ? data.displayPricePerDay : undefined,
     displayRate: typeof data.displayRate === 'number' ? data.displayRate : undefined,
@@ -158,7 +163,7 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
 }
 
 function parseRequestMode(raw: unknown): EquipmentRequest['requestMode'] {
-  if (raw === 'fixed_days' || raw === 'open_ended') return raw;
+  if (raw === 'fixed_days' || raw === 'hourly' || raw === 'daily' || raw === 'open_ended') return raw;
   if (raw === 'fixed_duration') return 'fixed_days';
   return undefined;
 }
@@ -174,9 +179,14 @@ function calculateNumberOfDays(startDate: string, endDate: string): number | und
 }
 
 function parseRequest(id: string, data: Record<string, unknown>): EquipmentRequest {
-  const startDate = toISOString(data.startDate) || (data.startDate as string) || '';
-  const endDate = toISOString(data.endDate) || (data.endDate as string) || '';
-  const requestMode = parseRequestMode(data.requestMode) || 'fixed_days';
+  const requestedStartAt = toISOString(data.requestedStartAt);
+  const requestedEndAt = data.requestedEndAt ? toISOString(data.requestedEndAt) : null;
+  const startDate = requestedStartAt || toISOString(data.startDate) || (data.startDate as string) || '';
+  const endDate = requestedEndAt || toISOString(data.endDate) || (data.endDate as string) || '';
+  const rentalMode = data.rentalMode === 'hourly' || data.rentalMode === 'daily' || data.rentalMode === 'open_ended'
+    ? data.rentalMode
+    : undefined;
+  const requestMode = rentalMode || parseRequestMode(data.requestMode) || 'fixed_days';
   const rawDays = typeof data.numberOfDays === 'number' ? data.numberOfDays : undefined;
   const inferredDays = calculateNumberOfDays(startDate, endDate);
   const numberOfDays = requestMode === 'fixed_days' ? (rawDays || inferredDays) : undefined;
@@ -191,6 +201,17 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     providerPublic: parsePublicUserSnapshot(data.providerPublic, (data.providerUid as string) || ''),
     status: (data.status as EquipmentRequest['status']) || 'pending',
     requestMode,
+    pricingModelVersion: data.pricingModelVersion === 2 ? 2 : undefined,
+    rentalMode,
+    rateUnit: data.rateUnit === 'hourly' || data.rateUnit === 'daily' ? data.rateUnit : undefined,
+    requestedStartAt: requestedStartAt || undefined,
+    requestedEndAt,
+    actualStartAt: data.actualStartAt ? toISOString(data.actualStartAt) : null,
+    actualEndAt: data.actualEndAt ? toISOString(data.actualEndAt) : null,
+    pricingSnapshot: data.pricingSnapshot as EquipmentRequest['pricingSnapshot'],
+    finalRentalSnapshot: data.finalRentalSnapshot as EquipmentRequest['finalRentalSnapshot'],
+    cancellationReason: typeof data.cancellationReason === 'string' ? data.cancellationReason : undefined,
+    completionRequestedBy: typeof data.completionRequestedBy === 'string' ? data.completionRequestedBy : undefined,
     numberOfDays,
     startDate,
     endDate,
@@ -505,6 +526,17 @@ export async function updateRequestStatus(
   await workerRequest(`/api/requests/${encodeURIComponent(requestId)}/transition`, {
     method: 'POST',
     body: JSON.stringify({ action: nextAction }),
+  });
+}
+
+export async function transitionRequest(
+  requestId: string,
+  action: 'accept' | 'reject' | 'start' | 'request_completion' | 'complete' | 'cancel',
+  reason?: string,
+): Promise<void> {
+  await workerRequest(`/api/requests/${encodeURIComponent(requestId)}/transition`, {
+    method: 'POST',
+    body: JSON.stringify({ action, ...(reason?.trim() ? { reason: reason.trim() } : {}) }),
   });
 }
 

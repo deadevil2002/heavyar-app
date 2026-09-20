@@ -117,6 +117,23 @@ describe('bounded public equipment search', () => {
     expect((result.body.equipment?.[0] as any).moderationReason).toBeUndefined();
   });
 
+  test('projects Saudi market metadata for a sparse historical legacy detail', async () => {
+    const result = await searchPublicEquipment(new Request('https://api.test/api/equipment/search?id=sparse-legacy'), {
+      projectId,
+      isMarketplaceEnabled: enabled,
+      runQuery: async () => [listing('sparse-legacy', {
+        countryCode: undefined, nativeCurrency: undefined, pricePerDay: 1500,
+      })],
+    });
+    expect(result.status).toBe(200);
+    expect(result.body.equipment?.[0]).toMatchObject({
+      countryCode: 'SA',
+      nativeCurrency: 'SAR',
+      pricingModelVersion: 1,
+      pricing: { currency: 'SAR', daily: { enabled: true, amountMinor: 150_000 } },
+    });
+  });
+
   test('hides non-public and Store Review detail IDs without projecting them', async () => {
     for (const row of [
       listing('inactive', { isActive: false }),

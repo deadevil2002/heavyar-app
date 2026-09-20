@@ -6,7 +6,7 @@ const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'u
 const service = source('../services/firestoreService.ts');
 
 const implementation = (name: string, nextName: string) =>
-  service.split(`export ${name}`)[1].split(`export ${nextName}`)[0];
+  service.split(`export ${name}(`)[1].split(`export ${nextName}(`)[0];
 
 describe('bounded Firestore read paths', () => {
   it('sets explicit normal-read page budgets', () => {

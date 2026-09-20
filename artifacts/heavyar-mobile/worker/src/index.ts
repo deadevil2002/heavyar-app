@@ -12,6 +12,7 @@ import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-ac
 import { hash } from './early-access-model';
 import { evaluateCanonicalCompleteness, isOperationallyBlocked, isSecuritySuspended, isStoreReviewAccount } from './integrity';
 import { searchPublicEquipment, type FirestoreQuery, type EquipmentSearchRow } from './equipment-search';
+import { activeInterval, buildFinalPaymentHandoff, calculateRental, estimateRental, intervalsOverlap, legacyMarketProjection, legacyPricingProjection, marketForCountry, parseV2RequestInput, rateFor, validateListingPricing, validateServerStart, v2TransitionAllowed, type V2RequestInput } from './rental-v2';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -202,7 +203,15 @@ export async function listFirebaseAuthIdentities(env: Env, limit = 50, pageToken
   const result: any = await response.json();
   return { identities: (result.users || []).map((identity: any) => ({ uid: String(identity.localId || ''), email: typeof identity.email === 'string' ? identity.email : null, emailVerified: identity.emailVerified === true, disabled: identity.disabled === true, createdAt: identity.createdAt ? new Date(Number(identity.createdAt)).toISOString() : undefined })).filter((identity: any) => identity.uid), nextPageToken: typeof result.nextPageToken === 'string' ? result.nextPageToken : null };
 }
-const val = (v: any): any => v?.stringValue ?? v?.integerValue ?? v?.doubleValue ?? v?.booleanValue ?? v?.timestampValue ?? (v?.arrayValue ? (v.arrayValue.values || []).map(val) : v?.mapValue ? decode(v.mapValue) : undefined);
+function firestoreInteger(value: unknown): number {
+  if (typeof value !== 'string' || !/^-?\d+$/.test(value)) throw new Error('Invalid Firestore integerValue');
+  const integer = BigInt(value);
+  if (integer < BigInt(Number.MIN_SAFE_INTEGER) || integer > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Firestore integerValue exceeds safe integer range');
+  return Number(integer);
+}
+const val = (v: any): any => v && Object.hasOwn(v, 'nullValue') ? null
+  : v && Object.hasOwn(v, 'integerValue') ? firestoreInteger(v.integerValue)
+    : v?.stringValue ?? v?.doubleValue ?? v?.booleanValue ?? v?.timestampValue ?? (v?.arrayValue ? (v.arrayValue.values || []).map(val) : v?.mapValue ? decode(v.mapValue) : undefined);
 const decode = (d: any) => Object.fromEntries(Object.entries(d?.fields || {}).map(([k, v]) => [k, val(v)]));
 function fullName(env: Env, path: string) { return `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/${path}`; }
 function firestoreUrl(env: Env, path: string) {
@@ -949,6 +958,7 @@ function paymentPricing(env: Env) {
   );
 }
 async function paymentQuote(env: Env, r: any, e: any, requestId: string) {
+  if (r?.pricingModelVersion === 2) err('V2_SETTLEMENT_DISABLED');
   const baseAmount = Number(r?.finalAmount ?? r?.amount);
   const calculatedAt = new Date().toISOString();
   const snapshot = r?.finalCommercialSnapshot
@@ -1009,6 +1019,25 @@ async function authoritativeCommercialSnapshot(env: Env, r: any, e: any, baseAmo
     ruleUpdatedAt: rule.updatedAt, ruleUpdatedBy: rule.updatedBy, ruleNotes: rule.notes,
   }) as LockedCommercialSnapshot;
 }
+async function authoritativeCommercialSnapshotMinor(env: Env, r: any, e: any, baseAmountMinor: number, calculatedAt = new Date().toISOString()): Promise<CommercialSnapshot> {
+  if (!Number.isSafeInteger(baseAmountMinor) || baseAmountMinor < 0) err('Invalid base amount');
+  const context = commercialContext(r, e);
+  const catalog = await commercialCatalog(env);
+  const rule = resolveRule(catalog, { ...context, at: calculatedAt });
+  const tax = context.currency === 'SAR'
+    ? { amount: Number((BigInt(baseAmountMinor) * BigInt(configuredVatRateBps(env)) + 5_000n) / 10_000n), reference: 'legacy-sar-vat-policy' }
+    : {};
+  const snapshot = calculateCommercial(rule, {
+    ...context, baseAmountMinor, calculatedAt,
+    ...(tax.amount === undefined ? {} : { taxAmountMinor: tax.amount, taxReference: tax.reference }),
+  });
+  return Object.assign(snapshot, {
+    taxRateBps: tax.amount === undefined ? null : configuredVatRateBps(env),
+    ruleEffectiveFrom: rule.effectiveFrom, ruleEffectiveTo: rule.effectiveTo,
+    ruleCreatedAt: rule.createdAt, ruleCreatedBy: rule.createdBy,
+    ruleUpdatedAt: rule.updatedAt, ruleUpdatedBy: rule.updatedBy, ruleNotes: rule.notes,
+  });
+}
 function lockedRule(snapshot: LockedCommercialSnapshot): CommissionRule {
   const legacy = snapshot.ruleVersion.startsWith('legacy-');
   if (!legacy && (!snapshot.ruleEffectiveFrom || !snapshot.ruleCreatedAt || !snapshot.ruleCreatedBy || !snapshot.ruleUpdatedAt || !snapshot.ruleUpdatedBy)) {
@@ -1042,6 +1071,25 @@ function recalculateLockedCommercial(env: Env, snapshot: CommercialSnapshot, bas
   return Object.assign(result, {
     taxRateBps: taxRateBps ?? null,
     ruleEffectiveFrom: locked.ruleEffectiveFrom, ruleEffectiveTo: locked.ruleEffectiveTo ?? null,
+    ruleCreatedAt: locked.ruleCreatedAt, ruleCreatedBy: locked.ruleCreatedBy,
+    ruleUpdatedAt: locked.ruleUpdatedAt, ruleUpdatedBy: locked.ruleUpdatedBy, ruleNotes: locked.ruleNotes,
+  });
+}
+function recalculateLockedCommercialMinor(snapshot: CommercialSnapshot, baseAmountMinor: number, calculatedAt: string): CommercialSnapshot {
+  if (!Number.isSafeInteger(baseAmountMinor) || baseAmountMinor < 0) err('Invalid base amount');
+  const locked = snapshot as LockedCommercialSnapshot;
+  const taxRateBps = locked.taxRateBps;
+  if (locked.currency === 'SAR' && !Number.isSafeInteger(taxRateBps)) err('Locked VAT policy unavailable');
+  const taxAmountMinor = taxRateBps === null || taxRateBps === undefined ? undefined
+    : Number((BigInt(baseAmountMinor) * BigInt(taxRateBps) + 5_000n) / 10_000n);
+  const result = calculateCommercial(lockedRule(locked), {
+    baseAmountMinor, countryCode: snapshot.countryCode, categoryId: snapshot.categoryId,
+    providerUid: snapshot.providerUid, currency: snapshot.currency, calculatedAt,
+    ...(taxAmountMinor === undefined ? {} : { taxAmountMinor, taxReference: snapshot.taxReference }),
+  });
+  return Object.assign(result, {
+    taxRateBps: taxRateBps ?? null,
+    ruleEffectiveFrom: locked.ruleEffectiveFrom, ruleEffectiveTo: locked.ruleEffectiveTo,
     ruleCreatedAt: locked.ruleCreatedAt, ruleCreatedBy: locked.ruleCreatedBy,
     ruleUpdatedAt: locked.ruleUpdatedAt, ruleUpdatedBy: locked.ruleUpdatedBy, ruleNotes: locked.ruleNotes,
   });
@@ -1341,8 +1389,145 @@ function rentalDates(from: string, until: string): string[] {
 function reservationPath(equipmentId: string, date: string) {
   return `equipmentReservations/${encodeURIComponent(`${equipmentId}:${date}`)}`;
 }
+const V2_AVAILABILITY_LIMIT = 101;
+const BLOCKING_RENTAL_STATUSES = ['pending', 'accepted', 'in_progress', 'completion_requested', 'payment_pending', 'paid'];
+type RentalRowsResult = { rows: Array<{ data: any; updateTime?: string; name?: string }>; exhausted: boolean };
+async function rentalRowsForEquipment(env: Env, equipmentId: string, transaction?: string): Promise<RentalRowsResult> {
+  if (firestoreOverride) {
+    const injected = firestoreOverride('__queries', 'equipmentRequests');
+    const matching = (Array.isArray(injected) ? injected : []).filter((item: any) => {
+      const data = item.data || item;
+      return data.equipmentId === equipmentId && (BLOCKING_RENTAL_STATUSES.includes(String(data.status)) || data.paymentState === 'paid');
+    });
+    return { rows: matching.slice(0, V2_AVAILABILITY_LIMIT).map((item: any) => ({ data: item.data || item, updateTime: item.updateTime, name: item.name })), exhausted: matching.length >= V2_AVAILABILITY_LIMIT };
+  }
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'equipmentRequests' }],
+    where: { compositeFilter: { op: 'AND', filters: [
+      { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: equipmentId } } },
+      { compositeFilter: { op: 'OR', filters: [
+        { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: BLOCKING_RENTAL_STATUSES.map(stringValue => ({ stringValue })) } } } },
+        { fieldFilter: { field: { fieldPath: 'paymentState' }, op: 'EQUAL', value: { stringValue: 'paid' } } },
+      ] } },
+    ] } },
+    orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+    limit: V2_AVAILABILITY_LIMIT,
+  }, ...(transaction ? { transaction } : {}) }) }) as any[] || [];
+  const documents = result.filter(row => row.document).map(row => row.document);
+  return {
+    rows: documents.map(document => ({ data: decode(document), updateTime: document.updateTime, name: document.name })),
+    exhausted: documents.length >= V2_AVAILABILITY_LIMIT,
+  };
+}
+async function assertV2Available(env: Env, equipmentId: string, requested: { startAt: string; endAt: string | null }, excludingRequestId?: string, transaction?: string) {
+  const result = await rentalRowsForEquipment(env, equipmentId, transaction);
+  if (result.exhausted) throw new Error('AVAILABILITY_CAP_EXHAUSTED');
+  const rows = result.rows;
+  const conflict = rows.some(row => {
+    const id = String(row.name || '').split('/').pop();
+    if (excludingRequestId && id === excludingRequestId) return false;
+    const interval = activeInterval(row.data);
+    return interval ? intervalsOverlap(requested, interval) : false;
+  });
+  if (conflict) throw new Error('ACTIVE_RENTAL_OVERLAP');
+}
+function v2PricingForEquipment(equipment: any) {
+  if (equipment?.pricingModelVersion === 2) return validateListingPricing(equipment.pricing, String(equipment.nativeCurrency || equipment.currency || ''));
+  return legacyPricingProjection(equipment).pricing;
+}
+function v2EquipmentContext(equipment: any) {
+  if (equipment?.pricingModelVersion === 2) return equipment;
+  const market = legacyMarketProjection(equipment || {});
+  return { ...equipment, countryCode: market.countryCode, nativeCurrency: market.nativeCurrency, currency: market.nativeCurrency };
+}
+function v2Failure(error: unknown): { status: number; error: string; errorCode: string } {
+  const code = error instanceof Error ? error.message : '';
+  if (code === 'RATE_CHANGED') return { status: 409, error: 'Listing rate changed before locking', errorCode: code };
+  if (code === 'ACTIVE_RENTAL_OVERLAP') return { status: 409, error: 'Equipment is unavailable for the full selected period.', errorCode: code };
+  if (code === 'AVAILABILITY_CAP_EXHAUSTED') return { status: 503, error: 'Availability temporarily unavailable', errorCode: code };
+  if (code === 'Requested start is in the past') return { status: 400, error: code, errorCode: 'PAST_START_TIME' };
+  if (code === 'hourly rental is unavailable' || code === 'daily rental is unavailable') return { status: 409, error: code, errorCode: 'RENTAL_UNIT_UNAVAILABLE' };
+  if (['Requested end must be after start', 'Rental duration must be positive', 'Daily rentals require market-midnight boundaries', 'Daily rental duration must be from 1 to 365 days'].includes(code)) {
+    return { status: 400, error: code, errorCode: 'INVALID_RENTAL_INTERVAL' };
+  }
+  // Stored listing/commercial failures are operational details and must never
+  // expose raw Error.message values to clients.
+  return { status: 503, error: 'Rental pricing temporarily unavailable', errorCode: 'RENTAL_PRICING_UNAVAILABLE' };
+}
+async function buildV2Estimate(env: Env, input: V2RequestInput, equipment: any, now: string) {
+  const normalizedEquipment = v2EquipmentContext(equipment);
+  const pricing = v2PricingForEquipment(normalizedEquipment);
+  const estimate = estimateRental(input, pricing, String(normalizedEquipment.countryCode || ''), now);
+  let commercial: CommercialSnapshot | null = null;
+  if (estimate.baseAmountMinor !== null) commercial = await authoritativeCommercialSnapshotMinor(env, { providerUid: normalizedEquipment.ownerUid }, normalizedEquipment, estimate.baseAmountMinor, now);
+  return { ...estimate, commercial };
+}
+async function estimateV2Request(req: Request, env: Env, u: User) {
+  let input: V2RequestInput;
+  try { input = parseV2RequestInput(await req.json()); }
+  catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid request', errorCode: 'INVALID_RENTAL_REQUEST' }, 400); }
+  const equipment = await getDoc(env, 'equipment', input.equipmentId);
+  if (!equipment || equipment.ownerUid === u.uid || !isPublicRentableListing(equipment)) return out(env, req, { success: false, error: 'Listing unavailable', errorCode: 'LISTING_UNAVAILABLE' }, 409);
+  const now = new Date().toISOString();
+  try {
+    const estimate = await buildV2Estimate(env, input, equipment, now);
+    await assertV2Available(env, input.equipmentId, { startAt: input.requestedStartAt, endAt: input.requestedEndAt });
+    return out(env, req, { success: true, serverNow: now, estimate });
+  } catch (error) {
+    const failure = v2Failure(error);
+    return out(env, req, { success: false, error: failure.error, errorCode: failure.errorCode }, failure.status);
+  }
+}
+async function createV2Request(body: any, req: Request, env: Env, u: User) {
+  let input: V2RequestInput;
+  try { input = parseV2RequestInput(body); }
+  catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid request', errorCode: 'INVALID_RENTAL_REQUEST' }, 400); }
+  const equipmentRaw = await getRawDoc(env, 'equipment', input.equipmentId), equipment = equipmentRaw?.data;
+  if (!equipmentRaw?.updateTime || !equipment || equipment.ownerUid === u.uid || !isPublicRentableListing(equipment)) return out(env, req, { success: false, error: 'Listing unavailable', errorCode: 'LISTING_UNAVAILABLE' }, 409);
+  const account = u.accountProfile || await getDoc(env, 'users', u.uid);
+  if (account?.role !== 'customer') return out(env, req, { success: false, error: 'Rental requests require a customer account', errorCode: 'CUSTOMER_ACCOUNT_REQUIRED' }, 403);
+  await enforceOperationalAccess(env, u, equipment);
+  try { await enforceEmailVerified(env, u, 'rental'); }
+  catch (error) { if (error instanceof Error && error.message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403); throw error; }
+  const id = `r_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
+  try {
+    const normalizedEquipment = v2EquipmentContext(equipment);
+    const estimate = await buildV2Estimate(env, input, normalizedEquipment, now);
+    await assertV2Available(env, input.equipmentId, { startAt: input.requestedStartAt, endAt: input.requestedEndAt });
+    // For open-ended requests, lock rule/tax terms against one selected rate
+    // unit. Usage amounts are deliberately absent until server completion.
+    const lockedCommercial = estimate.commercial || await authoritativeCommercialSnapshotMinor(env, { providerUid: normalizedEquipment.ownerUid }, normalizedEquipment, estimate.rateAmountMinor, now);
+    const pricingSnapshot = {
+      snapshotId: `rental-v2:${id}:locked`,
+      calculationVersion: 2, rateUnit: estimate.rateUnit, rateAmountMinor: estimate.rateAmountMinor,
+      currency: estimate.currency, currencyDecimals: estimate.currencyDecimals, marketTimezone: estimate.marketTimezone,
+      baseAmountMinor: estimate.baseAmountMinor, commercialTerms: lockedCommercial,
+    };
+    const value: any = {
+      pricingModelVersion: 2, equipmentId: input.equipmentId, customerUid: u.uid, providerUid: equipment.ownerUid,
+      categoryId: String(normalizedEquipment.category || ''), countryCode: String(normalizedEquipment.countryCode || ''),
+      status: 'pending', rentalMode: input.rentalMode, requestMode: input.rentalMode,
+      rateUnit: input.rateUnit, requestedStartAt: input.requestedStartAt, requestedEndAt: input.requestedEndAt,
+      actualStartAt: null, actualEndAt: null, notes: input.notes || '', pricingSnapshot,
+      commercialSnapshot: lockedCommercial, commercialSnapshotStatus: input.rentalMode === 'open_ended' ? 'terms_locked' : 'estimated',
+      currency: estimate.currency, nativeCurrency: normalizedEquipment.nativeCurrency, baseAmountMinor: estimate.baseAmountMinor,
+      paymentStatus: 'unpaid', paymentState: null, paymentId: '', allowChat: false, createdAt: now, updatedAt: now,
+    };
+    const publicRequestNumber = await createWithPublicIdentifier(env, 'request', `equipmentRequests/${id}`, value, [
+      // Verify makes listing rate/moderation edits race-safe without mutating it.
+      { verify: fullName(env, `equipment/${encodeURIComponent(input.equipmentId)}`), currentDocument: { updateTime: equipmentRaw.updateTime } },
+      await notificationWrite(fullName.bind(null, env), String(equipment.ownerUid), 'rental_request_created', now, id, `${id}:created`),
+    ]);
+    return out(env, req, { success: true, serverNow: now, request: { id, publicRequestNumber, ...value }, estimate }, 201);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'precondition failed') return out(env, req, { success: false, error: 'Listing changed; retry request', errorCode: 'LISTING_CHANGED' }, 409);
+    const failure = v2Failure(error);
+    return out(env, req, { success: false, error: failure.error, errorCode: failure.errorCode }, failure.status);
+  }
+}
 async function createRequest(req: Request, env: Env, u: User) {
   const body: any = await req.json().catch(() => ({}));
+  if (body?.pricingModelVersion === 2) return createV2Request(body, req, env, u);
   // A supplied public number is intentionally ignored for legacy-client
   // compatibility; the Worker transaction always allocates the real value.
   const allowedRequestFields = new Set(['equipmentId', 'requestMode', 'numberOfDays', 'startDate', 'endDate', 'publicRequestNumber']);
@@ -1351,18 +1536,30 @@ async function createRequest(req: Request, env: Env, u: User) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(equipmentId)) return out(env, req, { success: false, error: 'Invalid request' }, 400);
   const equipment = await getDoc(env, 'equipment', equipmentId);
   if (!equipment || equipment.ownerUid === u.uid || !isPublicRentableListing(equipment)) return out(env, req, { success: false, error: 'Listing unavailable' }, 409);
+  if (equipment.pricingModelVersion === 2) {
+    let pricing;
+    try { pricing = validateListingPricing(equipment.pricing, String(equipment.nativeCurrency || equipment.currency || '')); }
+    catch { return out(env, req, { success: false, error: 'Listing pricing unavailable' }, 409); }
+    if (!pricing.daily.enabled) return out(env, req, { success: false, error: 'This listing supports hourly rental only. Update the app to create a time-based request.', errorCode: 'DAILY_RENTAL_UNAVAILABLE' }, 409);
+  }
   await enforceOperationalAccess(env, u, equipment);
   try { await enforceEmailVerified(env, u, 'rental'); } catch (error) { if (error instanceof Error && error.message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403); throw error; }
   const mode = body.requestMode === 'open_ended' ? 'open_ended' : 'fixed_days';
-  const days = Number(body.numberOfDays || 0), amount = mode === 'fixed_days' ? Number(equipment.pricePerDay) * days : Number(equipment.pricePerDay);
+  const dailyMajor = equipment.pricingModelVersion === 2
+    ? Number(minorToMajor(rateFor(validateListingPricing(equipment.pricing, String(equipment.nativeCurrency || equipment.currency || '')), 'daily'), String(equipment.pricing.currency)))
+    : Number(equipment.pricePerDay);
+  const days = Number(body.numberOfDays || 0), amount = mode === 'fixed_days' ? dailyMajor * days : dailyMajor;
   const fallbackStart = new Date().toISOString().slice(0, 10), fallbackEnd = new Date(Date.now() + Math.max(0, days - 1) * 86400000).toISOString().slice(0, 10);
   const requestedRange = { from: String(body.startDate || fallbackStart), until: body.endDate === undefined ? fallbackEnd : String(body.endDate) };
   const dateCheck = validateDateRange(requestedRange);
   if (!dateCheck.ok || !requestedRange.until || (mode === 'fixed_days' && Math.round((Date.parse(`${requestedRange.until}T00:00:00Z`) - Date.parse(`${requestedRange.from}T00:00:00Z`)) / 86400000) + 1 !== days)) return out(env, req, { success: false, error: 'Invalid rental dates' }, 400);
   const availabilityCheckResult = availabilityAllows(equipment.availability || { from: requestedRange.from }, requestedRange);
   if (!availabilityCheckResult.ok) return out(env, req, { success: false, error: availabilityCheckResult.error }, 409);
-  const existingRequests = firestoreOverride ? [] : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: equipmentId } } }, limit: 100 } }) }) as any[] || [];
-  const overlap = existingRequests.map(row => decode(row.document || row)).some(existing => hasActiveRental([existing]) && existing.startDate && String(existing.startDate) <= String(requestedRange.until || '9999-12-31') && String(requestedRange.from) <= String(existing.endDate || '9999-12-31'));
+  let existingRequests: RentalRowsResult = { rows: [], exhausted: false };
+  try { existingRequests = await rentalRowsForEquipment(env, equipmentId); }
+  catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_UNAVAILABLE' }, 503); }
+  if (existingRequests.exhausted) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
+  const overlap = existingRequests.rows.map(row => row.data).some(existing => hasActiveRental([existing]) && existing.startDate && String(existing.startDate) <= String(requestedRange.until || '9999-12-31') && String(requestedRange.from) <= String(existing.endDate || '9999-12-31'));
   if (overlap) return out(env, req, { success: false, error: 'An active request or rental overlaps this period.', errorCode: 'ACTIVE_RENTAL_OVERLAP', details: { ar: 'يوجد طلب أو تأجير نشط يتعارض مع الفترة المحددة. اختر فترة أخرى.', en: 'An active request or rental overlaps this period. Choose different dates.' } }, 409);
   if (!Number.isFinite(amount) || amount <= 0 || (mode === 'fixed_days' && (!Number.isInteger(days) || days < 1 || days > 365))) return out(env, req, { success: false, error: 'Invalid request amount' }, 400);
   const id = `r_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
@@ -1381,11 +1578,147 @@ async function createRequest(req: Request, env: Env, u: User) {
   );
   return out(env, req, { success: true, request: requestDto(id, { ...value, publicRequestNumber }), quote: initialQuote, commercialSnapshot }, 201);
 }
+async function transitionV2Request(req: Request, env: Env, u: User, requestId: string, raw: { data: any; updateTime?: string }, body: any) {
+  const r = raw.data, action = String(body.action || '');
+  if (!v2TransitionAllowed(r, action, u.uid, u.admin)) return out(env, req, { success: false, error: 'Invalid V2 rental transition', errorCode: 'INVALID_TRANSITION' }, 409);
+  if (Object.keys(body).some(key => !['action', 'reason'].includes(key))) return out(env, req, { success: false, error: 'Unsupported transition field' }, 400);
+  const reason = body.reason === undefined ? '' : String(body.reason).trim();
+  if (action === 'cancel' && (!reason || reason.length > 500 || /[\u0000-\u001f\u007f]/.test(reason))) return out(env, req, { success: false, error: 'A valid cancellation reason is required' }, 400);
+  const now = new Date().toISOString(), updates: Record<string, any> = { updatedAt: { timestampValue: now } };
+  let next = '';
+  if (action === 'accept') { next = 'accepted'; updates.allowChat = { booleanValue: true }; }
+  if (action === 'reject') next = 'rejected';
+  if (action === 'cancel') {
+    next = 'cancelled'; updates.cancellationReason = { stringValue: reason };
+    updates.cancelledBy = { stringValue: u.uid }; updates.cancelledAt = { timestampValue: now }; updates.allowChat = { booleanValue: false };
+  }
+  if (action === 'start') {
+    try { validateServerStart(r, now); } catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid start time', errorCode: 'INVALID_START_TIME' }, 409); }
+    next = 'in_progress'; updates.actualStartAt = { timestampValue: now }; updates.startedAt = { timestampValue: now };
+  }
+  if (action === 'request_completion') {
+    next = 'completion_requested'; updates.completionRequestedBy = { stringValue: u.uid }; updates.completionRequestedAt = { timestampValue: now };
+  }
+  if (action === 'complete') {
+    next = 'completed';
+    const pricing = r.pricingSnapshot, startAt = String(r.actualStartAt || '');
+    if (!pricing || !startAt || !r.commercialSnapshot) return out(env, req, { success: false, error: 'Locked rental accounting unavailable' }, 409);
+    try {
+      const calculation = calculateRental({ mode: r.rentalMode, unit: r.rateUnit, rateAmountMinor: Number(pricing.rateAmountMinor), startAt, endAt: now, countryCode: String(r.countryCode) });
+      if (calculation.baseAmountMinor === null) throw new Error('Final amount unavailable');
+      const finalCommercial = recalculateLockedCommercialMinor(r.commercialSnapshot, calculation.baseAmountMinor, now);
+      const commercialSnapshotId = `rental-v2:${requestId}:final`;
+      const paymentHandoff = buildFinalPaymentHandoff(commercialSnapshotId, finalCommercial);
+      updates.actualEndAt = { timestampValue: now }; updates.endedAt = { timestampValue: now };
+      updates.finalBaseAmountMinor = { integerValue: String(calculation.baseAmountMinor) };
+      updates.finalDuration = firestoreValue(calculation.duration);
+      updates.finalCommercialSnapshot = firestoreValue(finalCommercial);
+      updates.finalCommercialSnapshotId = { stringValue: commercialSnapshotId };
+      updates.paymentHandoff = { mapValue: { fields: {
+        amountUnit: { stringValue: paymentHandoff.amountUnit },
+        currency: { stringValue: paymentHandoff.currency },
+        baseAmount: { integerValue: String(paymentHandoff.baseAmount) },
+        platformCommission: { integerValue: String(paymentHandoff.platformCommission) },
+        tax: paymentHandoff.tax === null ? { nullValue: null } : { integerValue: String(paymentHandoff.tax) },
+        gatewayFee: paymentHandoff.gatewayFee === null ? { nullValue: null } : { integerValue: String(paymentHandoff.gatewayFee) },
+        customerPayable: { integerValue: String(paymentHandoff.customerPayable) },
+        providerReceivable: { integerValue: String(paymentHandoff.providerReceivable) },
+        commercialSnapshotId: { stringValue: paymentHandoff.commercialSnapshotId },
+        settlementEnabled: { booleanValue: false },
+      } } };
+      updates.commercialSnapshotStatus = { stringValue: 'finalized' };
+      updates.finalizedAt = { timestampValue: now }; updates.allowChat = { booleanValue: false };
+    } catch { return out(env, req, { success: false, error: 'Invalid request accounting' }, 409); }
+  }
+  updates.status = { stringValue: next };
+  const requestWrite = { update: { name: fullName(env, `equipmentRequests/${encodeURIComponent(requestId)}`), fields: updates }, updateMask: { fieldPaths: Object.keys(updates) }, currentDocument: { updateTime: raw.updateTime } };
+  const recipient = action === 'cancel' || action === 'request_completion' || action === 'complete'
+    ? (u.uid === r.customerUid ? String(r.providerUid) : String(r.customerUid))
+    : action === 'accept' || action === 'reject' || action === 'start' ? String(r.customerUid) : String(r.providerUid);
+  const notificationEvent: NotificationEvent = action === 'accept' ? 'rental_accepted'
+    : action === 'reject' ? 'rental_rejected'
+      : action === 'cancel' ? 'rental_cancelled'
+        : action === 'request_completion' ? 'completion_requested'
+          : action === 'start' ? 'rental_starting' : 'rental_completed';
+  const notification = await notificationWrite(fullName.bind(null, env), recipient, notificationEvent, now, requestId, `${requestId}:v2:${action}:${r.updatedAt || r.createdAt}`);
+  try {
+    if (action === 'accept') {
+      // Pending V2 requests are soft/nonblocking. Acceptance performs the
+      // authoritative overlap read and equipment fence write in one transaction.
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const transaction = await beginTransaction(env);
+        try {
+          await assertV2Available(env, String(r.equipmentId), { startAt: r.requestedStartAt, endAt: r.requestedEndAt }, requestId, transaction);
+          const fencePath = `equipmentBookingFences/${encodeURIComponent(String(r.equipmentId))}`;
+          const fence = transaction ? await transactionDocument(env, fencePath, transaction) : await getRawDoc(env, 'equipmentBookingFences', String(r.equipmentId));
+          const fenceWrite = { update: { name: fullName(env, fencePath), fields: { equipmentId: { stringValue: String(r.equipmentId) }, revision: { integerValue: String(Number(fence?.data?.revision || 0) + 1) }, requestId: { stringValue: requestId }, updatedAt: { timestampValue: now } } }, currentDocument: fence?.updateTime ? { updateTime: fence.updateTime } : { exists: false } };
+          await commitWrites(env, [requestWrite, fenceWrite, notification], transaction);
+          break;
+        } catch (error) {
+          if (error instanceof Error && (error.message === 'ACTIVE_RENTAL_OVERLAP' || error.message === 'AVAILABILITY_CAP_EXHAUSTED')) throw error;
+          if (attempt === 3) throw error;
+        }
+      }
+    } else await commitWrites(env, [requestWrite, notification]);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : 'Request changed';
+    const knownCode = code === 'ACTIVE_RENTAL_OVERLAP' || code === 'AVAILABILITY_CAP_EXHAUSTED' ? code : 'REQUEST_CHANGED';
+    return out(env, req, { success: false, error: code === 'ACTIVE_RENTAL_OVERLAP' ? 'Equipment is unavailable for the full selected period.' : code === 'AVAILABILITY_CAP_EXHAUSTED' ? 'Availability temporarily unavailable' : 'Request changed', errorCode: knownCode }, code === 'AVAILABILITY_CAP_EXHAUSTED' ? 503 : 409);
+  }
+  const responseUpdates = decode({ fields: updates });
+  if (responseUpdates.finalBaseAmountMinor !== undefined) responseUpdates.finalBaseAmountMinor = Number(responseUpdates.finalBaseAmountMinor);
+  if (responseUpdates.paymentHandoff) {
+    for (const field of ['baseAmount', 'platformCommission', 'tax', 'gatewayFee', 'customerPayable', 'providerReceivable']) {
+      if (responseUpdates.paymentHandoff[field] !== null && responseUpdates.paymentHandoff[field] !== undefined) {
+        responseUpdates.paymentHandoff[field] = Number(responseUpdates.paymentHandoff[field]);
+      }
+    }
+  }
+  return out(env, req, { success: true, serverNow: now, request: { id: requestId, ...r, ...responseUpdates } });
+}
+async function rentalV2Summary(req: Request, env: Env, u: User, requestId: string) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) return out(env, req, { success: false, error: 'Not found' }, 404);
+  const r = await getDoc(env, 'equipmentRequests', requestId);
+  if (!r || r.pricingModelVersion !== 2 || (r.customerUid !== u.uid && r.providerUid !== u.uid && !u.admin)) return out(env, req, { success: false, error: 'Not found' }, 404);
+  const now = new Date().toISOString();
+  let duration = { elapsedMinutes: null, billableMinutes: null, billableUnits: null, unit: r.rateUnit === 'hourly' ? 'minute' : 'day' };
+  let currentEstimate: any = null, final: any = null;
+  try {
+    if (r.actualStartAt && !r.actualEndAt && ['in_progress', 'completion_requested'].includes(String(r.status))) {
+      const calculation = calculateRental({ mode: r.rentalMode, unit: r.rateUnit, rateAmountMinor: Number(r.pricingSnapshot?.rateAmountMinor), startAt: r.actualStartAt, endAt: now, countryCode: r.countryCode });
+      duration = calculation.duration as any;
+      currentEstimate = { asOf: now, baseAmountMinor: calculation.baseAmountMinor, commercial: recalculateLockedCommercialMinor(r.commercialSnapshot, calculation.baseAmountMinor!, now) };
+    } else if (r.actualStartAt && r.actualEndAt) {
+      const calculation = calculateRental({ mode: r.rentalMode, unit: r.rateUnit, rateAmountMinor: Number(r.pricingSnapshot?.rateAmountMinor), startAt: r.actualStartAt, endAt: r.actualEndAt, countryCode: r.countryCode });
+      duration = (r.finalDuration || calculation.duration) as any;
+      const paymentHandoff = r.paymentHandoff ? { ...r.paymentHandoff } : null;
+      if (paymentHandoff) for (const field of ['baseAmount', 'platformCommission', 'tax', 'gatewayFee', 'customerPayable', 'providerReceivable']) {
+        if (paymentHandoff[field] !== null && paymentHandoff[field] !== undefined) paymentHandoff[field] = Number(paymentHandoff[field]);
+      }
+      final = {
+        finalizedAt: r.finalizedAt || r.actualEndAt,
+        baseAmountMinor: Number(r.finalBaseAmountMinor ?? calculation.baseAmountMinor),
+        commercialSnapshotId: r.finalCommercialSnapshotId,
+        commercial: r.finalCommercialSnapshot,
+        paymentHandoff,
+      };
+    } else if (r.requestedEndAt) {
+      duration = calculateRental({ mode: r.rentalMode, unit: r.rateUnit, rateAmountMinor: Number(r.pricingSnapshot?.rateAmountMinor), startAt: r.requestedStartAt, endAt: r.requestedEndAt, countryCode: r.countryCode }).duration as any;
+    }
+  } catch { return out(env, req, { success: false, error: 'Rental summary unavailable', errorCode: 'INVALID_LOCKED_SNAPSHOT' }, 409); }
+  return out(env, req, { success: true, serverNow: now, summary: {
+    requestId, pricingModelVersion: 2, status: r.status, rentalMode: r.rentalMode,
+    requestedStartAt: r.requestedStartAt, requestedEndAt: r.requestedEndAt,
+    actualStartAt: r.actualStartAt || null, actualEndAt: r.actualEndAt || null,
+    pricingSnapshot: r.pricingSnapshot, duration, currentEstimate, final,
+  } });
+}
 async function transitionRequest(req: Request, env: Env, u: User, requestId: string) {
   const body: any = await req.json().catch(() => ({})), action = body.action;
   if (!['accept', 'reject', 'cancel', 'request_completion', 'start', 'complete'].includes(action) || !/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) return out(env, req, { success: false, error: 'Invalid transition' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', requestId), r = raw?.data;
   if (!raw?.updateTime || !r) return out(env, req, { success: false, error: 'Not found' }, 404);
+  if (r.pricingModelVersion === 2) return transitionV2Request(req, env, u, requestId, raw, body);
   await enforceOperationalAccess(env, u, await getDoc(env, 'equipment', r.equipmentId));
   const [customerAccount, providerAccount] = await Promise.all([getDoc(env, 'users', r.customerUid), getDoc(env, 'users', r.providerUid)]);
   if (isOperationallyBlocked(customerAccount) || isOperationallyBlocked(providerAccount)) return out(env, req, { success: false, error: 'ACCOUNT_SUSPENDED' }, 403);
@@ -1438,6 +1771,20 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
           : null;
       }))).filter(Boolean)
       : [];
+  if (next === 'accepted') {
+    const legacyInterval = activeInterval({ ...r, status: 'pending' });
+    if (!legacyInterval) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'LEGACY_INTERVAL_UNAVAILABLE' }, 409);
+    // Read the shared fence before the overlap query. A concurrent V2 commit
+    // then invalidates this precondition instead of slipping between reads.
+    const fencePath = `equipmentBookingFences/${encodeURIComponent(String(r.equipmentId))}`;
+    const fence = await getRawDoc(env, 'equipmentBookingFences', String(r.equipmentId));
+    try { await assertV2Available(env, String(r.equipmentId), legacyInterval, requestId); }
+    catch (error) {
+      const code = error instanceof Error ? error.message : '';
+      return out(env, req, { success: false, error: code === 'AVAILABILITY_CAP_EXHAUSTED' ? 'Availability temporarily unavailable' : 'Equipment is unavailable for the full selected period.', errorCode: code || 'ACTIVE_RENTAL_OVERLAP' }, code === 'AVAILABILITY_CAP_EXHAUSTED' ? 503 : 409);
+    }
+    reservationWrites.push({ update: { name: fullName(env, fencePath), fields: { equipmentId: { stringValue: String(r.equipmentId) }, revision: { integerValue: String(Number(fence?.data?.revision || 0) + 1) }, requestId: { stringValue: requestId }, updatedAt: { timestampValue: now } } }, currentDocument: fence?.updateTime ? { updateTime: fence.updateTime } : { exists: false } });
+  }
   try {
     await commitWrites(env, [{ update: { name: fullName(env, `equipmentRequests/${requestId}`), fields: updates }, updateMask: { fieldPaths: Object.keys(updates) }, currentDocument: { updateTime: raw.updateTime } }, ...reservationWrites, await notificationWrite(fullName.bind(null, env), String(action === 'cancel' || action === 'complete' ? r.providerUid : r.customerUid), action === 'accept' ? 'rental_accepted' : action === 'reject' ? 'rental_rejected' : action === 'cancel' ? 'rental_cancelled' : action === 'request_completion' ? 'completion_requested' : action === 'start' ? 'rental_starting' : 'rental_completed', now, requestId, `${requestId}:transition:${action}:${r.updatedAt || r.createdAt}`)]);
   } catch {
@@ -1448,6 +1795,7 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
 async function startRequest(req: Request, env: Env, u: User) {
   await enforceOperationalAccess(env, u);
   const { requestId } = await req.json() as { requestId?: string }; const raw = requestId ? await getRawDoc(env, 'equipmentRequests', requestId) : null;
+  if (raw?.data?.pricingModelVersion === 2) return out(env, req, { success: false, error: 'Use the Rental V2 transition endpoint', errorCode: 'V2_GUARD_REQUIRED' }, 409);
   if (!raw?.data || (raw.data.providerUid !== u.uid && !u.admin) || raw.data.status !== 'accepted' || !raw.updateTime) return out(env, req, { success: false, error: 'Invalid request state' }, 409);
   try {
     const equipment = await getDoc(env, 'equipment', raw.data.equipmentId);
@@ -1465,6 +1813,7 @@ async function startRequest(req: Request, env: Env, u: User) {
 async function confirmCompletion(req: Request, env: Env, u: User) {
   await enforceOperationalAccess(env, u);
   const { requestId } = await req.json() as { requestId?: string }; const raw = requestId ? await getRawDoc(env, 'equipmentRequests', requestId) : null, r = raw?.data;
+  if (r?.pricingModelVersion === 2) return out(env, req, { success: false, error: 'Use the Rental V2 transition endpoint', errorCode: 'V2_GUARD_REQUIRED' }, 409);
   if (!r || r.customerUid !== u.uid || r.status !== 'completion_requested' || !raw?.updateTime) return out(env, req, { success: false, error: 'Invalid request state' }, 409);
   const now = Date.now(), started = Date.parse(r.startedAt || ''), lockedRate = Number(r.amount);
   if (!Number.isFinite(started) || (r.requestMode === 'open_ended' && (!Number.isFinite(lockedRate) || lockedRate <= 0))) return out(env, req, { success: false, error: 'Invalid request state' }, 409);
@@ -1788,6 +2137,7 @@ async function create(req: Request, env: Env, u: User) {
   const body = await req.json() as { requestId?: string; amount?: number; purpose?: string };
   if (!body.requestId || Object.keys(body).some(key => !['requestId', 'purpose'].includes(key)) || (body.purpose && body.purpose !== 'equipment_request')) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', body.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
+  if (r?.pricingModelVersion === 2) return out(env, req, { success: false, error: 'Rental V2 settlement is not enabled', errorCode: 'V2_SETTLEMENT_DISABLED' }, 409);
   try {
     await enforceOperationalAccess(env, u, e);
     const customer = r?.customerUid ? await getDoc(env, 'users', String(r.customerUid)) : null;
@@ -1900,6 +2250,7 @@ async function verify(req: Request, env: Env, u: User) {
   let d; try { d = await new TapPaymentProvider(env.TAP_SECRET_KEY_TEST).retrieve(chargeId); } catch { return out(env, req, { success: false, error: 'Payment unavailable' }, 502); }
   const m = d.metadata || {};
   const raw = await getRawDoc(env, 'equipmentRequests', m.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
+  if (r?.pricingModelVersion === 2) return out(env, req, { success: false, error: 'Rental V2 settlement is not enabled', errorCode: 'V2_SETTLEMENT_DISABLED' }, 409);
   let quote: PaymentQuote; const storedQuote = await getDoc(env, 'paymentQuotes', String(m.requestId));
   try { assertSarSettlement(r, e); quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : await paymentQuote(env, r, e, String(m.requestId)); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
   if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
@@ -1933,6 +2284,7 @@ async function tapWebhook(req: Request, env: Env) {
   const m = d.metadata || {}, requestId = String(m.requestId || '');
   if (!requestId || d.id !== chargeId) return out(env, req, { success: false, error: 'Invalid transaction' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
+  if (r?.pricingModelVersion === 2) return out(env, req, { success: false, error: 'Rental V2 settlement is not enabled', errorCode: 'V2_SETTLEMENT_DISABLED' }, 409);
   const storedQuote = await getDoc(env, 'paymentQuotes', requestId);
   let quote; try { assertSarSettlement(r, e); quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : await paymentQuote(env, r, e, requestId); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid transaction' }, 400); }
   if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
@@ -2462,9 +2814,15 @@ async function createWithPublicIdentifier(
 async function listingAvailability(req: Request, env: Env, u: User, id: string) {
   const listing = await getDoc(env, 'equipment', id);
   if (!listing || (listing.ownerUid !== u.uid && !isPublicRentableListing(listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
-  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
-  const rentals = (result || []).map((x: any) => decode(x.document || x)).filter((x: any) => ['pending', 'accepted', 'in_progress', 'completion_requested'].includes(String(x.status)) || x.paymentState === 'paid');
-  return out(env, req, { success: true, listingId: id, availability: listing.availability || null, activeRentals: rentals.map((x: any) => ({ from: x.startDate, until: x.endDate, status: x.status })) });
+  let rows;
+  try { rows = await rentalRowsForEquipment(env, id); }
+  catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_UNAVAILABLE' }, 503); }
+  if (rows.exhausted) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
+  const rentals = rows.rows.map(row => row.data).filter((x: any) => activeInterval(x));
+  let pricingProjection;
+  try { pricingProjection = listing.pricingModelVersion === 2 ? { pricingModelVersion: 2, pricing: validateListingPricing(listing.pricing, String(listing.nativeCurrency || listing.currency || '')) } : legacyPricingProjection(listing); }
+  catch { pricingProjection = null; }
+  return out(env, req, { success: true, listingId: id, availability: listing.availability || null, pricing: pricingProjection, activeRentals: rentals.map((x: any) => ({ from: x.startDate, until: x.endDate, startAt: x.requestedStartAt || null, endAt: x.actualEndAt || x.requestedEndAt || null, status: x.status })) });
 }
 async function equipmentSearchRows(env: Env, structuredQuery: FirestoreQuery): Promise<EquipmentSearchRow[]> {
   capturedEquipmentQueries?.push(structuredQuery);
@@ -2524,13 +2882,14 @@ async function listingCreate(req: Request, env: Env, u: User) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing' }, 400);
   // Currency fields are accepted for compatibility with the current Add form,
   // but ignored: country configuration remains authoritative for stored price.
-  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'images', 'dailyPrice', 'pricePerDay', 'category', 'countryCode', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'availability', 'nativeCurrency', 'nativePricePerDay', 'displayCurrency'];
+  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'images', 'dailyPrice', 'pricePerDay', 'pricingModelVersion', 'pricing', 'category', 'countryCode', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'availability', 'nativeCurrency', 'nativePricePerDay', 'displayCurrency'];
   const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'isActive', 'adminHidden', 'createdAt', 'updatedAt'];
   if (Object.keys(body).some((key) => forbidden.includes(key) || !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported listing field' }, 400);
   const titleEn = String(body.titleEn || body.title || '').trim(), titleAr = String(body.titleAr || body.title || '').trim();
   const descriptionEn = String(body.descriptionEn || body.description || '').trim(), descriptionAr = String(body.descriptionAr || body.description || '').trim();
   const dailyPrice = Number(body.dailyPrice ?? body.pricePerDay);
-  if (!titleEn || !titleAr || titleEn.length > 160 || titleAr.length > 160 || descriptionEn.length > 5000 || descriptionAr.length > 5000 || !Number.isFinite(dailyPrice) || dailyPrice <= 0 || dailyPrice > 100000) return out(env, req, { success: false, error: 'Invalid listing fields' }, 400);
+  const v2 = body.pricingModelVersion === 2;
+  if (!titleEn || !titleAr || titleEn.length > 160 || titleAr.length > 160 || descriptionEn.length > 5000 || descriptionAr.length > 5000 || (!v2 && (!Number.isFinite(dailyPrice) || dailyPrice <= 0 || dailyPrice > 100000))) return out(env, req, { success: false, error: 'Invalid listing fields' }, 400);
   const images = Array.isArray(body.images) ? body.images : [];
   if (images.length > 20 || images.some((image: any) => !image || typeof image !== 'object' || typeof image.publicId !== 'string' || typeof image.url !== 'string' || image.publicId.length > 300 || image.url.length > 2000)) return out(env, req, { success: false, error: 'Invalid listing images' }, 400);
   const availability = body.availability || { from: new Date().toISOString().slice(0, 10) }, availabilityCheck = validateDateRange(availability);
@@ -2540,16 +2899,21 @@ async function listingCreate(req: Request, env: Env, u: User) {
   if (profile.countryCode && requestedCountry !== String(profile.countryCode).toUpperCase()) return out(env, req, { success: false, error: 'Listing country must match provider country' }, 400);
   const country = await countrySettings(env, requestedCountry);
   if (!country.enabled || !country.providerOnboardingAvailable || !country.marketplaceAvailable) return out(env, req, { success: false, error: 'Country marketplace unavailable' }, 400);
+  let pricing: ReturnType<typeof validateListingPricing> | undefined;
+  if (v2) {
+    try { pricing = validateListingPricing(body.pricing, country.currency); }
+    catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid pricing' }, 400); }
+  } else if (body.pricingModelVersion !== undefined || body.pricing !== undefined) return out(env, req, { success: false, error: 'Invalid pricing model version' }, 400);
   const id = `eq_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
   const ownerPublic = { uid: u.uid, nameAr: String(profile.nameAr || ''), nameEn: String(profile.nameEn || ''), avatar: String(profile.avatar || '') };
   const publicationReason = 'automated_post_moderation_eligible_provider';
   const reviewOnly = profile.accountPurpose === 'store_review';
-  const value: any = { ownerUid: u.uid, ...(reviewOnly ? { accountPurpose: 'store_review' } : {}), countryCode: country.code, nativeCurrency: country.currency, nativePricePerDay: dailyPrice, titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), pricePerDay: dailyPrice, images, availability, ownerPublic, isActive: true, visibility: reviewOnly ? 'hidden' : 'visible', moderationStatus: 'approved', moderationReason: reviewOnly ? 'store_review_qa_only' : publicationReason, createdAt: now, updatedAt: now };
+  const value: any = { ownerUid: u.uid, ...(reviewOnly ? { accountPurpose: 'store_review' } : {}), countryCode: country.code, nativeCurrency: country.currency, ...(v2 ? { pricingModelVersion: 2, pricing } : { nativePricePerDay: dailyPrice, pricePerDay: dailyPrice }), titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), images, availability, ownerPublic, isActive: true, visibility: reviewOnly ? 'hidden' : 'visible', moderationStatus: 'approved', moderationReason: reviewOnly ? 'store_review_qa_only' : publicationReason, createdAt: now, updatedAt: now };
   const writes: any[] = [
     { update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:create`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: 'create' }, reason: { stringValue: publicationReason }, automated: { booleanValue: true }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
   ];
   const publicEquipmentNumber = await createWithPublicIdentifier(env, 'equipment', `equipment/${id}`, value, writes);
-  return out(env, req, { success: true, id, listing: { id, ...value, publicEquipmentNumber, dailyPrice } }, 201);
+  return out(env, req, { success: true, id, listing: { id, ...value, publicEquipmentNumber, ...(v2 ? {} : { dailyPrice }) } }, 201);
 }
 async function listingUpdate(req: Request, env: Env, u: User, id: string) {
   const raw = await getRawDoc(env, 'equipment', id);
@@ -2557,18 +2921,26 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
   if (raw.data.visibility === 'archived') return out(env, req, { success: false, error: 'Listing is archived' }, 409);
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing update' }, 400);
-  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 101 } }) });
+  if ((result || []).filter((x: any) => x.document).length >= 101) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
   // Firestore may append a readTime-only terminal row to runQuery responses.
   // It is not a document and must not turn a never-rented listing into history.
   const rentals = (result || []).filter((x: any) => x.document).map((x: any) => decode(x.document));
   if (hasActiveRental(rentals)) return out(env, req, { success: false, error: 'LISTING_EDIT_LOCKED' }, 409);
-  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'category', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'dailyPrice', 'pricePerDay', 'images', 'availability', 'isActive'];
+  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'category', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'dailyPrice', 'pricePerDay', 'pricingModelVersion', 'pricing', 'images', 'availability', 'isActive'];
   const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'adminHidden', 'createdAt', 'updatedAt'];
   if (Object.keys(body).some((key) => forbidden.includes(key) || !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported listing field' }, 400);
   const patch = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k) && !['title', 'description', 'dailyPrice'].includes(k)));
   if (body.title !== undefined) { patch.titleAr = String(body.title); patch.titleEn = String(body.title); }
   if (body.description !== undefined) { patch.descriptionAr = String(body.description); patch.descriptionEn = String(body.description); }
   if (body.dailyPrice !== undefined) { patch.pricePerDay = Number(body.dailyPrice); patch.nativePricePerDay = Number(body.dailyPrice); }
+  if (body.pricingModelVersion !== undefined || body.pricing !== undefined) {
+    if (body.pricingModelVersion !== 2 || body.pricing === undefined) return out(env, req, { success: false, error: 'Invalid pricing model version' }, 400);
+    try {
+      patch.pricingModelVersion = 2;
+      patch.pricing = validateListingPricing(body.pricing, String(raw.data.nativeCurrency || raw.data.currency || ''));
+    } catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid pricing' }, 400); }
+  }
   if (Object.keys(patch).length === 0) return out(env, req, { success: false, error: 'No editable fields' }, 400);
   if (patch.pricePerDay !== undefined && (!Number.isFinite(Number(patch.pricePerDay)) || Number(patch.pricePerDay) <= 0 || Number(patch.pricePerDay) > 100000)) return out(env, req, { success: false, error: 'Invalid daily price' }, 400);
   if (patch.availability) {
@@ -2597,7 +2969,8 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
 async function listingLifecycle(req: Request, env: Env, u: User, id: string, archive: boolean) {
   const raw = await getRawDoc(env, 'equipment', id);
   if (!raw?.data || raw.data.ownerUid !== u.uid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
-  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 101 } }) });
+  if ((result || []).filter((x: any) => x.document).length >= 101) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
   // Firestore may append a readTime-only terminal row to runQuery responses.
   // Only actual request documents count as preserved rental history.
   const rentals = (result || []).filter((x: any) => x.document).map((x: any) => decode(x.document));
@@ -2613,13 +2986,27 @@ async function listingLifecycle(req: Request, env: Env, u: User, id: string, arc
 async function availabilityCheck(req: Request, env: Env, u: User, id: string) {
   const listing = await getDoc(env, 'equipment', id);
   if (!listing || (listing.ownerUid !== u.uid && !isPublicRentableListing(listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
-  const body: any = await req.json().catch(() => null), requested = { from: String(body?.from || ''), until: body?.until === undefined ? undefined : String(body.until) };
+  const body: any = await req.json().catch(() => null);
+  if (body?.startAt !== undefined || body?.endAt !== undefined) {
+    if (!body || Object.keys(body).some(key => !['startAt', 'endAt'].includes(key))) return out(env, req, { success: false, error: 'Invalid availability interval' }, 400);
+    try {
+      const probe = parseV2RequestInput({ pricingModelVersion: 2, equipmentId: id, rentalMode: body.endAt === null ? 'open_ended' : 'hourly', rateUnit: 'hourly', requestedStartAt: body.startAt, requestedEndAt: body.endAt, expectedRateAmountMinor: 1 });
+      await assertV2Available(env, id, { startAt: probe.requestedStartAt, endAt: probe.requestedEndAt });
+      return out(env, req, { success: true, available: true, reason: null, serverNow: new Date().toISOString() });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : 'INVALID_INTERVAL';
+      if (code === 'ACTIVE_RENTAL_OVERLAP') return out(env, req, { success: true, available: false, reason: code, serverNow: new Date().toISOString() });
+      return out(env, req, { success: false, error: code === 'AVAILABILITY_CAP_EXHAUSTED' ? 'Availability temporarily unavailable' : code, errorCode: code }, code === 'AVAILABILITY_CAP_EXHAUSTED' ? 503 : 400);
+    }
+  }
+  const requested = { from: String(body?.from || ''), until: body?.until === undefined ? undefined : String(body.until) };
   const valid = validateDateRange(requested);
   if (!valid.ok) return out(env, req, { success: false, error: valid.error }, 400);
   const availability = listing.availability || { from: requested.from };
   const base = availabilityAllows(availability, requested);
   if (!base.ok) return out(env, req, { success: true, available: false, reason: base.error });
-  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 100 } }) });
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 101 } }) });
+  if ((result || []).filter((x: any) => x.document).length >= 101) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
   const conflict = (result || []).map((x: any) => decode(x.document || x)).some((r: any) => hasActiveRental([r]) && r.startDate && !(requested.until && String(r.startDate) > requested.until) && !(r.endDate && String(r.endDate) < requested.from));
   return out(env, req, { success: true, available: !conflict, reason: conflict ? 'ACTIVE_RENTAL_OVERLAP' : null });
 }
@@ -3004,6 +3391,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (path === '/api/verification/profile' && req.method === 'GET') return await verificationProfile(req, env, await authenticatedUser(req, env));
      if (path === '/api/verification/policy' && req.method === 'GET') return await verificationPolicy(req, env, await authenticatedUser(req, env));
      if (path === '/api/verification/attempts' && req.method === 'POST') return await startVerification(req, env, await authenticatedUser(req, env));
+      if (path === '/api/requests/estimate' && req.method === 'POST') return await estimateV2Request(req, env, await authenticatedUser(req, env));
      if (path === '/api/requests' && req.method === 'POST') return await createRequest(req, env, await authenticatedUser(req, env));
       if (path === '/api/equipment/search' && req.method === 'GET') return await equipmentSearch(req, env);
       const listingMatch = path.match(/^\/api\/listings\/([^/]+)\/availability$/);
@@ -3042,6 +3430,8 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
        if (selfServiceInvoiceMatch && req.method === 'GET') return await selfServiceInvoicePdf(req, env, await authenticatedUser(req, env), selfServiceInvoiceMatch[1]);
     const requestTransitionMatch = path.match(/^\/api\/requests\/([^/]+)\/transition$/);
      if (requestTransitionMatch && req.method === 'POST') return await transitionRequest(req, env, await authenticatedUser(req, env), requestTransitionMatch[1]);
+    const rentalSummaryMatch = path.match(/^\/api\/requests\/([^/]+)\/rental-summary$/);
+     if (rentalSummaryMatch && req.method === 'GET') return await rentalV2Summary(req, env, await authenticatedUser(req, env), decodeURIComponent(rentalSummaryMatch[1]));
     const verificationAttemptMatch = path.match(/^\/api\/verification\/attempts\/([^/]+)$/);
      if (verificationAttemptMatch && req.method === 'GET') return await verificationAttempt(req, env, await authenticatedUser(req, env), verificationAttemptMatch[1]);
     const identityCallbackMatch = path.match(/^\/api\/webhooks\/identity\/([A-Za-z0-9_-]{16,128})$/);

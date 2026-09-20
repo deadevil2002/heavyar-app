@@ -11,7 +11,92 @@ export type UserRole = 'customer' | 'provider' | 'driver';
 export type AccountState = 'authenticated_complete' | 'provisioning_incomplete' | 'restricted' | 'deletion_requested' | 'suspended';
 export type GccCountryCode = 'SA' | 'AE' | 'KW' | 'QA' | 'BH' | 'OM';
 
-export type RequestMode = 'fixed_days' | 'open_ended';
+/** fixed_days is retained for historical V1 requests. */
+export type RequestMode = 'fixed_days' | 'hourly' | 'daily' | 'open_ended';
+export type RentalRateUnit = 'hourly' | 'daily';
+
+export interface RentalRate {
+  enabled: boolean;
+  amountMinor: number;
+}
+
+export interface ListingPricingV2 {
+  currency: string;
+  hourly: RentalRate;
+  daily: RentalRate;
+}
+
+export interface RentalPricingSnapshot {
+  calculationVersion: 2;
+  rateUnit: RentalRateUnit;
+  rateAmountMinor: number;
+  currency: string;
+  currencyDecimals: number;
+  marketTimezone: string;
+  [key: string]: unknown;
+}
+
+export interface RentalAmountBreakdown {
+  baseAmountMinor: number;
+  platformCommissionMinor?: number;
+  taxAmountMinor?: number | null;
+  gatewayFeeMinor?: number | null;
+  customerPayableMinor?: number;
+  providerReceivableMinor?: number;
+  totalAmountMinor?: number;
+}
+
+export interface RentalEstimate {
+  pricingModelVersion: 2;
+  calculationVersion: 2;
+  rentalMode: Exclude<RequestMode, 'fixed_days'>;
+  rateUnit: RentalRateUnit;
+  rateAmountMinor: number;
+  currency: string;
+  currencyDecimals: number;
+  marketTimezone: string;
+  requestedStartAt: string;
+  requestedEndAt: string | null;
+  duration: {
+    elapsedMinutes: number | null;
+    billableMinutes: number | null;
+    billableUnits: number | null;
+    unit: 'minute' | 'day';
+  };
+  baseAmountMinor: number | null;
+  commercial: CommercialSnapshot | null;
+  estimated: true;
+  serverNow?: string;
+}
+
+export interface RentalSummary {
+  requestId: string;
+  pricingModelVersion: 2;
+  status: string;
+  rentalMode: Exclude<RequestMode, 'fixed_days'>;
+  requestedStartAt: string;
+  requestedEndAt: string | null;
+  actualStartAt: string | null;
+  actualEndAt: string | null;
+  pricingSnapshot: RentalPricingSnapshot;
+  duration: {
+    elapsedMinutes: number | null;
+    billableMinutes: number | null;
+    billableUnits: number | null;
+    unit: 'minute' | 'day';
+  };
+  currentEstimate: {
+    asOf: string;
+    baseAmountMinor: number;
+    commercial: CommercialSnapshot;
+  } | null;
+  final: {
+    finalizedAt: string;
+    baseAmountMinor: number;
+    commercial: CommercialSnapshot;
+  } | null;
+  serverNow?: string;
+}
 
 export interface PublicUserSnapshot {
   uid: string;
@@ -98,6 +183,9 @@ export interface Equipment {
   countryCode?: GccCountryCode;
   nativeCurrency?: string;
   nativePricePerDay?: number;
+  pricingModelVersion?: 2;
+  pricing?: ListingPricingV2;
+  marketTimezone?: string;
   displayCurrency?: string;
   displayPricePerDay?: number;
   displayRate?: number;
@@ -115,6 +203,26 @@ export interface EquipmentRequest {
   providerPublic?: PublicUserSnapshot;
   status: RequestStatus;
   requestMode?: RequestMode;
+  pricingModelVersion?: 2;
+  rentalMode?: 'hourly' | 'daily' | 'open_ended';
+  rateUnit?: RentalRateUnit;
+  requestedStartAt?: string;
+  requestedEndAt?: string | null;
+  actualStartAt?: string | null;
+  actualEndAt?: string | null;
+  pricingSnapshot?: RentalPricingSnapshot;
+  finalRentalSnapshot?: {
+    actualStartAt: string;
+    actualEndAt: string;
+    durationMinutes?: number;
+    billableMinutes?: number;
+    billableDays?: number;
+    amountMinor: number;
+    breakdown?: RentalAmountBreakdown;
+    [key: string]: unknown;
+  };
+  cancellationReason?: string;
+  completionRequestedBy?: string;
   numberOfDays?: number;
   startDate: string;
   endDate: string;

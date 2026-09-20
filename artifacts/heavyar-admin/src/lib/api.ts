@@ -168,10 +168,26 @@ export type VerificationReminderFields = {
 };
 export type PersonSummary = { id?: string; uid?: string; name?: string; nameAr?: string; nameEn?: string; email?: string; phone?: string; city?: string; region?: string };
 export type User = { id: string; email?: string; nameAr?: string; nameEn?: string; displayName?: string; publicId?: string; publicIdentifier?: string; suspensionStatus?: string; status?: string; createdAt?: string; role?: string; accountPurpose?: string; verification?: string; city?: string; region?: string; provider?: PersonSummary; emailVerified?: boolean; emailVerifiedAt?: string; lastEmailVerificationSentAt?: string; verificationReminderCount?: number; nextVerificationReminderAt?: string; } & TrustFields & VerificationReminderFields;
-export type Equipment = { id: string; publicId?: string; equipmentNumber?: string; title?: string; titleAr?: string; titleEn?: string; ownerUid?: string; owner?: PersonSummary; moderationStatus?: string; visibility?: string; isActive?: boolean; rate?: number; dailyRate?: number; city?: string; reviewedBy?: PersonSummary; reviewedAt?: string; rejectionReason?: string };
+export type RentalRateUnit = 'hourly' | 'daily';
+export type RentalPricingV2 = {
+  currency: string;
+  hourly: { enabled: boolean; amountMinor?: number };
+  daily: { enabled: boolean; amountMinor?: number };
+};
+export type RentalPricingSnapshotV2 = {
+  calculationVersion: 2;
+  rateUnit: RentalRateUnit;
+  rateAmountMinor: number;
+  currency: string;
+  currencyDecimals: 2 | 3;
+  marketTimezone: string;
+  baseAmountMinor: number | null;
+  [key: string]: unknown;
+};
+export type Equipment = { id: string; publicId?: string; equipmentNumber?: string; title?: string; titleAr?: string; titleEn?: string; ownerUid?: string; owner?: PersonSummary; moderationStatus?: string; visibility?: string; isActive?: boolean; rate?: number; dailyRate?: number; pricePerDay?: number; pricingModelVersion?: number; pricing?: RentalPricingV2; city?: string; reviewedBy?: PersonSummary; reviewedAt?: string; rejectionReason?: string };
 export type Provider = User & { providerId?: string };
 export type Driver = { id: string; uid?: string; publicId?: string; displayName?: string; name?: string; email?: string; phone?: string; city?: string; region?: string; active?: boolean; status?: string; availabilityStatus?: string; moderationStatus?: string; verificationStatus?: string; trustStatus?: string; equipmentTypes?: string[]; moderatedAt?: string; reviewedAt?: string; emailVerified?: boolean; lastEmailVerificationSentAt?: string; lastVerificationReminderAt?: string; verificationReminderCount?: number; deliveryStatus?: string; verificationReminderDeliveryStatus?: string; verificationReminder?: VerificationReminderFields['verificationReminder'] };
-export type Request = { id: string; requestNumber?: string; publicRequestNumber?: string; status: string; customerUid?: string; providerUid?: string; customer?: PersonSummary; provider?: PersonSummary; equipment?: { id?: string; number?: string; title?: string }; rentalFrom?: string; rentalTo?: string; startDate?: string; endDate?: string; paymentState?: string; totalAmount?: number; events?: any[] } & TrustFields;
+export type Request = { id: string; requestNumber?: string; publicRequestNumber?: string; status: string; customerUid?: string; providerUid?: string; customer?: PersonSummary; provider?: PersonSummary; equipment?: { id?: string; number?: string; title?: string }; pricingModelVersion?: number; rentalMode?: 'hourly' | 'daily' | 'open_ended'; rateUnit?: RentalRateUnit; requestedStartAt?: string; requestedEndAt?: string | null; actualStartAt?: string | null; actualEndAt?: string | null; pricingSnapshot?: RentalPricingSnapshotV2; finalCommercialSnapshot?: CommercialSnapshot; commercialSnapshot?: CommercialSnapshot; rentalFrom?: string; rentalTo?: string; startDate?: string; endDate?: string; paymentState?: string; totalAmount?: number; events?: any[] } & TrustFields;
 export type Payment = { id: string; requestNumber?: string; request?: { requestNumber?: string }; customer?: PersonSummary; provider?: PersonSummary; state: string; amount: number; vatAmount?: number; platformFee?: number; providerName?: string; providerReference?: string; invoiceId?: string; events?: any[] } & TrustFields;
 export type Invoice = { id: string; invoiceNumber?: string; requestNumber?: string; request?: { requestNumber?: string }; totalAmount?: number; status: string; customerId?: string; providerId?: string; customer?: PersonSummary; provider?: PersonSummary; issuedAt?: string; url?: string };
 export type Refund = { id: string; state?: string; amount: number; requestId?: string; requestNumber?: string; originalPaymentId?: string; customer?: PersonSummary; provider?: PersonSummary };

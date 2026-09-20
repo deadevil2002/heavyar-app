@@ -25,6 +25,12 @@ import { Equipment, EquipmentImage } from '@/types';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { updateListing, WorkerError } from '@/services/workerClient';
+import ListingPricingFields from '@/components/ListingPricingFields';
+import {
+  buildListingPricing,
+  ListingPricingInput,
+  pricingInputFromListing,
+} from '@/services/listingPricing';
 
 export default function EditEquipmentScreen() {
   const { isRTL, t, localizedText } = useLanguage();
@@ -50,7 +56,12 @@ export default function EditEquipmentScreen() {
   const [city, setCity] = useState<string>('');
   const [customCity, setCustomCity] = useState<string>('');
   const [district, setDistrict] = useState<string>('');
-  const [price, setPrice] = useState<string>('');
+  const [pricingInput, setPricingInput] = useState<ListingPricingInput>({
+    hourlyEnabled: false,
+    hourlyAmount: '',
+    dailyEnabled: true,
+    dailyAmount: '',
+  });
   const [availabilityFrom, setAvailabilityFrom] = useState<string>('');
   const [availabilityUntil, setAvailabilityUntil] = useState<string>('');
   const [temporarilyUnavailable, setTemporarilyUnavailable] = useState<boolean>(false);
@@ -109,7 +120,7 @@ export default function EditEquipmentScreen() {
         setCity(eq.city);
         setCustomCity(eq.customCity || '');
         setDistrict(eq.district);
-        setPrice(eq.pricePerDay > 0 ? String(eq.pricePerDay) : '');
+        setPricingInput(pricingInputFromListing(eq as unknown as import('@/services/listingPricing').ListingPricingSource));
         if (typeof eq.availability === 'object' && eq.availability) {
           setAvailabilityFrom(eq.availability.from || '');
           setAvailabilityUntil(eq.availability.until || '');
@@ -177,9 +188,13 @@ export default function EditEquipmentScreen() {
       showDialog(t('validation_error'), t('validation_city_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
-    const parsedPrice = parseFloat(price);
-    if (!price.trim() || isNaN(parsedPrice) || parsedPrice <= 0) {
-      showDialog(t('validation_error'), t('validation_price_required'), [{ text: t('ok'), style: 'default' }]);
+    const currency = originalEquipment.nativeCurrency || user.nativeCurrency || 'SAR';
+    const pricingResult = buildListingPricing(pricingInput, currency);
+    if (!pricingResult.ok) {
+      const message = pricingResult.reason === 'RATE_REQUIRED'
+        ? (isRTL ? 'فعّل سعراً واحداً على الأقل.' : 'Enable at least one rental rate.')
+        : (isRTL ? 'أدخل سعراً موجباً صالحاً بدقة العملة المحددة.' : 'Enter a valid positive rate using the currency precision shown.');
+      showDialog(t('validation_error'), message, [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (existingImages.length === 0 && newImageUris.length === 0) {
@@ -220,7 +235,8 @@ export default function EditEquipmentScreen() {
         city,
         customCity,
         district,
-        pricePerDay: parsedPrice,
+        pricingModelVersion: pricingResult.pricingModelVersion,
+        pricing: pricingResult.pricing,
         images: finalImages,
         isActive: originalEquipment.isActive,
         availability: { from: availabilityFrom, ...(availabilityUntil ? { until: availabilityUntil } : {}), temporarilyUnavailable },
@@ -249,7 +265,7 @@ export default function EditEquipmentScreen() {
       setSaving(false);
       setUploadProgress('');
     }
-  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, price, existingImages, newImageUris, oldImages, availabilityFrom, availabilityUntil, temporarilyUnavailable, t, router, showDialog]);
+  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, pricingInput, existingImages, newImageUris, oldImages, availabilityFrom, availabilityUntil, temporarilyUnavailable, t, router, showDialog, isRTL]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 
@@ -513,17 +529,13 @@ export default function EditEquipmentScreen() {
               />
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('price_per_day')}</Text>
-              <TextInput
-                style={[styles.textInput, { textAlign: isRTL ? 'right' : 'left' }]}
-                value={price}
-                onChangeText={setPrice}
-                placeholder="0"
-                placeholderTextColor={Colors.textMuted}
-                keyboardType="numeric"
-              />
-            </View>
+            <ListingPricingFields
+              value={pricingInput}
+              onChange={setPricingInput}
+              currency={originalEquipment?.nativeCurrency || user?.nativeCurrency || 'SAR'}
+              isRTL={isRTL}
+              disabled={saving}
+            />
 
             <Pressable
               style={[styles.saveButton, saving && styles.saveButtonDisabled]}

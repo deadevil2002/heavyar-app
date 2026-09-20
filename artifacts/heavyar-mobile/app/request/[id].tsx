@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { ArrowLeft, ArrowRight, MessageCircle, CreditCard, Star, Calendar, Receipt } from 'lucide-react-native';
@@ -7,12 +7,15 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { subscribeToRequest, fetchEquipmentById, updateRequestStatus, tryBackfillRequestPublicSnapshots } from '@/services/firestoreService';
-import { Equipment, EquipmentRequest, PublicUserSnapshot } from '@/types';
+import { subscribeToRequest, fetchEquipmentById, tryBackfillRequestPublicSnapshots } from '@/services/firestoreService';
+import { Equipment, EquipmentRequest, PublicUserSnapshot, RentalSummary } from '@/types';
 import StatusBadge from '@/components/StatusBadge';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
+import { getRentalSummary, transitionRentalRequest } from '@/services/workerClient';
+import { formatMinorAmount, prorateHourlyMinor } from '@/services/rentalV2';
+import { safeErrorMessage } from '@/services/errorMessages';
 
 export default function RequestDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -23,8 +26,12 @@ export default function RequestDetailScreen() {
   const [request, setRequest] = useState<EquipmentRequest | null>(null);
   const [equipment, setEquipment] = useState<Equipment | null>(null);
   const [otherUserPublic, setOtherUserPublic] = useState<PublicUserSnapshot | null>(null);
+  const [rentalSummary, setRentalSummary] = useState<RentalSummary | null>(null);
+  const [displayNow, setDisplayNow] = useState(0);
+  const [cancelReason, setCancelReason] = useState('');
   const [_loading, setLoading] = useState<boolean>(true);
   const equipmentRef = useRef<Equipment | null>(null);
+  const serverClockRef = useRef<{ serverNowMs: number; monotonicAtSync: number } | null>(null);
   const fetchedEquipmentIdRef = useRef<string | null>(null);
   const currentUid = user?.uid || '';
   const { dialog, showDialog, hideDialog } = useAppDialog();
@@ -83,6 +90,28 @@ export default function RequestDetailScreen() {
     return () => unsub();
   }, [id, currentUid, user]);
 
+  useEffect(() => {
+    if (!id || request?.pricingModelVersion !== 2) return;
+    let mounted = true;
+    getRentalSummary(id).then(summary => {
+      if (mounted) {
+        setRentalSummary(summary);
+        serverClockRef.current = {
+          serverNowMs: Date.parse(summary.serverNow || summary.currentEstimate?.asOf || ''),
+          monotonicAtSync: typeof performance !== 'undefined' ? performance.now() : 0,
+        };
+        setDisplayNow(value => value + 1);
+      }
+    }).catch(() => {});
+    return () => { mounted = false; };
+  }, [id, request?.pricingModelVersion, request?.status, request?.updatedAt]);
+
+  useEffect(() => {
+    if (!rentalSummary?.actualStartAt || rentalSummary.actualEndAt || request?.status !== 'in_progress') return;
+    const timer = setInterval(() => setDisplayNow(value => value + 1), 30_000);
+    return () => clearInterval(timer);
+  }, [rentalSummary?.actualEndAt, rentalSummary?.actualStartAt, request?.status]);
+
   if (_loading || !request || !equipment) {
     return (
       <View style={styles.container}>
@@ -99,18 +128,21 @@ export default function RequestDetailScreen() {
   const otherUserName = otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
   const requestMode = request.requestMode || 'fixed_days';
   const isOpenEnded = requestMode === 'open_ended';
+  const isV2 = request.pricingModelVersion === 2;
 
   const canChat = request.allowChat && ['accepted', 'in_progress'].includes(request.status);
   const canPay = !isProvider && request.status === 'completed' && request.paymentStatus === 'unpaid';
   const canRate = !isProvider && request.status === 'completed';
   const canAccept = isProvider && request.status === 'pending';
   const canStart = isProvider && request.status === 'accepted';
-  const canCancelCustomer = !isProvider && (request.status === 'pending' || (request.status === 'accepted' && !request.startedAt));
-  const canRequestCompletion = isProvider && request.status === 'in_progress';
-  const canConfirmCompletion = !isProvider && request.status === 'completion_requested';
+  const canCancelCustomer = (!isProvider && request.status === 'pending')
+    || (request.status === 'accepted' && !(request.actualStartAt || request.startedAt));
+  const canRequestCompletion = request.status === 'in_progress';
+  const canConfirmCompletion = request.status === 'completion_requested'
+    && (!request.completionRequestedBy || request.completionRequestedBy !== currentUid);
   const showInvoice = request.paymentStatus === 'paid';
 
-  const handleAction = (action: string) => {
+  const handleAction = (action: 'accept' | 'reject' | 'start' | 'request_completion' | 'complete' | 'cancel') => {
     showDialog(t('confirm'), t('confirm_action'), [
       { text: t('cancel'), style: 'cancel' },
       {
@@ -118,16 +150,9 @@ export default function RequestDetailScreen() {
         style: 'default',
         onPress: async () => {
           try {
-            let newStatus: EquipmentRequest['status'] = 'pending';
-            if (action === 'accept') newStatus = 'accepted';
-            else if (action === 'reject') newStatus = 'rejected';
-            else if (action === 'start') newStatus = 'in_progress';
-            else if (action === 'request_completion') newStatus = 'completion_requested';
-            else if (action === 'confirm_completion') newStatus = 'completed';
-            else if (action === 'cancel') newStatus = 'cancelled';
-            await updateRequestStatus(request.id, newStatus, currentUid);
-          } catch {
-            showDialog(t('error_title'), t('error_generic_message'), [{ text: t('ok'), style: 'default' }]);
+            await transitionRentalRequest(request.id, action, action === 'cancel' ? cancelReason : undefined);
+          } catch (error) {
+            showDialog(t('error_title'), safeErrorMessage(error, isRTL ? 'ar' : 'en'), [{ text: t('ok'), style: 'default' }]);
           }
         },
       },
@@ -144,6 +169,32 @@ export default function RequestDetailScreen() {
     return Math.max(1, Math.ceil(diff / 86400000));
   })();
   const days = request.numberOfDays || computedDays;
+  const dateTime = (value: string | null | undefined, includeTime = true) => {
+    if (!value) return '—';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return new Intl.DateTimeFormat(isRTL ? 'ar-SA' : 'en-GB', {
+      day: 'numeric', month: 'short', year: 'numeric',
+      ...(includeTime ? { hour: '2-digit', minute: '2-digit' } : {}),
+      timeZone: request.pricingSnapshot?.marketTimezone,
+    }).format(parsed);
+  };
+  const liveElapsedMinutes = (() => {
+    void displayNow;
+    if (!rentalSummary?.actualStartAt) return rentalSummary?.duration.elapsedMinutes ?? undefined;
+    const anchor = serverClockRef.current;
+    const serverReference = anchor?.serverNowMs ?? NaN;
+    const actualStart = Date.parse(rentalSummary.actualStartAt);
+    if (!Number.isFinite(serverReference) || !Number.isFinite(actualStart)) return rentalSummary.duration.elapsedMinutes ?? undefined;
+    const locallyElapsed = Math.max(0, (typeof performance !== 'undefined' ? performance.now() : anchor!.monotonicAtSync) - anchor!.monotonicAtSync);
+    return Math.max(1, Math.ceil((serverReference + locallyElapsed - actualStart) / 60_000));
+  })();
+  const liveEstimatedMinor = (() => {
+    if (!rentalSummary || !liveElapsedMinutes || rentalSummary.actualEndAt) return rentalSummary?.currentEstimate?.baseAmountMinor ?? rentalSummary?.final?.baseAmountMinor;
+    const snapshot = rentalSummary.pricingSnapshot;
+    if (snapshot.rateUnit === 'hourly') return prorateHourlyMinor(snapshot.rateAmountMinor, liveElapsedMinutes);
+    return Number(BigInt(snapshot.rateAmountMinor) * BigInt(Math.ceil(liveElapsedMinutes / 1440)));
+  })();
 
   return (
     <View style={styles.container}>
@@ -171,29 +222,69 @@ export default function RequestDetailScreen() {
                 <Calendar size={16} color={Colors.gold} />
                 <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
                   <Text style={styles.infoLabel}>{t('start_date')}</Text>
-                  <Text style={styles.infoValue}>{request.startDate}</Text>
+                   <Text style={styles.infoValue}>{dateTime(request.requestedStartAt || request.startDate, request.rentalMode !== 'daily')}</Text>
                 </View>
               </View>
               <View style={[styles.infoItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Calendar size={16} color={Colors.gold} />
                 <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
                   <Text style={styles.infoLabel}>{t('end_date')}</Text>
-                  <Text style={styles.infoValue}>{isOpenEnded ? t('until_work_completion') : request.endDate}</Text>
+                   <Text style={styles.infoValue}>{isOpenEnded ? t('until_work_completion') : dateTime(request.requestedEndAt || request.endDate, request.rentalMode !== 'daily')}</Text>
                 </View>
               </View>
             </View>
             <Text style={[styles.daysText, { textAlign: isRTL ? 'right' : 'left' }]}>
-              {isOpenEnded ? t('until_work_completion') : `${days || 0} ${t('days')}`}
+               {isV2
+                 ? (request.rentalMode === 'hourly' ? (isRTL ? 'إيجار بالساعة' : 'Hourly rental') : request.rentalMode === 'daily' ? `${days || rentalSummary?.duration.billableUnits || 0} ${t('days')}` : t('until_work_completion'))
+                 : (isOpenEnded ? t('until_work_completion') : `${days || 0} ${t('days')}`)}
             </Text>
           </View>
 
-          <View style={styles.card}>
+           {isV2 && request.pricingSnapshot ? (
+             <View style={styles.card}>
+               <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('locked_pricing')}</Text>
+               <View style={styles.paymentRows}>
+                 <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                   <Text style={styles.paymentLabel}>{isRTL ? 'أساس الحساب' : 'Billing basis'}</Text>
+                   <Text style={styles.paymentValue}>{request.pricingSnapshot.rateUnit === 'hourly' ? (isRTL ? 'بالساعة' : 'Hourly') : (isRTL ? 'باليوم' : 'Daily')}</Text>
+                 </View>
+                 <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                   <Text style={styles.paymentLabel}>{t('locked_rate')}</Text>
+                   <Text style={styles.paymentValue}>{formatMinorAmount(request.pricingSnapshot.rateAmountMinor, request.pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
+                 </View>
+                 {rentalSummary?.actualStartAt && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                   <Text style={styles.paymentLabel}>{isRTL ? 'البدء الفعلي' : 'Actual start'}</Text>
+                   <Text style={styles.paymentValue}>{dateTime(rentalSummary.actualStartAt)}</Text>
+                  </View>}
+                 {rentalSummary?.actualEndAt && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                   <Text style={styles.paymentLabel}>{isRTL ? 'الانتهاء الفعلي' : 'Actual end'}</Text>
+                   <Text style={styles.paymentValue}>{dateTime(rentalSummary.actualEndAt)}</Text>
+                 </View>}
+                 {!!liveElapsedMinutes && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                   <Text style={styles.paymentLabel}>{t('current_elapsed')}</Text>
+                   <Text style={styles.paymentValue}>{Math.floor(liveElapsedMinutes / 60)}:{String(liveElapsedMinutes % 60).padStart(2, '0')}</Text>
+                  </View>}
+                 {liveEstimatedMinor !== undefined && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                   <Text style={styles.paymentLabel}>{t('current_estimated_cost')}</Text>
+                   <Text style={styles.paymentTotal}>{formatMinorAmount(liveEstimatedMinor, request.pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
+                 </View>}
+                 {request.finalRentalSnapshot && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                   <Text style={styles.paymentTotalLabel}>{isRTL ? 'المبلغ النهائي' : 'Final amount'}</Text>
+                   <Text style={styles.paymentTotal}>{formatMinorAmount(request.finalRentalSnapshot.amountMinor, request.pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
+                 </View>}
+                 {!request.finalRentalSnapshot && rentalSummary?.final && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                   <Text style={styles.paymentTotalLabel}>{isRTL ? 'المبلغ النهائي' : 'Final amount'}</Text>
+                   <Text style={styles.paymentTotal}>{formatMinorAmount(rentalSummary.final.baseAmountMinor, request.pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
+                 </View>}
+               </View>
+             </View>
+           ) : <View style={styles.card}>
             <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('payment_summary')}</Text>
             <View style={styles.paymentRows}>
               <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Text style={styles.paymentLabel}>{t('total_amount')}</Text>
                 <Text style={styles.paymentValue}>{request.amount.toLocaleString()} {t('sar')}</Text>
-              </View>
+               </View>
               <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <Text style={styles.paymentLabel}>{t('platform_fee')}</Text>
                 <Text style={styles.paymentFee}>{request.platformFee.toLocaleString()} {t('sar')}</Text>
@@ -205,7 +296,7 @@ export default function RequestDetailScreen() {
               </View>
             </View>
             <StatusBadge status={request.paymentStatus} />
-          </View>
+          </View>}
 
           {otherUser && (
             <View style={styles.card}>
@@ -256,9 +347,19 @@ export default function RequestDetailScreen() {
               </View>
             )}
             {canCancelCustomer && (
-              <Pressable style={styles.rejectButton} onPress={() => handleAction('cancel')}>
-                <Text style={styles.rejectText}>{t('cancel')}</Text>
-              </Pressable>
+               <>
+                 <TextInput
+                   style={[styles.reasonInput, { textAlign: isRTL ? 'right' : 'left' }]}
+                   value={cancelReason}
+                   onChangeText={setCancelReason}
+                   maxLength={300}
+                   placeholder={t('cancellation_reason_required')}
+                   placeholderTextColor={Colors.textMuted}
+                 />
+                 <Pressable style={[styles.rejectButton, !cancelReason.trim() && styles.disabledButton]} onPress={() => handleAction('cancel')} disabled={!cancelReason.trim()}>
+                   <Text style={styles.rejectText}>{t('cancel')}</Text>
+                 </Pressable>
+               </>
             )}
             {canStart && (
               <Pressable style={styles.acceptButton} onPress={() => handleAction('start')}>
@@ -271,7 +372,7 @@ export default function RequestDetailScreen() {
               </Pressable>
             )}
             {canConfirmCompletion && (
-              <Pressable style={styles.completeButton} onPress={() => handleAction('confirm_completion')}>
+               <Pressable style={styles.completeButton} onPress={() => handleAction('complete')}>
                 <Text style={styles.completeText}>{t('confirm')}</Text>
               </Pressable>
             )}
@@ -347,4 +448,6 @@ const styles = StyleSheet.create({
   completeText: { color: Colors.white, fontSize: 16, fontWeight: '700' as const },
   invoiceButton: { flexDirection: 'row' as const, backgroundColor: Colors.info, borderRadius: 14, paddingVertical: 14, justifyContent: 'center' as const, alignItems: 'center' as const, gap: 8 },
   invoiceButtonText: { color: Colors.primary, fontSize: 16, fontWeight: '700' as const },
+  reasonInput: { minHeight: 48, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.inputBg, color: Colors.textPrimary, paddingHorizontal: 12 },
+  disabledButton: { opacity: 0.5 },
 });
