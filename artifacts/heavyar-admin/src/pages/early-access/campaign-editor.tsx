@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useUpdateCampaign, usePreviewCampaign, useTestCampaign, useApproveCampaign, useImportCampaign, useCampaignSnapshot, useCampaignRecipients, useCampaignProgress, useSendCampaign, useRetryCampaign, useOwnerQaSnapshot, useCleanupCampaignQa, buildOwnerQaSnapshotPayload, buildSnapshotPayload, buildRetryPayload, buildImportPayload, csvPreviewCounts, safeDeliveryReason, EarlyAccessPermissions, Campaign } from '@/lib/early-access';
+import { useUpdateCampaign, usePreviewCampaign, useTestCampaign, useApproveCampaign, useImportCampaign, useCampaignSnapshot, useCampaignRecipients, useCampaignProgress, useSendCampaign, useRetryCampaign, useOwnerQaSnapshot, useCleanupCampaignQa, buildOwnerQaSnapshotPayload, buildSnapshotPayload, buildRetryPayload, buildImportPayload, campaignAudienceMetrics, isCampaignCompleted, isCampaignDeliveryActive, csvPreviewCounts, safeDeliveryReason, EarlyAccessPermissions, Campaign } from '@/lib/early-access';
 import { useAppState } from '@/lib/app-state';
 import { useAuth } from '@/lib/auth';
 import { useAdminSession } from '@/lib/api';
@@ -98,8 +98,10 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
   const ownerQaMode = persistedOwnerQa;
   const csvCounts = csvPreviewCounts(csvPreview?.preview);
   const progress = useCampaignProgress(campaignId);
-  const activeCampaign = campaignStatus === 'queued' ||
-    progress.data?.status === 'queued' || (progress.data?.queued ?? 0) > 0 || (progress.data?.accepted ?? 0) > 0;
+  const activeCampaign = isCampaignDeliveryActive(progress.data)
+    || (!progress.data && (campaignStatus === 'queued' || campaignStatus === 'sending'));
+  const completedCampaign = isCampaignCompleted(progress.data);
+  const audienceMetrics = progress.data ? campaignAudienceMetrics(progress.data) : null;
   const recipientFilters = {
     ...(recipientStatus !== 'all' ? { status: recipientStatus } : {}),
     ...(recipientSource !== 'all' ? { source: recipientSource } : {}),
@@ -109,6 +111,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
   const recipients = useCampaignRecipients(campaignId, { cursor: recipientCursor, limit: 50, ...recipientFilters }, activeCampaign);
   const retryableRecipients = (recipients.data?.items || []).filter((item) => item.deliveryStatus === 'failed' && item.retryEligible === true);
   const selectedRetryableIds = retryableRecipients.filter((item) => recipientIds.has(item.id)).map((item) => item.id);
+  const retryableFailedCount = progress.data?.retryableFailed ?? 0;
   const hasCsvRecipients = Boolean(
     csvPreview?.snapshot ||
     (selectAllFiltered && recipientSource !== 'subscriber' && recipientSource !== 'owner_qa') ||
@@ -240,7 +243,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
 
   const statusLabel = (status: string) => ({
     not_sent: t('لم يُرسل', 'Not sent'),
-    accepted: t('مقبول من Resend', 'Accepted by Resend'),
+    accepted: t('مقبول لدى مزود البريد', 'Accepted by email provider'),
     delivered: t('تم التسليم', 'Delivered'),
     queued: t('في الانتظار', 'Queued'),
     failed: t('فشل', 'Failed'),
@@ -252,8 +255,9 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
 
   const progressLabel = (label: string) => ({
     status: t('حالة الحملة', 'Campaign status'),
-    audience: t('إجمالي الجمهور', 'Total selected'),
-    eligible: t('المؤهل', 'Eligible'),
+    original: t('الجمهور الأصلي', 'Original audience'),
+    eligible_now: t('مؤهل للإرسال الآن', 'Eligible now'),
+    already_sent: t('سبق الإرسال', 'Already sent'),
     not_sent: t('لم يُرسل', 'Not sent'),
     queued: t('في الانتظار', 'Queued'),
     accepted: t('مقبول', 'Accepted'),
@@ -264,6 +268,19 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
     suppressed: t('محظور / متخطى', 'Suppressed / skipped'),
     remaining: t('المتبقي', 'Remaining'),
   }[label] || t('العدد النهائي', 'Final count'));
+
+  const sourceLabel = (source: string) => ({
+    subscriber: t('مشترك', 'Subscriber'),
+    csv_import: t('استيراد من ملف CSV', 'CSV import'),
+    owner_qa: t('اختبار المالك', 'Owner QA'),
+  }[source] || t('مصدر آخر', 'Other source'));
+
+  const retryLabel = (status: string, retryEligible?: boolean) => {
+    if (status !== 'failed') return t('غير منطبق', 'Not applicable');
+    return retryEligible
+      ? t('مؤهل لإعادة محاولة الفشل', 'Eligible for failed-send retry')
+      : t('فشل نهائي — غير مؤهل', 'Permanent failure — not eligible');
+  };
 
   const timestampLabel = (value?: string | null) => {
     if (!value) return '—';
@@ -463,7 +480,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                   <Button
                     variant="outline"
                     onClick={() => setConfirmRetryAllOpen(true)}
-                    disabled={!retryableRecipients.length || retryCampaign.isPending}
+                    disabled={!retryableFailedCount || retryCampaign.isPending}
                   >
                     {t('إعادة محاولة كل الفاشل المؤهل', 'Retry all eligible failed')}
                   </Button>
@@ -474,21 +491,15 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
         </CardHeader>
         <CardContent className="space-y-4">
           {progress.data && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2" aria-label={t('تقدم الحملة', 'Campaign progress')}>
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2" aria-label={t('ملخص جمهور الحملة', 'Campaign audience summary')}>
               {[
                 ['status', progress.data.status],
-                ['audience', progress.data.audience],
-                ['eligible', Math.max(0, progress.data.audience - progress.data.suppressed - progress.data.skipped)],
-                ['not_sent', progress.data.notSent],
-                ['queued', progress.data.queued],
-                ['accepted', progress.data.accepted],
-                ['delivered', progress.data.delivered],
-                ['failed', progress.data.failed],
-                ['bounced', progress.data.bounced],
-                ['complained', progress.data.complained],
-                ['suppressed', progress.data.suppressed + progress.data.skipped],
-                ['remaining', progress.data.remaining],
-                ['final', finalRecipientCount ?? progress.data.finalRecipientCount],
+                ['original', audienceMetrics?.originalAudience ?? 0],
+                ['eligible_now', audienceMetrics?.eligibleNow ?? 0],
+                ['already_sent', audienceMetrics?.alreadySent ?? 0],
+                ['delivered', audienceMetrics?.delivered ?? 0],
+                ['failed', audienceMetrics?.failed ?? 0],
+                ['remaining', audienceMetrics?.remaining ?? 0],
               ].map(([label, value]) => (
                 <div key={String(label)} className="rounded-md border p-2 text-center">
                   <div className="font-semibold text-sm">{label === 'status' ? statusLabel(String(value)) : value}</div>
@@ -496,6 +507,28 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                 </div>
               ))}
             </div>
+          )}
+          {audienceMetrics && audienceMetrics.originalAudience > 0 && (
+            <Alert className="border-sky-500/30 bg-sky-500/5">
+              <Lock className="h-4 w-4" />
+              <AlertDescription>
+                {t(
+                  'الجمهور الأصلي لقطة تاريخية ثابتة ولا يتغير. يعرض «مؤهل للإرسال الآن» فقط المستلمين الذين يسمح الخادم بإرسالهم حاليًا.',
+                  'The original audience is an immutable historical snapshot. “Eligible now” includes only recipients the server currently permits sending.',
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+          {completedCampaign && (
+            <Alert className="border-emerald-500/30 bg-emerald-500/5">
+              <CheckCircle className="h-4 w-4" />
+              <AlertDescription>
+                {t(
+                  'اكتملت الحملة. الإرسال القياسي معطّل، ولا يمكن إعادة المحاولة إلا للمستلمين الفاشلين المؤهلين.',
+                  'This campaign is completed. Standard send is disabled; only eligible failed recipients can be retried.',
+                )}
+              </AlertDescription>
+            </Alert>
           )}
           <div className="flex flex-wrap gap-2 items-center">
             <Select value={recipientStatus} onValueChange={setRecipientStatus}>
@@ -510,8 +543,8 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
               <SelectContent>
                 <SelectItem value="all">{t('كل المصادر', 'All sources')}</SelectItem>
                 <SelectItem value="subscriber">{t('مشترك', 'Subscriber')}</SelectItem>
-                <SelectItem value="csv_import">{t('استيراد CSV', 'CSV import')}</SelectItem>
-                {canUseOwnerQa && <SelectItem value="owner_qa">{t('اختبار المالك', 'Owner QA')}</SelectItem>}
+                 <SelectItem value="csv_import">{sourceLabel('csv_import')}</SelectItem>
+                 {canUseOwnerQa && <SelectItem value="owner_qa">{sourceLabel('owner_qa')}</SelectItem>}
               </SelectContent>
             </Select>
             <Select value={recipientCountry} onValueChange={setRecipientCountry}>
@@ -584,22 +617,23 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                   for (const item of recipients.data?.items || []) next.has(item.id) ? next.delete(item.id) : next.add(item.id);
                   setRecipientIds(next);
                 }} /></TableHead>
-                 <TableHead>{t('البريد', 'Email')}</TableHead><TableHead>{t('المصدر', 'Source')}</TableHead><TableHead>{t('الدولة / اللغة', 'Country / language')}</TableHead><TableHead>{t('الحالة', 'Status')}</TableHead><TableHead>{t('وقت الإرسال', 'Sent')}</TableHead><TableHead>{t('وقت التسليم', 'Delivered')}</TableHead><TableHead>{t('سبب آمن / استبعاد', 'Safe reason / suppression')}</TableHead>
+                  <TableHead>{t('البريد', 'Email')}</TableHead><TableHead>{t('المصدر', 'Source')}</TableHead><TableHead>{t('الدولة / اللغة', 'Country / language')}</TableHead><TableHead>{t('الحالة', 'Status')}</TableHead><TableHead>{t('وقت الإرسال', 'Sent')}</TableHead><TableHead>{t('وقت التسليم', 'Delivered')}</TableHead><TableHead>{t('أهلية إعادة المحاولة', 'Retry eligibility')}</TableHead><TableHead>{t('سبب آمن / استبعاد', 'Safe reason / suppression')}</TableHead>
               </TableRow></TableHeader>
               <TableBody>
                 {(recipients.data?.items || []).filter((item) => (recipientStatus === 'all' || item.deliveryStatus === recipientStatus) && (recipientSource === 'all' || item.source === recipientSource) && (recipientCountry === 'all' || item.country === recipientCountry) && (recipientLanguage === 'all' || item.language === recipientLanguage)).map((item) => (
                   <TableRow key={item.id}>
                     <TableCell><Checkbox disabled={ownerQaMode} aria-label={`${t('تحديد', 'Select')} ${item.email}`} checked={!selectAllFiltered && recipientIds.has(item.id)} onCheckedChange={() => { setSelectAllFiltered(false); const next = new Set(recipientIds); next.has(item.id) ? next.delete(item.id) : next.add(item.id); setRecipientIds(next); }} /></TableCell>
                     <TableCell><div className="font-medium">{item.email}</div><div className="text-xs text-muted-foreground">{item.businessName || item.name || '—'}</div></TableCell>
-                     <TableCell>{item.source === 'csv_import' ? t('استيراد CSV', 'CSV import') : item.source === 'owner_qa' ? t('اختبار المالك', 'Owner QA') : t('مشترك', 'Subscriber')}</TableCell>
+                     <TableCell>{sourceLabel(item.source)}</TableCell>
                      <TableCell>{item.country || '—'} / {item.language === 'ar' ? t('العربية', 'Arabic') : item.language === 'en' ? t('الإنجليزية', 'English') : '—'}</TableCell>
                     <TableCell><Badge variant={item.deliveryStatus === 'delivered' ? 'default' : item.deliveryStatus === 'failed' ? 'destructive' : 'secondary'}>{statusLabel(item.deliveryStatus)}</Badge></TableCell>
                      <TableCell className="text-xs text-muted-foreground">{timestampLabel(item.sentAt || item.acceptedAt || item.lastAttemptAt)}</TableCell>
                      <TableCell className="text-xs text-muted-foreground">{timestampLabel(item.deliveredAt)}</TableCell>
+                      <TableCell className="max-w-48 text-xs">{retryLabel(item.deliveryStatus, item.retryEligible)}</TableCell>
                      <TableCell className="max-w-52 text-xs text-muted-foreground">{safeDeliveryReason(item.suppressionReason || item.failureReason, appLang)}</TableCell>
                   </TableRow>
                 ))}
-                 {!recipients.isLoading && !recipients.data?.items?.length && <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">{t('لا توجد نتائج إرسال بعد', 'No delivery records yet')}</TableCell></TableRow>}
+                 {!recipients.isLoading && !recipients.data?.items?.length && <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-8">{t('لا توجد نتائج إرسال بعد', 'No delivery records yet')}</TableCell></TableRow>}
               </TableBody>
             </Table>
           </div>
@@ -827,7 +861,12 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
             )}
 
             {permissions.send && previewResult && (
-              <Button variant="destructive" onClick={() => { setSendLawfulBasisConfirmed(false); setConfirmSendOpen(true); }} disabled={ownerQaMode ? campaignStatus !== 'approved' || previewResult.recipientCount !== 1 || sendCampaign.isPending : !hasTested || !previewResult.recipientCount || sendCampaign.isPending}>
+              <Button
+                variant="destructive"
+                onClick={() => { setSendLawfulBasisConfirmed(false); setConfirmSendOpen(true); }}
+                disabled={completedCampaign || campaignStatus !== 'approved' || (ownerQaMode ? previewResult.recipientCount !== 1 : !hasTested || !previewResult.recipientCount) || sendCampaign.isPending}
+                title={completedCampaign ? t('اكتملت الحملة؛ الإرسال القياسي معطّل', 'Campaign completed; standard send is disabled') : undefined}
+              >
                 {sendCampaign.isPending ? <Loader2 className="w-4 h-4 animate-spin me-2" /> : <Send className="w-4 h-4 me-2" />}
                 {t('إرسال الحملة', 'Queue campaign')}
               </Button>
@@ -910,7 +949,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={sendCampaign.isPending}>{t('إلغاء', 'Cancel')}</AlertDialogCancel>
-            <AlertDialogAction onClick={(event) => { event.preventDefault(); if (!previewResult?.previewId || (ownerQaMode && previewResult.recipientCount !== 1) || (hasCsvRecipients && !sendLawfulBasisConfirmed)) return; sendCampaign.mutate({ previewId: previewResult.previewId, confirm: true, ...(hasCsvRecipients && sendLawfulBasisConfirmed ? { lawfulBasisConfirmed: true as const } : {}) }, { onSuccess: (result) => { setCampaignStatus('queued'); setFinalRecipientCount(result.recipientCount); setConfirmSendOpen(false); toast({ title: t(`تم وضع ${result.recipientCount} مستلم في القائمة`, `${result.recipientCount} recipients queued`) }); }, onError: (error) => toast({ title: t('فشل بدء الإرسال', 'Could not queue campaign'), description: userErrorMessage(error, appLang), variant: 'destructive' }) }); }} disabled={sendCampaign.isPending || (ownerQaMode && previewResult?.recipientCount !== 1) || (hasCsvRecipients && !sendLawfulBasisConfirmed)}>
+            <AlertDialogAction onClick={(event) => { event.preventDefault(); if (completedCampaign || campaignStatus !== 'approved' || !previewResult?.previewId || (ownerQaMode && previewResult.recipientCount !== 1) || (hasCsvRecipients && !sendLawfulBasisConfirmed)) return; sendCampaign.mutate({ previewId: previewResult.previewId, confirm: true, ...(hasCsvRecipients && sendLawfulBasisConfirmed ? { lawfulBasisConfirmed: true as const } : {}) }, { onSuccess: (result) => { setCampaignStatus('queued'); setFinalRecipientCount(result.recipientCount); setConfirmSendOpen(false); toast({ title: t(`تم وضع ${result.recipientCount} مستلم في القائمة`, `${result.recipientCount} recipients queued`) }); }, onError: (error) => toast({ title: t('فشل بدء الإرسال', 'Could not queue campaign'), description: userErrorMessage(error, appLang), variant: 'destructive' }) }); }} disabled={completedCampaign || campaignStatus !== 'approved' || sendCampaign.isPending || (ownerQaMode && previewResult?.recipientCount !== 1) || (hasCsvRecipients && !sendLawfulBasisConfirmed)}>
               {sendCampaign.isPending && <Loader2 className="w-4 h-4 animate-spin me-2" />}{t('تأكيد الإرسال', 'Confirm queue')}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -923,8 +962,8 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
             <AlertDialogTitle>{t('إعادة محاولة الإرسال الفاشل', 'Retry eligible failed sends')}</AlertDialogTitle>
             <AlertDialogDescription className="text-foreground">
               {t(
-                `سيتم وضع ${retryableRecipients.length} مستلم فاشل قابل للإعادة في قائمة المحاولة. لن تشمل العملية الرسائل المقبولة أو المسلّمة أو المرتدة أو الشكاوى أو المحظورة أو المتخطاة.`,
-                `${retryableRecipients.length} failed, retry-eligible recipients will be queued. Accepted, delivered, bounced, complained, suppressed, skipped, and non-retryable rows are excluded.`,
+                `سيتم وضع ${retryableFailedCount} مستلم فاشل قابل للإعادة من جمهور الحملة المحدد في قائمة المحاولة. لن تشمل العملية الرسائل المقبولة أو المسلّمة أو المرتدة أو الشكاوى أو المحظورة أو المتخطاة.`,
+                `${retryableFailedCount} failed, retry-eligible recipients in the campaign selection will be queued. Accepted, delivered, bounced, complained, suppressed, skipped, and non-retryable rows are excluded.`,
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -942,7 +981,7 @@ export function CampaignEditor({ campaignId, initialData, onBack, permissions, s
                   onError: () => toast({ title: t('فشلت إعادة المحاولة', 'Retry failed'), variant: 'destructive' }),
                 });
               }}
-              disabled={retryCampaign.isPending}
+              disabled={!retryableFailedCount || retryCampaign.isPending}
             >
               {retryCampaign.isPending && <Loader2 className="w-4 h-4 animate-spin me-2" />}
               {t('تأكيد إعادة المحاولة', 'Confirm retry')}

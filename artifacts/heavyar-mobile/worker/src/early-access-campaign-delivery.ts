@@ -1,4 +1,4 @@
-import { EA, OWNER_QA_EMAIL, EarlyAccessError, eligible, fail, hash, nowIso, opaqueToken, renderCampaign, type EarlyAccessStore } from './early-access-model';
+import { EA, OWNER_QA_EMAIL, EarlyAccessError, eligible, fail, hash, nowIso, opaqueToken, renderCampaign, type EarlyAccessStore, type RecordVersion } from './early-access-model';
 
 export const campaignDeliveryStatuses = ['not_sent', 'queued', 'accepted', 'delivered', 'failed', 'bounced', 'complained', 'suppressed', 'skipped'] as const;
 export type CampaignDeliveryStatus = typeof campaignDeliveryStatuses[number];
@@ -196,6 +196,10 @@ export async function queueCampaign(store: EarlyAccessStore, campaignId: string,
 export async function retryCampaignRecipients(store: EarlyAccessStore, campaignId: string, actorUid: string, recipientIds?: string[], allEligible = false) {
   if (recipientIds && (!recipientIds.length || recipientIds.length > 500)) fail('INVALID_SELECTION');
   if (recipientIds && allEligible || !recipientIds && !allEligible) fail('INVALID_SELECTION');
+  const campaign = await store.read(EA.campaigns, campaignId);
+  if (!campaign) fail('NOT_FOUND', 404);
+  const hasFinalSelection = Array.isArray(campaign.data.finalRecipientIds);
+  const finalIds = new Set<string>(hasFinalSelection ? campaign.data.finalRecipientIds : []);
   const candidates = recipientIds
     ? (await Promise.all(recipientIds.map(id => store.read(EA.deliveries, id)))).map((record, index) => record ? { ...record, requestedId: recipientIds[index] } : null)
     : await store.query(EA.deliveries, {
@@ -207,17 +211,14 @@ export async function retryCampaignRecipients(store: EarlyAccessStore, campaignI
   const changes: any[] = [];
   let queued = 0, skipped = 0;
   for (const candidate of candidates) {
-    if (!candidate || candidate.data.campaignId !== campaignId || candidate.data.source === 'owner_qa' || candidate.data.ownerQa === true || candidate.data.deliveryStatus !== 'failed' || candidate.data.retryEligible !== true) { skipped++; continue; }
-    const id = String(candidate.name || '').split('/').pop();
-    if (!id) { skipped++; continue; }
+    const id = String(candidate?.name || '').split('/').pop();
+    if (!candidate || !id || hasFinalSelection && !finalIds.has(id) || candidate.data.campaignId !== campaignId || candidate.data.source === 'owner_qa' || candidate.data.ownerQa === true || candidate.data.deliveryStatus !== 'failed' || candidate.data.retryEligible !== true) { skipped++; continue; }
     changes.push({ collection: EA.deliveries, id, prior: candidate, data: {
       ...candidate.data, deliveryStatus: 'queued', retryEligible: false, nextAttemptAt: null,
       leaseToken: null, leaseUntil: null, updatedAt: nowIso(),
     } });
     queued++;
   }
-  const campaign = await store.read(EA.campaigns, campaignId);
-  if (!campaign) fail('NOT_FOUND', 404);
   if (queued > 0 && campaign.data.status === 'sent') changes.push({
     collection: EA.campaigns, id: campaignId, prior: campaign,
     data: { ...campaign.data, status: 'queued', retryQueuedAt: nowIso(), retryQueuedBy: actorUid },
@@ -249,14 +250,43 @@ export async function campaignProgress(store: EarlyAccessStore, campaignId: stri
   const campaign = await store.read(EA.campaigns, campaignId);
   if (!campaign) fail('NOT_FOUND', 404);
   const finalIds = new Set<string>(Array.isArray(campaign.data.finalRecipientIds) ? campaign.data.finalRecipientIds : []);
-  const selectedCounts = { selected: finalIds.size, selectedNotSent: 0, selectedQueued: 0, selectedAccepted: 0 };
+  const selectedCounts = {
+    selected: finalIds.size,
+    selectedNotSent: 0,
+    selectedQueued: 0,
+    selectedAccepted: 0,
+    selectedDelivered: 0,
+    selectedFailed: 0,
+    selectedBounced: 0,
+    selectedComplained: 0,
+    selectedSuppressed: 0,
+    selectedSkipped: 0,
+    retryableFailed: 0,
+    currentEligible: 0,
+    alreadySent: 0,
+  };
   for (const row of rows) if (finalIds.has(String(row.name || '').split('/').pop() || '')) {
-    if (row.data.deliveryStatus === 'not_sent') selectedCounts.selectedNotSent++;
-    else if (row.data.deliveryStatus === 'queued') selectedCounts.selectedQueued++;
-    else if (row.data.deliveryStatus === 'accepted') selectedCounts.selectedAccepted++;
+    const status = row.data.deliveryStatus;
+    if (status === 'not_sent') {
+      selectedCounts.selectedNotSent++;
+      selectedCounts.currentEligible++;
+    } else if (status === 'queued') selectedCounts.selectedQueued++;
+    else if (status === 'accepted') selectedCounts.selectedAccepted++;
+    else if (status === 'delivered') selectedCounts.selectedDelivered++;
+    else if (status === 'failed') selectedCounts.selectedFailed++;
+    else if (status === 'bounced') selectedCounts.selectedBounced++;
+    else if (status === 'complained') selectedCounts.selectedComplained++;
+    else if (status === 'suppressed') selectedCounts.selectedSuppressed++;
+    else if (status === 'skipped') selectedCounts.selectedSkipped++;
+    if (status === 'failed' && row.data.retryEligible === true) {
+      selectedCounts.retryableFailed++;
+      selectedCounts.currentEligible++;
+    }
+    if (status === 'accepted' || status === 'delivered' || status === 'bounced' || status === 'complained') selectedCounts.alreadySent++;
   }
   return {
     campaignId, status: campaign.data.status, ...counts, ...selectedCounts,
+    originalAudience: finalIds.size,
     remaining: selectedCounts.selectedNotSent + selectedCounts.selectedQueued + selectedCounts.selectedAccepted,
     finalRecipientCount: campaign.data.finalRecipientCount || 0,
     finalRecipientIds: campaign.data.finalRecipientIds || [],
@@ -275,13 +305,17 @@ export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send:
       limit: 501,
     });
     const ownerQa = campaign.data.ownerQa === true;
+    const hasFinalSelection = Array.isArray(campaign.data.finalRecipientIds);
+    const finalIds = new Set<string>(hasFinalSelection ? campaign.data.finalRecipientIds : []);
+    const isSelected = (row: NonNullable<RecordVersion>) => !hasFinalSelection || finalIds.has(String(row.name || '').split('/').pop() || '');
     const ownerQaShapeValid = !ownerQa || rows.length === 1 && Array.isArray(campaign.data.finalRecipientIds) &&
       campaign.data.finalRecipientIds.length === 1 && campaign.data.finalRecipientIds[0] === campaign.data.ownerQaRecipientId &&
       String(rows[0]?.name || '').split('/').pop() === campaign.data.ownerQaRecipientId &&
       rows[0]?.data.source === 'owner_qa' && rows[0]?.data.ownerQa === true &&
       rows[0]?.data.email === OWNER_QA_EMAIL && rows[0]?.data.normalizedEmail === OWNER_QA_EMAIL;
     const recipients = (ownerQaShapeValid ? rows : []).filter(row =>
-      (row.data.deliveryStatus === 'queued' || !ownerQa && row.data.retryEligible === true) &&
+      isSelected(row) &&
+      (row.data.deliveryStatus === 'queued' || !ownerQa && row.data.deliveryStatus === 'failed' && row.data.retryEligible === true) &&
       (!row.data.leaseUntil || Date.parse(row.data.leaseUntil) <= now) &&
       (!row.data.nextAttemptAt || Date.parse(row.data.nextAttemptAt) <= now)).slice(0, 50);
     for (const recipient of recipients) {
@@ -341,7 +375,11 @@ export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send:
       processed++;
     }
     const current = await store.query(EA.deliveries, { from: [{ collectionId: EA.deliveries }], where: { fieldFilter: { field: { fieldPath: 'campaignId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 501 });
-    const remaining = current.some(row => (row.data.deliveryStatus === 'queued' || row.data.retryEligible === true) && (!row.data.leaseUntil || Date.parse(row.data.leaseUntil) <= now));
+    const remaining = current.some(row => isSelected(row) && (
+      row.data.deliveryStatus === 'not_sent' ||
+      row.data.deliveryStatus === 'queued' ||
+      row.data.deliveryStatus === 'failed' && row.data.retryEligible === true
+    ));
     if (!remaining) {
       try { const completedAt = nowIso(); await store.save([{ collection: EA.campaigns, id, prior: campaign, data: { ...campaign.data, status: 'sent', completedAt, sendCompletedAt: completedAt, sentAt: completedAt } }], 'early_access_campaign_completed', id); }
       catch { /* another scheduler invocation completed this campaign */ }

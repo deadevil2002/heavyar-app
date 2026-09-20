@@ -97,9 +97,69 @@ export type CampaignProgress = {
   remaining: number;
   finalRecipientCount: number;
   finalRecipientIds: string[];
+  originalAudience: number;
+  currentEligible: number;
+  alreadySent: number;
+  selectedNotSent: number;
+  selectedQueued: number;
+  selectedAccepted: number;
+  selectedDelivered: number;
+  selectedFailed: number;
+  selectedBounced: number;
+  selectedComplained: number;
+  selectedSuppressed: number;
+  selectedSkipped: number;
+  retryableFailed: number;
   completedAt?: string | null;
   sendCompletedAt?: string | null;
 };
+
+export type CampaignAudienceMetrics = {
+  originalAudience: number;
+  eligibleNow: number;
+  alreadySent: number;
+  delivered: number;
+  failed: number;
+  remaining: number;
+};
+
+const CAMPAIGN_REFRESH_INTERVAL_MS = 15_000;
+
+export function getCampaignAudienceSummary(progress: CampaignProgress): CampaignAudienceMetrics {
+  return {
+    originalAudience: Math.max(0, progress.originalAudience),
+    eligibleNow: Math.max(0, progress.currentEligible),
+    alreadySent: Math.max(0, progress.alreadySent),
+    delivered: Math.max(0, progress.selectedDelivered),
+    failed: Math.max(0, progress.selectedFailed),
+    remaining: Math.max(0, progress.remaining),
+  };
+}
+
+export const campaignAudienceMetrics = getCampaignAudienceSummary;
+
+export function campaignNeedsRefresh(progress?: CampaignProgress): boolean {
+  if (!progress) return false;
+  if (progress.selectedQueued > 0 || progress.selectedAccepted > 0) return true;
+  return (progress.status === 'queued' || progress.status === 'sending')
+    && (progress.remaining > 0 || progress.retryableFailed > 0);
+}
+
+export const isCampaignDeliveryActive = campaignNeedsRefresh;
+
+export function isCampaignCompleted(progress?: CampaignProgress): boolean {
+  if (!progress) return false;
+  const hasNoPendingWork = progress.selectedNotSent === 0
+    && progress.selectedQueued === 0
+    && progress.selectedAccepted === 0
+    && progress.retryableFailed === 0
+    && progress.remaining === 0
+    && progress.currentEligible === 0;
+  return hasNoPendingWork && (
+    Boolean(progress.completedAt || progress.sendCompletedAt)
+    || ['sent', 'completed'].includes(progress.status)
+  );
+}
 
 export type CsvPreview = {
   headers: string[];
@@ -434,7 +494,7 @@ export function useCampaignRecipients(campaignId: string, params: Record<string,
       `/early-access/campaigns/${campaignId}/recipients?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)]))}`,
     ),
     enabled: true,
-    refetchInterval: poll ? 15000 : false,
+    refetchInterval: poll ? CAMPAIGN_REFRESH_INTERVAL_MS : false,
   });
 }
 
@@ -442,12 +502,8 @@ export function useCampaignProgress(campaignId: string) {
   return useQuery({
     queryKey: ['early-access', 'campaign', campaignId, 'progress'],
     queryFn: () => fetchApi<CampaignProgress>(`/early-access/campaigns/${campaignId}/progress`),
-    refetchInterval: (query) => {
-      const progress = query.state.data;
-      return progress && (progress.status === 'queued' || progress.queued > 0 || progress.accepted > 0)
-        ? 15000
-        : false;
-    },
+    refetchInterval: (query) =>
+      isCampaignDeliveryActive(query.state.data) ? CAMPAIGN_REFRESH_INTERVAL_MS : false,
   });
 }
 
@@ -473,9 +529,8 @@ export function useRetryCampaign(campaignId: string) {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['early-access', 'campaign', campaignId, 'recipients'] });
-      queryClient.invalidateQueries({ queryKey: ['early-access', 'campaigns'] });
+    onSuccess: async () => {
+      await invalidateCampaignSendQueries(queryClient, campaignId);
     },
   });
 }

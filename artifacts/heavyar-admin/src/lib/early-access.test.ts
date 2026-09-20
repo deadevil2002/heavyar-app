@@ -129,4 +129,163 @@ describe('Early Access API Payload Contract', () => {
     expect(earlyAccess.safeDeliveryReason('INTERNAL_PROVIDER_CODE', 'en')).toBe('Delivery could not be completed');
     expect(earlyAccess.safeDeliveryReason('INTERNAL_PROVIDER_CODE', 'ar')).toBe('تعذر إكمال التسليم');
   });
+
+  it('derives immutable historical and current eligibility metrics from progress fields', () => {
+    const progress: earlyAccess.CampaignProgress = {
+      campaignId: 'historical-campaign',
+      status: 'sent',
+      audience: 4,
+      finalRecipientCount: 1,
+      finalRecipientIds: ['delivered-recipient'],
+      originalAudience: 1,
+      currentEligible: 0,
+      alreadySent: 1,
+      selectedNotSent: 0,
+      selectedQueued: 0,
+      selectedAccepted: 0,
+      selectedDelivered: 1,
+      selectedFailed: 0,
+      selectedBounced: 0,
+      selectedComplained: 0,
+      selectedSuppressed: 0,
+      selectedSkipped: 0,
+      retryableFailed: 0,
+      notSent: 3,
+      queued: 0,
+      accepted: 0,
+      delivered: 1,
+      failed: 0,
+      bounced: 0,
+      complained: 0,
+      suppressed: 0,
+      skipped: 3,
+      remaining: 0,
+      completedAt: '2025-01-01T00:00:00.000Z',
+    };
+    expect(earlyAccess.campaignAudienceMetrics(progress)).toEqual({
+      originalAudience: 1,
+      eligibleNow: 0,
+      alreadySent: 1,
+      delivered: 1,
+      failed: 0,
+      remaining: 0,
+    });
+    expect(earlyAccess.isCampaignDeliveryActive(progress)).toBe(false);
+    expect(earlyAccess.isCampaignCompleted(progress)).toBe(true);
+  });
+
+  it('keeps accepted delivery active but stops for a terminal stale queued status', () => {
+    const base: earlyAccess.CampaignProgress = {
+      campaignId: 'campaign',
+      status: 'sent',
+      audience: 1,
+      finalRecipientCount: 1,
+      finalRecipientIds: ['recipient'],
+      originalAudience: 1,
+      currentEligible: 0,
+      alreadySent: 1,
+      selectedNotSent: 0,
+      selectedQueued: 0,
+      selectedAccepted: 1,
+      selectedDelivered: 0,
+      selectedFailed: 0,
+      selectedBounced: 0,
+      selectedComplained: 0,
+      selectedSuppressed: 0,
+      selectedSkipped: 0,
+      retryableFailed: 0,
+      notSent: 0,
+      queued: 0,
+      accepted: 1,
+      delivered: 0,
+      failed: 0,
+      bounced: 0,
+      complained: 0,
+      suppressed: 0,
+      skipped: 0,
+      remaining: 0,
+    };
+    expect(earlyAccess.isCampaignDeliveryActive(base)).toBe(true);
+    expect(earlyAccess.isCampaignDeliveryActive({
+      ...base,
+      status: 'queued',
+      accepted: 0,
+      delivered: 1,
+      selectedAccepted: 0,
+      selectedDelivered: 1,
+    })).toBe(false);
+  });
+
+  it('ignores unselected historical in-flight rows in summaries and terminal decisions', () => {
+    const progress: earlyAccess.CampaignProgress = {
+      campaignId: 'selected-terminal',
+      status: 'sent',
+      audience: 3,
+      finalRecipientCount: 1,
+      finalRecipientIds: ['selected'],
+      originalAudience: 1,
+      currentEligible: 0,
+      alreadySent: 1,
+      notSent: 0,
+      queued: 1,
+      accepted: 1,
+      delivered: 1,
+      failed: 1,
+      bounced: 0,
+      complained: 0,
+      suppressed: 0,
+      skipped: 0,
+      selectedNotSent: 0,
+      selectedQueued: 0,
+      selectedAccepted: 0,
+      selectedDelivered: 1,
+      selectedFailed: 0,
+      selectedBounced: 0,
+      selectedComplained: 0,
+      selectedSuppressed: 0,
+      selectedSkipped: 0,
+      retryableFailed: 0,
+      remaining: 0,
+      completedAt: '2025-01-01T00:00:00.000Z',
+    };
+    expect(earlyAccess.getCampaignAudienceSummary(progress).delivered).toBe(1);
+    expect(earlyAccess.getCampaignAudienceSummary(progress).failed).toBe(0);
+    expect(earlyAccess.campaignNeedsRefresh(progress)).toBe(false);
+    expect(earlyAccess.isCampaignCompleted(progress)).toBe(true);
+  });
+
+  it('keeps a scheduled retryable failure refreshing until it is queued again', () => {
+    const progress: earlyAccess.CampaignProgress = {
+      campaignId: 'retry-scheduled',
+      status: 'queued',
+      audience: 1,
+      finalRecipientCount: 1,
+      finalRecipientIds: ['selected'],
+      originalAudience: 1,
+      currentEligible: 1,
+      alreadySent: 0,
+      notSent: 0,
+      queued: 0,
+      accepted: 0,
+      delivered: 0,
+      failed: 1,
+      bounced: 0,
+      complained: 0,
+      suppressed: 0,
+      skipped: 0,
+      selectedNotSent: 0,
+      selectedQueued: 0,
+      selectedAccepted: 0,
+      selectedDelivered: 0,
+      selectedFailed: 1,
+      selectedBounced: 0,
+      selectedComplained: 0,
+      selectedSuppressed: 0,
+      selectedSkipped: 0,
+      retryableFailed: 1,
+      remaining: 0,
+    };
+    expect(earlyAccess.campaignNeedsRefresh(progress)).toBe(true);
+    expect(earlyAccess.campaignNeedsRefresh({ ...progress, status: 'sent' })).toBe(false);
+  });
 });

@@ -203,7 +203,69 @@ describe('Early Access privacy and races', () => {
     expect(progress.audience).toBe(2);
     expect(progress.notSent).toBe(1);
     expect(progress.selected).toBe(1);
+    expect(progress.originalAudience).toBe(1);
+    expect(progress.currentEligible).toBe(0);
+    expect(progress.alreadySent).toBe(1);
     expect(progress.remaining).toBe(0);
+  });
+
+  test('dispatch completes with accepted selected recipients while unselected history cannot keep it active', async () => {
+    const m = memoryStore(), campaignId = 'terminal-selection';
+    m.put(EA.campaigns, campaignId, {
+      status: 'queued', finalRecipientIds: ['accepted'], finalRecipientCount: 1,
+      subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body',
+    });
+    m.put(EA.deliveries, 'accepted', { campaignId, deliveryStatus: 'accepted', retryEligible: false });
+    m.put(EA.deliveries, 'historical-not-sent', { campaignId, deliveryStatus: 'not_sent', retryEligible: false });
+    m.put(EA.deliveries, 'historical-retry', { campaignId, deliveryStatus: 'failed', retryEligible: true });
+    const send = async () => { throw new Error('terminal derivation must not call provider'); };
+    expect((await processEarlyAccessCampaigns(m.store, send)).processed).toBe(0);
+    expect(m.docs.get(`${EA.campaigns}/${campaignId}`)!.data.status).toBe('sent');
+    expect(m.docs.get(`${EA.deliveries}/historical-retry`)!.data.deliveryStatus).toBe('failed');
+    const progress = await campaignProgress(m.store, campaignId);
+    expect(progress).toMatchObject({ originalAudience: 1, currentEligible: 0, alreadySent: 1, accepted: 1, remaining: 1 });
+  });
+
+  test('selected progress counters stay authoritative when unselected queued, accepted, and failed history remains', async () => {
+    const m = memoryStore(), campaignId = 'selected-terminal-counters';
+    m.put(EA.campaigns, campaignId, {
+      status: 'queued', finalRecipientIds: ['selected-delivered'], finalRecipientCount: 1,
+      subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body',
+    });
+    m.put(EA.deliveries, 'selected-delivered', { campaignId, deliveryStatus: 'delivered', retryEligible: false });
+    m.put(EA.deliveries, 'unselected-queued', { campaignId, deliveryStatus: 'queued', retryEligible: false });
+    m.put(EA.deliveries, 'unselected-accepted', { campaignId, deliveryStatus: 'accepted', retryEligible: false });
+    m.put(EA.deliveries, 'unselected-failed', { campaignId, deliveryStatus: 'failed', retryEligible: true });
+    const send = async () => { throw new Error('unselected history must not call provider'); };
+    expect((await processEarlyAccessCampaigns(m.store, send)).processed).toBe(0);
+    expect(m.docs.get(`${EA.campaigns}/${campaignId}`)!.data.status).toBe('sent');
+    expect(await campaignProgress(m.store, campaignId)).toMatchObject({
+      queued: 1,
+      accepted: 1,
+      failed: 1,
+      delivered: 1,
+      originalAudience: 1,
+      selectedQueued: 0,
+      selectedAccepted: 0,
+      selectedDelivered: 1,
+      selectedFailed: 0,
+      retryableFailed: 0,
+      currentEligible: 0,
+      alreadySent: 1,
+      remaining: 0,
+    });
+  });
+
+  test('selected queued lease and selected sendable remainder both prevent premature completion', async () => {
+    const m = memoryStore(), now = Date.parse('2026-01-01T00:00:00.000Z');
+    m.put(EA.campaigns, 'in-flight', { status: 'queued', finalRecipientIds: ['leased'], subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    m.put(EA.deliveries, 'leased', { campaignId: 'in-flight', deliveryStatus: 'queued', leaseToken: 'active', leaseUntil: '2026-01-01T00:05:00.000Z' });
+    m.put(EA.campaigns, 'not-sent-remainder', { status: 'queued', finalRecipientIds: ['remaining'], subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
+    m.put(EA.deliveries, 'remaining', { campaignId: 'not-sent-remainder', deliveryStatus: 'not_sent' });
+    const send = async () => { throw new Error('blocked recipients must not call provider'); };
+    expect((await processEarlyAccessCampaigns(m.store, send, now)).processed).toBe(0);
+    expect(m.docs.get(`${EA.campaigns}/in-flight`)!.data.status).toBe('queued');
+    expect(m.docs.get(`${EA.campaigns}/not-sent-remainder`)!.data.status).toBe('queued');
   });
 
   test('select-all filtered preview and recipient status filters stay campaign-scoped and paginated', async () => {
@@ -275,7 +337,7 @@ describe('Early Access privacy and races', () => {
     const m = memoryStore();
     m.put(EA.campaigns, 'lease-campaign', { status: 'queued', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
     m.put(EA.deliveries, 'lease-recipient', { campaignId: 'lease-campaign', email: 'lease@example.com', language: 'en', deliveryStatus: 'queued', attempts: 0, createdAt: '2026-01-01T00:00:00.000Z' });
-    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }), sends = [];
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }), sends: unknown[][] = [];
     const send = async (...args: any[]) => { sends.push(args); await gate; return { delivered: true, messageId: 'lease-message' }; };
     const first = processEarlyAccessCampaigns(m.store, send, Date.parse('2026-01-01T00:00:00.000Z'));
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -311,6 +373,20 @@ describe('Early Access privacy and races', () => {
     expect(denied).toBe('FORBIDDEN');
     for (let i = 0; i < 501; i++) m.put(EA.deliveries, `too-many-${i}`, { campaignId, deliveryStatus: 'failed', retryEligible: true });
     expect(await errorCode(() => retryCampaignRecipients(m.store, campaignId, 'owner', undefined, true))).toBe('AUDIENCE_TOO_LARGE');
+  });
+
+  test('manual retry is immutable-selection scoped and duplicate-safe', async () => {
+    const m = memoryStore(), campaignId = 'selected-retry';
+    m.put(EA.campaigns, campaignId, { status: 'sent', finalRecipientIds: ['selected-failed', 'selected-delivered'] });
+    m.put(EA.deliveries, 'selected-failed', { campaignId, deliveryStatus: 'failed', retryEligible: true });
+    m.put(EA.deliveries, 'selected-delivered', { campaignId, deliveryStatus: 'delivered', retryEligible: true });
+    m.put(EA.deliveries, 'unselected-failed', { campaignId, deliveryStatus: 'failed', retryEligible: true });
+    const first = await retryCampaignRecipients(m.store, campaignId, 'owner', ['selected-failed', 'selected-delivered', 'unselected-failed']);
+    expect(first).toEqual({ selected: 3, queued: 1, skipped: 2 });
+    expect(m.docs.get(`${EA.deliveries}/selected-failed`)!.data.deliveryStatus).toBe('queued');
+    expect(m.docs.get(`${EA.deliveries}/selected-delivered`)!.data.deliveryStatus).toBe('delivered');
+    expect(m.docs.get(`${EA.deliveries}/unselected-failed`)!.data.deliveryStatus).toBe('failed');
+    expect(await retryCampaignRecipients(m.store, campaignId, 'owner', ['selected-failed'])).toEqual({ selected: 1, queued: 0, skipped: 1 });
   });
 
   test('OFF by default and config reveals only enabled; no email or mutation while closed', async () => {

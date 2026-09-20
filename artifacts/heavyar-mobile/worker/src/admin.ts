@@ -134,7 +134,17 @@ async function rawDoc(env: Env, collection: string, id: string): Promise<RawDoc 
   return response ? { data: decode(response), updateTime: response.updateTime, name: response.name } : null;
 }
 
-async function priorResendEvent(env: Env, providerMessageId: string, retainSubscriberSuppression = false) {
+type ResendWebhookEvent = {
+  status: string;
+  providerMessageId?: unknown;
+  eventAt?: string;
+  processedAt?: string;
+};
+type PriorResendEvent = ResendWebhookEvent & {
+  stateTimestamps: { deliveredAt?: string; sentAt?: string; acceptedAt?: string };
+};
+
+async function priorResendEvent(env: Env, providerMessageId: string, retainSubscriberSuppression = false): Promise<PriorResendEvent | null> {
   if (!providerMessageId) return null;
   const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
     from: [{ collectionId: 'resendWebhookEvents' }],
@@ -142,8 +152,8 @@ async function priorResendEvent(env: Env, providerMessageId: string, retainSubsc
     limit: 20,
   } }) }) as any[] || [];
   const allowed = new Set(['accepted', 'delivered', 'bounced', 'complained', 'failed']);
-  const events = rows.flatMap(row => row.document ? [decode(row.document)] : [])
-    .filter(event => event.providerMessageId === providerMessageId && allowed.has(String(event.status)));
+  const events = rows.flatMap(row => row.document ? [decode(row.document) as ResendWebhookEvent] : [])
+    .filter(event => event.providerMessageId === providerMessageId && allowed.has(event.status));
   const selected = events.sort((a, b) => {
       if (retainSubscriberSuppression) {
         const rank = (status: string) => status === 'complained' ? 2 : status === 'bounced' ? 1 : 0;
