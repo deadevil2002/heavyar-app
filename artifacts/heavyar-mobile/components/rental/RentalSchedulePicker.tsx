@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { ChevronLeft, ChevronRight, Clock3 } from 'lucide-react-native';
 import Colors from '@/constants/colors';
-import { addCalendarDays } from '@/services/rentalV2';
+import { addCalendarDays, calendarDayCount } from '@/services/rentalV2';
 
 type Props = {
   language: 'ar' | 'en';
@@ -70,6 +70,9 @@ export default function RentalSchedulePicker(props: Props) {
   const shiftMonth = (delta: number) => setVisibleMonth(new Date(Date.UTC(year, month + delta, 1)));
   const ArrowPrevious = props.isRTL ? ChevronRight : ChevronLeft;
   const ArrowNext = props.isRTL ? ChevronLeft : ChevronRight;
+  const selectedDays = props.mode === 'daily' && props.startDate && props.endDate
+    ? calendarDayCount(props.startDate, props.endDate)
+    : 0;
 
   return (
     <View style={styles.wrap}>
@@ -98,6 +101,15 @@ export default function RentalSchedulePicker(props: Props) {
           ? (props.mode === 'open_ended' ? 'اختر تاريخ بدء المهمة' : 'اختر تاريخ البدء ثم تاريخ الانتهاء')
           : (props.mode === 'open_ended' ? 'Select the job start date' : 'Select the start date, then the end date')}
       </Text>
+      {selectedDays > 0 && (
+        <View style={[styles.dayCount, { flexDirection: props.isRTL ? 'row-reverse' : 'row' }]}>
+          <Text style={[styles.dayCountText, { textAlign: props.isRTL ? 'right' : 'left' }]}>
+            {props.language === 'ar'
+              ? `${selectedDays} ${selectedDays === 1 ? 'يوم محسوب' : 'أيام محسوبة'} (تاريخ الانتهاء غير مشمول)`
+              : `${selectedDays} billable ${selectedDays === 1 ? 'day' : 'days'} (end date not included)`}
+          </Text>
+        </View>
+      )}
       {props.mode !== 'daily' && (
         <View style={styles.times}>
           <TimeControl value={props.startTime} onChange={props.onStartTime} label={props.language === 'ar' ? 'وقت البدء' : 'Start time'} isRTL={props.isRTL} />
@@ -122,6 +134,8 @@ const styles = StyleSheet.create({
   disabled: { color: Colors.textMuted, opacity: 0.35 },
   selectedText: { color: Colors.primary, fontWeight: '800' },
   hint: { color: Colors.textMuted, fontSize: 12 },
+  dayCount: { paddingHorizontal: 10, paddingVertical: 9, borderRadius: 10, backgroundColor: Colors.surface },
+  dayCountText: { flex: 1, color: Colors.gold, fontSize: 13, fontWeight: '700' },
   times: { gap: 8 },
   timeBox: { gap: 5 },
   smallLabel: { color: Colors.textSecondary, fontSize: 12 },

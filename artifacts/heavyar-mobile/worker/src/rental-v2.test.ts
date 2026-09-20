@@ -188,11 +188,57 @@ describe('Rental V2 HTTP authority boundary', () => {
     __test.setFirestore((collection, id) => {
       if (extra[`${collection}/${id}`] !== undefined) return extra[`${collection}/${id}`];
       if (collection === 'equipment' && id === 'eq_1') return listing;
-      if (collection === 'users' && id === actor.uid) return { uid: actor.uid, role: actor.accountRole || 'customer', emailVerified: true };
+      if (collection === 'users' && id === actor.uid) return { uid: actor.uid, role: actor.accountRole || 'customer', accountPurpose: actor.accountPurpose, emailVerified: true };
       if (collection === '__queries') return extra[`__queries/${id}`] || [];
       return undefined;
     });
   }
+
+  it('keeps Store Review inventory private while allowing designated review direct access', async () => {
+    const reviewListing = {
+      ...listing,
+      ownerUid: 'review-provider',
+      accountPurpose: 'store_review',
+      moderationReason: 'store_review_qa_only',
+      visibility: 'hidden',
+    };
+    fixture({ 'equipment/eq_1': reviewListing, '__queries/equipment': [{ id: 'eq_1', data: reviewListing }] });
+    const publicResponse = await worker.fetch(new Request('https://api.test/api/equipment/search?id=eq_1'), env);
+    expect(publicResponse.status).toBe(404);
+
+    fixture({ 'equipment/eq_1': reviewListing }, { ...authenticated, accountRole: 'customer' });
+    const ordinaryEstimate = await worker.fetch(new Request('https://api.test/api/requests/estimate', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...request(), requestedStartAt: '2099-09-20T08:00:00.000Z', requestedEndAt: '2099-09-20T10:00:00.000Z' }),
+    }), env);
+    expect(ordinaryEstimate.status).toBe(409);
+    expect(await ordinaryEstimate.json()).toMatchObject({ errorCode: 'LISTING_UNAVAILABLE' });
+
+    const reviewCustomer = { ...authenticated, accountRole: 'customer', accountPurpose: 'store_review' };
+    fixture({ 'equipment/eq_1': reviewListing }, reviewCustomer);
+    const detail = await worker.fetch(new Request('https://api.test/api/equipment/search?id=eq_1', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({ success: true, equipment: [{ id: 'eq_1', pricingModelVersion: 2 }] });
+
+    const estimate = await worker.fetch(new Request('https://api.test/api/requests/estimate', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...request(), requestedStartAt: '2099-09-20T08:00:00.000Z', requestedEndAt: '2099-09-20T10:00:00.000Z' }),
+    }), env);
+    expect(estimate.status).toBe(200);
+    expect(await estimate.json()).toMatchObject({ success: true, estimate: { baseAmountMinor: 24_000 } });
+    const commits: unknown[] = [];
+    __test.captureCommits(commits);
+    const create = await worker.fetch(new Request('https://api.test/api/requests', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...request(), requestedStartAt: '2099-09-20T08:00:00.000Z', requestedEndAt: '2099-09-20T10:00:00.000Z' }),
+    }), env);
+    expect(create.status).toBe(201);
+    expect(await create.json()).toMatchObject({ success: true, request: { pricingModelVersion: 2, providerUid: 'review-provider' } });
+    expect(commits.length).toBeGreaterThan(0);
+    __test.setAuth(); __test.setFirestore();
+  });
 
   it('returns the documented authoritative estimate envelope', async () => {
     fixture();

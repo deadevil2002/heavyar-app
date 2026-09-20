@@ -125,6 +125,39 @@ function publicProjection(id: string, data: Record<string, unknown>): Record<str
   return projected;
 }
 
+/**
+ * Store Review inventory is intentionally not public, but an authenticated
+ * designated review customer may open a known test listing by direct ID.
+ * Keep this projection separate from publicProjection so a caller cannot
+ * accidentally relax normal discovery filters.
+ */
+export function reviewEquipmentProjection(id: string, data: Record<string, unknown>): Record<string, unknown> | null {
+  if (data.accountPurpose !== 'store_review' || data.moderationReason !== 'store_review_qa_only') return null;
+  const projected = publicProjection(id, { ...data, accountPurpose: undefined });
+  if (projected) return projected;
+  const fields = [
+    'publicEquipmentNumber', 'titleAr', 'titleEn', 'descriptionAr', 'descriptionEn',
+    'category', 'customCategory', 'countryCode', 'region', 'city', 'customCity',
+    'district', 'pricePerDay', 'nativeCurrency', 'nativePricePerDay',
+    'pricingModelVersion', 'pricing', 'images', 'availability',
+    'isActive', 'visibility', 'moderationStatus', 'createdAt', 'updatedAt',
+  ] as const;
+  const result: Record<string, unknown> = { id };
+  for (const field of fields) if (data[field] !== undefined) result[field] = data[field];
+  const owner = publicOwner(data.ownerPublic);
+  if (owner) result.ownerPublic = owner;
+  if (data.pricingModelVersion !== 2) {
+    try {
+      const market = legacyMarketProjection(data as Record<string, any>);
+      result.countryCode = market.countryCode;
+      result.nativeCurrency = market.nativeCurrency;
+      result.pricingModelVersion = 1;
+      result.pricing = legacyPricingProjection(data as Record<string, any>).pricing;
+    } catch { /* preserve the safe historical fields when malformed */ }
+  }
+  return result;
+}
+
 function matchesCandidate(data: Record<string, unknown>, filters: {
   country: string; city: string; text: string;
 }): boolean {

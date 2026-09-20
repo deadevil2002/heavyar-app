@@ -11,7 +11,7 @@ import { quotaFetch, isQuotaError, quotaResponse, quotaBlocked } from './quota-p
 import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-access-delivery';
 import { hash } from './early-access-model';
 import { evaluateCanonicalCompleteness, isOperationallyBlocked, isSecuritySuspended, isStoreReviewAccount } from './integrity';
-import { searchPublicEquipment, type FirestoreQuery, type EquipmentSearchRow } from './equipment-search';
+import { reviewEquipmentProjection, searchPublicEquipment, type FirestoreQuery, type EquipmentSearchRow } from './equipment-search';
 import { activeInterval, buildFinalPaymentHandoff, calculateRental, estimateRental, intervalsOverlap, legacyMarketProjection, legacyPricingProjection, marketForCountry, parseV2RequestInput, rateFor, validateListingPricing, validateServerStart, v2TransitionAllowed, type V2RequestInput } from './rental-v2';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
@@ -1440,6 +1440,15 @@ function v2EquipmentContext(equipment: any) {
   const market = legacyMarketProjection(equipment || {});
   return { ...equipment, countryCode: market.countryCode, nativeCurrency: market.nativeCurrency, currency: market.nativeCurrency };
 }
+function canRentEquipment(u: User, equipment: any): boolean {
+  if (isPublicRentableListing(equipment)) return true;
+  const account = u.accountProfile;
+  return account?.role === 'customer'
+    && isStoreReviewAccount(account)
+    && equipment?.accountPurpose === 'store_review'
+    && equipment?.moderationReason === 'store_review_qa_only'
+    && equipment?.ownerUid !== u.uid;
+}
 function v2Failure(error: unknown): { status: number; error: string; errorCode: string } {
   const code = error instanceof Error ? error.message : '';
   if (code === 'RATE_CHANGED') return { status: 409, error: 'Listing rate changed before locking', errorCode: code };
@@ -1467,7 +1476,7 @@ async function estimateV2Request(req: Request, env: Env, u: User) {
   try { input = parseV2RequestInput(await req.json()); }
   catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid request', errorCode: 'INVALID_RENTAL_REQUEST' }, 400); }
   const equipment = await getDoc(env, 'equipment', input.equipmentId);
-  if (!equipment || equipment.ownerUid === u.uid || !isPublicRentableListing(equipment)) return out(env, req, { success: false, error: 'Listing unavailable', errorCode: 'LISTING_UNAVAILABLE' }, 409);
+  if (!equipment || equipment.ownerUid === u.uid || !canRentEquipment(u, equipment)) return out(env, req, { success: false, error: 'Listing unavailable', errorCode: 'LISTING_UNAVAILABLE' }, 409);
   const now = new Date().toISOString();
   try {
     const estimate = await buildV2Estimate(env, input, equipment, now);
@@ -1483,7 +1492,7 @@ async function createV2Request(body: any, req: Request, env: Env, u: User) {
   try { input = parseV2RequestInput(body); }
   catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid request', errorCode: 'INVALID_RENTAL_REQUEST' }, 400); }
   const equipmentRaw = await getRawDoc(env, 'equipment', input.equipmentId), equipment = equipmentRaw?.data;
-  if (!equipmentRaw?.updateTime || !equipment || equipment.ownerUid === u.uid || !isPublicRentableListing(equipment)) return out(env, req, { success: false, error: 'Listing unavailable', errorCode: 'LISTING_UNAVAILABLE' }, 409);
+  if (!equipmentRaw?.updateTime || !equipment || equipment.ownerUid === u.uid || !canRentEquipment(u, equipment)) return out(env, req, { success: false, error: 'Listing unavailable', errorCode: 'LISTING_UNAVAILABLE' }, 409);
   const account = u.accountProfile || await getDoc(env, 'users', u.uid);
   if (account?.role !== 'customer') return out(env, req, { success: false, error: 'Rental requests require a customer account', errorCode: 'CUSTOMER_ACCOUNT_REQUIRED' }, 403);
   await enforceOperationalAccess(env, u, equipment);
@@ -2848,6 +2857,18 @@ async function equipmentSearchRows(env: Env, structuredQuery: FirestoreQuery): P
     data: decode(item.document),
   }));
 }
+async function reviewEquipmentDetail(req: Request, env: Env, u: User, id: string) {
+  const equipment = await getDoc(env, 'equipment', id);
+  const account = u.accountProfile || await getDoc(env, 'users', u.uid);
+  if (account?.role !== 'customer' || !isStoreReviewAccount(account) || !equipment ||
+      equipment.accountPurpose !== 'store_review' || equipment.moderationReason !== 'store_review_qa_only') {
+    return out(env, req, { success: false, error: 'Equipment not found', errorCode: 'EQUIPMENT_NOT_FOUND' }, 404);
+  }
+  const projection = reviewEquipmentProjection(id, equipment);
+  return projection
+    ? out(env, req, { success: true, equipment: [projection], nextCursor: null })
+    : out(env, req, { success: false, error: 'Equipment not found', errorCode: 'EQUIPMENT_NOT_FOUND' }, 404);
+}
 async function equipmentSearch(req: Request, env: Env) {
   const result = await searchPublicEquipment(req, {
     projectId: String(env.FIREBASE_PROJECT_ID || ''),
@@ -3393,7 +3414,16 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (path === '/api/verification/attempts' && req.method === 'POST') return await startVerification(req, env, await authenticatedUser(req, env));
       if (path === '/api/requests/estimate' && req.method === 'POST') return await estimateV2Request(req, env, await authenticatedUser(req, env));
      if (path === '/api/requests' && req.method === 'POST') return await createRequest(req, env, await authenticatedUser(req, env));
-      if (path === '/api/equipment/search' && req.method === 'GET') return await equipmentSearch(req, env);
+      if (path === '/api/equipment/search' && req.method === 'GET') {
+        const directId = new URL(req.url).searchParams.get('id');
+        if (directId && req.headers.has('Authorization')) {
+          try {
+            const reviewUser = await authenticatedUser(req, env);
+            if (reviewUser.accountProfile && isStoreReviewAccount(reviewUser.accountProfile)) return await reviewEquipmentDetail(req, env, reviewUser, directId);
+          } catch { /* public search below remains the safe fallback */ }
+        }
+        return await equipmentSearch(req, env);
+      }
       const listingMatch = path.match(/^\/api\/listings\/([^/]+)\/availability$/);
       if (listingMatch && req.method === 'GET') return await listingAvailability(req, env, await authenticatedUser(req, env), decodeURIComponent(listingMatch[1]));
       if (path === '/api/listings' && req.method === 'POST') return await listingCreate(req, env, await authenticatedUser(req, env));
