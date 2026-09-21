@@ -526,7 +526,9 @@ describe('invitation HTTP and Firestore resource contract', () => {
     put('emailVerificationPolicies/default', { enabled: true, requireBeforeListingSubmission: true });
     const response = await worker.fetch(request('/api/listings', { titleEn: 'Equipment' }), env);
     expect(response.status).toBe(403);
-    expect((await response.json() as any).error).toBe('EMAIL_VERIFICATION_REQUIRED');
+    const body = await response.json() as any;
+    expect(body.error).toBe('EMAIL_VERIFICATION_REQUIRED');
+    expect(body.errorCode).toBe('EMAIL_VERIFICATION_REQUIRED');
     expect(commits.length).toBe(0);
   });
 });

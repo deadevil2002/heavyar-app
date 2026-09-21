@@ -5,7 +5,9 @@
  * This module intentionally accepts no arbitrary metadata, URLs, payloads, IDs,
  * search text, or error details so that its output cannot contain PII.
  *
- * Native frame/UI-thread timing is outside the scope of this JS-only utility.
+ * All durations are local JavaScript monotonic-clock observations. Native
+ * frame/UI-thread, Worker, Cloudinary, and physical-device timing are outside
+ * the scope of this utility and must not be inferred from these measurements.
  */
 
 export type MobilePerformanceKind =
@@ -14,7 +16,8 @@ export type MobilePerformanceKind =
   | 'refetch'
   | 'context_commit'
   | 'press_to_visible'
-  | 'event_loop_lag';
+  | 'event_loop_lag'
+  | 'operation';
 
 export type MobilePerformancePhase = 'record' | 'start' | 'complete';
 
@@ -66,6 +69,13 @@ export interface PressToVisibleMeasurement {
   cancel(): void;
 }
 
+export interface OperationMeasurement {
+  /** Complete once; duplicate calls are ignored. */
+  complete(failed?: boolean): number | undefined;
+  /** Abandon the measurement without recording completion. */
+  cancel(): void;
+}
+
 type MutableMetric = MobilePerformanceMetric;
 
 interface PerformanceState {
@@ -103,6 +113,10 @@ const state: PerformanceState = {
 
 const NOOP_PRESS: PressToVisibleMeasurement = Object.freeze({
   visible: () => undefined,
+  cancel: () => undefined,
+});
+const NOOP_OPERATION: OperationMeasurement = Object.freeze({
+  complete: () => undefined,
   cancel: () => undefined,
 });
 
@@ -261,6 +275,49 @@ export function trackNetwork<T>(
   );
 }
 
+export function startOperation(label: string): OperationMeasurement {
+  if (!state.enabled) return NOOP_OPERATION;
+  const normalizedLabel = safeLabel(label);
+  const startedAt = clock();
+  let active = true;
+  record('operation', normalizedLabel, { phase: 'start' });
+  return {
+    complete: (failed = false) => {
+      if (!active || !state.enabled) return undefined;
+      active = false;
+      const durationMs = Math.max(0, clock() - startedAt);
+      record('operation', normalizedLabel, {
+        durationMs,
+        failed,
+        phase: 'complete',
+        increment: false,
+      });
+      return durationMs;
+    },
+    cancel: () => { active = false; },
+  };
+}
+
+export async function trackOperation<T>(
+  label: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const measurement = startOperation(label);
+  try {
+    const value = await operation();
+    measurement.complete();
+    return value;
+  } catch (error) {
+    measurement.complete(true);
+    throw error;
+  }
+}
+
+/** Records a known safe duration under a static label. */
+export function recordOperationDuration(label: string, durationMs: number, failed = false): void {
+  record('operation', label, { durationMs, failed });
+}
+
 export function startPressToVisible(
   label: string,
 ): PressToVisibleMeasurement {
@@ -344,6 +401,9 @@ export const mobilePerformance = Object.freeze({
   isEnabled: isMobilePerformanceEnabled,
   countRender,
   trackNetwork,
+  trackOperation,
+  startOperation,
+  recordOperationDuration,
   markRefetch,
   markContextCommit,
   startPress: startPressToVisible,

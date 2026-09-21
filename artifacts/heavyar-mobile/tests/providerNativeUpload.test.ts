@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import ts from 'typescript';
 import { MutationError } from '../services/mutationError';
 import { safeErrorMessage } from '../services/errorMessages';
+import { sanitizeCreateListingPayload } from '../services/listingPayload';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, '../../../');
@@ -135,4 +136,55 @@ describe('installed Android multipart contract', () => {
     expect(mock).toHaveBeenCalledTimes(2);
     vi.restoreAllMocks();
   });
+  it.each([
+    { count: 1, mime: 'image/jpeg', extension: 'jpg' },
+    { count: 2, mime: 'image/jpeg', extension: 'jpg' },
+    { count: 4, mime: 'image/jpeg', extension: 'jpg' },
+    { count: 1, mime: 'image/png', extension: 'png' },
+    { count: 2, mime: 'image/png', extension: 'png' },
+    { count: 4, mime: 'image/png', extension: 'png' },
+  ].flatMap(contract => ['file', 'content'].map(uriScheme => ({ ...contract, uriScheme }))))(
+    'serializes the deterministic adapter/Node matrix: $count $mime $uriScheme URIs',
+    async ({ count, mime, extension, uriScheme }) => {
+      vi.stubGlobal('FormData', NativeFormData);
+      const uris = Array.from({ length: count }, (_, index) => uriScheme === 'file'
+        ? `file:///matrix/${mime.slice(6)}-${index}.${extension}`
+        : `content://media/external/images/${mime.slice(6)}-${index}`);
+      const parts: any[] = [];
+      const timings: Array<{ index: number; durationMs: number }> = [];
+      const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+        if (!init) return new Response(new Blob([`matrix-${url}`], { type: mime }));
+        const part = (init.body as any).getParts()[0];
+        parts.push(part);
+        const index = uris.indexOf(part.uri);
+        return Response.json({
+          success: true,
+          url: `https://res.cloudinary.com/qa/image/upload/matrix-${index}.${extension}`,
+          publicId: `heavyar/qa/matrix-${index}`,
+        });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const uploaded = await service().uploadMultipleImages(uris, (_completed: number, _total: number, timing: { index: number; durationMs: number }) => {
+        timings.push(timing);
+      }, 'qa');
+      expect(parts).toHaveLength(count);
+      expect(parts.map(part => part.uri)).toEqual(uris);
+      expect(parts.every(part => part.headers['content-type'] === mime)).toBe(true);
+      expect(parts.every(part => part.headers['content-disposition'].includes(`filename="upload.${extension}"`))).toBe(true);
+      expect(timings.map(timing => timing.index).sort((a, b) => a - b)).toEqual(Array.from({ length: count }, (_, index) => index));
+      expect(timings.every(timing => Number.isFinite(timing.durationMs) && timing.durationMs >= 0)).toBe(true);
+      expect(timings.every(timing => !('uri' in timing) && !('publicId' in timing))).toBe(true);
+      expect(sanitizeCreateListingPayload({
+        titleAr: 'اختبار عقد',
+        titleEn: 'Contract test',
+        images: uploaded,
+        ownerUid: 'must-be-removed',
+        isActive: true,
+      })).toEqual({
+        titleAr: 'اختبار عقد',
+        titleEn: 'Contract test',
+        images: uploaded,
+      });
+    },
+  );
 });

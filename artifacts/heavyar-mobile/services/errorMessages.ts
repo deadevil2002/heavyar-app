@@ -1,4 +1,5 @@
 import type { Language } from '@/types';
+import { supportCodeFromError, type PublishFailureStage } from './mutationError';
 const messages: Record<Language, Record<string, string>> = {
   ar: {
     ACTIVE_RENTAL_OVERLAP: 'المعدة غير متاحة خلال كامل الفترة المحددة. اختر وقتًا أو تاريخًا آخر.',
@@ -81,4 +82,30 @@ export function safeErrorMessage(error: unknown, language: Language) {
   const message = messages[language][code] || messages[language].REQUEST_FAILED;
   const support = typeof value?.supportCode === 'string' && /^(?:[A-F0-9]{10}|CLIENT-[A-Z0-9-]{3,48})$/.test(value.supportCode) ? value.supportCode : undefined;
   return support ? `${message}\n${language === 'ar' ? 'رمز الدعم' : 'Support code'}: ${support}` : message;
+}
+
+const publishMessages: Record<Language, Record<PublishFailureStage, string>> = {
+  ar: {
+    upload: 'فشل رفع الصور.',
+    listing: 'تعذر نشر الإعلان.',
+    confirmation: 'تعذر تأكيد نتيجة النشر. تحقق من «معداتي» قبل إعادة المحاولة. قد تؤدي إعادة المحاولة إلى إنشاء إعلان مكرر، وقد يظهر الإعلان المتأخر لاحقًا.',
+  },
+  en: {
+    upload: 'Image upload failed.',
+    listing: 'Listing could not be published.',
+    confirmation: 'Publishing result could not be confirmed. Check My Equipment before retrying. Retrying may create a duplicate listing, and a delayed listing may still appear later.',
+  },
+};
+
+/** Stage-only publish copy. It never renders an internal code or error message. */
+export function safePublishErrorMessage(
+  error: unknown,
+  language: Language,
+  stage: PublishFailureStage,
+): string {
+  const message = publishMessages[language][stage];
+  const supportCode = supportCodeFromError(error);
+  return supportCode
+    ? `${message}\n${language === 'ar' ? 'رمز الدعم' : 'Support code'}: ${supportCode}`
+    : message;
 }

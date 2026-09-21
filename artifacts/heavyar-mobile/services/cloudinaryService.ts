@@ -16,6 +16,11 @@ export interface UploadProgress {
   total: number;
 }
 
+export interface UploadItemTiming {
+  index: number;
+  durationMs: number;
+}
+
 export async function uploadImageToCloudinary(
   localUri: string,
   expectedUid?: string,
@@ -102,7 +107,7 @@ export async function uploadImageToCloudinary(
 
 export async function uploadMultipleImages(
   localUris: string[],
-  onProgress?: (completed: number, total: number) => void | Promise<void>,
+  onProgress?: (completed: number, total: number, timing?: UploadItemTiming) => void | Promise<void>,
   expectedUid?: string,
 ): Promise<CloudinaryImage[]> {
   const auth = getFirebaseAuth(), uid = auth.currentUser?.uid;
@@ -118,10 +123,12 @@ export async function uploadMultipleImages(
       const index = nextIndex++;
       try {
         if (auth.currentUser?.uid !== uid) throw new MutationError('AUTH_SESSION_CHANGED');
+        const startedAt = Date.now();
         results[index] = await uploadImageToCloudinary(localUris[index], uid);
+        const timing = { index, durationMs: Math.max(0, Date.now() - startedAt) };
         completed++;
         try {
-          const progress = onProgress?.(completed, localUris.length);
+          const progress = onProgress?.(completed, localUris.length, timing);
           if (progress) void Promise.resolve(progress).catch(() => console.warn('[media] upload progress observer failed'));
         }
         catch { console.warn('[media] upload progress observer failed'); }

@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import Home from '../app/(tabs)/(home)/index';
 import Search from '../app/(tabs)/search/index';
 
-const state = vi.hoisted(() => ({ role: 'provider', unread: 0, push: vi.fn(), discovery: vi.fn() }));
+const state = vi.hoisted(() => ({ role: 'provider', accountPurpose: undefined as string | undefined, unread: 0, push: vi.fn(), discovery: vi.fn() }));
 vi.mock('react-native', () => ({
   View: ({ children, testID }: any) => <div data-testid={testID}>{children}</div>,
   ScrollView: ({ children }: any) => <div>{children}</div>,
@@ -20,7 +20,7 @@ vi.mock('lucide-react-native', () => ({
   Package: () => null, PlusCircle: () => null, Inbox: () => null, Activity: () => null, SlidersHorizontal: () => null, X: () => null,
 }));
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: state.push }), useLocalSearchParams: () => ({ mode: 'equipment' }) }));
-vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ isLoading: false, isAuthenticated: true, user: { uid: 'fixture', role: state.role, nameEn: 'Fixture' } }) }));
+vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ isLoading: false, isAuthenticated: true, user: { uid: 'fixture', role: state.role, nameEn: 'Fixture', accountPurpose: state.accountPurpose } }) }));
 vi.mock('../contexts/LanguageContext', () => ({ useLanguage: () => ({ isRTL: false, t: (key: string) => key, localizedText: (_ar: string, en: string) => en }) }));
 vi.mock('../contexts/DiscoveryContext', () => ({ useDiscovery: state.discovery, useDiscoveryDraft: vi.fn() }));
 vi.mock('../hooks/useNotificationUnread', () => ({ useNotificationUnread: () => ({ unreadCount: state.unread }) }));
@@ -42,7 +42,7 @@ async function mount(component: React.ReactNode) {
 }
 afterEach(async () => { if (root) await act(async () => root.unmount()); });
 it('Provider Home renders operations only and routes driver history to unified Requests', async () => {
-  state.role = 'provider'; state.unread = 0;
+  state.role = 'provider'; state.accountPurpose = undefined; state.unread = 0;
   await mount(<Home />);
   for (const label of ['My Equipment', 'Add Equipment', 'Incoming Requests', 'Active Rentals', 'Find Driver']) expect(host.textContent).toContain(label);
   expect(host.textContent).not.toContain('Marketplace');
@@ -53,14 +53,21 @@ it('Provider Home renders operations only and routes driver history to unified R
   await act(async () => (host.querySelector('[aria-label="Notifications"]') as HTMLButtonElement).click());
   expect(state.push).toHaveBeenCalledWith('/notifications');
 });
+it('Store Review Provider Home does not offer driver request navigation', async () => {
+  state.role = 'provider'; state.accountPurpose = 'store_review'; state.unread = 0;
+  await mount(<Home />);
+  expect(host.textContent).not.toContain('Find Driver');
+  expect(host.textContent).not.toContain('my_requests');
+  expect(Array.from(host.querySelectorAll('button')).some(button => button.textContent === 'my_requests')).toBe(false);
+});
 it.each([0, 16])('Home bell uses shared unread=%s', async unread => {
-  state.role = 'provider'; state.unread = unread;
+  state.role = 'provider'; state.accountPurpose = undefined; state.unread = unread;
   await mount(<Home />);
   expect(!!host.querySelector('[data-testid="home-notification-dot"]')).toBe(unread > 0);
   expect(host.querySelector('[aria-label="Notifications"]')).not.toBeNull();
 });
 it.each(['provider', 'driver'])('%s Search does not mount equipment discovery even with equipment deep link', async role => {
-  state.role = role;
+  state.role = role; state.accountPurpose = undefined;
   await mount(<Search />);
   expect(state.discovery).not.toHaveBeenCalled();
   expect(host.textContent).not.toContain('Marketplace');
@@ -68,7 +75,7 @@ it.each(['provider', 'driver'])('%s Search does not mount equipment discovery ev
 });
 
 it('Driver Home is a Requests workspace without marketplace or Provider actions', async () => {
-  state.role = 'driver';
+  state.role = 'driver'; state.accountPurpose = undefined;
   await mount(<Home />);
   expect(host.textContent).toContain('Driver workspace');
   expect(host.textContent).toContain('my_requests');

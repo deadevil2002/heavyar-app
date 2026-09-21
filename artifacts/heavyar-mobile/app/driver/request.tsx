@@ -22,6 +22,7 @@ export default function DriverRequestScreen() {
   const { dialog, showDialog, hideDialog } = useAppDialog();
   const { user, isAuthenticated } = useAuth();
   const accountStatus = (user as (typeof user & { accountStatus?: string }))?.accountStatus;
+  const requestAllowed = canRequestDriver(isAuthenticated, user?.role, accountStatus, user?.accountPurpose);
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [targetReady, setTargetReady] = useState(false);
@@ -30,6 +31,12 @@ export default function DriverRequestScreen() {
   const guardRef = useRef(new LatestRequestGuard());
 
   const validateTarget = useCallback(async (silent = false) => {
+    if (!requestAllowed) {
+      setTargetReady(false);
+      setTargetError(false);
+      setValidating(false);
+      return;
+    }
     if (!id) {
       setTargetReady(false);
       setTargetError(true);
@@ -50,19 +57,19 @@ export default function DriverRequestScreen() {
     } finally {
       if (guardRef.current.isCurrent(request.generation)) setValidating(false);
     }
-  }, [id]);
+  }, [id, requestAllowed]);
 
   useFocusEffect(useCallback(() => {
     void validateTarget();
-    const interval = setInterval(() => void validateTarget(true), 15000);
+    const interval = requestAllowed ? setInterval(() => void validateTarget(true), 15000) : undefined;
     return () => {
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
       guardRef.current.cancel();
     };
-  }, [validateTarget, isAuthenticated, user?.uid, user?.role, accountStatus]));
+  }, [validateTarget, isAuthenticated, user?.uid, user?.role, accountStatus, requestAllowed]));
 
   const handleSubmit = async () => {
-    if (!isAuthenticated || !canRequestDriver(isAuthenticated, user?.role, accountStatus)) {
+    if (!requestAllowed) {
       showDialog(t('error_title'), isRTL ? 'حسابك غير مؤهل لطلب سائق' : 'Your account is not eligible to request a driver', [{ text: t('ok'), style: 'default' }]);
       return;
     }
@@ -103,6 +110,11 @@ export default function DriverRequestScreen() {
           <View style={{ width: 24 }} />
         </View>
         <View style={styles.content}>
+          {user?.accountPurpose === 'store_review' ? <View style={styles.targetError}>
+            <Text style={[styles.errorText, { textAlign: isRTL ? 'right' : 'left' }]}>
+              {isRTL ? 'طلبات السائقين غير متاحة لحساب مراجعة المتجر.' : 'Driver requests are unavailable for this Store Review account.'}
+            </Text>
+          </View> : null}
           {validating ? <ActivityIndicator color={Colors.gold} /> : targetError ? (
             <View style={styles.targetError}>
               <Text style={[styles.errorText, { textAlign: isRTL ? 'right' : 'left' }]}>
@@ -114,7 +126,7 @@ export default function DriverRequestScreen() {
               </View>
             </View>
           ) : null}
-          <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'تفاصيل الطلب' : 'Request Details'}</Text>
+          {user?.accountPurpose !== 'store_review' ? <><Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'تفاصيل الطلب' : 'Request Details'}</Text>
           <TextInput
             style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]}
             placeholder={hint}
@@ -125,12 +137,12 @@ export default function DriverRequestScreen() {
             textAlignVertical="top"
           />
           <Pressable
-            style={[styles.button, (submitting || validating || targetError || !targetReady || !canRequestDriver(isAuthenticated, user?.role, accountStatus)) && styles.buttonDisabled]}
+            style={[styles.button, (submitting || validating || targetError || !targetReady || !requestAllowed) && styles.buttonDisabled]}
             onPress={handleSubmit}
-            disabled={submitting || validating || targetError || !targetReady || !canRequestDriver(isAuthenticated, user?.role, accountStatus)}
+            disabled={submitting || validating || targetError || !targetReady || !requestAllowed}
           >
             <Text style={styles.buttonText}>{submitting ? t('saving') : (isRTL ? 'إرسال الطلب' : 'Send Request')}</Text>
-          </Pressable>
+          </Pressable></> : null}
         </View>
       </SafeAreaView>
       <AppDialog visible={dialog.visible} title={dialog.title} message={dialog.message} buttons={dialog.buttons} onClose={hideDialog} />

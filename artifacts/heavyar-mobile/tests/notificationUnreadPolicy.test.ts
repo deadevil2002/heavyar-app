@@ -11,18 +11,20 @@ describe('authoritative unread cache policy', () => {
     const releaseTabs = retainNotificationUnread(client, 'provider');
     const releaseHome = retainNotificationUnread(client, 'provider');
     client.setQueryData(notificationUnreadKey('provider'), 16);
-    publishNotificationRead('provider');
-    expect(invalidate).toHaveBeenCalledTimes(1);
+    publishNotificationRead({ uid: 'provider', type: 'replace', unreadCount: 15 });
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(client.getQueryData(notificationUnreadKey('provider'))).toBe(15);
     releaseHome();
     expect(cancel).not.toHaveBeenCalled();
-    expect(client.getQueryData(notificationUnreadKey('provider'))).toBe(16);
-    publishNotificationRead('provider');
-    expect(invalidate).toHaveBeenCalledTimes(2);
+    expect(client.getQueryData(notificationUnreadKey('provider'))).toBe(15);
+    publishNotificationRead({ uid: 'provider', type: 'replace', unreadCount: 0 });
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(client.getQueryData(notificationUnreadKey('provider'))).toBe(0);
     releaseTabs();
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(client.getQueryData(notificationUnreadKey('provider'))).toBeUndefined();
-    publishNotificationRead('provider');
-    expect(invalidate).toHaveBeenCalledTimes(2);
+    publishNotificationRead({ uid: 'provider', type: 'replace', unreadCount: 14 });
+    expect(invalidate).not.toHaveBeenCalled();
     client.clear();
   });
 
@@ -90,11 +92,25 @@ describe('authoritative unread cache policy', () => {
   it('publishes successful reads only to mounted subscribers with captured uid', () => {
     const listener = vi.fn();
     const unsubscribe = subscribeNotificationReads(listener);
-    publishNotificationRead('original-provider');
-    expect(listener).toHaveBeenCalledExactlyOnceWith('original-provider');
+    publishNotificationRead({ uid: 'original-provider', type: 'replace', unreadCount: 15 });
+    expect(listener).toHaveBeenCalledExactlyOnceWith({ uid: 'original-provider', type: 'replace', unreadCount: 15 });
     unsubscribe();
-    publishNotificationRead('next-user');
+    publishNotificationRead({ uid: 'next-user', type: 'replace', unreadCount: 1 });
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps exact item and mark-all counts in the shared cache without refetching', () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const release = retainNotificationUnread(client, 'provider');
+    client.setQueryData(notificationUnreadKey('provider'), 16);
+    publishNotificationRead({ uid: 'provider', type: 'replace', unreadCount: 15 });
+    expect(client.getQueryData(notificationUnreadKey('provider'))).toBe(15);
+    publishNotificationRead({ uid: 'provider', type: 'replace', unreadCount: 0 });
+    expect(client.getQueryData(notificationUnreadKey('provider'))).toBe(0);
+    expect(invalidate).not.toHaveBeenCalled();
+    release();
+    client.clear();
   });
 
   it('refreshes once after invalidation rather than on every subsequent focus', async () => {

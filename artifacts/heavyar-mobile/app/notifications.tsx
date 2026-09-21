@@ -16,6 +16,7 @@ import {
   listNotifications,
   markAllNotificationsRead,
   markNotificationRead,
+  mergeNotificationPage,
   notificationActionRoute,
   type NotificationItem,
   type NotificationPreferences,
@@ -26,6 +27,7 @@ export default function NotificationsScreen() {
   const { isAuthenticated, user } = useAuth();
   const uid = isAuthenticated ? user?.uid || '' : '';
   const operations = useRef(createNotificationOperationGuard()).current;
+  const openingItems = useRef(new Set<string>()).current;
   operations.setIdentity(uid);
   useEffect(() => () => operations.invalidate(), [operations]);
   const router = useRouter();
@@ -38,12 +40,14 @@ export default function NotificationsScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [mutationBusy, setMutationBusy] = useState(false);
   const [savingPreference, setSavingPreference] = useState<string | null>(null);
   const [readAllRemaining, setReadAllRemaining] = useState(0);
 
   const load = useCallback(async (append = false) => {
     if (!uid) return;
     const isCurrent = operations.begin(uid, 'load');
+    const mutationSnapshot = operations.mutationSnapshot();
     append ? setLoadingMore(true) : setLoading(true);
     setError(null);
     try {
@@ -54,13 +58,12 @@ export default function NotificationsScreen() {
       if (!isCurrent()) return;
       if (pageResult.status === 'rejected') throw pageResult.reason;
       const page = pageResult.value;
-      setItems((current) => {
-        const combined = append ? [...current, ...page.notifications] : page.notifications;
-        return [...new Map(combined.map(item => [item.id, item])).values()];
-      });
+      setItems((current) => mergeNotificationPage(current, page.notifications, append));
       setNextPageToken(page.nextPageToken || null);
-      setUnreadCount(page.unreadCount);
-      queryClient.setQueryData(notificationUnreadKey(uid), page.unreadCount);
+      if (operations.mutationIsCurrent(mutationSnapshot)) {
+        setUnreadCount(page.unreadCount);
+        queryClient.setQueryData(notificationUnreadKey(uid), page.unreadCount);
+      }
       if (!append && prefsResult.status === 'fulfilled') setPreferences(prefsResult.value);
       if (prefsResult.status === 'rejected') setError(t('notifications_error'));
     } catch (e) {
@@ -80,6 +83,7 @@ export default function NotificationsScreen() {
     setNextPageToken(null);
     setPreferences(defaultPreferences);
     setOpeningId(null);
+    setMutationBusy(false);
     setSavingPreference(null);
     setLoadingMore(false);
     setReadAllRemaining(0);
@@ -89,15 +93,23 @@ export default function NotificationsScreen() {
   }, [uid]); // only reload on actual identity changes, not preference edits
 
   const openItem = useCallback(async (item: NotificationItem) => {
-    if (openingId || !uid) return;
-    const isCurrent = operations.begin(uid, 'open');
+    if (openingId || openingItems.has(item.id) || !uid) return;
+    const mutationLock = operations.tryLockMutation();
+    if (mutationLock === null) return;
+    openingItems.add(item.id);
+    setMutationBusy(true);
+    const isCurrent = operations.beginMutation(uid, 'open');
+    const countCancellation = queryClient.cancelQueries({ queryKey: notificationUnreadKey(uid), exact: true });
     setOpeningId(item.id);
     try {
       if (!item.read) {
-        await markNotificationRead(item.id, uid);
+        const authoritativeCount = await operations.serializeWrite(async () => {
+          await countCancellation;
+          return markNotificationRead(item.id, uid);
+        });
         if (!isCurrent()) return;
         setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, read: true } : entry));
-        setUnreadCount((count) => Math.max(0, count - 1));
+        setUnreadCount(authoritativeCount);
       }
       if (!isCurrent()) return;
       const route = notificationActionRoute(item.action);
@@ -105,22 +117,36 @@ export default function NotificationsScreen() {
     } catch {
       if (isCurrent()) setError(t('notifications_error'));
     } finally {
+      openingItems.delete(item.id);
+      operations.unlockMutation(mutationLock);
+      setMutationBusy(false);
       if (isCurrent()) setOpeningId(null);
     }
-  }, [openingId, operations, router, t, uid]);
+  }, [openingId, openingItems, operations, queryClient, router, t, uid]);
 
   const markAll = useCallback(async () => {
     if (!unreadCount || !uid) return;
-    const isCurrent = operations.begin(uid, 'markAll');
+    const mutationLock = operations.tryLockMutation();
+    if (mutationLock === null) return;
+    setMutationBusy(true);
+    const isCurrent = operations.beginMutation(uid, 'markAll');
+    const countCancellation = queryClient.cancelQueries({ queryKey: notificationUnreadKey(uid), exact: true });
     try {
-      const result = await markAllNotificationsRead(10, uid);
+      const result = await operations.serializeWrite(async () => {
+        await countCancellation;
+        return markAllNotificationsRead(10, uid);
+      });
       if (!isCurrent()) return;
       if (!result.hasMore) setItems((current) => current.map((item) => ({ ...item, read: true })));
       setUnreadCount(result.remainingCount);
       setReadAllRemaining(result.hasMore ? result.remainingCount : 0);
       if (result.hasMore) await load();
     } catch { if (isCurrent()) setError(t('notifications_error')); }
-  }, [load, operations, t, unreadCount, uid]);
+    finally {
+      operations.unlockMutation(mutationLock);
+      setMutationBusy(false);
+    }
+  }, [load, operations, queryClient, t, unreadCount, uid]);
 
   const togglePreference = useCallback(async (category: keyof NotificationPreferences) => {
     if (!uid || category === 'payment' || category === 'verification' || category === 'security' || savingPreference) return;
@@ -149,8 +175,9 @@ export default function NotificationsScreen() {
           <ChevronLeft size={22} color={Colors.textPrimary} />
         </Pressable>
         <Text accessibilityRole="header" style={styles.title}>{t('notifications')}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel={t('mark_all_read')} onPress={markAll} style={styles.iconButton} disabled={!unreadCount}>
+        <Pressable testID="notifications-mark-all" accessibilityRole="button" accessibilityLabel={t('mark_all_read')} onPress={markAll} style={styles.markAllButton} disabled={!unreadCount || mutationBusy}>
           <CheckCheck size={22} color={unreadCount ? Colors.gold : Colors.textMuted} />
+          <Text style={[styles.markAllText, !unreadCount && styles.markAllTextDisabled]}>{t('mark_all_read')}</Text>
         </Pressable>
       </View>
       <View style={[styles.preferenceBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -194,7 +221,7 @@ export default function NotificationsScreen() {
                 accessibilityRole="button"
                 accessibilityLabel={`${localizedText(item.titleAr, item.titleEn)}${item.read ? '' : `, ${t('unread')}`}`}
                 accessibilityState={{ busy: openingId === item.id, selected: !item.read }}
-                disabled={openingId !== null}
+                disabled={openingId !== null || mutationBusy}
                 onPress={() => void openItem(item)}
                 style={[styles.card, !item.read && styles.unreadCard, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
               >
@@ -228,7 +255,7 @@ const styles = StyleSheet.create({
   list: { padding: 16, gap: 10 },
   emptyList: { flexGrow: 1 },
   card: { minHeight: 92, alignItems: 'center', gap: 10, padding: 14, borderRadius: 14, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border },
-  unreadCard: { borderColor: Colors.gold },
+  unreadCard: { borderColor: Colors.gold, backgroundColor: Colors.surfaceLight },
   dot: { width: 14, height: 14, alignItems: 'center', justifyContent: 'center' },
   dotInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.gold },
   copy: { flex: 1 },
@@ -240,5 +267,8 @@ const styles = StyleSheet.create({
   error: { color: Colors.error, textAlign: 'center' },
   retry: { minHeight: 44, paddingHorizontal: 18, borderRadius: 10, backgroundColor: Colors.gold, flexDirection: 'row', gap: 8, alignItems: 'center' },
   retryText: { color: Colors.primary, fontWeight: '700' },
+  markAllButton: { minHeight: 44, maxWidth: 150, flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'flex-end' },
+  markAllText: { color: Colors.gold, fontSize: 12, fontWeight: '700' },
+  markAllTextDisabled: { color: Colors.textMuted },
   inlineError: { color: Colors.error, textAlign: 'center', padding: 8 },
 });

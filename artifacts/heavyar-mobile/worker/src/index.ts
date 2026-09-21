@@ -15,6 +15,7 @@ import { hash } from './early-access-model';
 import { evaluateCanonicalCompleteness, isOperationallyBlocked, isSecuritySuspended, isStoreReviewAccount } from './integrity';
 import { reviewEquipmentProjection, searchPublicEquipment, type FirestoreQuery, type EquipmentSearchRow } from './equipment-search';
 import { activeInterval, buildFinalPaymentHandoff, calculateRental, estimateRental, intervalsOverlap, legacyMarketProjection, legacyPricingProjection, marketForCountry, parseV2RequestInput, rateFor, validateListingPricing, validateServerStart, v2TransitionAllowed, type V2RequestInput } from './rental-v2';
+import { mutationDiagnosticEvent, mutationRoute, responseErrorCode, type MutationDiagnostics, type MutationStage } from './observability';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -28,24 +29,12 @@ export interface Env {
   SEO_PUBLIC_KV?: KVNamespace;
   VERIFICATION_RETENTION_DAYS?: string;
   FIREBASE_MESSAGING_SENDER_ID?: string;
+  RELEASE_VERSION?: string;
+  CF_VERSION_METADATA?: { id?: string; tag?: string };
   __executionCtx?: { waitUntil(promise: Promise<unknown>): void };
-  __diagnostics?: RequestDiagnostics;
+  __diagnostics?: MutationDiagnostics;
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; roleProfileRaw?: { data: any; updateTime?: string } | null };
-type RequestDiagnostics = {
-  requestId: string;
-  startedAt: number;
-  firestoreReads: number;
-  firestoreWrites: number;
-  firestoreRequests: number;
-  firestoreDurationMs: number;
-  firestoreLastOperation?: string;
-  firestoreFailure?: { operation: string; status: number; code?: string };
-  upstreamDurationMs: number;
-  upstream?: { service: string; operation: string; status: number; ok: boolean };
-  cas?: 'not_used' | 'succeeded' | 'conflict' | 'failed';
-  quota: { checked: boolean; blocked: boolean; exhausted: boolean };
-};
 let authOverride: User | undefined;
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let assetOwnedOverride: boolean | undefined;
@@ -75,8 +64,7 @@ const cors = (env: Env, origin: string | null) => {
   return { 'Access-Control-Allow-Origin': allow.includes(origin || '') || trustedExpoPreview ? origin! : 'null', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Correlation-ID', 'Access-Control-Expose-Headers': 'X-Request-ID', Vary: 'Origin' };
 };
 function importantMutation(req: Request): boolean {
-  const path = new URL(req.url).pathname;
-  return req.method !== 'GET' && (path === '/api/listings' || path === '/api/drivers/profile' || path === '/cloudinary/upload' || path === '/cloudinary/delete');
+  return mutationRoute(req) !== undefined;
 }
 function diagnosticOperation(req: Request): boolean {
   return importantMutation(req) || (req.method === 'GET' && new URL(req.url).pathname === '/api/equipment/search');
@@ -84,35 +72,32 @@ function diagnosticOperation(req: Request): boolean {
 function out(env: Env, req: Request, value: unknown, status = 200) {
   const diagnostics = env.__diagnostics;
   let body = value;
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
   if (diagnostics && importantMutation(req) && status >= 400 && value && typeof value === 'object' && !Array.isArray(value)) {
-    const source = value as Record<string, unknown>;
-    body = { ...source, errorCode: typeof source.errorCode === 'string' ? source.errorCode : typeof source.code === 'string' ? source.code : status >= 500 ? 'INTERNAL_SERVICE_ERROR' : 'REQUEST_FAILED', requestId: diagnostics.requestId, supportCode: diagnostics.requestId };
+    const code = responseErrorCode(source?.errorCode ?? source?.code ?? source?.error, status);
+    body = { ...source, errorCode: code, requestId: diagnostics.requestId, supportCode: diagnostics.requestId, stage: diagnostics.stage };
   }
   const response = new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...cors(env, req.headers.get('Origin')) } });
   if (diagnostics) response.headers.set('X-Request-ID', diagnostics.requestId);
   if (diagnostics && diagnosticOperation(req)) {
-    console.log(JSON.stringify({
-      event: importantMutation(req) ? 'important_mutation' : 'public_equipment_search',
+    const event = mutationDiagnosticEvent(req, diagnostics, status, source?.errorCode ?? source?.code ?? source?.error, env.RELEASE_VERSION || env.CF_VERSION_METADATA?.tag || env.CF_VERSION_METADATA?.id);
+    if (event) console.log(JSON.stringify(event));
+    else console.log(JSON.stringify({
+      event: 'public_equipment_search',
       requestId: diagnostics.requestId,
+      route: '/api/equipment/search',
       method: req.method,
-      path: new URL(req.url).pathname,
       status,
       durationMs: Date.now() - diagnostics.startedAt,
-      firestore: {
-        reads: diagnostics.firestoreReads,
-        writes: diagnostics.firestoreWrites,
-        requests: diagnostics.firestoreRequests,
-        durationMs: diagnostics.firestoreDurationMs,
-        lastOperation: diagnostics.firestoreLastOperation,
-        failure: diagnostics.firestoreFailure,
-      },
-      upstream: diagnostics.upstream,
-      upstreamDurationMs: diagnostics.upstreamDurationMs,
-      cas: diagnostics.cas || 'not_used',
-      quota: diagnostics.quota,
+      firestoreRequestCount: diagnostics.firestoreRequests,
+      firestoreReadCount: diagnostics.firestoreReads,
+      firestoreDurationMs: diagnostics.firestoreDurationMs,
     }));
   }
   return response;
+}
+function mutationStage(env: Env, stage: MutationStage) {
+  if (env.__diagnostics) env.__diagnostics.stage = stage;
 }
 const err = (message: string): never => { throw new Error(message); };
 const authErr = (): never => { throw new Error('AUTH_REQUIRED'); };
@@ -245,6 +230,11 @@ async function fs(env: Env, path: string, init?: RequestInit): Promise<any> {
   diagnostics && (diagnostics.firestoreRequests += 1);
   diagnostics && (diagnostics.firestoreLastOperation = operation);
   if (diagnostics) {
+    if (path === ':commit') {
+      try { diagnostics.firestoreWriteAttempts += (JSON.parse(String(init?.body || '{}')).writes || []).length; } catch { /* malformed calls remain visible through the request count */ }
+    } else if (method === 'PATCH' || method === 'DELETE') diagnostics.firestoreWriteAttempts += 1;
+  }
+  if (diagnostics) {
     diagnostics.quota.checked = true;
     diagnostics.quota.blocked ||= quotaBlocked();
   }
@@ -253,6 +243,7 @@ async function fs(env: Env, path: string, init?: RequestInit): Promise<any> {
     r = await quotaFetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${await googleToken(env)}`, 'Content-Type': 'application/json', ...(init?.headers || {}) } });
   } catch (error) {
     if (diagnostics && isQuotaError(error)) diagnostics.quota.exhausted = true;
+    if (diagnostics && !diagnostics.firestoreFailure) diagnostics.firestoreFailure = { operation, status: 0 };
     throw error;
   } finally {
     if (diagnostics) diagnostics.firestoreDurationMs += Date.now() - startedAt;
@@ -2330,6 +2321,7 @@ async function tapWebhook(req: Request, env: Env) {
   return out(env, req, { success: true, paymentId: chargeId, paymentState: state, canonicalStatus: state, status: state, providerStatus: d.status, chargeId, requestId, amount: d.amount, currency: d.currency });
 }
 async function removeAsset(req: Request, env: Env, u: User) {
+  mutationStage(env, 'validation');
   const { publicId } = await req.json() as { publicId?: string }; if (!publicId || typeof publicId !== 'string' || publicId.length > 512) return out(env, req, { success: false, error: 'Invalid asset', errorCode: 'ASSET_INVALID' }, 400);
   const folder = env.CLOUDINARY_FOLDER || 'heavyar';
   if (!u.admin && !publicId.startsWith(`${folder}/${u.uid}/`)) return out(env, req, { success: false, error: 'Asset ownership could not be verified', errorCode: 'ASSET_NOT_OWNED' }, 403);
@@ -2337,10 +2329,23 @@ async function removeAsset(req: Request, env: Env, u: User) {
   const timestamp = String(Math.floor(Date.now() / 1000)), digest = await crypto.subtle.digest('SHA-1', enc.encode(`public_id=${publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`));
   const hex = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join(''), form = new FormData();
   form.append('public_id', publicId); form.append('timestamp', timestamp); form.append('api_key', env.CLOUDINARY_API_KEY); form.append('signature', hex);
-  const r = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`, { method: 'POST', body: form });
+  mutationStage(env, 'upload');
+  const upstreamStartedAt = Date.now();
+  let r: Response;
+  try {
+    r = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`, { method: 'POST', body: form });
+    if (env.__diagnostics) env.__diagnostics.upstream = { service: 'cloudinary', operation: 'image_delete', status: r.status, ok: r.ok };
+  } catch (error) {
+    if (env.__diagnostics) env.__diagnostics.upstream = { service: 'cloudinary', operation: 'image_delete', status: 0, ok: false };
+    throw error;
+  } finally {
+    if (env.__diagnostics) env.__diagnostics.upstreamDurationMs += Date.now() - upstreamStartedAt;
+  }
+  if (r.ok) mutationStage(env, 'response');
   return out(env, req, { success: r.ok, ...(r.ok ? {} : { errorCode: 'CLOUDINARY_DELETE_FAILED' }) }, r.ok ? 200 : 502);
 }
 async function cloudinaryUpload(req: Request, env: Env, u: User) {
+  mutationStage(env, 'validation');
   if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return out(env, req, { success: false, error: 'Asset service unavailable', errorCode: 'ASSET_SERVICE_UNAVAILABLE' }, 503);
   const declaredLength = Number(req.headers.get('Content-Length') || 0);
   if (!declaredLength || declaredLength > 10 * 1024 * 1024 + 65536) return out(env, req, { success: false, error: 'Upload too large' }, 413);
@@ -2353,6 +2358,7 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
     return out(env, req, { success: false, error: 'Complete your account setup before uploading media.', errorCode: 'PROFILE_REQUIRED' }, 409);
   }
   const now = Date.now(), windowStart = new Date(Math.floor(now / 60000) * 60000).toISOString(), ratePath = `cloudinaryUploadRates/${encodeURIComponent(u.uid)}`;
+  mutationStage(env, 'quota');
   const rate = await getRawDoc(env, 'cloudinaryUploadRates', u.uid);
   const count = rate?.data?.windowStart === windowStart ? Number(rate.data.count || 0) : 0;
   if (count >= 10) return out(env, req, { success: false, error: 'RATE_LIMITED' }, 429);
@@ -2361,6 +2367,7 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
     if (rate?.updateTime) await compareAndSwap(env, ratePath, rate.updateTime, rateFields);
     else await createDoc(env, ratePath, rateFields);
   } catch { return out(env, req, { success: false, error: 'RATE_LIMITED' }, 429); }
+  mutationStage(env, 'validation');
   const form: any = await req.formData().catch(() => null), file = form?.get('file');
   if (!(file instanceof Blob)) return out(env, req, { success: false, error: 'File required' }, 400);
   const mime = String(file.type || '').toLowerCase();
@@ -2370,15 +2377,21 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
   const digest = await crypto.subtle.digest('SHA-1', enc.encode(`folder=${folder}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`));
   const signature = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join('');
   const upload = new FormData(); upload.append('file', file); upload.append('folder', folder); upload.append('timestamp', timestamp); upload.append('api_key', env.CLOUDINARY_API_KEY); upload.append('signature', signature);
+  mutationStage(env, 'upload');
   const upstreamStartedAt = Date.now();
-  const response = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/upload`, { method: 'POST', body: upload });
-  if (env.__diagnostics) {
-    const duration = Date.now() - upstreamStartedAt;
-    env.__diagnostics.upstreamDurationMs += duration;
-    env.__diagnostics.upstream = { service: 'cloudinary', operation: 'image_upload', status: response.status, ok: response.ok };
+  let response: Response;
+  try {
+    response = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/upload`, { method: 'POST', body: upload });
+    if (env.__diagnostics) env.__diagnostics.upstream = { service: 'cloudinary', operation: 'image_upload', status: response.status, ok: response.ok };
+  } catch (error) {
+    if (env.__diagnostics) env.__diagnostics.upstream = { service: 'cloudinary', operation: 'image_upload', status: 0, ok: false };
+    throw error;
+  } finally {
+    if (env.__diagnostics) env.__diagnostics.upstreamDurationMs += Date.now() - upstreamStartedAt;
   }
   const result: any = await response.json().catch(() => ({}));
-  if (!response.ok || typeof result.public_id !== 'string' || typeof result.secure_url !== 'string' || !result.public_id.startsWith(`${folder}/`)) return out(env, req, { success: false, error: 'Upload failed' }, 502);
+  if (!response.ok || typeof result.public_id !== 'string' || typeof result.secure_url !== 'string' || !result.public_id.startsWith(`${folder}/`)) return out(env, req, { success: false, error: 'Upload failed', errorCode: 'CLOUDINARY_UPLOAD_FAILED' }, 502);
+  mutationStage(env, 'response');
   return out(env, req, { success: true, url: result.secure_url, publicId: result.public_id });
 }
 export const DEFAULT_AUTH_CONFIG = Object.freeze({
@@ -2896,6 +2909,7 @@ async function equipmentSearch(req: Request, env: Env) {
   return out(env, req, result.body, result.status);
 }
 async function listingCreate(req: Request, env: Env, u: User) {
+  mutationStage(env, 'validation');
   if (!await allowAuthenticatedMutation(u.uid, 'listing_create')) return out(env, req, { success: false, error: 'Too many listing submissions', errorCode: 'RATE_LIMITED' }, 429);
   try { await enforceEmailVerified(env, u, 'listing'); } catch (error) { if (error instanceof Error && error.message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403); throw error; }
   const profile = u.accountProfile || await getDoc(env, 'users', u.uid);
@@ -2947,10 +2961,13 @@ async function listingCreate(req: Request, env: Env, u: User) {
   const writes: any[] = [
     { update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:create`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: 'create' }, reason: { stringValue: publicationReason }, automated: { booleanValue: true }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
   ];
+  mutationStage(env, 'commit');
   const publicEquipmentNumber = await createWithPublicIdentifier(env, 'equipment', `equipment/${id}`, value, writes);
+  mutationStage(env, 'response');
   return out(env, req, { success: true, id, listing: { id, ...value, publicEquipmentNumber, ...(v2 ? {} : { dailyPrice }) } }, 201);
 }
 async function listingUpdate(req: Request, env: Env, u: User, id: string) {
+  mutationStage(env, 'validation');
   const raw = await getRawDoc(env, 'equipment', id);
   if (!raw?.data || raw.data.ownerUid !== u.uid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
   if (raw.data.visibility === 'archived') return out(env, req, { success: false, error: 'Listing is archived' }, 409);
@@ -2998,10 +3015,13 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
     patch.reviewedAt = null;
   }
   const fields = Object.fromEntries(Object.entries({ ...patch, updatedAt: new Date().toISOString() }).map(([k, v]) => [k, firestoreValue(v)]));
+  mutationStage(env, 'commit');
   try { await compareAndSwap(env, `equipment/${encodeURIComponent(id)}`, raw.updateTime!, fields); } catch { return out(env, req, { success: false, error: 'LISTING_UPDATE_CONFLICT' }, 409); }
+  mutationStage(env, 'response');
   return out(env, req, { success: true, listingId: id, listing: { ...raw.data, ...patch } });
 }
 async function listingLifecycle(req: Request, env: Env, u: User, id: string, archive: boolean) {
+  mutationStage(env, 'validation');
   const raw = await getRawDoc(env, 'equipment', id);
   if (!raw?.data || raw.data.ownerUid !== u.uid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 101 } }) });
@@ -3015,7 +3035,9 @@ async function listingLifecycle(req: Request, env: Env, u: User, id: string, arc
     ? [{ update: { name: fullName(env, `equipment/${encodeURIComponent(id)}`), fields: { isActive: { booleanValue: false }, visibility: { stringValue: 'archived' }, archivedAt: { timestampValue: now }, archivedBy: { stringValue: u.uid }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['isActive', 'visibility', 'archivedAt', 'archivedBy', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } }]
     : [{ delete: fullName(env, `equipment/${encodeURIComponent(id)}`), currentDocument: { updateTime: raw.updateTime } }];
   writes.push({ update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:${Date.now()}`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: archive || history ? 'archive' : 'delete' }, reason: { stringValue: archive ? 'owner_archive' : 'owner_delete' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } });
+  mutationStage(env, 'commit');
   try { await commitWrites(env, writes); } catch { return out(env, req, { success: false, error: 'LISTING_LIFECYCLE_CONFLICT' }, 409); }
+  mutationStage(env, 'response');
   return out(env, req, { success: true, listingId: id, action: archive || history ? 'archived' : 'deleted', preservedRentalHistory: history });
 }
 async function availabilityCheck(req: Request, env: Env, u: User, id: string) {
@@ -3160,6 +3182,7 @@ async function ownerDriverProfile(env: Env, uid: string, profile: any) {
 }
 
 async function driverProfile(req: Request, env: Env, u: User) {
+  if (req.method !== 'GET') mutationStage(env, 'validation');
   const id = u.uid, raw = u.roleProfileRaw === undefined ? await getRawDoc(env, 'driverProfiles', id) : u.roleProfileRaw;
   const account = u.accountProfile || await getDoc(env, 'users', id);
   if (!u.admin && account?.role !== 'driver') return out(env, req, { success: false, error: 'Driver profile unavailable for this account' }, 403);
@@ -3200,6 +3223,7 @@ async function driverProfile(req: Request, env: Env, u: User) {
     ...patch,
     updatedAt: new Date().toISOString(),
   }).map(([k, v]) => [k, firestoreValue(v)]));
+  mutationStage(env, 'commit');
   try {
     if (raw) await compareAndSwap(env, `driverProfiles/${encodeURIComponent(id)}`, raw.updateTime!, fields);
     else await createDoc(env, `driverProfiles/${encodeURIComponent(id)}`, fields);
@@ -3207,6 +3231,7 @@ async function driverProfile(req: Request, env: Env, u: User) {
     if (String(error).includes('precondition')) return out(env, req, { success: false, error: 'Driver profile changed; refresh and retry' }, 409);
     throw error;
   }
+  mutationStage(env, 'response');
   return out(env, req, { success: true, profile: await ownerDriverProfile(env, id, { ...raw?.data, ...patch, publicId: await canonicalDriverPublicId(id), active: raw?.data?.active === true && raw?.data?.moderationStatus === 'approved', moderationStatus: raw?.data?.moderationStatus || 'pending_review' }) });
 }
 async function driverSearch(req: Request, env: Env) {
@@ -3380,8 +3405,10 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
   env = { ...env, __executionCtx: executionCtx, __diagnostics: {
     requestId: crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase(),
     startedAt: Date.now(),
+    stage: 'authentication',
     firestoreReads: 0,
     firestoreWrites: 0,
+    firestoreWriteAttempts: 0,
     firestoreRequests: 0,
     firestoreDurationMs: 0,
     upstreamDurationMs: 0,
@@ -3526,6 +3553,17 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (path === '/cloudinary/upload' && req.method === 'POST') return await cloudinaryUpload(req, env, await authenticatedUser(req, env));
     return out(env, req, { success: false, error: 'Not found' }, 404);
   } catch (e) {
+    if (env.__diagnostics) {
+      env.__diagnostics.exceptionClass = isQuotaError(e)
+        ? 'QuotaError'
+        : e instanceof AdminDocumentUnavailableError
+          ? 'AdminDocumentUnavailableError'
+          : e instanceof TypeError
+            ? 'TypeError'
+            : e instanceof Error
+              ? 'Error'
+              : undefined;
+    }
     if (isQuotaError(e)) {
       const quota = quotaResponse(req, e);
       if (importantMutation(req)) {

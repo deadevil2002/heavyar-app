@@ -3,13 +3,17 @@ import type { QueryClient } from '@tanstack/react-query';
 export const NOTIFICATION_UNREAD_STALE_MS = 120_000;
 export const notificationUnreadKey = (uid: string) => ['notification-unread', uid] as const;
 
-type Listener = (uid: string) => void;
+export type NotificationUnreadChange =
+  | { uid: string; type: 'replace'; unreadCount: number }
+  | { uid: string; type: 'invalidate' };
+type Listener = (change: NotificationUnreadChange) => void;
 const listeners = new Set<Listener>();
 
 // Carries the identity captured before the write, never the current account
-// after it completes. Failed writes must not publish an unread change.
-export function publishNotificationRead(uid: string) {
-  listeners.forEach(listener => listener(uid));
+// after it completes. Successful known mutations patch the shared cache
+// directly; only an indeterminate partial operation needs another count read.
+export function publishNotificationRead(change: NotificationUnreadChange) {
+  listeners.forEach(listener => listener(change));
 }
 
 export function subscribeNotificationReads(listener: Listener) {
@@ -27,8 +31,14 @@ export function retainNotificationUnread(client: QueryClient, uid: string) {
   if (!entry) {
     entry = {
       users: 0,
-      unsubscribe: subscribeNotificationReads(changedUid => {
-        if (changedUid === uid) void client.invalidateQueries({ queryKey: notificationUnreadKey(uid), exact: true });
+      unsubscribe: subscribeNotificationReads(change => {
+        if (change.uid !== uid) return;
+        const queryKey = notificationUnreadKey(uid);
+        if (change.type === 'replace') {
+          client.setQueryData(queryKey, change.unreadCount);
+        } else {
+          void client.invalidateQueries({ queryKey, exact: true });
+        }
       }),
     };
     identities.set(uid, entry);

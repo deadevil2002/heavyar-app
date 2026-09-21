@@ -9,9 +9,11 @@ describe('unified role requests', () => {
   it('resolves canonical and legacy sections without granting cross-role equipment access', () => {
     expect(DRIVER_REQUESTS_ROUTE).toEqual({ pathname: '/(tabs)/requests', params: { section: 'drivers' } });
     expect(requestSections('driver')).toEqual(['drivers']);
+    expect(requestSections('provider', 'store_review')).toEqual(['equipment', 'active']);
     expect(resolveRequestSection('driver', 'equipment')).toBe('drivers');
     expect(resolveRequestSection('provider', undefined, 'active')).toBe('active');
     expect(resolveRequestSection('provider', 'drivers')).toBe('drivers');
+    expect(resolveRequestSection('provider', 'drivers', undefined, 'store_review')).toBe('equipment');
     expect(resolveRequestSection('customer', 'invalid')).toBe('equipment');
     expect(requestSections()).toEqual([]);
     expect(canAccessRolePath('provider', '/driver/requests')).toBe(true);
@@ -21,6 +23,17 @@ describe('unified role requests', () => {
       expect(canAccessRolePath(role, '/notifications')).toBe(true);
       expect(driverRequestsAllowed({ uid: 'review', role, accountPurpose: 'store_review' })).toBe(false);
     }
+  });
+
+  it('hides Store Review driver-request entry points while retaining deep-link explanation', () => {
+    const home = readFileSync(new URL('../app/(tabs)/(home)/index.tsx', import.meta.url), 'utf8');
+    const requests = readFileSync(new URL('../app/(tabs)/requests/index.tsx', import.meta.url), 'utf8');
+    const driverProfile = readFileSync(new URL('../app/driver-profile.tsx', import.meta.url), 'utf8');
+    expect(home).toContain('provider && canUseDriverRequests');
+    expect(home).toContain("user?.accountPurpose !== 'store_review'");
+    expect(requests).toContain('restrictedDriverDeepLink');
+    expect(requests).toContain('Driver requests are unavailable for this Store Review account.');
+    expect(driverProfile).toContain('driverRequestsAllowed(user)');
   });
 
   it('makes one entry call, zero timer calls over30s, reuses fresh focus and refetches stale focus; isolates roles/UIDs', async () => {

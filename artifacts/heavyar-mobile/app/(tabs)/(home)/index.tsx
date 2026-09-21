@@ -20,6 +20,7 @@ import type { Equipment } from '@/types';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
 import { useNotificationUnread } from '@/hooks/useNotificationUnread';
+import { driverRequestsAllowed } from '@/services/requestSections';
 
 export default function HomeScreen() {
   const auth = useAuth();
@@ -43,6 +44,7 @@ function OperationsHome() {
   const { isRTL, t, localizedText } = useLanguage();
   const router = useRouter();
   const provider = user?.role === 'provider';
+  const canUseDriverRequests = driverRequestsAllowed(user);
   return <View style={styles.container}><SafeAreaView edges={['top']} style={styles.safeArea}>
     <ScrollView>
       <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -66,7 +68,7 @@ function OperationsHome() {
           {!provider && <Pressable style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}><Inbox color={Colors.gold} /><Text style={styles.providerActionText}>{t('my_requests')}</Text></Pressable>}
         </View>
       </View>
-      {provider && <View style={styles.driverCtaContainer}>
+      {provider && canUseDriverRequests && <View style={styles.driverCtaContainer}>
         <Text style={styles.driverCtaTitle}>{isRTL ? 'تحتاج إلى سائق معدات؟' : 'Need an equipment driver?'}</Text>
         <View style={[styles.driverCtaActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
           <Pressable style={styles.driverCtaButton} onPress={() => router.push('/(tabs)/search?mode=drivers')}><Text style={styles.driverCtaButtonText}>{isRTL ? 'البحث عن سائق' : 'Find Driver'}</Text></Pressable>
@@ -192,7 +194,7 @@ function MarketplaceHome() {
             </>}
           </View>
 
-          <View style={styles.driverCtaContainer}>
+          {user?.accountPurpose !== 'store_review' && <View style={styles.driverCtaContainer}>
             <View style={[styles.driverCtaTextContainer, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
               <Text style={[styles.driverCtaTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'تحتاج سائق معدات؟' : 'Need an equipment driver?'}</Text>
               <Text style={[styles.driverCtaSubtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'ابحث عن سائق مناسب لمعدتك' : 'Find the right driver for your equipment'}</Text>
@@ -207,7 +209,7 @@ function MarketplaceHome() {
                 </Pressable>
               )}
             </View>
-          </View>
+          </View>}
 
           <View style={[styles.sectionHeader, styles.section, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <Text style={styles.sectionTitle}>{t('all_equipment')}</Text>

@@ -177,6 +177,7 @@ describe('trusted notification foundation', () => {
       : collection === 'users' ? completeCustomer('owner-2') : null);
     const response = await worker.fetch(request('/cloudinary/upload', { method: 'POST', body: '{}', headers: { 'Content-Length': '100' } }), { ...env, CLOUDINARY_CLOUD_NAME: 'cloud', CLOUDINARY_API_KEY: 'public', CLOUDINARY_API_SECRET: 'secret' });
     expect(response.status).toBe(429);
+    expect((await response.json() as any).errorCode).toBe('RATE_LIMITED');
   });
   test('upload proxy accepts only bounded allowlisted multipart images and returns canonical DTO', async () => {
     __test.setAuth({ uid: 'u-upload', admin: false });

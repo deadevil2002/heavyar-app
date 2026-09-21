@@ -15,7 +15,8 @@ import { createListing } from '@/services/workerClient';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { preferredDisplayCurrency } from '@/services/currency';
-import { safeErrorMessage } from '@/services/errorMessages';
+import { safePublishErrorMessage } from '@/services/errorMessages';
+import { publishFailureStage } from '@/services/mutationError';
 import ListingPricingFields from '@/components/ListingPricingFields';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import {
@@ -95,10 +96,34 @@ function AddEquipmentForm({ auth, activeUid }: {
   const { user, isAuthenticated, requiresEmailVerification } = auth;
   const mounted = useRef(true);
   const publishingRef = useRef(false);
+  const publishTotalMeasurement = useRef<ReturnType<typeof mobilePerformance.startOperation> | null>(null);
+  const publishUiMeasurement = useRef<ReturnType<typeof mobilePerformance.startOperation> | null>(null);
+  const publishLagStop = useRef<(() => void) | null>(null);
+  const pendingPublishOutcome = useRef<{ failed: boolean } | null>(null);
   useLayoutEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    return () => {
+      mounted.current = false;
+      pendingPublishOutcome.current = null;
+      publishTotalMeasurement.current?.cancel();
+      publishUiMeasurement.current?.cancel();
+      publishLagStop.current?.();
+      publishTotalMeasurement.current = null;
+      publishUiMeasurement.current = null;
+      publishLagStop.current = null;
+    };
   }, []);
+  useLayoutEffect(() => {
+    const outcome = pendingPublishOutcome.current;
+    if (!outcome) return;
+    pendingPublishOutcome.current = null;
+    publishUiMeasurement.current?.complete(outcome.failed);
+    publishUiMeasurement.current = null;
+    publishTotalMeasurement.current?.complete(outcome.failed);
+    publishTotalMeasurement.current = null;
+    publishLagStop.current?.();
+    publishLagStop.current = null;
+  });
   const ownsDraft = useCallback(() => mounted.current && !!user?.uid && activeUid.current === user.uid, [activeUid, user?.uid]);
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
@@ -136,6 +161,7 @@ function AddEquipmentForm({ auth, activeUid }: {
   const [_uploading, setUploading] = useState<boolean>(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
   const [publishing, setPublishing] = useState<boolean>(false);
+  if (publishing) mobilePerformance.countRender('publish.render');
 
   const isProvider = user?.role === 'provider';
 
@@ -164,30 +190,57 @@ function AddEquipmentForm({ auth, activeUid }: {
 
   const handlePublish = useCallback(async () => {
     if (!user || !ownsDraft() || publishingRef.current) return;
+    const totalMeasurement = mobilePerformance.startOperation('publish.total');
+    const stopLagMonitor = mobilePerformance.startEventLoopLagMonitor({ label: 'publish.js_event_loop' });
+    publishTotalMeasurement.current = totalMeasurement;
+    publishLagStop.current = stopLagMonitor;
+    let measurementFinished = false;
+    let outcomeScheduled = false;
+    const finishMeasurement = (failed: boolean) => {
+      if (measurementFinished) return;
+      measurementFinished = true;
+      totalMeasurement.complete(failed);
+      stopLagMonitor();
+      publishTotalMeasurement.current = null;
+      publishLagStop.current = null;
+    };
+    const validationMeasurement = mobilePerformance.startOperation('publish.media_validation');
     if (requiresEmailVerification('listing')) {
+      validationMeasurement.complete(true);
+      finishMeasurement(true);
       showDialog(t('email_verification_required_title'), t('email_verification_required_listing'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
 
     if (!titleAr.trim()) {
+      validationMeasurement.complete(true);
+      finishMeasurement(true);
       showDialog(t('validation_error'), t('validation_title_ar_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (!category) {
+      validationMeasurement.complete(true);
+      finishMeasurement(true);
       showDialog(t('validation_error'), t('validation_category_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (category === 'other' && !customCategory.trim()) {
+      validationMeasurement.complete(true);
+      finishMeasurement(true);
       showDialog(t('validation_error'), 'يرجى إدخال اسم الفئة', [{ text: t('ok'), style: 'default' }]);
       return;
     }
     if (!city && !customCity.trim()) {
+      validationMeasurement.complete(true);
+      finishMeasurement(true);
       showDialog(t('validation_error'), t('validation_city_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
     const currency = user.nativeCurrency || 'SAR';
     const pricingResult = buildListingPricing(pricingDraft.current, currency);
     if (!pricingResult.ok) {
+      validationMeasurement.complete(true);
+      finishMeasurement(true);
       const message = pricingResult.reason === 'RATE_REQUIRED'
         ? (isRTL ? 'فعّل سعراً واحداً على الأقل.' : 'Enable at least one rental rate.')
         : (isRTL ? 'أدخل سعراً موجباً صالحاً بدقة العملة المحددة.' : 'Enter a valid positive rate using the currency precision shown.');
@@ -195,9 +248,12 @@ function AddEquipmentForm({ auth, activeUid }: {
       return;
     }
     if (images.length === 0) {
+      validationMeasurement.complete(true);
+      finishMeasurement(true);
       showDialog(t('validation_error'), t('validation_images_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
+    validationMeasurement.complete();
     // Lock synchronously; a second press can arrive before React commits.
     publishingRef.current = true;
     const submitUid = user.uid;
@@ -210,20 +266,32 @@ function AddEquipmentForm({ auth, activeUid }: {
     let listingCommitted = false;
     try {
       if (!isCurrentSubmission()) return;
-      uploadedImages = await uploadMultipleImages(
-        images,
-        (completed, total) => {
-          if (!isCurrentSubmission()) return;
-          setUploadProgress(`${t('uploading_images')} ${completed}/${total}`);
-        },
-        submitUid,
+      uploadedImages = await mobilePerformance.trackOperation(
+        'publish.image_uploads',
+        () => uploadMultipleImages(
+          images,
+          (completed, total, timing) => {
+            // Includes the owned uploader's complete per-item
+            // read/validate/upload operation; it is not network-only timing.
+            if (timing && Number.isInteger(timing.index)
+              && Number.isFinite(timing.durationMs) && timing.durationMs >= 0) {
+              mobilePerformance.recordOperationDuration(
+                'publish.image_read_validate_upload',
+                timing.durationMs,
+              );
+            }
+            if (!isCurrentSubmission()) return;
+            setUploadProgress(`${t('uploading_images')} ${completed}/${total}`);
+          },
+          submitUid,
+        ),
       );
       if (!isCurrentSubmission()) return;
       setUploading(false);
       setUploadProgress(t('saving'));
 
       listingSubmitted = true;
-      await createListing({
+      await mobilePerformance.trackOperation('publish.create_listing', () => createListing({
         titleAr,
         titleEn: titleEn || titleAr,
         descriptionAr: descAr,
@@ -242,9 +310,14 @@ function AddEquipmentForm({ auth, activeUid }: {
         displayCurrency: preferredDisplayCurrency(user.countryCode, user.displayCurrency),
         images: uploadedImages,
         availability: { from: new Date().toISOString().slice(0, 10), temporarilyUnavailable: false },
-      }, submitUid);
+      }, submitUid));
       listingCommitted = true;
       if (!isCurrentSubmission()) return;
+      // useLayoutEffect closes this at the first committed React outcome. This
+      // is JS/React evidence only, not a native frame-presented timestamp.
+      publishUiMeasurement.current = mobilePerformance.startOperation('publish.success_ui_visible');
+      pendingPublishOutcome.current = { failed: false };
+      outcomeScheduled = true;
       showDialog(t('success'), '', [{ text: t('confirm'), style: 'default' }]);
       setTitleAr('');
       setTitleEn('');
@@ -262,23 +335,20 @@ function AddEquipmentForm({ auth, activeUid }: {
     } catch (e) {
       // Never issue cleanup under a different authenticated identity.
       if (!isCurrentSubmission()) return;
-      const failure = e as { code?: unknown; status?: unknown } | null;
-      const transportFailure = failure?.code === 'NETWORK_TIMEOUT' || failure?.code === 'NETWORK_UNAVAILABLE'
-        || failure?.code === 'AUTH_SESSION_CHANGED';
-      const definitiveRejection = !transportFailure && typeof failure?.status === 'number'
-        && failure.status >= 400 && failure.status < 500 && failure.status !== 408;
-      const uncertainOutcome = listingSubmitted && !listingCommitted && !definitiveRejection;
+      const stage = publishFailureStage(e, listingSubmitted, listingCommitted);
+      const definitiveRejection = stage === 'listing';
       // A lost response is not a rejected write. Never delete media that the
       // Worker may already have attached to a listing, or retry implicitly.
       if (!listingCommitted && (!listingSubmitted || definitiveRejection)) {
         await Promise.allSettled(uploadedImages.map(image => deleteCloudinaryImage(image.publicId)));
       }
       if (!isCurrentSubmission()) return;
-      const message = safeErrorMessage(e, isRTL ? 'ar' : 'en');
-      showDialog(t('error_title'), uncertainOutcome
-        ? `${message}\n${isRTL ? 'تعذر تأكيد النشر. تحقق من إعلاناتك قبل المحاولة مجددًا.' : 'Publishing could not be confirmed. Check your listings before trying again.'}`
-        : message, [{ text: t('ok'), style: 'default' }]);
+      publishUiMeasurement.current = mobilePerformance.startOperation('publish.error_ui_visible');
+      pendingPublishOutcome.current = { failed: true };
+      outcomeScheduled = true;
+      showDialog(t('error_title'), safePublishErrorMessage(e, isRTL ? 'ar' : 'en', stage), [{ text: t('ok'), style: 'default' }]);
     } finally {
+      if (!measurementFinished && !outcomeScheduled) finishMeasurement(true);
       publishingRef.current = false;
       if (isCurrentSubmission()) {
         setPublishing(false);

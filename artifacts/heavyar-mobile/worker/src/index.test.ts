@@ -1374,9 +1374,144 @@ describe('worker security boundary', () => {
     const failedBody: any = await failed.json();
     expect(failed.status).toBe(400);
     expect(failedBody.errorCode).toBe('REQUEST_FAILED');
+    expect(failedBody.stage).toBe('validation');
     expect(failedBody.requestId).toMatch(/^[A-F0-9]{10}$/);
     expect(failedBody.supportCode).toBe(failedBody.requestId);
     expect(failed.headers.get('X-Request-ID')).toBe(failedBody.requestId);
+  });
+
+  test('mutation failure diagnostics use route templates and safe canonical fields', async () => {
+    const records: string[] = [];
+    const originalLog = console.log;
+    console.log = (record?: unknown) => { records.push(String(record)); };
+    try {
+      const failed = await worker.fetch(new Request('https://worker.test/api/listings/private-listing-id?token=private-token', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Private Name', imageUrl: 'https://private.example/image.jpg' }),
+      }), { ...env, RELEASE_VERSION: 'release-2026.09.21' });
+      const body: any = await failed.json();
+      expect(failed.status).toBe(401);
+      expect(body.errorCode).toBe('AUTH_REQUIRED');
+      expect(body.stage).toBe('authentication');
+      expect(body.requestId).toBe(body.supportCode);
+
+      const event = JSON.parse(records.at(-1)!);
+      expect(event.event).toBe('important_mutation');
+      expect(event.requestId).toBe(body.requestId);
+      expect(event.route).toBe('/api/listings/:listingId');
+      expect(event.method).toBe('PATCH');
+      expect(event.status).toBe(401);
+      expect(event.canonicalErrorCode).toBe('AUTH_REQUIRED');
+      expect(event.stage).toBe('authentication');
+      expect(event.exceptionClass).toBe('Error');
+      expect(event.firestoreRequestCount).toBe(0);
+      expect(event.firestoreReadCount).toBe(0);
+      expect(event.firestoreWriteCount).toBe(0);
+      expect(event.firestoreDurationMs).toBe(0);
+      expect(event.upstreamDurationMs).toBe(0);
+      expect(event.quotaOutcome).toBe('not_checked');
+      expect(event.casOutcome).toBe('not_used');
+      expect(event.release).toBe('release-2026.09.21');
+      const serialized = JSON.stringify(event);
+      expect(serialized).not.toContain('private-listing-id');
+      expect(serialized).not.toContain('private-token');
+      expect(serialized).not.toContain('Private Name');
+      expect(serialized).not.toContain('private.example');
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
+  test('upload validation failure returns canonical JSON without consuming the response body', async () => {
+    __test.setAuth({ uid: 'provider-1', admin: false, emailVerified: true });
+    __test.setFirestore(collection => collection === 'users' ? {
+      uid: 'provider-1',
+      role: 'customer',
+      accountStatus: 'active',
+      email: 'private-provider@example.com',
+      nameEn: 'Private Provider',
+      countryCode: 'SA',
+      region: 'Riyadh',
+      city: 'Riyadh',
+    } : null);
+    const form = new FormData();
+    form.append('file', new Blob(['image'], { type: 'image/jpeg' }), 'private-name.jpg');
+    const response = await worker.fetch(new Request('https://worker.test/cloudinary/upload', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test' },
+      body: form,
+    }), {
+      ...env,
+      CLOUDINARY_CLOUD_NAME: 'cloud',
+      CLOUDINARY_API_KEY: 'key',
+      CLOUDINARY_API_SECRET: 'secret',
+    });
+    const body: any = await response.json();
+    expect(response.status).toBe(413);
+    expect(body.errorCode).toBe('REQUEST_FAILED');
+    expect(body.stage).toBe('validation');
+    expect(body.requestId).toBe(response.headers.get('X-Request-ID'));
+    expect(body.supportCode).toBe(body.requestId);
+  });
+
+  test('Cloudinary rejection is attributed to upload stage without logging media data', async () => {
+    __test.setAuth({ uid: 'provider-1', admin: false, emailVerified: true });
+    __test.setFirestore(collection => collection === 'users' ? {
+      uid: 'provider-1',
+      role: 'customer',
+      accountStatus: 'active',
+      email: 'private-provider@example.com',
+      nameEn: 'Private Provider',
+      countryCode: 'SA',
+      region: 'Riyadh',
+      city: 'Riyadh',
+    } : null);
+    __test.captureWrites([]);
+    const records: string[] = [];
+    const originalLog = console.log;
+    const originalFetch = globalThis.fetch;
+    console.log = (record?: unknown) => { records.push(String(record)); };
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'provider detail must not be logged' } }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    try {
+      const form = new FormData();
+      form.append('file', new Blob(['private-image-bytes'], { type: 'image/jpeg' }), 'private-name.jpg');
+      const response = await worker.fetch(new Request('https://worker.test/cloudinary/upload?token=private-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer test', 'Content-Length': '1024' },
+        body: form,
+      }), {
+        ...env,
+        CLOUDINARY_CLOUD_NAME: 'cloud',
+        CLOUDINARY_API_KEY: 'key',
+        CLOUDINARY_API_SECRET: 'secret',
+      });
+      const body: any = await response.json();
+      expect(response.status).toBe(502);
+      expect(body.errorCode).toBe('CLOUDINARY_UPLOAD_FAILED');
+      expect(body.stage).toBe('upload');
+      expect(body.supportCode).toBe(body.requestId);
+
+      const event = JSON.parse(records.at(-1)!);
+      expect(event.route).toBe('/cloudinary/upload');
+      expect(event.canonicalErrorCode).toBe('CLOUDINARY_UPLOAD_FAILED');
+      expect(event.stage).toBe('upload');
+      expect(event.upstream).toEqual({ service: 'cloudinary', operation: 'image_upload', status: 502, ok: false });
+      expect(event.exceptionClass).toBeUndefined();
+      const serialized = JSON.stringify(event);
+      expect(serialized).not.toContain('private-name');
+      expect(serialized).not.toContain('private-token');
+      expect(serialized).not.toContain('provider detail');
+      expect(serialized).not.toContain('private-image-bytes');
+      expect(serialized).not.toContain('private-provider@example.com');
+      expect(serialized).not.toContain('Private Provider');
+    } finally {
+      globalThis.fetch = originalFetch;
+      console.log = originalLog;
+    }
   });
 
   test('self-service invoice PDF is available only to canonical request participants', async () => {

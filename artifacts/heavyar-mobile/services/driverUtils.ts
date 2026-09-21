@@ -31,9 +31,11 @@ export function resetDriverSearchFilters(markets?: readonly MarketAvailability[]
 export function canRequestDriver(
   isAuthenticated: boolean,
   userRole?: string,
-  userStatus?: string
+  userStatus?: string,
+  accountPurpose?: string,
 ): boolean {
   if (!isAuthenticated) return false;
+  if (accountPurpose === 'store_review') return false;
   if (userRole !== 'customer' && userRole !== 'provider') return false;
   if (userStatus && userStatus !== 'active') return false;
   return true;

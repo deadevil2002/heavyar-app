@@ -18,6 +18,11 @@ Object.assign(globalThis, { window: dom.window, document: dom.window.document, I
 
 const effects = { create: vi.fn(), upload: vi.fn(), fetch: vi.fn(), deleteImage: vi.fn() };
 const renders: Record<string, number> = {};
+const profileEvents: Array<{ label: string; durationMs: number; failed: boolean }> = [];
+let lagMonitorsStarted = 0;
+let lagMonitorsStopped = 0;
+let lagEventCount = 0;
+let maxEventLoopLagMs = 0;
 let hosts: { name: string; props: any }[] = [];
 const host = (name: string) => function Host(props: any) {
   renders[name] = (renders[name] || 0) + 1;
@@ -50,7 +55,58 @@ function load(file: string): any {
     '@/services/workerClient': { createListing: effects.create },
     '@/services/cloudinaryService': { uploadMultipleImages: effects.upload, deleteCloudinaryImage: effects.deleteImage },
     '@/components/AppDialog': { __esModule: true, default: host('Dialog') },
-    '@/utils/mobilePerformance': { mobilePerformance: { countRender: (label: string) => { renders[label] = (renders[label] || 0) + 1; }, startPress: () => ({ visible() {} }) } },
+    '@/utils/mobilePerformance': { mobilePerformance: {
+      countRender: (label: string) => { renders[label] = (renders[label] || 0) + 1; },
+      startPress: () => ({ visible() {} }),
+      startOperation: (label: string) => {
+        const startedAt = performance.now();
+        let active = true;
+        return {
+          complete(failed = false) {
+            if (!active) return;
+            active = false;
+            profileEvents.push({ label, durationMs: Math.max(0, performance.now() - startedAt), failed });
+          },
+          cancel() { active = false; },
+        };
+      },
+      startEventLoopLagMonitor: () => {
+        lagMonitorsStarted++;
+        let active = true;
+        const intervalMs = 1;
+        let expectedAt = performance.now() + intervalMs;
+        const timer = setInterval(() => {
+          const now = performance.now();
+          const lagMs = Math.max(0, now - expectedAt);
+          expectedAt = now + intervalMs;
+          if (lagMs >= 5) {
+            lagEventCount++;
+            maxEventLoopLagMs = Math.max(maxEventLoopLagMs, lagMs);
+          }
+        }, intervalMs);
+        return () => {
+          if (active) {
+            clearInterval(timer);
+            lagMonitorsStopped++;
+          }
+          active = false;
+        };
+      },
+      trackOperation: async (label: string, operation: () => Promise<unknown>) => {
+        const startedAt = performance.now();
+        try {
+          const value = await operation();
+          profileEvents.push({ label, durationMs: Math.max(0, performance.now() - startedAt), failed: false });
+          return value;
+        } catch (error) {
+          profileEvents.push({ label, durationMs: Math.max(0, performance.now() - startedAt), failed: true });
+          throw error;
+        }
+      },
+      recordOperationDuration: (label: string, durationMs: number, failed = false) => {
+        profileEvents.push({ label, durationMs, failed });
+      },
+    } },
   };
   new Function('require', 'module', 'exports', output)((id: string) => {
     if (id in mocks) return mocks[id];
@@ -80,6 +136,11 @@ describe('Add Equipment local interaction isolation', () => {
     cache.clear();
     user = { ...user, uid: 'provider-a' };
     hosts = [];
+    profileEvents.length = 0;
+    lagMonitorsStarted = 0;
+    lagMonitorsStopped = 0;
+    lagEventCount = 0;
+    maxEventLoopLagMs = 0;
     Object.values(effects).forEach(fn => fn.mockClear());
     vi.stubGlobal('fetch', effects.fetch);
     const Screen = load(path.join(mobile, 'app/(tabs)/add/index.tsx')).default;
@@ -95,11 +156,18 @@ describe('Add Equipment local interaction isolation', () => {
       expect(button, text).toBeTruthy();
       hosts = [];
       Object.keys(renders).forEach(key => delete renders[key]);
-      await act(async () => {
-        const first = button!.props.onPress();
-        if (text === 'publish') await button!.props.onPress();
-        await first;
-      });
+      if (text === 'publish') {
+        let first!: Promise<void>;
+        // Flush the mounted publishing state before resolving mock network
+        // work, then flush the committed success/error outcome separately.
+        await act(() => {
+          first = button!.props.onPress();
+          void button!.props.onPress();
+        });
+        await act(async () => { await first; });
+      } else {
+        await act(async () => { await button!.props.onPress(); });
+      }
       console.info('ADD_EQUIPMENT_SELECTION', text, JSON.stringify(renders));
     };
     await pressContaining('select_category');
@@ -139,7 +207,11 @@ describe('Add Equipment local interaction isolation', () => {
     expect(effects.upload).not.toHaveBeenCalled();
     expect(effects.fetch).not.toHaveBeenCalled();
     const uploaded = [{ publicId: 'equipment/test', url: 'https://res.cloudinary.com/test/image/upload/equipment/test.jpg' }];
-    effects.upload.mockResolvedValue(uploaded);
+    effects.upload.mockImplementation(async (_uris, onProgress) => {
+      onProgress?.(1, 1, { index: 0, durationMs: 7 });
+      await new Promise(resolve => setTimeout(resolve, 1));
+      return uploaded;
+    });
     if (supportCode) effects.create.mockRejectedValue({ supportCode, code, status, message: 'private internal data' });
     else effects.create.mockResolvedValue({ id: 'test' });
     // ImagesSection is memoized, so its original handler is still live.
@@ -183,6 +255,11 @@ describe('Add Equipment local interaction isolation', () => {
     expect(effects.upload).toHaveBeenCalledTimes(1);
     expect(effects.create).toHaveBeenCalledTimes(1);
     expect(effects.upload).toHaveBeenCalledWith(['file:///local-equipment.jpg'], expect.any(Function), 'provider-a');
+    expect(profileEvents).toContainEqual({
+      label: 'publish.image_read_validate_upload',
+      durationMs: 7,
+      failed: false,
+    });
     expect(effects.create.mock.calls[0][1]).toBe('provider-a');
     expect(effects.create.mock.calls[0][0]).toMatchObject({
       titleAr: 'حفار اختبار', titleEn: 'حفار اختبار',
@@ -198,12 +275,38 @@ describe('Add Equipment local interaction isolation', () => {
     expect(dialog!.props.message).not.toContain('private internal data');
     if (ambiguous) {
       expect(effects.deleteImage).not.toHaveBeenCalled();
-      expect(dialog!.props.message).toContain('Check your listings before trying again.');
+      expect(dialog!.props.message).toContain('Publishing result could not be confirmed.');
       expect(effects.create).toHaveBeenCalledTimes(1);
     } else if (supportCode) {
+      expect(dialog!.props.message).toContain('Listing could not be published.');
       expect(effects.deleteImage).toHaveBeenCalledExactlyOnceWith('equipment/test');
     } else {
       expect(effects.deleteImage).not.toHaveBeenCalled();
+    }
+    if (code === '' || code === 'INVALID_LISTING') {
+      const total = profileEvents.find(event => event.label === 'publish.total');
+      const profile = {
+        scope: 'host React fixture with mock network',
+        outcome: code === '' ? 'success' : 'definitive-listing-failure',
+        publishingRenderCount: renders['publish.render'] || 0,
+        eventLoopLagThresholdMs: 5,
+        eventLoopLagEvents: lagEventCount,
+        maxEventLoopLagMs,
+        lagMonitorsStarted,
+        lagMonitorsStopped,
+        totalDurationMs: total?.durationMs,
+        stages: profileEvents,
+      };
+      console.info('PUBLISH_MOUNTED_FIXTURE_PROFILE', JSON.stringify(profile));
+      expect(profile.publishingRenderCount).toBeGreaterThan(0);
+      expect(profile.lagMonitorsStarted).toBe(1);
+      expect(profile.lagMonitorsStopped).toBe(1);
+      expect(profile.totalDurationMs).toBeTypeOf('number');
+      expect(profile.stages.some(event => event.label === 'publish.image_uploads')).toBe(true);
+      expect(profile.stages.some(event => event.label === 'publish.create_listing')).toBe(true);
+      expect(profile.stages.some(event => event.label === (
+        code === '' ? 'publish.success_ui_visible' : 'publish.error_ui_visible'
+      ))).toBe(true);
     }
   });
 });

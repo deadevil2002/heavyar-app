@@ -17,7 +17,7 @@ import EmptyState from '@/components/EmptyState';
 import { Equipment, EquipmentRequest } from '@/types';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import DriverRequestsSection from '@/components/DriverRequestsSection';
-import { requestSections, resolveRequestSection } from '@/services/requestSections';
+import { driverRequestsAllowed, requestSections, resolveRequestSection } from '@/services/requestSections';
 import { safeErrorMessage } from '@/services/errorMessages';
 
 export default function RequestsScreen() {
@@ -25,7 +25,8 @@ export default function RequestsScreen() {
   const { isRTL, t } = useLanguage();
   const router = useRouter();
   const { section, status } = useLocalSearchParams<{ section?: string; status?: string }>();
-  const selected = resolveRequestSection(user?.role, section, status);
+  const selected = resolveRequestSection(user?.role, section, status, user?.accountPurpose);
+  const restrictedDriverDeepLink = section === 'drivers' && !driverRequestsAllowed(user);
   const [focused, setFocused] = useState(false);
   useFocusEffect(useCallback(() => {
     setFocused(true);
@@ -36,7 +37,7 @@ export default function RequestsScreen() {
     <SafeAreaView edges={['top']} style={styles.safeArea}>
       <View style={styles.headerRow}><Text style={styles.title}>{t('my_requests')}</Text></View>
       <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', flexWrap: 'wrap' }}>
-        {requestSections(user.role).map(value => <Pressable key={value} accessibilityRole="tab"
+        {requestSections(user.role, user.accountPurpose).map(value => <Pressable key={value} accessibilityRole="tab"
           accessibilityState={{ selected: selected === value }}
           style={[styles.driverRequestsLink, selected === value && { borderColor: Colors.gold }]}
           onPress={() => router.setParams({ section: value, status: '' })}>
@@ -44,6 +45,9 @@ export default function RequestsScreen() {
             : value === 'active' ? (isRTL ? 'الإيجارات النشطة' : 'Active rentals') : (isRTL ? 'طلبات المعدات' : 'Equipment requests')}</Text>
         </Pressable>)}
       </View>
+      {restrictedDriverDeepLink ? <Text accessibilityRole="alert" style={styles.restrictedMessage}>
+        {isRTL ? 'طلبات السائقين غير متاحة لحساب مراجعة المتجر.' : 'Driver requests are unavailable for this Store Review account.'}
+      </Text> : null}
       {focused ? selected === 'drivers'
         ? <DriverRequestsSection key={`${user.uid}:${user.role}`} />
         : <EquipmentRequestsSection key={`${user.uid}:${user.role}`} activeOnly={selected === 'active'} /> : null}
@@ -255,6 +259,11 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
+  },
+  restrictedMessage: {
+    color: Colors.textSecondary,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
   },
   guestContainer: {
     marginHorizontal: 20,

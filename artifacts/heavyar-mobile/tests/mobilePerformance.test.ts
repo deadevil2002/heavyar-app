@@ -9,6 +9,8 @@ import {
   snapshotMobilePerformance,
   startEventLoopLagMonitor,
   startPressToVisible,
+  startOperation,
+  trackOperation,
   trackNetwork,
 } from '../utils/mobilePerformance';
 
@@ -61,6 +63,31 @@ describe('mobilePerformance', () => {
     expect(JSON.stringify(snapshotMobilePerformance())).not.toContain(
       'private server detail',
     );
+  });
+
+  it('measures bounded safe publish operations without metadata', async () => {
+    const total = startOperation('publish.total');
+    await trackOperation('publish.create_listing', async () => 'ok');
+    await expect(trackOperation('publish.image_uploads', async () => {
+      throw new Error('https://private.example/image.jpg?token=secret');
+    })).rejects.toThrow();
+    total.complete(true);
+
+    const snapshot = snapshotMobilePerformance();
+    expect(snapshot.metrics.find(item => item.label === 'publish.total')).toMatchObject({ count: 1, failures: 1 });
+    expect(snapshot.metrics.find(item => item.label === 'publish.create_listing')).toMatchObject({ count: 1, failures: 0 });
+    expect(snapshot.metrics.find(item => item.label === 'publish.image_uploads')).toMatchObject({ count: 1, failures: 1 });
+    expect(JSON.stringify(snapshot)).not.toContain('private.example');
+    expect(JSON.stringify(snapshot)).not.toContain('token');
+  });
+
+  it('provides controllable duration evidence for a publish stage', () => {
+    vi.useFakeTimers();
+    const stage = startOperation('publish.media_validation');
+    vi.advanceTimersByTime(25);
+    expect(stage.complete()).toBe(25);
+    expect(snapshotMobilePerformance().metrics.find(item => item.label === 'publish.media_validation'))
+      .toMatchObject({ count: 1, totalDurationMs: 25, maxDurationMs: 25 });
   });
 
   it('measures press-to-visible once and allows cancellation', () => {

@@ -72,7 +72,7 @@ export default function DriverDetailsScreen() {
       router.push('/login');
       return;
     }
-    if (!canRequestDriver(isAuthenticated, user?.role, accountStatus)) {
+    if (!canRequestDriver(isAuthenticated, user?.role, accountStatus, user?.accountPurpose)) {
       return;
     }
     router.push(`/driver/request?id=${id}`);
@@ -164,9 +164,11 @@ export default function DriverDetailsScreen() {
             <Pressable style={styles.primaryButton} onPress={handleRequest}>
               <Text style={styles.primaryButtonText}>{isRTL ? 'تسجيل الدخول لطلب السائق' : 'Sign in to Request Driver'}</Text>
             </Pressable>
-          ) : !canRequestDriver(isAuthenticated, user?.role, accountStatus) ? (
+          ) : !canRequestDriver(isAuthenticated, user?.role, accountStatus, user?.accountPurpose) ? (
              <View style={styles.disabledButton}>
-               <Text style={styles.disabledButtonText}>{isRTL ? 'لا يمكنك طلب سائق حالياً' : 'You cannot request drivers'}</Text>
+               <Text style={styles.disabledButtonText}>{user?.accountPurpose === 'store_review'
+                 ? (isRTL ? 'طلبات السائقين غير متاحة لحساب مراجعة المتجر.' : 'Driver requests are unavailable for this Store Review account.')
+                 : (isRTL ? 'لا يمكنك طلب سائق حالياً' : 'You cannot request drivers')}</Text>
              </View>
           ) : (
             <Pressable style={styles.primaryButton} onPress={handleRequest}>

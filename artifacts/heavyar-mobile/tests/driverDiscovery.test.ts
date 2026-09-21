@@ -5,9 +5,10 @@ import { canRequestDriver, formatDriverLocation, formatEquipmentCapability, getR
 import { type MarketConfig } from '../services/authService';
 import type { DriverPublicProfile } from '../services/workerClient';
 
+const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
+
 describe('Driver Discovery Logic', () => {
   it('keeps Equipment entry points and Driver request history on their canonical routes', () => {
-    const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
     expect(source('../app/(tabs)/(home)/index.tsx')).toContain("router.push('/(tabs)/search?mode=equipment')");
     expect(source('../app/(tabs)/search/index.tsx')).toContain('useDiscovery()');
     expect(source('../app/driver/request.tsx')).toContain('router.replace(DRIVER_REQUESTS_ROUTE)');
@@ -57,6 +58,18 @@ describe('Driver Discovery Logic', () => {
     it('customer and provider can request drivers if active', () => {
       expect(canRequestDriver(true, 'customer', 'active')).toBe(true);
       expect(canRequestDriver(true, 'provider', 'active')).toBe(true);
+    });
+
+    it('blocks Store Review request entry and direct-route forms', () => {
+      expect(canRequestDriver(true, 'provider', 'active', 'store_review')).toBe(false);
+      expect(canRequestDriver(true, 'customer', 'active', 'store_review')).toBe(false);
+      const details = source('../app/driver/[id].tsx');
+      const direct = source('../app/driver/request.tsx');
+      expect(details).toContain("user?.accountPurpose === 'store_review'");
+      expect(details).toContain('user?.accountPurpose)');
+      expect(direct).toContain('if (!requestAllowed)');
+      expect(direct).toContain("user?.accountPurpose !== 'store_review'");
+      expect(direct).toContain('requestAllowed ? setInterval');
     });
 
     it('blocks suspended or restricted users from requesting', () => {

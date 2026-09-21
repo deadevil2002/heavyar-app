@@ -43,6 +43,16 @@ export type NotificationPage = {
   nextPageToken?: string | null;
 };
 
+// Notification read state is monotonic. A page request that began before a
+// successful read must not turn that item unread again when its stale response
+// arrives. Refresh still replaces membership; pagination appends/deduplicates.
+export function mergeNotificationPage(current: NotificationItem[], incoming: NotificationItem[], append: boolean): NotificationItem[] {
+  const currentById = new Map(current.map(item => [item.id, item]));
+  const reconciled = incoming.map(item => currentById.get(item.id)?.read ? { ...item, read: true } : item);
+  if (!append) return reconciled;
+  return [...new Map([...current, ...reconciled].map(item => [item.id, item])).values()];
+}
+
 export type NotificationPreferences = {
   rental: boolean;
   payment: boolean;
@@ -214,35 +224,55 @@ export async function listNotifications(pageToken?: string | null, expectedUid?:
   };
 }
 
-export async function markNotificationRead(id: string, expectedUid?: string): Promise<void> {
+export async function markNotificationRead(id: string, expectedUid?: string): Promise<number> {
   if (!/^[A-Za-z0-9:_-]{3,180}$/.test(id)) throw new Error('INVALID_NOTIFICATION');
-  const uid = getFirebaseAuth().currentUser?.uid;
+  const uid = expectedUid ?? getFirebaseAuth().currentUser?.uid;
   await request(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', body: '{}' }, expectedUid);
-  if (uid) publishNotificationRead(uid);
+  // The read endpoint is intentionally idempotent and does not currently
+  // report whether the document was already read. Reconcile once with the
+  // authoritative aggregate instead of optimistically decrementing: a retry,
+  // stale cursor page, or already-read document must never double-decrement.
+  if (uid) {
+    const unreadCount = await getNotificationUnreadCount(uid);
+    publishNotificationRead({ uid, type: 'replace', unreadCount });
+    return unreadCount;
+  }
+  throw new Error('AUTH_REQUIRED');
 }
 
 export async function markAllNotificationsRead(maxPasses = 10, expectedUid?: string): Promise<{ hasMore: boolean; remainingCount: number }> {
   const uid = expectedUid ?? getFirebaseAuth().currentUser?.uid;
   let remainingCount = 0;
   let changed = false;
+  let exactResult = false;
   try {
     for (let pass = 0; pass < maxPasses; pass++) {
       if (getFirebaseAuth().currentUser?.uid !== uid) throw new Error('SESSION_EXPIRED');
       const result = await request<{ hasMore?: boolean }>('/api/notifications/read-all', { method: 'POST', body: '{}' }, uid);
       changed = true;
-      if (result.hasMore === false) return { hasMore: false, remainingCount: 0 };
+      if (result.hasMore === false) {
+        exactResult = true;
+        return { hasMore: false, remainingCount: 0 };
+      }
       // Modern bounded endpoint tells us whether another batch is needed;
       // do not aggregate on every batch in addition to cache invalidation.
       if (result.hasMore === undefined) {
         remainingCount = await getNotificationUnreadCount(uid || '');
-        if (!remainingCount) return { hasMore: false, remainingCount: 0 };
+        if (!remainingCount) {
+          exactResult = true;
+          return { hasMore: false, remainingCount: 0 };
+        }
       }
     }
     remainingCount = await getNotificationUnreadCount(uid || '');
+    exactResult = true;
     return { hasMore: remainingCount > 0, remainingCount };
   } finally {
-    // One event per operation, including partial success before a later failure.
-    if (changed && uid) publishNotificationRead(uid);
+    // One cache event per operation. Complete/known results avoid a duplicate
+    // count request; only a partial failure is invalidated for reconciliation.
+    if (changed && uid) publishNotificationRead(exactResult
+      ? { uid, type: 'replace', unreadCount: remainingCount }
+      : { uid, type: 'invalidate' });
   }
 }
 
