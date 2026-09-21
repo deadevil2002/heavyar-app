@@ -24,7 +24,9 @@ describe('equipment owner detail fallback', () => {
 
     const screen = source('../app/equipment/[id].tsx');
     expect(screen).toContain('ownerEquipmentFallbackUid(currentUser)');
-    expect(screen).toContain('fetchEquipmentByOwnerId(id, fallbackOwnerUid)');
+    expect(screen).toContain('loadRoleEquipmentDetail(id, auth');
+    expect(screen).toContain('ownerById: fetchEquipmentByOwnerId');
+    expect(screen).toContain('loadedEquipment?.key === detailKey');
     expect(screen).not.toContain('fetchEquipmentById(');
   });
 });

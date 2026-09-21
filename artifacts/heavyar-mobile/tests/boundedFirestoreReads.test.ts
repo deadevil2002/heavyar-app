@@ -58,8 +58,8 @@ describe('bounded Firestore read paths', () => {
   });
 
   it('routes Active Rentals to an actual requests status filter', () => {
-    expect(source('../app/(tabs)/(home)/index.tsx')).toContain("/(tabs)/requests?status=active");
-    expect(source('../app/(tabs)/requests/index.tsx')).toContain("status === 'active'");
+    expect(source('../app/(tabs)/(home)/index.tsx')).toContain("pathname: '/(tabs)/requests', params: { section: 'active' }");
+    expect(source('../app/(tabs)/requests/index.tsx')).toContain("activeOnly={selected === 'active'}");
   });
 
   it('uses the request public provider snapshot in the rating flow', () => {

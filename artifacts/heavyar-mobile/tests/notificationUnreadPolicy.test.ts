@@ -1,9 +1,43 @@
 import { QueryClient } from '@tanstack/react-query';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { notificationUnreadKey, NOTIFICATION_UNREAD_STALE_MS, publishNotificationRead, subscribeNotificationReads } from '../services/notificationUnreadPolicy';
+import { notificationUnreadKey, NOTIFICATION_UNREAD_STALE_MS, publishNotificationRead, subscribeNotificationReads, retainNotificationUnread } from '../services/notificationUnreadPolicy';
 
 describe('authoritative unread cache policy', () => {
+  it('shares one read invalidation and retains data when either Home or Tabs unmounts', () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const cancel = vi.spyOn(client, 'cancelQueries');
+    const releaseTabs = retainNotificationUnread(client, 'provider');
+    const releaseHome = retainNotificationUnread(client, 'provider');
+    client.setQueryData(notificationUnreadKey('provider'), 16);
+    publishNotificationRead('provider');
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    releaseHome();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(client.getQueryData(notificationUnreadKey('provider'))).toBe(16);
+    publishNotificationRead('provider');
+    expect(invalidate).toHaveBeenCalledTimes(2);
+    releaseTabs();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(client.getQueryData(notificationUnreadKey('provider'))).toBeUndefined();
+    publishNotificationRead('provider');
+    expect(invalidate).toHaveBeenCalledTimes(2);
+    client.clear();
+  });
+
+  it('isolates a new identity while prior identity still has another observer', () => {
+    const client = new QueryClient();
+    const releaseA = retainNotificationUnread(client, 'A');
+    const releaseB = retainNotificationUnread(client, 'B');
+    client.setQueryData(notificationUnreadKey('A'), 16);
+    client.setQueryData(notificationUnreadKey('B'), 2);
+    releaseA();
+    expect(client.getQueryData(notificationUnreadKey('A'))).toBeUndefined();
+    expect(client.getQueryData(notificationUnreadKey('B'))).toBe(2);
+    releaseB();
+    client.clear();
+  });
   it('keeps tabs mounted and never reads notification documents just to render the badge', () => {
     const layout = readFileSync('app/(tabs)/_layout.tsx', 'utf8');
     expect(layout).not.toMatch(/listNotifications|unmountOnBlur|key=\{.*uid/);
@@ -17,7 +51,9 @@ describe('authoritative unread cache policy', () => {
     const profile = readFileSync('app/(tabs)/profile/index.tsx', 'utf8');
     expect(profile).not.toMatch(/fetchEquipmentByOwner|tryBackfillEquipmentOwnerPublic|useFocusEffect/);
     const requests = readFileSync('app/(tabs)/requests/index.tsx', 'utf8');
-    expect(requests).not.toContain('useFocusEffect');
+    // Focus may activate the selected lazy section, but must not directly
+    // issue an unconditional network refresh.
+    expect(requests).not.toMatch(/useFocusEffect\(useCallback\(\(\) => \{[^}]*fetchUserRequests/);
     expect(requests).toContain('subscribeToUserRequests');
   });
 

@@ -579,7 +579,8 @@ export function subscribeToRequest(requestId: string, callback: (req: EquipmentR
 export function subscribeToUserRequests(
   uid: string,
   role: 'customer' | 'provider',
-  callback: (page: FirestorePage<EquipmentRequest>) => void
+  callback: (page: FirestorePage<EquipmentRequest>) => void,
+  onError?: (error: Error) => void
 ): Unsubscribe {
   const db = getFirebaseDb();
   const field = role === 'customer' ? 'customerUid' : 'providerUid';
@@ -594,7 +595,7 @@ export function subscribeToUserRequests(
     items: snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>)),
     cursor: snap.docs.at(-1) || null,
     hasMore: snap.size === REQUESTS_PAGE_SIZE,
-  }));
+  }), onError);
 }
 
 export function subscribeToMessages(

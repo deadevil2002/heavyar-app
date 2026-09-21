@@ -801,6 +801,30 @@ describe('admin authorization and operational boundary', () => {
     expect((await worker.fetch(new Request('https://worker.test/api/admin/drivers?sort=ownerUid', { headers: { Authorization: 'Bearer test' } }), env)).status).toBe(400);
   });
 
+  test('driver list explains discovery from canonical account and bounded configuration reads', async () => {
+    __test.setAuth({ uid: 'ops-1', admin: true, role: 'admin', permissionRole: 'operations' });
+    const profile = { active: true, moderationStatus: 'approved', countryCode: 'SA', availabilityStatus: 'offline', trustStatus: 'unverified' };
+    __adminTest.setQuery(() => ['review', 'pending'].map(id => ({
+      name: `projects/undefined/databases/(default)/documents/driverProfiles/${id}`,
+      data: id === 'review' ? profile : { ...profile, active: false, moderationStatus: 'pending_review' },
+    })));
+    const reads: string[] = [];
+    __adminTest.setFirestore((collection, id) => {
+      reads.push(`${collection}/${id}`);
+      return collection === 'users' ? { role: 'driver', emailVerified: id === 'review', ...(id === 'review' ? { accountPurpose: 'store_review' } : {}) } : null;
+    });
+    const response = await worker.fetch(request('/api/admin/drivers', undefined, { Authorization: 'Bearer test' }), env);
+    const body: any = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.items.map((item: any) => item.discoveryEligibility.reasons)).toEqual([
+      ['store_review'], ['inactive', 'pending_review', 'email_verification_required'],
+    ]);
+    expect(reads.filter(path => path === 'countryConfigs/SA')).toHaveLength(1);
+    expect(reads.filter(path => path === 'emailVerificationPolicies/default')).toHaveLength(1);
+    expect((await worker.fetch(request('/api/admin/drivers?status=active', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(400);
+    expect((await worker.fetch(request('/api/admin/drivers?status=offline', undefined, { Authorization: 'Bearer test' }), env)).status).toBe(200);
+  });
+
   test('public-number backfill is explicit, idempotent by field, and list GET performs no migration write', async () => {
     __test.setAuth({ uid: 'super-1', admin: true, role: 'super_admin' });
     __adminTest.setQuery((collection) => collection === 'equipment' ? [{

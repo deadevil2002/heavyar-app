@@ -335,7 +335,8 @@ export function useAccountIntegrity(params: { q?: string; state?: string; cursor
   });
 }
 export function useProviders(params: Record<string, any> = {}) { return useListQuery<Provider>('providers', '/providers', params); }
-export function useDrivers(params: Record<string, any> = {}) { return useListQuery<Driver>('drivers', '/drivers', params); }
+export type DriverDiscovery = { discoveryEligibility?: { discoverable: boolean; reasons: string[] } };
+export function useDrivers(params: Record<string, any> = {}) { return useListQuery<Driver & DriverDiscovery>('drivers', '/drivers', params); }
 export function useEquipment(params: Record<string, any> = {}) { return useListQuery<Equipment>('equipment', '/equipment', params); }
 export function useRequests(params: Record<string, any> = {}) { return useListQuery<Request>('requests', '/requests', params); }
 export function usePayments(params: Record<string, any> = {}) { return useListQuery<Payment>('payments', '/payments', params); }

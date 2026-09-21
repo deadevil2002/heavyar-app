@@ -11,6 +11,7 @@ import { subscribePublicEquipmentInvalidation } from '@/services/discoveryInvali
 import type { Equipment } from '@/types';
 import { refreshIfStale as refreshOnSignalIfStale } from '@/services/discoveryRefreshPolicy';
 import { mobilePerformance } from '@/utils/mobilePerformance';
+import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
 
 const INVENTORY_STALE_MS = 2 * 60_000;
 const MARKET_STALE_MS = 30 * 60_000;
@@ -42,8 +43,15 @@ const retryDiscovery = (failures: number, error: Error) =>
   error.message !== 'DISCOVERY_REQUEST_TIMEOUT' && error.message !== 'DISCOVERY_REQUEST_CANCELLED' && failures < 1;
 
 function useDiscoveryState() {
-  const { user } = useAuth();
+  const auth = useAuth();
+  const { user } = auth;
+  const inventoryEnabled = canBrowsePublicEquipment(auth);
+  const allowed = useRef(inventoryEnabled);
+  allowed.current = inventoryEnabled;
   const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!inventoryEnabled) void queryClient.cancelQueries({ queryKey: ['equipment', 'public-search'] });
+  }, [inventoryEnabled, queryClient]);
   const marketQuery = useQuery({
     queryKey: ['markets', 'public'],
     queryFn: ({ signal }) => mobilePerformance.trackNetwork('discovery.markets', () => withDiscoveryDeadline(fetchMarketConfig, signal)),
@@ -66,8 +74,12 @@ function useDiscoveryState() {
   const inventoryKey = useMemo(() => ['equipment', 'public-search', queryFilters] as const, [queryFilters]);
   const inventory = useInfiniteQuery({
     queryKey: inventoryKey,
-    queryFn: ({ pageParam, signal }) => mobilePerformance.trackNetwork('discovery.equipment', () =>
-      withDiscoveryDeadline(boundedSignal => searchPublicEquipment(queryFilters, pageParam, 20, boundedSignal), signal)),
+    enabled: inventoryEnabled,
+    queryFn: ({ pageParam, signal }) => {
+      if (!allowed.current) throw new Error('PUBLIC_MARKETPLACE_ROLE_DISABLED');
+      return mobilePerformance.trackNetwork('discovery.equipment', () =>
+        withDiscoveryDeadline(boundedSignal => searchPublicEquipment(queryFilters, pageParam, 20, boundedSignal), signal));
+    },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: page => page.nextCursor,
     staleTime: INVENTORY_STALE_MS,
@@ -98,6 +110,7 @@ function useDiscoveryState() {
   const { refetch: refetchInventory, fetchNextPage } = inventory;
   const { refetch: refetchMarkets } = marketQuery;
   const resetAndRefetchInventory = useCallback(() => {
+    if (!allowed.current) return;
     mobilePerformance.markRefetch('discovery.equipment');
     queryClient.setQueryData(inventoryKey, (current: typeof inventory.data) => current ? {
       ...current,
@@ -111,6 +124,7 @@ function useDiscoveryState() {
     if (marketQuery.isError) void refetchMarkets();
   }, [resetAndRefetchInventory, marketQuery.isError, refetchMarkets]);
   const refreshIfStale = useCallback(() => {
+    if (!allowed.current) return;
     const now = Date.now();
     refreshOnSignalIfStale(inventory.dataUpdatedAt, INVENTORY_STALE_MS, resetAndRefetchInventory, now);
     refreshOnSignalIfStale(marketQuery.dataUpdatedAt, MARKET_STALE_MS, () => { void refetchMarkets(); }, now);
@@ -121,16 +135,17 @@ function useDiscoveryState() {
   }, [refreshIfStale]);
   useEffect(() => subscribePublicEquipmentInvalidation(resetAndRefetchInventory), [resetAndRefetchInventory]);
   const loadMore = useCallback(() => {
+    if (!allowed.current) return;
     if (inventory.hasNextPage && !inventory.isFetching && !inventory.isPlaceholderData) void fetchNextPage({ cancelRefetch: false });
   }, [fetchNextPage, inventory.hasNextPage, inventory.isFetching, inventory.isPlaceholderData]);
-  const loading = inventory.isPending || marketQuery.isPending;
+  const loading = inventoryEnabled && (inventory.isPending || marketQuery.isPending);
   const error = inventory.isError || marketQuery.isError;
   const refreshing = inventory.isFetching && !inventory.isFetchingNextPage && !inventory.isPending;
   const hasFilters = !!(filters.region || filters.city || filters.category || filters.text || filters.countryCode !== defaultCountry);
-  return useMemo(() => ({ equipment, filters, markets, setFilter, applyFilters, resetFilters, refresh, refreshIfStale, loadMore,
+  return useMemo(() => ({ equipment: inventoryEnabled ? equipment : [], filters, markets, setFilter, applyFilters, resetFilters, refresh, refreshIfStale, loadMore,
     hasMore: inventory.hasNextPage, loadingMore: inventory.isFetchingNextPage,
     loading, refreshing, error, hasFilters }),
-  [equipment, filters, markets, setFilter, applyFilters, resetFilters, refresh, refreshIfStale, loadMore,
+  [inventoryEnabled, equipment, filters, markets, setFilter, applyFilters, resetFilters, refresh, refreshIfStale, loadMore,
     inventory.hasNextPage, inventory.isFetchingNextPage, loading, refreshing, error, hasFilters]);
 }
 

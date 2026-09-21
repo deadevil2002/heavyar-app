@@ -14,7 +14,8 @@ export function hasCapability(role: UserRole | undefined, capability: RoleCapabi
 export function canAccessRolePath(role: UserRole | undefined, path: string) {
   if (path.includes('my-equipment') || path.includes('create-listing') || path.includes('edit-equipment')) return hasCapability(role, 'manageEquipment');
   if (path.includes('driver-profile')) return hasCapability(role, 'manageDriverProfile');
-  if (path.includes('driver/request') || path.includes('driver/requests')) return hasCapability(role, 'driverRequests');
+  if (path.includes('driver/requests')) return !!role;
+  if (path.includes('driver/request')) return hasCapability(role, 'findDriver');
   return true;
 }
 export const roleLabel = (role: UserRole, ar: boolean) => ({ customer: ar ? 'عميل' : 'Customer', provider: ar ? 'مقدم خدمة' : 'Provider', driver: ar ? 'سائق' : 'Driver' }[role]);

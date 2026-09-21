@@ -10,7 +10,8 @@ vi.mock('firebase/auth', () => ({ signOut: vi.fn() }));
 vi.mock('react-native', () => ({ Platform: { OS: 'web' } }));
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: {} }));
 
-import { getNotificationUnreadCount } from '../services/notificationService';
+import { getNotificationUnreadCount, listNotifications, markAllNotificationsRead } from '../services/notificationService';
+import { subscribeNotificationReads } from '../services/notificationUnreadPolicy';
 
 describe('unread service binds requests to the query identity', () => {
   beforeEach(() => { auth.currentUser = userA; vi.stubGlobal('fetch', vi.fn()); });
@@ -38,5 +39,32 @@ describe('unread service binds requests to the query identity', () => {
   it('returns a validated count only for the matching identity', async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ success: true, unreadCount: 16 })));
     await expect(getNotificationUnreadCount('A')).resolves.toBe(16);
+  });
+  it('does not silently turn a missing list aggregate into a zero badge', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ success: true, notifications: [] })));
+    await expect(listNotifications(null, 'A')).rejects.toThrow('NOTIFICATION_COUNT_INVALID');
+  });
+  it('marks bounded batches with one read event and no intermediate count requests', async () => {
+    const listener = vi.fn();
+    const release = subscribeNotificationReads(listener);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, hasMore: true })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, hasMore: false })));
+    try {
+      await expect(markAllNotificationsRead(10, 'A')).resolves.toEqual({ hasMore: false, remainingCount: 0 });
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(listener).toHaveBeenCalledExactlyOnceWith('A');
+    } finally { release(); }
+  });
+  it('publishes partial success once when a later read batch fails', async () => {
+    const listener = vi.fn();
+    const release = subscribeNotificationReads(listener);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, hasMore: true })))
+      .mockRejectedValueOnce(new Error('offline'));
+    try {
+      await expect(markAllNotificationsRead(10, 'A')).rejects.toThrow();
+      expect(listener).toHaveBeenCalledExactlyOnceWith('A');
+    } finally { release(); }
   });
 });

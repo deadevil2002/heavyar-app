@@ -2,7 +2,7 @@ import { useCallback, useEffect } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getNotificationUnreadCount } from '@/services/notificationService';
-import { notificationUnreadKey, NOTIFICATION_UNREAD_STALE_MS, subscribeNotificationReads } from '@/services/notificationUnreadPolicy';
+import { notificationUnreadKey, NOTIFICATION_UNREAD_STALE_MS, retainNotificationUnread } from '@/services/notificationUnreadPolicy';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 
 function fetchUnread({ queryKey, signal }: { queryKey: readonly ['notification-unread', string]; signal: AbortSignal }) {
@@ -22,16 +22,7 @@ export function useNotificationUnread(uid: string) {
   });
   useEffect(() => {
     if (!uid) return;
-    const unsubscribe = subscribeNotificationReads(changedUid => {
-      if (changedUid === uid) {
-        void client.invalidateQueries({ queryKey: notificationUnreadKey(uid), exact: true });
-      }
-    });
-    return () => {
-      unsubscribe();
-      void client.cancelQueries({ queryKey: notificationUnreadKey(uid), exact: true });
-      client.removeQueries({ queryKey: notificationUnreadKey(uid), exact: true });
-    };
+    return retainNotificationUnread(client, uid);
   }, [client, uid]);
   useFocusEffect(useCallback(() => {
     if (!uid) return;

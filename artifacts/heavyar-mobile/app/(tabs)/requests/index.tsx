@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Lock } from 'lucide-react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -15,27 +15,65 @@ import {
 import RequestCard from '@/components/RequestCard';
 import EmptyState from '@/components/EmptyState';
 import { Equipment, EquipmentRequest } from '@/types';
-import { hasCapability } from '@/services/roleCapabilities';
 import { mobilePerformance } from '@/utils/mobilePerformance';
+import DriverRequestsSection from '@/components/DriverRequestsSection';
+import { requestSections, resolveRequestSection } from '@/services/requestSections';
+import { safeErrorMessage } from '@/services/errorMessages';
 
 export default function RequestsScreen() {
+  const { user } = useAuth();
+  const { isRTL, t } = useLanguage();
+  const router = useRouter();
+  const { section, status } = useLocalSearchParams<{ section?: string; status?: string }>();
+  const selected = resolveRequestSection(user?.role, section, status);
+  const [focused, setFocused] = useState(false);
+  useFocusEffect(useCallback(() => {
+    setFocused(true);
+    return () => setFocused(false);
+  }, []));
+  if (!user) return <EquipmentRequestsSection />;
+  return <View style={styles.container}>
+    <SafeAreaView edges={['top']} style={styles.safeArea}>
+      <View style={styles.headerRow}><Text style={styles.title}>{t('my_requests')}</Text></View>
+      <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', flexWrap: 'wrap' }}>
+        {requestSections(user.role).map(value => <Pressable key={value} accessibilityRole="tab"
+          accessibilityState={{ selected: selected === value }}
+          style={[styles.driverRequestsLink, selected === value && { borderColor: Colors.gold }]}
+          onPress={() => router.setParams({ section: value, status: '' })}>
+          <Text style={styles.driverRequestsText}>{value === 'drivers' ? (isRTL ? 'طلبات السائقين' : 'Driver requests')
+            : value === 'active' ? (isRTL ? 'الإيجارات النشطة' : 'Active rentals') : (isRTL ? 'طلبات المعدات' : 'Equipment requests')}</Text>
+        </Pressable>)}
+      </View>
+      {focused ? selected === 'drivers'
+        ? <DriverRequestsSection key={`${user.uid}:${user.role}`} />
+        : <EquipmentRequestsSection key={`${user.uid}:${user.role}`} activeOnly={selected === 'active'} /> : null}
+    </SafeAreaView>
+  </View>;
+}
+
+function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean }) {
   mobilePerformance.countRender('Requests');
   const { isRTL, t } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
-  const { status } = useLocalSearchParams<{ status?: string }>();
   const [requests, setRequests] = useState<EquipmentRequest[]>([]);
   const [equipmentById, setEquipmentById] = useState<Map<string, Equipment>>(new Map());
   const [cursor, setCursor] = useState<FirestoreCursor | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasOlderPages, setHasOlderPages] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [subscriptionAttempt, setSubscriptionAttempt] = useState(0);
+  const subscriptionIdentity = useRef('');
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const firstPageCursorRef = useRef<FirestoreCursor | null>(null);
   const firstPageHasMoreRef = useRef(false);
   const hasOlderPagesRef = useRef(false);
-  const visibleRequests = useMemo(() => status === 'active'
+  const visibleRequests = useMemo(() => activeOnly
     ? requests.filter(item => ['accepted', 'in_progress', 'completion_requested'].includes(item.status))
-    : requests, [requests, status]);
+    : requests, [requests, activeOnly]);
   useEffect(() => { mobilePerformance.markContextCommit('Requests:auth'); }, [user]);
   useEffect(() => { mobilePerformance.markContextCommit('Requests:language'); }, [t, isRTL]);
 
@@ -44,30 +82,30 @@ export default function RequestsScreen() {
   const identity = `${currentUid}:${requestPerspective}`;
   const identityRef = useRef(identity);
   identityRef.current = identity;
-  const canViewDriverRequests = hasCapability(user?.role, 'driverRequests');
 
   useEffect(() => {
     // Never merge a previous identity's older pages into the next account.
     let active = true;
-    setRequests([]);
-    setEquipmentById(new Map());
-    setCursor(null);
-    setHasMore(false);
-    setHasOlderPages(false);
-    setLoadingMore(false);
-    hasOlderPagesRef.current = false;
-    firstPageCursorRef.current = null;
-    firstPageHasMoreRef.current = false;
+    if (subscriptionIdentity.current !== identity) {
+      subscriptionIdentity.current = identity;
+      setRequests([]);
+      setEquipmentById(new Map());
+      setCursor(null);
+      setHasMore(false);
+      setHasOlderPages(false);
+      setLoadingMore(false);
+      hasOlderPagesRef.current = false;
+      firstPageCursorRef.current = null;
+      firstPageHasMoreRef.current = false;
+    }
+    setLoadError('');
     if (!currentUid) {
       setRequests([]);
       return;
     }
-    if (canViewDriverRequests) {
-      setRequests([]);
-      return;
-    }
     const unsub = subscribeToUserRequests(currentUid, requestPerspective, (page) => {
-      if (!active) return;
+      if (!active || identityRef.current !== identity) return;
+      setLoadError('');
       mobilePerformance.markRefetch('Requests:bounded-live-page');
       setRequests((previous) => {
         const older = previous.slice(20);
@@ -81,12 +119,14 @@ export default function RequestsScreen() {
         setHasMore(page.hasMore);
       }
       void fetchEquipmentByIds(page.items.map(item => item.equipmentId)).then((equipment) => {
-        if (!active) return;
+        if (!active || identityRef.current !== identity) return;
         setEquipmentById(previous => new Map([...previous, ...equipment]));
-      });
+      }).catch(error => { if (active && identityRef.current === identity) setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en')); });
+    }, error => {
+      if (active && identityRef.current === identity) setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en'));
     });
     return () => { active = false; unsub(); };
-  }, [canViewDriverRequests, currentUid, requestPerspective]);
+  }, [currentUid, requestPerspective, identity, subscriptionAttempt]);
 
   const renderItem = useCallback(({ item }: { item: EquipmentRequest }) => (
     <RequestCard request={item} equipment={equipmentById.get(item.equipmentId)} />
@@ -98,7 +138,7 @@ export default function RequestsScreen() {
     try {
       const page = await fetchUserRequests(currentUid, requestPerspective, cursor);
       const equipment = await fetchEquipmentByIds(page.items.map(item => item.equipmentId));
-      if (identityRef.current !== identity) return;
+      if (!mounted.current || identityRef.current !== identity) return;
       setEquipmentById(previous => new Map([...previous, ...equipment]));
       setRequests(previous => {
         const seen = new Set(previous.map(item => item.id));
@@ -108,8 +148,10 @@ export default function RequestsScreen() {
       setHasMore(page.hasMore);
       setHasOlderPages(true);
       hasOlderPagesRef.current = true;
+    } catch (error) {
+      if (mounted.current) setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en'));
     } finally {
-      if (identityRef.current === identity) setLoadingMore(false);
+      if (mounted.current && identityRef.current === identity) setLoadingMore(false);
     }
   }, [cursor, currentUid, hasMore, identity, loadingMore, requestPerspective]);
 
@@ -120,6 +162,27 @@ export default function RequestsScreen() {
     setCursor(firstPageCursorRef.current);
     setHasMore(firstPageHasMoreRef.current);
   }, []);
+
+  const refresh = async () => {
+    if (refreshing || loadingMore) return;
+    setRefreshing(true);
+    setLoadError('');
+    try {
+      const page = await fetchUserRequests(currentUid, requestPerspective);
+      const equipment = await fetchEquipmentByIds(page.items.map(item => item.equipmentId));
+      if (!mounted.current) return;
+      setRequests(page.items);
+      setEquipmentById(equipment);
+      setCursor(page.cursor);
+      setHasMore(page.hasMore);
+      firstPageCursorRef.current = page.cursor;
+      firstPageHasMoreRef.current = page.hasMore;
+      hasOlderPagesRef.current = false;
+      setHasOlderPages(false);
+    } catch (error) {
+      if (mounted.current) setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en'));
+    } finally { if (mounted.current) setRefreshing(false); }
+  };
 
   if (!user) {
     return (
@@ -145,15 +208,16 @@ export default function RequestsScreen() {
 
   return (
     <View style={styles.container}>
-      <SafeAreaView edges={['top']} style={styles.safeArea}>
-        <View style={styles.headerRow}>
-          <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>{t('my_requests')}</Text>
-        </View>
-        {canViewDriverRequests ? (
-          <Pressable accessibilityRole="button" testID="driver-requests-link" style={styles.driverRequestsLink} onPress={() => router.push('/driver/requests')}>
-            <Text style={styles.driverRequestsText}>{isRTL ? 'طلبات السائقين' : 'Driver Requests'}</Text>
-          </Pressable>
-        ) : <FlatList
+      <SafeAreaView edges={[]} style={styles.safeArea}>
+        <FlatList
+          refreshing={refreshing}
+          onRefresh={() => void refresh()}
+          ListHeaderComponent={loadError ? <View>
+            <Text accessibilityRole="alert" style={styles.staleText}>{loadError}</Text>
+            <Pressable accessibilityRole="button" onPress={() => setSubscriptionAttempt(value => value + 1)}>
+              <Text style={styles.driverRequestsText}>{isRTL ? 'إعادة المحاولة' : 'Retry'}</Text>
+            </Pressable>
+          </View> : null}
           data={visibleRequests}
           renderItem={renderItem}
           keyExtractor={item => item.id}
@@ -178,7 +242,7 @@ export default function RequestsScreen() {
               ) : null}
             </View>
           ) : null}
-        />}
+        />
       </SafeAreaView>
     </View>
   );

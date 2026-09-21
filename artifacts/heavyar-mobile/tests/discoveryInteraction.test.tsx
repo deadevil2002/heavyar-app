@@ -15,7 +15,7 @@ const calls = vi.hoisted(() => ({
 }));
 vi.mock('react-native', () => ({ AppState: { addEventListener: () => ({ remove() {} }) } }));
 vi.mock('expo-router', () => ({ useFocusEffect: () => {} }));
-vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: undefined }) }));
+vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: undefined, isLoading: false, isAuthenticated: false }) }));
 vi.mock('../services/authService', () => ({ fetchMarketConfig: async () => [
   { code: 'SA', enabled: true, marketplaceAvailable: true },
   { code: 'AE', enabled: true, marketplaceAvailable: true },

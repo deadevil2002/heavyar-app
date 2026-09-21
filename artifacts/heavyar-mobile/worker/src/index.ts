@@ -3,7 +3,9 @@ import { buildLegacyCatalog, calculateCommercial, majorToMinor, minorToMajor, re
 import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
+import { notificationInboxItem, notificationInboxOrder, notificationUnreadOrder } from './notification-inbox';
 import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry } from './completion';
+import { driverEligibility } from './driver-eligibility';
 import { PUBLIC_IDENTIFIER_COUNTER_IDS, PUBLIC_IDENTIFIER_FIELDS, formatPublicIdentifier, type PublicIdentifierKind } from './public-identifiers';
 import { isPublicRentableListing, legacyProviderReady, listingVisibilityForOwnerActive, requiresListingRereview } from './moderation';
 import { createInvoicePdfService, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
@@ -650,10 +652,17 @@ async function compareAndSwap(env: Env, path: string, updateTime: string, fields
 function safeNotificationId(id: string) { return /^[A-Za-z0-9:_-]{3,180}$/.test(id); }
 function notificationCursor(value: string | null) {
   if (!value) return undefined;
-  try { const decoded = JSON.parse(new TextDecoder().decode(b64(value))); return decoded?.createdAt && decoded?.id ? { createdAt: String(decoded.createdAt), id: String(decoded.id) } : undefined; } catch { return undefined; }
+  try {
+    const decoded = JSON.parse(new TextDecoder().decode(b64(value)));
+    if (typeof decoded?.id !== 'string' || !safeNotificationId(decoded.id)) return undefined;
+    // v1 timestamp cursors remain accepted. v2 retains the original Firestore
+    // value type so legacy string/null dates paginate without skips or loops.
+    const orderValue = decoded.orderValue || (decoded.createdAt ? { timestampValue: String(decoded.createdAt) } : undefined);
+    return orderValue && typeof orderValue === 'object' ? { orderValue, id: decoded.id } : undefined;
+  } catch { return undefined; }
 }
-function nextNotificationCursor(createdAt: string, id: string) {
-  return b64u(enc.encode(JSON.stringify({ createdAt, id })));
+function nextNotificationCursor(orderValue: unknown, id: string) {
+  return b64u(enc.encode(JSON.stringify({ orderValue, id })));
 }
 async function notificationDevices(env: Env, uid: string) {
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
@@ -750,29 +759,25 @@ async function accountDeletionRequest(req: Request, env: Env, u: User) {
 async function notificationList(req: Request, env: Env, u: User) {
   const url = new URL(req.url), rawLimit = Number(url.searchParams.get('limit') || 20), limit = Math.min(50, Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 20));
   const cursor = notificationCursor(url.searchParams.get('pageToken') || url.searchParams.get('cursor')), where: any = { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: u.uid } } };
-  const structuredQuery: any = { from: [{ collectionId: 'notifications' }], where, orderBy: [
-    { field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' },
-    { field: { fieldPath: '__name__' }, direction: 'DESCENDING' },
-  ], limit: cursor ? limit + 1 : limit };
-  if (cursor) structuredQuery.startAt = { before: false, values: [{ timestampValue: cursor.createdAt }, { referenceValue: fullName(env, `notifications/${cursor.id}`) }] };
+  const structuredQuery: any = { from: [{ collectionId: 'notifications' }], where, orderBy: notificationInboxOrder, limit: limit + 1 };
+  if (cursor) structuredQuery.startAt = { before: false, values: [cursor.orderValue, { referenceValue: fullName(env, `notifications/${cursor.id}`) }] };
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) });
-  const items = (result || []).map((x: any) => ({ ...decode(x.document || x), id: String(x.document?.name || '').split('/').pop() || decode(x.document || x).notificationId || '' })).filter((x: any) => x.uid === u.uid && (!cursor || x.id !== cursor.id || x.createdAt !== cursor.createdAt)).slice(0, limit).map((x: any) => ({
-    id: String(x.id || x.notificationId || ''), event: x.event, category: x.category, titleAr: x.titleAr, titleEn: x.titleEn,
-    bodyAr: x.bodyAr || x.titleAr, bodyEn: x.bodyEn || x.titleEn, read: x.read === true, critical: x.critical === true, createdAt: x.createdAt, action: x.action, subjectId: x.subjectId || null,
-  }));
-  const last = items[items.length - 1];
+  const rows = (result || []).filter((x: any) => x.document && decode(x.document).uid === u.uid);
+  const page = rows.slice(0, limit);
+  const items = page.map((x: any) => notificationInboxItem(decode(x.document), x.document.name.split('/').pop(), x.document.createTime));
+  const last = page[page.length - 1];
   let unreadCount: number;
   try {
     unreadCount = await notificationUnreadCount(env, u.uid);
   } catch { return out(env, req, { success: false, errorCode: 'NOTIFICATION_COUNT_UNAVAILABLE' }, 503); }
-  return out(env, req, { success: true, notifications: items, unreadCount, nextPageToken: last ? nextNotificationCursor(last.createdAt, last.id) : null });
+  return out(env, req, { success: true, notifications: items, unreadCount, hasMore: rows.length > limit, nextPageToken: rows.length > limit && last ? nextNotificationCursor(last.document.fields.createdAt, items[items.length - 1].id) : null });
 }
 async function notificationUnreadCount(env: Env, uid: string): Promise<number> {
   const aggregate = await fs(env, ':runAggregationQuery', { method: 'POST', body: JSON.stringify({ structuredAggregationQuery: {
       structuredQuery: { from: [{ collectionId: 'notifications' }], where: { compositeFilter: { op: 'AND', filters: [
         { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: uid } } },
         { fieldFilter: { field: { fieldPath: 'read' }, op: 'EQUAL', value: { booleanValue: false } } },
-      ] } } }, aggregations: [{ alias: 'unread', count: {} }],
+      ] } }, orderBy: notificationUnreadOrder }, aggregations: [{ alias: 'unread', count: {} }],
     } }) });
   const raw = aggregate?.[0]?.result?.aggregateFields?.unread?.integerValue;
   if (raw === undefined || !/^\d+$/.test(String(raw)) || !Number.isSafeInteger(Number(raw))) throw new Error('Invalid unread aggregate');
@@ -3245,8 +3250,7 @@ async function driverSearch(req: Request, env: Env) {
       (!trustStatus || raw.trustStatus === trustStatus) &&
       (!requestedFrom || (raw.availableFrom && String(raw.availableFrom) <= requestedFrom)) &&
       (!requestedUntil || (raw.availableUntil && String(raw.availableUntil) >= requestedUntil));
-    const emailAllowed = !verificationPolicy.enabled || !verificationPolicy.requireBeforeDriverActivation || account?.emailVerified === true;
-    const eligible = raw.active === true && raw.moderationStatus === 'approved' && eligibleAccount(account, 'driver') && emailAllowed;
+    const eligible = driverEligibility(raw, account, market, verificationPolicy).discoverable;
     if (matches && eligible) {
       const id = await canonicalDriverPublicId(uid);
       drivers.push(publicDriverProfile({ ...raw, id }));

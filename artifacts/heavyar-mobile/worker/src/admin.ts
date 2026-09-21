@@ -20,6 +20,7 @@ import { EarlyAccessError, subscriberFacets, type EarlyAccessStore } from './ear
 import { dailyEarlyAccessRetention } from './early-access-retention';
 import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-access-delivery';
 import { processEarlyAccessCampaigns } from './early-access-campaign-delivery';
+import { driverEligibility, driverDiscoveryMarket } from './driver-eligibility';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
@@ -1230,6 +1231,17 @@ async function enrichAdminItems(env: Env, collection: string, items: any[]) {
       }
     }
   }
+  // Enrich only the bounded page; never scan all drivers to imply global totals.
+  const driverMarkets = new Map<string, any>();
+  let driverEmailPolicy: any;
+  if (collection === 'driverProfiles') {
+    driverEmailPolicy = (await rawDoc(env, 'emailVerificationPolicies', 'default'))?.data;
+    const countries = [...new Set(items.map(item => String(item.countryCode || '')))]
+      .filter(code => ['SA', 'AE', 'KW', 'QA', 'BH', 'OM'].includes(code));
+    await Promise.all(countries.map(async code => {
+      driverMarkets.set(code, driverDiscoveryMarket(code, (await rawDoc(env, 'countryConfigs', code))?.data));
+    }));
+  }
   return items.map((item) => {
     const record = { ...item };
     const accountUid = String(record.uid || record.id || '');
@@ -1245,6 +1257,7 @@ async function enrichAdminItems(env: Env, collection: string, items: any[]) {
     if (collection === 'users') record.displayName = displayName(record);
     if (collection === 'driverProfiles') {
       const person = people.get(record.uid || record.id);
+      record.discoveryEligibility = driverEligibility(record, person, driverMarkets.get(String(record.countryCode || '')), driverEmailPolicy);
       record.displayName = displayName(record, displayName(person));
       if (person?.email) record.email = person.email;
       // Do not overwrite the authoritative Auth value with the profile mirror.
@@ -2816,6 +2829,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   if (query.direction && !['asc', 'desc'].includes(query.direction)) return { error: 'Invalid sort direction', status: 400 };
   if (url.pathname === '/api/admin/providers') query.role = 'provider';
   if (url.pathname === '/api/admin/drivers') {
+    if (query.status && !['available', 'busy', 'offline'].includes(query.status)) return { error: 'Invalid driver availability', status: 400 };
     if (query.status) { query.availabilityStatus = query.status; delete query.status; }
     if (query.moderation) { query.moderationStatus = query.moderation; delete query.moderation; }
     if (query.verification) { query.trustStatus = query.verification; delete query.verification; }

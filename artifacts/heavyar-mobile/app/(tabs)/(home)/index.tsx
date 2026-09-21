@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, FlatList, Pressable, ActivityIndicator, RefreshControl, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Search, Bell, Globe, Grid2X2, List, Package, PlusCircle, Inbox, Activity, UserSearch } from 'lucide-react-native';
+import { Search, Bell, Globe, Grid2X2, List, Package, PlusCircle, Inbox, Activity } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -18,8 +18,66 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 import { loadEquipmentView, saveEquipmentView, type EquipmentView } from '@/services/equipmentViewPreference';
 import type { Equipment } from '@/types';
 import { mobilePerformance } from '@/utils/mobilePerformance';
+import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
+import { useNotificationUnread } from '@/hooks/useNotificationUnread';
 
 export default function HomeScreen() {
+  const auth = useAuth();
+  if (auth.isLoading) return <View style={styles.container}><ActivityIndicator color={Colors.gold} /></View>;
+  return canBrowsePublicEquipment(auth) ? <MarketplaceHome /> : <OperationsHome />;
+}
+
+function NotificationBell() {
+  const { user, isAuthenticated } = useAuth();
+  const { unreadCount } = useNotificationUnread(isAuthenticated ? user?.uid || '' : '');
+  const router = useRouter();
+  return <Pressable accessibilityRole="button" accessibilityLabel="Notifications" style={styles.notifButton} onPress={() => router.push('/notifications')}>
+    <Bell size={22} color={Colors.textPrimary} />
+    {!!unreadCount && unreadCount > 0 && <View testID="home-notification-dot" style={styles.notifDot} />}
+  </Pressable>;
+}
+
+function OperationsHome() {
+  mobilePerformance.countRender('home');
+  const { user } = useAuth();
+  const { isRTL, t, localizedText } = useLanguage();
+  const router = useRouter();
+  const provider = user?.role === 'provider';
+  return <View style={styles.container}><SafeAreaView edges={['top']} style={styles.safeArea}>
+    <ScrollView>
+      <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.greeting}>{t('welcome_back')} {user ? localizedText(user.nameAr, user.nameEn).split(' ')[0] : ''}</Text>
+          <Text style={styles.subtitle}>{provider ? (isRTL ? 'إدارة عملياتك' : 'Run your operations') : (isRTL ? 'مساحة عمل السائق' : 'Driver workspace')}</Text>
+        </View>
+        <NotificationBell />
+        <Pressable accessibilityRole="button" accessibilityLabel={t('profile')} onPress={() => router.push('/(tabs)/profile')}>
+          <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
+        </Pressable>
+      </View>
+      <View style={styles.providerOperations}>
+        <View style={[styles.providerActionGrid, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          {provider && <>
+            <Pressable style={styles.providerAction} onPress={() => router.push('/my-equipment')}><Package color={Colors.gold} /><Text style={styles.providerActionText}>{isRTL ? 'معداتي' : 'My Equipment'}</Text></Pressable>
+            <Pressable style={styles.providerAction} onPress={() => router.push('/(tabs)/add')}><PlusCircle color={Colors.gold} /><Text style={styles.providerActionText}>{isRTL ? 'إضافة معدة' : 'Add Equipment'}</Text></Pressable>
+            <Pressable style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'equipment' } })}><Inbox color={Colors.gold} /><Text style={styles.providerActionText}>{isRTL ? 'الطلبات الواردة' : 'Incoming Requests'}</Text></Pressable>
+            <Pressable style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'active' } })}><Activity color={Colors.gold} /><Text style={styles.providerActionText}>{isRTL ? 'الإيجارات النشطة' : 'Active Rentals'}</Text></Pressable>
+          </>}
+          {!provider && <Pressable style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}><Inbox color={Colors.gold} /><Text style={styles.providerActionText}>{t('my_requests')}</Text></Pressable>}
+        </View>
+      </View>
+      {provider && <View style={styles.driverCtaContainer}>
+        <Text style={styles.driverCtaTitle}>{isRTL ? 'تحتاج إلى سائق معدات؟' : 'Need an equipment driver?'}</Text>
+        <View style={[styles.driverCtaActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <Pressable style={styles.driverCtaButton} onPress={() => router.push('/(tabs)/search?mode=drivers')}><Text style={styles.driverCtaButtonText}>{isRTL ? 'البحث عن سائق' : 'Find Driver'}</Text></Pressable>
+          <Pressable style={styles.driverCtaOutlineButton} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}><Text style={styles.driverCtaOutlineButtonText}>{t('my_requests')}</Text></Pressable>
+        </View>
+      </View>}
+    </ScrollView>
+  </SafeAreaView></View>;
+}
+
+function MarketplaceHome() {
   mobilePerformance.countRender('home');
   const { isRTL, t, localizedText, setLanguage } = useLanguage();
   const { user, isAuthenticated } = useAuth();
@@ -47,9 +105,6 @@ export default function HomeScreen() {
   const handleSearch = useCallback(() => {
     router.push('/(tabs)/search?mode=equipment');
   }, [router]);
-
-  const handleNotifications = useCallback(() => {
-  }, []);
 
   const handleGuestLanguage = useCallback(() => {
     showDialog(
@@ -92,10 +147,7 @@ export default function HomeScreen() {
             </View>
             <View style={[styles.headerActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               {isAuthenticated ? (
-                <Pressable style={styles.notifButton} onPress={handleNotifications}>
-                  <Bell size={22} color={Colors.textPrimary} />
-                  <View style={styles.notifDot} />
-                </Pressable>
+                <NotificationBell />
               ) : (
                 <Pressable style={styles.notifButton} onPress={handleGuestLanguage}>
                   <Globe size={22} color={Colors.textPrimary} />
@@ -104,31 +156,6 @@ export default function HomeScreen() {
               <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
             </View>
           </View>
-
-          {user?.role === 'provider' && (
-            <View style={styles.providerOperations}>
-              <Text style={[styles.sectionTitle, { textAlign: isRTL ? 'right' : 'left' }]}>
-                {isRTL ? 'إدارة عملياتك' : 'Run your operations'}
-              </Text>
-              <View style={[styles.providerActionGrid, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                {[
-                  { label: isRTL ? 'معداتي' : 'My Equipment', icon: Package, route: '/my-equipment' as const },
-                  { label: isRTL ? 'إضافة معدة' : 'Add Equipment', icon: PlusCircle, route: '/(tabs)/add' as const },
-                  { label: isRTL ? 'الطلبات الواردة' : 'Incoming Requests', icon: Inbox, route: '/(tabs)/requests' as const },
-                  { label: isRTL ? 'الإيجارات النشطة' : 'Active Rentals', icon: Activity, route: '/(tabs)/requests?status=active' as const },
-                  { label: isRTL ? 'البحث عن سائق' : 'Find Driver', icon: UserSearch, route: '/(tabs)/search?mode=drivers' as const },
-                ].map(action => (
-                  <Pressable key={action.label} accessibilityRole="button" onPress={() => router.push(action.route)} style={styles.providerAction}>
-                    <action.icon size={21} color={Colors.gold} />
-                    <Text style={styles.providerActionText}>{action.label}</Text>
-                  </Pressable>
-                ))}
-              </View>
-              <Pressable accessibilityRole="button" onPress={handleSearch} style={styles.marketLink}>
-                <Text style={styles.seeAll}>{isRTL ? 'تصفح سوق المعدات' : 'Browse equipment market'}</Text>
-              </Pressable>
-            </View>
-          )}
 
           <View style={[styles.searchBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <Search size={20} color={Colors.textMuted} />
@@ -175,7 +202,7 @@ export default function HomeScreen() {
                 <Text style={styles.driverCtaButtonText}>{isRTL ? 'البحث عن سائق' : 'Find a Driver'}</Text>
               </Pressable>
               {isAuthenticated && user?.role !== 'driver' && (
-                <Pressable style={styles.driverCtaOutlineButton} onPress={() => router.push('/driver/requests')}>
+                <Pressable style={styles.driverCtaOutlineButton} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}>
                   <Text style={styles.driverCtaOutlineButtonText}>{isRTL ? 'طلباتي' : 'My Requests'}</Text>
                 </Pressable>
               )}

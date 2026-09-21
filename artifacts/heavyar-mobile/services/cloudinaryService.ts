@@ -109,22 +109,39 @@ export async function uploadMultipleImages(
   if (!uid) throw new MutationError('AUTH_REQUIRED', 401);
   if (expectedUid && uid !== expectedUid) throw new MutationError('AUTH_SESSION_CHANGED');
   const results: CloudinaryImage[] = [];
-  let completed = 0;
-  try {
-    for (const uri of localUris) {
-      if (auth.currentUser?.uid !== uid) throw new MutationError('AUTH_SESSION_CHANGED');
-      const result = await uploadImageToCloudinary(uri, uid);
-      results.push(result);
-      completed++;
+  let completed = 0, nextIndex = 0;
+  let failed = false, firstError: unknown;
+  // Bound the entire read/validate/upload operation, not just the network call:
+  // at most two validation buffers and two uploads can exist at once.
+  const worker = async () => {
+    while (!failed && nextIndex < localUris.length) {
+      const index = nextIndex++;
       try {
-        const progress = onProgress?.(completed, localUris.length);
-        if (progress) void Promise.resolve(progress).catch(() => console.warn('[media] upload progress observer failed'));
+        if (auth.currentUser?.uid !== uid) throw new MutationError('AUTH_SESSION_CHANGED');
+        results[index] = await uploadImageToCloudinary(localUris[index], uid);
+        completed++;
+        try {
+          const progress = onProgress?.(completed, localUris.length);
+          if (progress) void Promise.resolve(progress).catch(() => console.warn('[media] upload progress observer failed'));
+        }
+        catch { console.warn('[media] upload progress observer failed'); }
+      } catch (error) {
+        if (!failed) { failed = true; firstError = error; }
       }
-      catch { console.warn('[media] upload progress observer failed'); }
     }
-  } catch (error) {
-    if (auth.currentUser?.uid === uid) await Promise.all(results.map(image => deleteCloudinaryImage(image.publicId)));
-    throw error;
+  };
+  // Workers absorb failure until both settle. Rollback must include successes
+  // arriving after the first failure; never race deletion against an upload.
+  await Promise.all(Array.from({ length: Math.min(2, localUris.length) }, () => worker()));
+  if (!failed && auth.currentUser?.uid !== uid) {
+    failed = true;
+    firstError = new MutationError('AUTH_SESSION_CHANGED');
+  }
+  if (failed) {
+    if (auth.currentUser?.uid === uid) {
+      await Promise.all(results.map(image => deleteCloudinaryImage(image.publicId, uid)));
+    }
+    throw firstError;
   }
 
   return results;
@@ -135,17 +152,23 @@ export function getImageUrl(image: string | CloudinaryImage): string {
   return image.url;
 }
 
-export async function deleteCloudinaryImage(publicId: string): Promise<boolean> {
+export async function deleteCloudinaryImage(publicId: string, expectedUid?: string): Promise<boolean> {
   if (!publicId) {
     return false;
   }
 
   try {
+    const auth = getFirebaseAuth(), user = auth.currentUser;
+    if (!user || (expectedUid && user.uid !== expectedUid)) return false;
+    const token = await user.getIdToken();
+    // Token acquisition can yield to sign-out/account switching. Never send a
+    // rollback authorized by the next session, even if cleanup already started.
+    if (!token || auth.currentUser?.uid !== user.uid) return false;
     const response = await fetch(`${WORKER_BASE_URL}/cloudinary/delete`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${await getFirebaseAuth().currentUser?.getIdToken()}`,
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ publicId }),
     });

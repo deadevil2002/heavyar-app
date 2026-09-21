@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useDrivers, useSendReminder, useDetail, type Driver } from '@/lib/api';
+import { useDrivers, useSendReminder, useDetail, type Driver, type DriverDiscovery } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
 import { OperationsTable, type OperationsColumn } from '@/components/operations-table';
 import { OperationDetails } from '@/components/operation-details';
@@ -13,6 +13,24 @@ import { DeletionJobProgress } from './users-components/DeletionJobProgress';
 export default function Drivers() {
   const { language } = useAppState();
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
+  const eligibilityLabel = (driver: Driver & DriverDiscovery) => {
+    const eligibility = driver.discoveryEligibility;
+    if (!eligibility) return t('الأهلية غير متاحة', 'Eligibility unavailable');
+    if (eligibility.discoverable) return t('قابل للاكتشاف العام', 'Publicly discoverable');
+    const reasons: Record<string, string> = {
+      store_review: t('مراجعة المتجر / غير عام', 'Store Review / not public'),
+      inactive: t('ملف غير نشط', 'Inactive profile'),
+      pending_review: t('قيد المراجعة', 'Pending review'),
+      moderation_suspended: t('موقوف بالمراجعة', 'Moderation suspended'),
+      rejected: t('مرفوض', 'Rejected'),
+      account_missing: t('الحساب غير موجود', 'Account missing'),
+      not_driver: t('الحساب ليس سائقاً', 'Account is not a driver'),
+      account_restricted: t('الحساب مقيّد أو غير نشط', 'Account restricted or inactive'),
+      email_verification_required: t('يتطلب توثيق البريد', 'Email verification required'),
+      market_unavailable: t('السوق غير متاح', 'Market unavailable'),
+    };
+    return eligibility.reasons.map(reason => reasons[reason] || reason).join(' · ');
+  };
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [city, setCity] = useState('');
@@ -41,11 +59,12 @@ export default function Drivers() {
     description: t('يتحقق الخادم من الحالة والصلاحيات قبل التنفيذ.', 'The server validates state and permissions before execution.'),
   });
   const columns: OperationsColumn<Driver>[] = [
+    { key: 'discovery', label: t('الظهور العام', 'Public discovery'), render: d => <span className="text-xs">{eligibilityLabel(d)}</span> },
     { key: 'driver', label: t('السائق', 'Driver'), sortable: true, render: d => <div><div className="font-medium">{d.displayName || d.name || '—'}</div><div dir="ltr" className="text-xs text-muted-foreground">{d.email || d.phone || '—'}</div><div className="text-[11px] text-muted-foreground">{d.emailVerified ? t('موثق', 'Verified') : t('غير موثق', 'Unverified')} · {d.verificationReminderCount ?? d.verificationReminder?.count ?? 0} · {d.lastVerificationReminderAt || d.verificationReminder?.lastSentAt || '—'} · {d.verificationReminderDeliveryStatus || d.verificationReminder?.deliveryStatus || '—'}</div></div> },
     { key: 'phone', label: t('الهاتف', 'Phone'), render: d => d.phone || '—' },
     { key: 'area', label: t('المنطقة', 'Area'), render: d => [d.city, d.region].filter(Boolean).join(' · ') || '—' },
     { key: 'capabilities', label: t('القدرات', 'Capabilities'), render: d => d.equipmentTypes?.join(', ') || '—' },
-     { key: 'availability', label: t('التوفر', 'Availability'), render: d => statusLabel(d.availabilityStatus || d.status || (d.active ? 'active' : 'inactive')) },
+     { key: 'availability', label: t('التوفر', 'Availability'), render: d => statusLabel(d.availabilityStatus) },
      { key: 'moderation', label: t('المراجعة', 'Moderation'), render: d => statusLabel(d.moderationStatus) },
      { key: 'verification', label: t('التحقق', 'Verification'), render: d => statusLabel(d.verificationStatus || d.trustStatus) },
     { key: 'review', label: t('آخر مراجعة', 'Last review'), render: d => <span className="text-xs">{d.moderatedAt || d.reviewedAt || '—'}</span> },
@@ -57,6 +76,7 @@ export default function Drivers() {
   const statusLabel = (value?: string) => ({
     active: t('نشط', 'Active'), inactive: t('غير نشط', 'Inactive'),
     available: t('متاح', 'Available'), unavailable: t('غير متاح', 'Unavailable'),
+    busy: t('مشغول', 'Busy'), offline: t('غير متصل', 'Offline'),
     pending_review: t('قيد المراجعة', 'Pending review'), approved: t('معتمد', 'Approved'),
     rejected: t('مرفوض', 'Rejected'), suspended: t('موقوف', 'Suspended'),
     verified: t('موثق', 'Verified'), pending: t('قيد الانتظار', 'Pending'),
@@ -66,6 +86,10 @@ export default function Drivers() {
   const canSelectAllMatching = !status && !city && !region && !moderation && !verification;
   const clearSelection = () => { setSelectedIds(new Set()); setSelectAllMatching(false); };
   return <div className="space-y-6">
+    <div className="rounded-lg border bg-muted/30 p-4 text-sm" aria-live="polite">
+      <p className="font-medium">{t('الملفات المسجلة في هذه الصفحة', 'Registered profiles on this page')}: {data?.items.length ?? '—'} · {t('القابلة للاكتشاف العام في هذه الصفحة', 'Publicly discoverable on this page')}: {data ? (data.items.every(item => item.discoveryEligibility) ? data.items.filter(item => item.discoveryEligibility?.discoverable).length : '—') : '—'}</p>
+      <p className="mt-1 text-muted-foreground">{t('هذه أعداد الصفحة المصفاة وليست إجماليات المنصة. التسجيل لا يعني الظهور في البحث. التوفر والتحقق من الثقة عوامل تصفية اختيارية وليسا مانعين دائمين.', 'These are filtered page counts, not platform totals. Registration does not mean search visibility. Availability and trust verification are optional search filters, not unconditional blockers.')}</p>
+    </div>
     {actionDialog}
     <ReminderDialog accountScope="driver" open={reminderOpen} onOpenChange={setReminderOpen} selectedIds={selectedIds} selectAllMatching={selectAllMatching} filters={filters} onSuccess={clearSelection} />
     <DeletionDialog accountScope="driver" open={deletionOpen} onOpenChange={setDeletionOpen} selectedIds={selectedIds} selectAllMatching={selectAllMatching} filters={filters} onJobStarted={id => { setActiveJobId(id); clearSelection(); }} />
@@ -73,7 +97,7 @@ export default function Drivers() {
     <div><h1 className="text-3xl font-bold tracking-tight">{t('السائقون', 'Drivers')}</h1><p className="mt-1 text-muted-foreground">{t('ملفات السائقين المسجلة تلقائياً من التطبيق مع مراجعة وتشغيل كاملين.', 'Driver profiles registered by the mobile application with operational and moderation status.')}</p></div>
     {selectedIds.size > 0 && <div className="flex gap-2"><Button size="sm" onClick={() => setReminderOpen(true)}>{t('تذكير المحددين', 'Remind selected')}</Button><Button size="sm" variant="destructive" onClick={() => setDeletionOpen(true)}>{t('حذف المحددين', 'Delete selected')}</Button>{canSelectAllMatching && data?.total && data.total > selectedIds.size && !selectAllMatching && <Button size="sm" variant="link" onClick={() => setSelectAllMatching(true)}>{t(`تحديد كل النتائج (${data.total})`, `Select all ${data.total} results`)}</Button>}</div>}
     <OperationsTable<Driver> selectable selectedIds={selectedIds} onSelect={(id, checked) => setSelectedIds(previous => { const nextIds = new Set(previous); checked ? nextIds.add(id) : nextIds.delete(id); return nextIds; })} onSelectPage={checked => setSelectedIds(previous => { const nextIds = new Set(previous); (data?.items || []).forEach(item => checked ? nextIds.add(item.id) : nextIds.delete(item.id)); return nextIds; })} columns={columns} items={data?.items} loading={isLoading} search={search} onSearch={v => { setSearch(v); resetPage(); clearSelection(); }} searchPlaceholder={t('الاسم أو البريد أو المعرف...', 'Name, email or identifier…')} onDetails={setSelected} nextCursor={data?.nextCursor} hasPrevious={history.length > 0} onNext={next} onPrevious={previous} toolbar={<>
-      <select value={status} onChange={e => { setStatus(e.target.value); resetPage(); }} className="h-9 rounded-md border bg-background px-2 text-sm"><option value="">{t('كل حالات التوفر', 'All availability')}</option><option value="active">{t('نشط', 'Active')}</option><option value="inactive">{t('غير نشط', 'Inactive')}</option></select>
+      <select value={status} onChange={e => { setStatus(e.target.value); resetPage(); }} className="h-9 rounded-md border bg-background px-2 text-sm"><option value="">{t('كل حالات التوفر', 'All availability')}</option><option value="available">{t('متاح', 'Available')}</option><option value="busy">{t('مشغول', 'Busy')}</option><option value="offline">{t('غير متصل', 'Offline')}</option></select>
       <input value={city} onChange={e => { setCity(e.target.value); resetPage(); }} placeholder={t('المدينة', 'City')} className="h-9 w-24 rounded-md border bg-background px-2 text-sm" />
       <input value={region} onChange={e => { setRegion(e.target.value); resetPage(); }} placeholder={t('المنطقة', 'Region')} className="h-9 w-24 rounded-md border bg-background px-2 text-sm" />
       <select value={moderation} onChange={e => { setModeration(e.target.value); resetPage(); }} className="h-9 rounded-md border bg-background px-2 text-sm"><option value="">{t('كل المراجعة', 'All moderation')}</option><option value="pending_review">{t('قيد المراجعة', 'Pending')}</option><option value="approved">{t('معتمد', 'Approved')}</option><option value="rejected">{t('مرفوض', 'Rejected')}</option><option value="suspended">{t('موقوف', 'Suspended')}</option></select>

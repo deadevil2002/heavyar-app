@@ -1,0 +1,28 @@
+{
+  "baselineCommit": "6d7980b35ab05f75bc295d336073842c6a591fae",
+  "environment": "Controlled actual React DOM/jsdom DiscoveryProvider + QueryClient with simulated equipment/market transports and Home/Search/Add hook probes; not Samsung/native UI or production network measurements.",
+  "baselineHarness": "/tmp/heavyar-runtime-baseline.test.tsx supplied by parent agent; initial auth mock Provider role; equipment fixture 20 items with 15ms delay",
+  "afterHarness": "tests/roleAwareDiscovery.test.tsx; explicit resolved Provider auth; same context probes, fixture transport and real 30-second observation",
+  "metricOrder": ["equipmentCalls", "marketCalls", "homeProbeRenders", "searchProbeRenders", "discoveryContextCommits"],
+  "before": {
+    "homeSettled": [1, 1, 3, 3, 3],
+    "localFilterDrafts": [1, 1, 7, 3, 3],
+    "publishInvalidationSettled": [2, 1, 9, 5, 5],
+    "following30Seconds": [2, 1, 9, 5, 5],
+    "sixFreshFocusCycles": [2, 1, 9, 5, 5]
+  },
+  "after": {
+    "homeSettled": [0, 1, 3, 2, 2],
+    "localFilterDrafts": [0, 1, 7, 2, 2],
+    "publishInvalidationSettled": [0, 1, 7, 2, 2],
+    "following30Seconds": [0, 1, 7, 2, 2],
+    "sixFreshFocusCycles": [0, 1, 7, 2, 2]
+  },
+  "conclusions": [
+    "Provider previously executed an unnecessary initial public equipment search and one additional public equipment search on publish invalidation.",
+    "Role boundary removes both public inventory calls and measured publish-triggered discovery context/probe work.",
+    "Neither controlled baseline nor after showed recurring inventory activity in the following 30 seconds or fresh-focus cycles.",
+    "Production Provider Home/Search now use separate operations/driver-only components without inventory subscriptions; probe counts above intentionally keep baseline harness topology for controlled comparison."
+  ],
+  "limitations": "Does not establish the complete physical-device sluggishness cause. Does not measure actual upload, listing-create duration, native press-to-visible, device frame rate, production Firestore/Worker, notification, verification, or driver requests. Shared market configuration remains one call because Add Equipment and driver location filtering need it."
+}

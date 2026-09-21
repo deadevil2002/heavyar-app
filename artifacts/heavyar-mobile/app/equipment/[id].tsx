@@ -17,7 +17,8 @@ import RentalRequestModal, { RentalRequestDraft } from '@/components/RentalReque
 import { createRentalRequest, WorkerError } from '@/services/workerClient';
 import { safeErrorMessage } from '@/services/errorMessages';
 import { fetchPublicEquipmentById } from '@/services/equipmentSearchService';
-import { ownerEquipmentFallbackUid } from '@/services/equipmentDetailAccess';
+import { loadRoleEquipmentDetail, ownerEquipmentFallbackUid } from '@/services/equipmentDetailAccess';
+import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
 import ListingPriceDisplay from '@/components/ListingPriceDisplay';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -25,30 +26,32 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 export default function EquipmentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { isRTL, t, localizedText } = useLanguage();
-  const { user: currentUser, isAuthenticated, isLoading: authLoading, requiresEmailVerification } = useAuth();
+  const auth = useAuth();
+  const { user: currentUser, isAuthenticated, isLoading: authLoading, requiresEmailVerification } = auth;
   const router = useRouter();
   const [currentImage, setCurrentImage] = useState<number>(0);
   const [liked, setLiked] = useState<boolean>(false);
-  const [equipment, setEquipment] = useState<Equipment | null>(null);
+  const [loadedEquipment, setLoadedEquipment] = useState<{ key: string; item: Equipment | null } | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [loadFailed, setLoadFailed] = useState<boolean>(false);
   const [requestModalVisible, setRequestModalVisible] = useState<boolean>(false);
   const scrollRef = useRef<ScrollView>(null);
   const { dialog, showDialog, hideDialog } = useAppDialog();
   const fallbackOwnerUid = ownerEquipmentFallbackUid(currentUser);
+  const publicAllowed = canBrowsePublicEquipment(auth);
+  const detailKey = JSON.stringify([id, authLoading, publicAllowed, currentUser?.uid, currentUser?.role]);
+  // Synchronously mask previous-role/previous-ID data, before effects can clean up.
+  const equipment = loadedEquipment?.key === detailKey ? loadedEquipment.item : null;
 
   useEffect(() => {
     let mounted = true;
     const load = async () => {
       try {
-        if (!id) return;
+        if (!id || authLoading) return;
         setLoading(true);
         setLoadFailed(false);
-        const publicEquipment = await fetchPublicEquipmentById(id);
-        const eq = publicEquipment || (fallbackOwnerUid ? await fetchEquipmentByOwnerId(id, fallbackOwnerUid) : null);
-        if (mounted && eq) {
-          setEquipment(eq);
-        }
+        const eq = await loadRoleEquipmentDetail(id, auth, { publicById: fetchPublicEquipmentById, ownerById: fetchEquipmentByOwnerId });
+        if (mounted) setLoadedEquipment({ key: detailKey, item: eq });
       } catch (e) {
         if (mounted) setLoadFailed(true);
       } finally {
@@ -57,7 +60,7 @@ export default function EquipmentDetailScreen() {
     };
     void load();
     return () => { mounted = false; };
-  }, [fallbackOwnerUid, id]);
+  }, [detailKey, fallbackOwnerUid, id, authLoading, publicAllowed]);
 
   useEffect(() => {
     if (!equipment || !currentUser) return;
@@ -76,7 +79,7 @@ export default function EquipmentDetailScreen() {
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <View style={styles.container}>
         <SafeAreaView edges={['top']} style={styles.safeArea}>
@@ -90,7 +93,9 @@ export default function EquipmentDetailScreen() {
     return (
       <View style={styles.container}>
         <SafeAreaView edges={['top']} style={styles.safeArea}>
-          <Text style={styles.errorText}>{loadFailed ? t('error_occurred') : t('no_equipment')}</Text>
+          <Text style={styles.errorText}>{!publicAllowed && !fallbackOwnerUid
+            ? (isRTL ? 'سوق المعدات متاح لحسابات العملاء فقط' : 'The equipment marketplace is available to Customer accounts only.')
+            : loadFailed ? t('error_occurred') : t('no_equipment')}</Text>
         </SafeAreaView>
       </View>
     );

@@ -193,6 +193,7 @@ export async function listNotifications(pageToken?: string | null, expectedUid?:
   const query = new URLSearchParams({ limit: String(PAGE_SIZE) });
   if (pageToken) query.set('cursor', pageToken);
   const result = await request<Partial<NotificationPage>>(`/api/notifications?${query.toString()}`, undefined, expectedUid);
+  if (!Number.isSafeInteger(result.unreadCount) || Number(result.unreadCount) < 0) throw new Error('NOTIFICATION_COUNT_INVALID');
   const raw = Array.isArray(result.notifications) ? result.notifications : [];
   return {
     notifications: raw.map((entry) => {
@@ -207,7 +208,7 @@ export async function listNotifications(pageToken?: string | null, expectedUid?:
               : rawAction === 'profile' ? { type: 'profile' as const, ...(subjectId ? { subjectId } : {}) } : undefined;
       return { ...item, action };
     }),
-    unreadCount: Number(result.unreadCount || 0),
+    unreadCount: result.unreadCount!,
     hasMore: result.hasMore === true,
     nextPageToken: result.nextPageToken || null,
   };
@@ -223,16 +224,26 @@ export async function markNotificationRead(id: string, expectedUid?: string): Pr
 export async function markAllNotificationsRead(maxPasses = 10, expectedUid?: string): Promise<{ hasMore: boolean; remainingCount: number }> {
   const uid = expectedUid ?? getFirebaseAuth().currentUser?.uid;
   let remainingCount = 0;
-  for (let pass = 0; pass < maxPasses; pass++) {
-    if (getFirebaseAuth().currentUser?.uid !== uid) throw new Error('SESSION_EXPIRED');
-    const result = await request<{ hasMore?: boolean; remainingCount?: number }>('/api/notifications/read-all', { method: 'POST', body: '{}' }, uid);
-    if (uid) publishNotificationRead(uid);
-    if (result.hasMore === false) return { hasMore: false, remainingCount: Number(result.remainingCount || 0) };
+  let changed = false;
+  try {
+    for (let pass = 0; pass < maxPasses; pass++) {
+      if (getFirebaseAuth().currentUser?.uid !== uid) throw new Error('SESSION_EXPIRED');
+      const result = await request<{ hasMore?: boolean }>('/api/notifications/read-all', { method: 'POST', body: '{}' }, uid);
+      changed = true;
+      if (result.hasMore === false) return { hasMore: false, remainingCount: 0 };
+      // Modern bounded endpoint tells us whether another batch is needed;
+      // do not aggregate on every batch in addition to cache invalidation.
+      if (result.hasMore === undefined) {
+        remainingCount = await getNotificationUnreadCount(uid || '');
+        if (!remainingCount) return { hasMore: false, remainingCount: 0 };
+      }
+    }
     remainingCount = await getNotificationUnreadCount(uid || '');
-    if (!remainingCount) return { hasMore: false, remainingCount: 0 };
-    if (result.hasMore === undefined && pass >= maxPasses - 1) break;
+    return { hasMore: remainingCount > 0, remainingCount };
+  } finally {
+    // One event per operation, including partial success before a later failure.
+    if (changed && uid) publishNotificationRead(uid);
   }
-  return { hasMore: true, remainingCount };
 }
 
 export async function getNotificationPreferences(expectedUid?: string): Promise<NotificationPreferences> {

@@ -10,8 +10,9 @@ describe('Driver Discovery Logic', () => {
     const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
     expect(source('../app/(tabs)/(home)/index.tsx')).toContain("router.push('/(tabs)/search?mode=equipment')");
     expect(source('../app/(tabs)/search/index.tsx')).toContain('useDiscovery()');
-    expect(source('../app/driver/request.tsx')).toContain("router.replace('/driver/requests')");
-    expect(source('../app/(tabs)/requests/index.tsx')).toContain("router.push('/driver/requests')");
+    expect(source('../app/driver/request.tsx')).toContain('router.replace(DRIVER_REQUESTS_ROUTE)');
+    expect(source('../app/driver/requests.tsx')).toContain('<Redirect href={DRIVER_REQUESTS_ROUTE}');
+    expect(source('../app/(tabs)/requests/index.tsx')).toContain('<DriverRequestsSection');
   });
 
   describe('Driver Search Utils', () => {

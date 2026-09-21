@@ -11,11 +11,14 @@ import { ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { useAuth } from '@/contexts/AuthContext';
 import { canRequestDriver } from '@/services/driverUtils';
 import { LatestRequestGuard } from '@/services/driverLiveSync';
+import { useQueryClient } from '@tanstack/react-query';
+import { DRIVER_REQUESTS_ROUTE, driverRequestsKey } from '@/services/requestSections';
 
 export default function DriverRequestScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { isRTL, t } = useLanguage();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { dialog, showDialog, hideDialog } = useAppDialog();
   const { user, isAuthenticated } = useAuth();
   const accountStatus = (user as (typeof user & { accountStatus?: string }))?.accountStatus;
@@ -74,8 +77,9 @@ export default function DriverRequestScreen() {
     setSubmitting(true);
     try {
       await createDriverRequest({ driverId: id, notes: notes.trim() });
+      if (user) void queryClient.invalidateQueries({ queryKey: driverRequestsKey(user.uid, user.role), exact: true });
       showDialog(t('success'), isRTL ? 'تم إرسال الطلب بنجاح' : 'Request sent successfully', [
-        { text: t('ok'), style: 'default', onPress: () => { hideDialog(); router.replace('/driver/requests'); } }
+        { text: t('ok'), style: 'default', onPress: () => { hideDialog(); router.replace(DRIVER_REQUESTS_ROUTE); } }
       ]);
     } catch {
       showDialog(t('error_title'), t('error_generic_message'), [{ text: t('ok'), style: 'default' }]);

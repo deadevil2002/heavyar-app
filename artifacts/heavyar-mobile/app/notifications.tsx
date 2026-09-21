@@ -2,11 +2,13 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { Bell, CheckCheck, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { createNotificationOperationGuard } from '@/services/notificationOperationGuard';
+import { notificationUnreadKey } from '@/services/notificationUnreadPolicy';
 import {
   defaultPreferences,
   getNotificationPreferences,
@@ -27,6 +29,7 @@ export default function NotificationsScreen() {
   operations.setIdentity(uid);
   useEffect(() => () => operations.invalidate(), [operations]);
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [preferences, setPreferences] = useState<NotificationPreferences>(defaultPreferences);
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
@@ -44,18 +47,22 @@ export default function NotificationsScreen() {
     append ? setLoadingMore(true) : setLoading(true);
     setError(null);
     try {
-      const [page, prefs] = await Promise.all([
+      const [pageResult, prefsResult] = await Promise.allSettled([
         listNotifications(append ? nextPageToken : null, uid),
         append ? Promise.resolve(preferences) : getNotificationPreferences(uid),
       ]);
       if (!isCurrent()) return;
+      if (pageResult.status === 'rejected') throw pageResult.reason;
+      const page = pageResult.value;
       setItems((current) => {
         const combined = append ? [...current, ...page.notifications] : page.notifications;
         return [...new Map(combined.map(item => [item.id, item])).values()];
       });
       setNextPageToken(page.nextPageToken || null);
       setUnreadCount(page.unreadCount);
-      if (!append) setPreferences(prefs);
+      queryClient.setQueryData(notificationUnreadKey(uid), page.unreadCount);
+      if (!append && prefsResult.status === 'fulfilled') setPreferences(prefsResult.value);
+      if (prefsResult.status === 'rejected') setError(t('notifications_error'));
     } catch (e) {
       if (!isCurrent()) return;
       setError((e as Error).message === 'SESSION_EXPIRED' ? t('session_expired') : t('notifications_error'));
@@ -65,7 +72,7 @@ export default function NotificationsScreen() {
         setLoadingMore(false);
       }
     }
-  }, [uid, nextPageToken, operations, preferences, t]);
+  }, [uid, nextPageToken, operations, preferences, queryClient, t]);
 
   useEffect(() => {
     setItems([]);
@@ -195,7 +202,7 @@ export default function NotificationsScreen() {
                 <View style={styles.copy}>
                   <Text style={[styles.itemTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{localizedText(item.titleAr, item.titleEn)}</Text>
                   {item.bodyAr || item.bodyEn ? <Text style={[styles.itemBody, { textAlign: isRTL ? 'right' : 'left' }]}>{localizedText(item.bodyAr || '', item.bodyEn || '')}</Text> : null}
-                  <Text style={[styles.date, { textAlign: isRTL ? 'right' : 'left' }]}>{new Date(item.createdAt).toLocaleDateString(isRTL ? 'ar-SA' : 'en-US')}</Text>
+                  {Number.isFinite(Date.parse(item.createdAt)) ? <Text style={[styles.date, { textAlign: isRTL ? 'right' : 'left' }]}>{new Date(item.createdAt).toLocaleDateString(isRTL ? 'ar-SA' : 'en-US')}</Text> : null}
                 </View>
                 <Chevron size={18} color={Colors.textMuted} />
               </Pressable>

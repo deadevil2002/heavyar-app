@@ -44,6 +44,7 @@ test('unread endpoint makes one UID-scoped aggregate, preserves zero, and fails 
     if (String(input).includes('oauth2.googleapis.com')) return Response.json({ access_token: 'test-only', expires_in: 3600 });
     expect(String(input)).toBe('https://firestore.googleapis.com/v1/projects/count-test/databases/(default)/documents:runAggregationQuery');
     const query = JSON.parse(String(init?.body)).structuredAggregationQuery;
+    expect(query.structuredQuery.orderBy).toEqual([{ field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' }]);
     expect(query.structuredQuery.where.compositeFilter.filters).toEqual([
       { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: profile.uid } } },
       { fieldFilter: { field: { fieldPath: 'read' }, op: 'EQUAL', value: { booleanValue: false } } },
@@ -58,4 +59,62 @@ test('unread endpoint makes one UID-scoped aggregate, preserves zero, and fails 
   const failed = await worker.fetch(request('/api/notifications/unread-count'), env);
   expect(failed.status).toBe(503);
   expect(await failed.json()).toEqual({ success: false, errorCode: 'NOTIFICATION_COUNT_UNAVAILABLE' });
+});
+
+test('bounded inbox pages and aggregate agree for legacy/malformed dates and explicit unread state', async () => {
+  auth();
+  const key = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  const env = { FIREBASE_PROJECT_ID: 'inbox-test', FIREBASE_CLIENT_EMAIL: 'inbox@test.invalid', FIREBASE_PRIVATE_KEY: key } as Env;
+  const root = 'projects/inbox-test/databases/(default)/documents/';
+  // Firestore descending type order: string, timestamp, null.
+  const documents = [
+    { name: `${root}notifications/legacy`, fields: { uid: { stringValue: profile.uid }, read: { booleanValue: false }, createdAt: { stringValue: '2026-09-20' }, titleEn: { stringValue: 'Legacy title' } } },
+    { name: `${root}notifications/valid`, fields: { uid: { stringValue: profile.uid }, read: { booleanValue: false }, createdAt: { timestampValue: '2026-09-19T00:00:00Z' }, titleAr: { stringValue: 'إشعار' } } },
+    { name: `${root}notifications/malformed`, fields: { uid: { stringValue: profile.uid }, read: { booleanValue: false }, createdAt: { nullValue: null } }, createTime: '2026-09-18T00:00:00Z' },
+    { name: `${root}notifications/missing-read`, fields: { uid: { stringValue: profile.uid }, createdAt: { nullValue: null } }, createTime: '2026-09-17T00:00:00Z' },
+  ];
+  let queryCalls = 0;
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).includes('oauth2.googleapis.com')) return Response.json({ access_token: 'test-only', expires_in: 3600 });
+    const body = JSON.parse(String(init?.body));
+    if (String(input).endsWith(':runAggregationQuery')) {
+      expect(body.structuredAggregationQuery.structuredQuery.orderBy).toEqual([{ field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' }]);
+      return Response.json([{ result: { aggregateFields: { unread: { integerValue: '3' } } } }]);
+    }
+    expect(String(input)).toBe(`https://firestore.googleapis.com/v1/${root.slice(0, -1)}:runQuery`);
+    const query = body.structuredQuery;
+    expect(query.limit).toBe(3); // page size 2 plus one bounded lookahead
+    expect(query.where.fieldFilter.value.stringValue).toBe(profile.uid);
+    expect(query.orderBy.map((order: any) => order.field.fieldPath)).toEqual(['createdAt', '__name__']);
+    let start = 0;
+    if (query.startAt) {
+      expect(query.startAt.before).toBe(false);
+      const position = documents.findIndex(doc => doc.name === query.startAt.values[1].referenceValue);
+      expect(query.startAt.values[0]).toEqual(documents[position].fields.createdAt);
+      start = position + 1;
+    }
+    queryCalls++;
+    return Response.json(documents.slice(start, start + query.limit).map(document => ({ document })));
+  }) as typeof fetch;
+  const page1: any = await (await worker.fetch(request('/api/notifications?limit=2'), env)).json();
+  expect(page1.notifications).toHaveLength(2);
+  expect(page1.unreadCount).toBe(3);
+  expect(page1.hasMore).toBe(true);
+  const page2: any = await (await worker.fetch(request(`/api/notifications?limit=2&cursor=${encodeURIComponent(page1.nextPageToken)}`), env)).json();
+  expect(page2.notifications).toHaveLength(2);
+  expect(page2.nextPageToken).toBeNull();
+  expect(page2.hasMore).toBe(false);
+  expect([...page1.notifications, ...page2.notifications].filter(item => !item.read)).toHaveLength(page2.unreadCount);
+  expect(page2.notifications[0].titleEn).toBe('Notification details unavailable');
+  expect(page2.notifications[0].createdAt).toBe(documents[2].createTime);
+  expect(queryCalls).toBe(2);
+  const legacyCursor = Buffer.from(JSON.stringify({ id: 'legacy', orderValue: documents[0].fields.createdAt })).toString('base64url');
+  const afterString: any = await (await worker.fetch(request(`/api/notifications?limit=2&cursor=${legacyCursor}`), env)).json();
+  expect(afterString.notifications.map((item: any) => item.id)).toEqual(['valid', 'malformed']);
+  const afterNull: any = await (await worker.fetch(request(`/api/notifications?limit=2&cursor=${afterString.nextPageToken}`), env)).json();
+  expect(afterNull.notifications.map((item: any) => item.id)).toEqual(['missing-read']);
+  expect(afterNull.nextPageToken).toBeNull();
+  const oldCursor = Buffer.from(JSON.stringify({ id: 'valid', createdAt: '2026-09-19T00:00:00Z' })).toString('base64url');
+  const oldPage: any = await (await worker.fetch(request(`/api/notifications?limit=2&cursor=${oldCursor}`), env)).json();
+  expect(oldPage.notifications.map((item: any) => item.id)).toEqual(['malformed', 'missing-read']);
 });

@@ -13,6 +13,7 @@ import { citiesForLocation, regionsForCountry } from '@/services/locationHierarc
 import { fetchMarketConfig, type MarketConfig } from '@/services/authService';
 import { mockCategories } from '@/mocks/categories';
 import { safeErrorMessage } from '@/services/errorMessages';
+import { DRIVER_REQUESTS_ROUTE } from '@/services/requestSections';
 import {
   buildDriverOwnerSavePayload,
   canEditDriverOwnerProfile,
@@ -235,7 +236,7 @@ export default function DriverProfileScreen() {
       <Pressable style={[styles.button, (!formValid || saving || moderationLocked) && styles.buttonDisabled]} onPress={() => void save()} disabled={!formValid || saving || loading || moderationLocked}>
         <Text style={styles.buttonText}>{saving ? t('saving') : t('save')}</Text>
       </Pressable>
-      <Pressable style={styles.secondaryButton} onPress={() => router.push('/driver/requests')}><Text style={styles.secondaryButtonText}>{localized('عرض الطلبات', 'View Requests')}</Text></Pressable>
+      <Pressable style={styles.secondaryButton} onPress={() => router.push(DRIVER_REQUESTS_ROUTE)}><Text style={styles.secondaryButtonText}>{localized('عرض الطلبات', 'View Requests')}</Text></Pressable>
     </>}
   </ScrollView></SafeAreaView><AppDialog visible={dialog.visible} title={dialog.title} message={dialog.message} buttons={dialog.buttons} onClose={hideDialog} /></View>;
 }

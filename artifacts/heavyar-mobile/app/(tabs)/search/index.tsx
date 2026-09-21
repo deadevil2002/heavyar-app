@@ -14,8 +14,21 @@ import { loadEquipmentView, saveEquipmentView, type EquipmentView } from '@/serv
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import DriverSearchTab from '@/components/DriverSearchTab';
 import { mobilePerformance } from '@/utils/mobilePerformance';
+import { useAuth } from '@/contexts/AuthContext';
+import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
 
 export default function SearchScreen() {
+  const auth = useAuth();
+  const { isRTL, t } = useLanguage();
+  if (canBrowsePublicEquipment(auth)) return <MarketplaceSearch />;
+  return <View style={styles.container}><SafeAreaView edges={['top']} style={styles.safeArea}>
+    <View style={styles.headerRow}><Text style={styles.title}>{auth.user?.role === 'provider' ? (isRTL ? 'البحث عن سائق' : 'Find Driver') : t('search')}</Text></View>
+    {auth.isLoading ? <ActivityIndicator color={Colors.gold} /> : auth.user?.role === 'provider' ? <DriverSearchTab /> :
+      <EmptyState title={isRTL ? 'تابع طلباتك من صفحة الطلبات' : 'Manage your work in Requests'} />}
+  </SafeAreaView></View>;
+}
+
+function MarketplaceSearch() {
   mobilePerformance.countRender('search');
   const { isRTL, t } = useLanguage();
   const params = useLocalSearchParams();

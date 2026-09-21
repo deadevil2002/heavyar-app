@@ -1,0 +1,47 @@
+{
+  "scope": "Part O controlled fixtures only; no production writes, deployment, browser, or native-device run",
+  "priorProductionObservation": {
+    "singleImageUploadMs": 5792,
+    "source": "Delegated prior-phase observation, not independently remeasured",
+    "limitation": "Single-image timing cannot establish a multi-image concurrency benefit"
+  },
+  "sameBaselineHarness": {
+    "source": "/tmp/heavyar-upload-baseline.cjs",
+    "implementation": "Actual cloudinaryService.ts with mocked Firebase, Android Platform flag, FormData, and fetch",
+    "images": 4,
+    "mockTransportDelayPerImageMs": 100,
+    "before": {
+      "elapsedMs": 447.52,
+      "peakInFlight": 1,
+      "localReads": 4,
+      "uploadCalls": 4,
+      "source": "Delegated measured baseline before this change"
+    },
+    "after": {
+      "elapsedMs": 232.993948,
+      "peakInFlight": 2,
+      "localReads": 4,
+      "uploadCalls": 4
+    }
+  },
+  "isolatedPairedControl": {
+    "command": "node --test tests/cloudinaryConcurrency.test.cjs",
+    "before": "Sequential calls to actual uploadImageToCloudinary using the same 4-image 100ms transport fixture",
+    "after": "Actual uploadMultipleImages bounded scheduler using the same fixture",
+    "beforeElapsedMs": 402.713164,
+    "afterElapsedMs": 202.656859,
+    "beforePeakInFlight": 1,
+    "afterPeakInFlight": 2,
+    "interpretation": "Sequential scheduling adds about 200ms to this controlled critical path; max-two scheduling removes one of two serial upload waves"
+  },
+  "safety": [
+    "No more than two complete read/validate/upload operations in flight",
+    "Results retain input order; progress counts acknowledged completions",
+    "First observed failure halts scheduling; both workers settle before rollback",
+    "Rollback includes acknowledged late successes and pins cleanup identity across token awaits",
+    "Unknown outcomes are not retried or assigned invented cleanup identifiers",
+    "Existing 401 single-refresh retry, actual Blob size/MIME validation, native Blob close, and storage/quality policy retained",
+    "No equipment submission or ambiguous-commit behavior changed"
+  ],
+  "caveat": "These are deterministic latency fixtures, not real Android upload or memory measurements. Real-device speed and throughput benefit remain unproven; shared bandwidth and native memory behavior may limit improvement."
+}
