@@ -32,14 +32,16 @@ describe('bounded Firestore read paths', () => {
     expect(body).toContain('limit(');
   });
 
-  it('batches request equipment instead of reading once per card', () => {
+  it('isolates request equipment hydration and keeps unavailable listings private', () => {
     const batch = implementation('async function fetchEquipmentByIds', 'async function createEquipment');
-    expect(batch).toContain('offset += 30');
-    expect(batch).toContain("where(documentId(), 'in', batch)");
-    expect(batch).toContain("where('visibility', '==', 'visible')");
-    expect(batch).toContain("where('ownerUid', '==', currentUid)");
+    expect(batch).toContain('Promise.allSettled');
+    expect(batch).toContain('fetchEquipmentById(id)');
+    expect(batch).toContain('result.status === \'fulfilled\'');
+    expect(service).toContain('equipmentSnapshot: parseEquipmentRequestSnapshot');
     expect(source('../components/RequestCard.tsx')).not.toContain('fetchEquipmentById');
     expect(source('../app/(tabs)/requests/index.tsx')).toContain('fetchEquipmentByIds');
+    expect(source('../components/RequestCard.tsx')).toContain("t('equipment_no_longer_available')");
+    expect(source('../app/request/[id].tsx')).toContain("t('equipment_no_longer_available')");
   });
 
   it('exposes pagination controls rather than silently truncating screens', () => {

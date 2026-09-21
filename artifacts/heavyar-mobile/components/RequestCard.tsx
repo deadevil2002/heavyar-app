@@ -22,8 +22,12 @@ export default React.memo(function RequestCard({ request, equipment = null }: Re
     router.push(`/request/${request.id}`);
   }, [request.id, router]);
 
-  const title = equipment ? localizedText(equipment.titleAr, equipment.titleEn) : '...';
-  const imageUrl = equipment ? getFirstImageUrl(equipment.images) : '';
+  const title = equipment
+    ? localizedText(equipment.titleAr, equipment.titleEn)
+    : request.equipmentSnapshot
+      ? localizedText(request.equipmentSnapshot.titleAr, request.equipmentSnapshot.titleEn)
+      : t('equipment_no_longer_available');
+  const imageUrl = equipment ? getFirstImageUrl(equipment.images) : getFirstImageUrl(request.equipmentSnapshot?.images || []);
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
   const requestMode = request.pricingModelVersion === 2 ? request.rentalMode : (request.requestMode || 'fixed_days');
   const isOpenEnded = requestMode === 'open_ended';

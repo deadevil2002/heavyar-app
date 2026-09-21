@@ -206,7 +206,8 @@ export async function listNotifications(pageToken?: string | null, expectedUid?:
   if (!Number.isSafeInteger(result.unreadCount) || Number(result.unreadCount) < 0) throw new Error('NOTIFICATION_COUNT_INVALID');
   const raw = Array.isArray(result.notifications) ? result.notifications : [];
   return {
-    notifications: raw.map((entry) => {
+    notifications: raw.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return [];
       const item = entry as NotificationItem & { action?: unknown; subjectId?: unknown };
       const structured = item.action && typeof item.action === 'object' ? item.action as { type?: unknown; subjectId?: unknown } : null;
       const subjectId = typeof structured?.subjectId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(structured.subjectId) ? structured.subjectId : undefined;
@@ -216,7 +217,11 @@ export async function listNotifications(pageToken?: string | null, expectedUid?:
           : rawAction === 'complaint' && subjectId ? { type: 'complaint' as const, subjectId }
             : rawAction === 'verification' ? { type: 'verification' as const, ...(subjectId ? { subjectId } : {}) }
               : rawAction === 'profile' ? { type: 'profile' as const, ...(subjectId ? { subjectId } : {}) } : undefined;
-      return { ...item, action };
+      // Do not let malformed server records reach the renderer. In
+      // particular, legacy records may have no action (or a non-object
+      // action), which is a valid inbox-only notification.
+      if (typeof item.id !== 'string' || !item.id) return [];
+      return [{ ...item, action }];
     }),
     unreadCount: result.unreadCount!,
     hasMore: result.hasMore === true,
@@ -227,7 +232,10 @@ export async function listNotifications(pageToken?: string | null, expectedUid?:
 export async function markNotificationRead(id: string, expectedUid?: string): Promise<number> {
   if (!/^[A-Za-z0-9:_-]{3,180}$/.test(id)) throw new Error('INVALID_NOTIFICATION');
   const uid = expectedUid ?? getFirebaseAuth().currentUser?.uid;
-  await request(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', body: '{}' }, expectedUid);
+  let changed = false;
+  try {
+    await request(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', body: '{}' }, expectedUid);
+    changed = true;
   // The read endpoint is intentionally idempotent and does not currently
   // report whether the document was already read. Reconcile once with the
   // authoritative aggregate instead of optimistically decrementing: a retry,
@@ -236,8 +244,14 @@ export async function markNotificationRead(id: string, expectedUid?: string): Pr
     const unreadCount = await getNotificationUnreadCount(uid);
     publishNotificationRead({ uid, type: 'replace', unreadCount });
     return unreadCount;
+    }
+    throw new Error('AUTH_REQUIRED');
+  } catch (error) {
+    // The write may have succeeded even when reconciliation failed. Let
+    // mounted badge consumers refresh rather than leaving a stale count.
+    if (changed && uid) publishNotificationRead({ uid, type: 'invalidate' });
+    throw error;
   }
-  throw new Error('AUTH_REQUIRED');
 }
 
 export async function markAllNotificationsRead(maxPasses = 10, expectedUid?: string): Promise<{ hasMore: boolean; remainingCount: number }> {
@@ -291,9 +305,14 @@ export async function updateNotificationPreferences(preferences: NotificationPre
 
 export function notificationActionRoute(action?: NotificationAction): string | null {
   if (!action) return null;
+  if (typeof action !== 'object' || typeof action.type !== 'string') return null;
   switch (action.type) {
-    case 'request': return `/request/${encodeURIComponent(action.subjectId)}`;
-    case 'payment': return `/payment/${encodeURIComponent(action.subjectId)}`;
+    case 'request':
+      return typeof action.subjectId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(action.subjectId)
+        ? `/request/${encodeURIComponent(action.subjectId)}` : null;
+    case 'payment':
+      return typeof action.subjectId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(action.subjectId)
+        ? `/payment/${encodeURIComponent(action.subjectId)}` : null;
     case 'verification': return '/verification';
     // There is no standalone complaint route yet; profile is the safe authenticated destination.
     case 'complaint': return '/(tabs)/profile';

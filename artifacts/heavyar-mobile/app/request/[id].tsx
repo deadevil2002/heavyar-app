@@ -112,7 +112,7 @@ export default function RequestDetailScreen() {
     return () => clearInterval(timer);
   }, [rentalSummary?.actualEndAt, rentalSummary?.actualStartAt, request?.status]);
 
-  if (_loading || !request || !equipment) {
+  if (_loading || !request) {
     return (
       <View style={styles.container}>
         <SafeAreaView edges={['top']} style={styles.centered}>
@@ -123,7 +123,28 @@ export default function RequestDetailScreen() {
   }
 
   const isProvider = request.providerUid === currentUid;
-  const title = localizedText(equipment.titleAr, equipment.titleEn);
+  const displayEquipment = equipment || {
+    id: request.equipmentId,
+    ownerUid: request.providerUid,
+    titleAr: request.equipmentSnapshot?.titleAr || t('equipment_no_longer_available'),
+    titleEn: request.equipmentSnapshot?.titleEn || t('equipment_no_longer_available'),
+    descriptionAr: '',
+    descriptionEn: '',
+    category: request.equipmentSnapshot?.category || '',
+    customCategory: '',
+    region: '',
+    city: '',
+    customCity: '',
+    district: '',
+    location: { lat: 0, lng: 0 },
+    pricePerDay: request.pricePerDay || 0,
+    images: request.equipmentSnapshot?.images || [],
+    availability: true,
+    isActive: false,
+    createdAt: '',
+    updatedAt: '',
+  } as Equipment;
+  const title = localizedText(displayEquipment.titleAr, displayEquipment.titleEn);
   const otherUser = otherUserPublic;
   const otherUserName = otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
   const requestMode = request.requestMode || 'fixed_days';
@@ -209,7 +230,7 @@ export default function RequestDetailScreen() {
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <View style={[styles.equipmentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-            <Image source={{ uri: getFirstImageUrl(equipment.images) }} style={styles.equipmentImage} contentFit="cover" />
+            <Image source={{ uri: getFirstImageUrl(displayEquipment.images) }} style={styles.equipmentImage} contentFit="cover" />
             <View style={[styles.equipmentInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
               <Text style={[styles.equipmentTitle, { textAlign: isRTL ? 'right' : 'left' }]} numberOfLines={2}>{title}</Text>
               <StatusBadge status={request.status} />

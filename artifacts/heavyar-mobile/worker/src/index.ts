@@ -1499,6 +1499,24 @@ async function estimateV2Request(req: Request, env: Env, u: User) {
     return out(env, req, { success: false, error: failure.error, errorCode: failure.errorCode }, failure.status);
   }
 }
+function requestEquipmentSnapshot(equipment: any): Record<string, unknown> {
+  const images = Array.isArray(equipment.images)
+    ? equipment.images.map((image: unknown) => {
+      if (typeof image === 'string') return { url: image };
+      if (!image || typeof image !== 'object') return null;
+      const url = typeof (image as any).url === 'string' ? (image as any).url : '';
+      return url ? { url } : null;
+    }).filter(Boolean)
+    : [];
+  return {
+    titleAr: typeof equipment.titleAr === 'string' ? equipment.titleAr : '',
+    titleEn: typeof equipment.titleEn === 'string' ? equipment.titleEn : '',
+    images,
+    category: typeof equipment.category === 'string' ? equipment.category : '',
+    countryCode: typeof equipment.countryCode === 'string' ? equipment.countryCode : '',
+  };
+}
+
 async function createV2Request(body: any, req: Request, env: Env, u: User) {
   let input: V2RequestInput;
   try { input = parseV2RequestInput(body); }
@@ -1524,8 +1542,10 @@ async function createV2Request(body: any, req: Request, env: Env, u: User) {
       currency: estimate.currency, currencyDecimals: estimate.currencyDecimals, marketTimezone: estimate.marketTimezone,
       baseAmountMinor: estimate.baseAmountMinor, commercialTerms: lockedCommercial,
     };
+    const equipmentSnapshot = requestEquipmentSnapshot(equipment);
     const value: any = {
       pricingModelVersion: 2, equipmentId: input.equipmentId, customerUid: u.uid, providerUid: equipment.ownerUid,
+      equipmentSnapshot,
       categoryId: String(normalizedEquipment.category || ''), countryCode: String(normalizedEquipment.countryCode || ''),
       status: 'pending', rentalMode: input.rentalMode, requestMode: input.rentalMode,
       rateUnit: input.rateUnit, requestedStartAt: input.requestedStartAt, requestedEndAt: input.requestedEndAt,
@@ -1592,7 +1612,7 @@ async function createRequest(req: Request, env: Env, u: User) {
     return out(env, req, { success: false, error: 'Commercial configuration unavailable' }, 503);
   }
   const initialQuote = quoteFromCommercial(commercialSnapshot, id, Date.parse(now));
-  const value: any = { equipmentId, customerUid: u.uid, providerUid: equipment.ownerUid, categoryId: String(equipment.category || ''), countryCode: commercialSnapshot.countryCode, status: 'pending', requestMode: mode, ...(mode === 'fixed_days' ? { numberOfDays: days } : {}), startDate: requestedRange.from, endDate: requestedRange.until, availabilitySnapshot: equipment.availability || null, amount, platformFee: Number(minorToMajor(commercialSnapshot.platformFeeMinor, commercialSnapshot.currency)), providerAmount: Number(minorToMajor(commercialSnapshot.providerReceivableMinor, commercialSnapshot.currency)), paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: commercialSnapshot.currency, nativeCurrency: commercialSnapshot.currency, nativeAmount: amount, commercialSnapshot, commercialSnapshotStatus: mode === 'fixed_days' ? 'finalized' : 'estimated', allowChat: false, createdAt: now, updatedAt: now };
+  const value: any = { equipmentId, equipmentSnapshot: requestEquipmentSnapshot(equipment), customerUid: u.uid, providerUid: equipment.ownerUid, categoryId: String(equipment.category || ''), countryCode: commercialSnapshot.countryCode, status: 'pending', requestMode: mode, ...(mode === 'fixed_days' ? { numberOfDays: days } : {}), startDate: requestedRange.from, endDate: requestedRange.until, availabilitySnapshot: equipment.availability || null, amount, platformFee: Number(minorToMajor(commercialSnapshot.platformFeeMinor, commercialSnapshot.currency)), providerAmount: Number(minorToMajor(commercialSnapshot.providerReceivableMinor, commercialSnapshot.currency)), paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: commercialSnapshot.currency, nativeCurrency: commercialSnapshot.currency, nativeAmount: amount, commercialSnapshot, commercialSnapshotStatus: mode === 'fixed_days' ? 'finalized' : 'estimated', allowChat: false, createdAt: now, updatedAt: now };
   const publicRequestNumber = await createWithPublicIdentifier(
     env, 'request', `equipmentRequests/${id}`, value,
     [await notificationWrite(fullName.bind(null, env), String(equipment.ownerUid), 'rental_request_created', now, id, `${id}:created`)],

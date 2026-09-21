@@ -11,7 +11,7 @@ vi.mock('firebase/auth', () => ({ signOut: vi.fn() }));
 vi.mock('react-native', () => ({ Platform: { OS: 'web' } }));
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: {} }));
 
-import { getNotificationUnreadCount, listNotifications, markAllNotificationsRead, markNotificationRead, mergeNotificationPage, type NotificationItem } from '../services/notificationService';
+import { getNotificationUnreadCount, listNotifications, markAllNotificationsRead, markNotificationRead, mergeNotificationPage, notificationActionRoute, type NotificationItem } from '../services/notificationService';
 import { notificationUnreadKey, retainNotificationUnread, subscribeNotificationReads } from '../services/notificationUnreadPolicy';
 
 describe('unread service binds requests to the query identity', () => {
@@ -44,6 +44,25 @@ describe('unread service binds requests to the query identity', () => {
   it('does not silently turn a missing list aggregate into a zero badge', async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ success: true, notifications: [] })));
     await expect(listNotifications(null, 'A')).rejects.toThrow('NOTIFICATION_COUNT_INVALID');
+  });
+  it('treats malformed, legacy, and unsupported actions as inbox-only', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
+      success: true,
+      unreadCount: 3,
+      notifications: [
+        null,
+        { id: 'legacy', titleAr: '', titleEn: '', category: 'rental', read: false, createdAt: '' },
+        { id: 'unsupported', action: { type: 'old_route', subjectId: 'req_1' } },
+        { id: 'missing-request', action: { type: 'request' } },
+      ],
+    })));
+    const page = await listNotifications(null, 'A');
+    expect(page.notifications).toHaveLength(3);
+    expect(page.notifications.every(item => item.action === undefined)).toBe(true);
+    expect(notificationActionRoute({ type: 'request', subjectId: '' })).toBeNull();
+    expect(notificationActionRoute({ type: 'payment', subjectId: '../invalid' })).toBeNull();
+    expect(notificationActionRoute({ type: 'request' } as never)).toBeNull();
+    expect(notificationActionRoute({ type: 'unsupported' } as never)).toBeNull();
   });
   it('does not let an old refresh or cursor page revert a locally confirmed read', () => {
     const item = (id: string, read: boolean): NotificationItem => ({

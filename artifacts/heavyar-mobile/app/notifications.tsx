@@ -102,18 +102,30 @@ export default function NotificationsScreen() {
     const countCancellation = queryClient.cancelQueries({ queryKey: notificationUnreadKey(uid), exact: true });
     setOpeningId(item.id);
     try {
+      const route = notificationActionRoute(item.action);
+      // Legacy, malformed, and unsupported records are inbox-only. Do not
+      // acknowledge them: there is no safe destination to take the user to.
+      if (!route) return;
+      let readError = false;
       if (!item.read) {
-        const authoritativeCount = await operations.serializeWrite(async () => {
-          await countCancellation;
-          return markNotificationRead(item.id, uid);
-        });
-        if (!isCurrent()) return;
-        setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, read: true } : entry));
-        setUnreadCount(authoritativeCount);
+        try {
+          const authoritativeCount = await operations.serializeWrite(async () => {
+            await countCancellation;
+            return markNotificationRead(item.id, uid);
+          });
+          if (!isCurrent()) return;
+          setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, read: true } : entry));
+          setUnreadCount(authoritativeCount);
+        } catch {
+          // A notification destination must remain usable when the read
+          // acknowledgement is unavailable. The service reconciles the
+          // shared badge when possible; navigation is intentionally separate.
+          readError = true;
+        }
       }
       if (!isCurrent()) return;
-      const route = notificationActionRoute(item.action);
-      if (route) router.push(route as never);
+      router.push(route as never);
+      if (readError && isCurrent()) setError(t('notifications_error'));
     } catch {
       if (isCurrent()) setError(t('notifications_error'));
     } finally {

@@ -41,7 +41,7 @@ export default function RequestsScreen() {
           accessibilityState={{ selected: selected === value }}
           style={[styles.driverRequestsLink, selected === value && { borderColor: Colors.gold }]}
           onPress={() => router.setParams({ section: value, status: '' })}>
-          <Text style={styles.driverRequestsText}>{value === 'drivers' ? (isRTL ? 'طلبات السائقين' : 'Driver requests')
+          <Text style={styles.driverRequestsText}>{value === 'drivers' ? t(user.role === 'driver' ? 'driver_job_requests' : 'driver_requests')
             : value === 'active' ? (isRTL ? 'الإيجارات النشطة' : 'Active rentals') : (isRTL ? 'طلبات المعدات' : 'Equipment requests')}</Text>
         </Pressable>)}
       </View>

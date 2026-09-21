@@ -10,7 +10,11 @@ import { mobilePerformance } from "@/utils/mobilePerformance";
 
 export default function TabLayout() {
   const { t } = useLanguage();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isLoading, accountState, user } = useAuth();
+  const canonicalProvider = !isLoading
+    && isAuthenticated
+    && accountState === 'authenticated_complete'
+    && user?.role === 'provider';
   const { unreadCount } = useNotificationUnread(isAuthenticated ? user?.uid || '' : '');
   mobilePerformance.countRender('Tabs');
 
@@ -57,6 +61,10 @@ export default function TabLayout() {
       <Tabs.Screen
         name="add"
         options={{
+          // Do not expose this entry while Firebase/canonical profile
+          // resolution is in flight. `href: null` also prevents navigating to
+          // the screen through the tab bar for non-provider accounts.
+          href: canonicalProvider ? undefined : null,
           title: t('add'),
           tabBarIcon: () => (
             <View style={styles.addButton}>

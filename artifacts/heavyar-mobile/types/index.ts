@@ -197,6 +197,8 @@ export interface EquipmentRequest {
   /** Immutable Worker-issued operational identifier; Firestore `id` is unchanged. */
   publicRequestNumber?: string;
   equipmentId: string;
+  /** Immutable, public display-only metadata captured when the request was created. */
+  equipmentSnapshot?: EquipmentRequestSnapshot;
   customerUid: string;
   customerPublic?: PublicUserSnapshot;
   providerUid: string;
@@ -250,6 +252,14 @@ export interface EquipmentRequest {
   commercialSnapshot?: CommercialSnapshot;
   commercialSnapshotStatus?: 'estimated' | 'finalized';
   finalCommercialSnapshot?: CommercialSnapshot;
+}
+
+export interface EquipmentRequestSnapshot {
+  titleAr: string;
+  titleEn: string;
+  images: EquipmentImage[];
+  category?: string;
+  countryCode?: string;
 }
 
 export interface CommercialSnapshot {

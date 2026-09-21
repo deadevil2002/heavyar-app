@@ -93,7 +93,7 @@ function AddEquipmentForm({ auth, activeUid }: {
 }) {
   mobilePerformance.countRender('AddEquipment');
   const { isRTL, t, localizedText } = useLanguage();
-  const { user, isAuthenticated, requiresEmailVerification } = auth;
+  const { user, isAuthenticated, isLoading, accountState, requiresEmailVerification } = auth;
   const mounted = useRef(true);
   const publishingRef = useRef(false);
   const publishTotalMeasurement = useRef<ReturnType<typeof mobilePerformance.startOperation> | null>(null);
@@ -360,7 +360,25 @@ function AddEquipmentForm({ auth, activeUid }: {
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 
-  if (!isAuthenticated || !user) {
+  // Auth resolution must never briefly mount the provider form. In
+  // particular, a cached profile is not canonical authorization.
+  if (isLoading) {
+    return (
+      <View style={styles.container}>
+        <SafeAreaView edges={['top']} style={styles.safeArea}>
+          <View style={styles.blockedContainer}>
+            <ActivityIndicator color={Colors.gold} />
+          </View>
+        </SafeAreaView>
+      </View>
+    );
+  }
+
+  const canonicalProvider = isAuthenticated
+    && accountState === 'authenticated_complete'
+    && user?.role === 'provider';
+
+  if (!canonicalProvider || !user) {
     return (
       <View style={styles.container}>
         <SafeAreaView edges={['top']} style={styles.safeArea}>

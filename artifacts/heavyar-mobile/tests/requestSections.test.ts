@@ -36,6 +36,25 @@ describe('unified role requests', () => {
     expect(driverProfile).toContain('driverRequestsAllowed(user)');
   });
 
+  it('keeps provider listing entry points canonical and role-aware', () => {
+    const tabs = readFileSync(new URL('../app/(tabs)/_layout.tsx', import.meta.url), 'utf8');
+    const add = readFileSync(new URL('../app/(tabs)/add/index.tsx', import.meta.url), 'utf8');
+    const create = readFileSync(new URL('../app/create-listing.tsx', import.meta.url), 'utf8');
+    const requests = readFileSync(new URL('../app/(tabs)/requests/index.tsx', import.meta.url), 'utf8');
+    const translations = readFileSync(new URL('../i18n/translations.ts', import.meta.url), 'utf8');
+    expect(tabs).toContain("href: canonicalProvider ? undefined : null");
+    expect(add).toContain("if (isLoading)");
+    expect(add).toContain("accountState === 'authenticated_complete'");
+    expect(create).toContain("router.replace(provider ? '/(tabs)/add' : '/(tabs)/(home)')");
+    expect(requests).toContain("user.role === 'driver' ? 'driver_job_requests' : 'driver_requests'");
+    expect(translations).toContain("notification_marketing: 'التسويق والعروض'");
+    expect(translations).toContain("notification_marketing: 'Marketing & Offers'");
+    expect(translations).toContain("driver_requests: 'طلبات السائق التي أرسلتها'");
+    expect(translations).toContain("driver_requests: 'My Driver Requests'");
+    expect(translations).toContain("driver_job_requests: 'طلبات العمل'");
+    expect(translations).toContain("driver_job_requests: 'Job Requests'");
+  });
+
   it('makes one entry call, zero timer calls over30s, reuses fresh focus and refetches stale focus; isolates roles/UIDs', async () => {
     vi.useFakeTimers();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

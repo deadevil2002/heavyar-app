@@ -20,7 +20,7 @@ import {
   DocumentData,
 } from 'firebase/firestore';
 import { getFirebaseAuth, getFirebaseDb } from './firebaseConfig';
-import { Equipment, EquipmentImage, EquipmentRequest, ChatMessage, Rating, User, Invoice, PublicUserSnapshot, ListingPricingV2 } from '@/types';
+import { Equipment, EquipmentImage, EquipmentRequest, EquipmentRequestSnapshot, ChatMessage, Rating, User, Invoice, PublicUserSnapshot, ListingPricingV2 } from '@/types';
 import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
 import { WORKER_BASE_URL } from '@/constants/worker';
@@ -195,6 +195,7 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     id,
     publicRequestNumber: typeof data.publicRequestNumber === 'string' ? data.publicRequestNumber : undefined,
     equipmentId: (data.equipmentId as string) || '',
+    equipmentSnapshot: parseEquipmentRequestSnapshot(data.equipmentSnapshot),
     customerUid: (data.customerUid as string) || '',
     customerPublic: parsePublicUserSnapshot(data.customerPublic, (data.customerUid as string) || ''),
     providerUid: (data.providerUid as string) || '',
@@ -235,6 +236,21 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     finalCommercialSnapshot: data.finalCommercialSnapshot as EquipmentRequest['finalCommercialSnapshot'],
     createdAt: toISOString(data.createdAt),
     updatedAt: toISOString(data.updatedAt),
+  };
+}
+
+function parseEquipmentRequestSnapshot(raw: unknown): EquipmentRequestSnapshot | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const value = raw as Record<string, unknown>;
+  const titleAr = typeof value.titleAr === 'string' ? value.titleAr : '';
+  const titleEn = typeof value.titleEn === 'string' ? value.titleEn : '';
+  if (!titleAr && !titleEn) return undefined;
+  return {
+    titleAr,
+    titleEn,
+    images: parseImages(value.images),
+    ...(typeof value.category === 'string' ? { category: value.category } : {}),
+    ...(typeof value.countryCode === 'string' ? { countryCode: value.countryCode } : {}),
   };
 }
 
@@ -307,41 +323,14 @@ export async function fetchEquipmentByOwner(
 }
 
 export async function fetchEquipmentByIds(ids: string[]): Promise<Map<string, Equipment>> {
-  const db = getFirebaseDb();
-  const currentUid = getFirebaseAuth().currentUser?.uid;
-  if (!currentUid) throw new Error('AUTH_REQUIRED');
   const uniqueIds = [...new Set(ids.filter(Boolean))];
   const equipment = new Map<string, Equipment>();
-  for (let offset = 0; offset < uniqueIds.length; offset += 30) {
-    const batch = uniqueIds.slice(offset, offset + 30);
-    if (!batch.length) continue;
-    // Rules are not filters: an ID-only collection query cannot prove that
-    // every possible result is readable. These two bounded queries mirror the
-    // existing public-listing and owner read predicates instead.
-    const [publicSnap, ownedSnap] = await Promise.all([
-      getDocs(query(
-        collection(db, 'equipment'),
-        where('isActive', '==', true),
-        where('visibility', '==', 'visible'),
-        where('moderationStatus', '==', 'approved'),
-        where(documentId(), 'in', batch),
-        orderBy('createdAt', 'desc'),
-        orderBy(documentId(), 'desc'),
-        limit(batch.length)
-      )),
-      getDocs(query(
-        collection(db, 'equipment'),
-        where('ownerUid', '==', currentUid),
-        where(documentId(), 'in', batch),
-        orderBy('createdAt', 'desc'),
-        orderBy(documentId(), 'desc'),
-        limit(batch.length)
-      )),
-    ]);
-    [...publicSnap.docs, ...ownedSnap.docs].forEach(d => {
-      equipment.set(d.id, parseEquipment(d.id, d.data() as Record<string, unknown>));
-    });
-  }
+  // Each listing is deliberately isolated: a missing, deleted, hidden, or
+  // legacy listing must not make an otherwise readable request page fail.
+  const results = await Promise.allSettled(uniqueIds.map(id => fetchEquipmentById(id)));
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled' && result.value) equipment.set(uniqueIds[index], result.value);
+  });
   return equipment;
 }
 
