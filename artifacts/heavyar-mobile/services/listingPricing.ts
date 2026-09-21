@@ -177,6 +177,8 @@ export function formatMinorCurrency(
   const scale = 10n ** BigInt(precision);
   const amount = BigInt(amountMinor);
   const whole = amount / scale;
+  if (whole > BigInt(Number.MAX_SAFE_INTEGER)) return '';
+  const wholeNumber = Number(whole);
   const fraction = String(amount % scale).padStart(precision, '0').replace(/0+$/, '');
   const localeCode = locale === 'ar' ? 'ar-SA' : 'en';
   const formatter = new Intl.NumberFormat(localeCode, {
@@ -186,7 +188,10 @@ export function formatMinorCurrency(
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   });
-  const parts = formatter.formatToParts(whole);
+  // Android Hermes does not accept BigInt in Intl.NumberFormat even though
+  // some desktop JavaScript runtimes do. The range check above makes this
+  // conversion exact before the value crosses the Intl boundary.
+  const parts = formatter.formatToParts(wholeNumber);
   if (!fraction) return parts.map(part => part.value).join('');
 
   const decimalSeparator = new Intl.NumberFormat(localeCode, {

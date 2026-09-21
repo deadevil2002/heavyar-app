@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildListingPricing,
   currencyMinorDigits,
@@ -125,5 +125,34 @@ describe('listing pricing model', () => {
     expect(minorAmountToDecimal(maximum, 'KWD')).toBe('9007199254740.991');
     const formatted = formatMinorCurrency(maximum, 'KWD', 'en');
     expect(formatted).toContain('9,007,199,254,740.991');
+  });
+
+  it.each([
+    ['SAR', 12345, 'en', /123\.45/],
+    ['SAR', 12345, 'ar', /١٢٣٫٤٥/],
+    ['KWD', 12345, 'en', /12\.345/],
+    ['KWD', 12345, 'ar', /١٢٫٣٤٥/],
+    ['BHD', 12345, 'en', /12\.345/],
+    ['BHD', 12345, 'ar', /١٢٫٣٤٥/],
+    ['OMR', 12345, 'en', /12\.345/],
+    ['OMR', 12345, 'ar', /١٢٫٣٤٥/],
+  ] as const)('formats %s amount %i in %s without passing BigInt to Intl', (currency, amount, locale, expected) => {
+    const original = Intl.NumberFormat.prototype.formatToParts;
+    const values: unknown[] = [];
+    const spy = vi.spyOn(Intl.NumberFormat.prototype, 'formatToParts').mockImplementation(function (
+      this: Intl.NumberFormat,
+      value,
+    ) {
+      values.push(value);
+      if (typeof value === 'bigint') throw new TypeError('Hermes rejects BigInt Intl input');
+      return original.call(this, value);
+    });
+    try {
+      expect(formatMinorCurrency(amount, currency, locale)).toMatch(expected);
+      expect(values.length).toBeGreaterThan(0);
+      expect(values.every(value => typeof value === 'number')).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
