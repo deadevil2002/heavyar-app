@@ -15,7 +15,13 @@ export type MutationDiagnostics = {
   upstreamDurationMs: number;
   upstream?: { service: 'cloudinary'; operation: 'image_upload' | 'image_delete'; status: number; ok: boolean };
   cas?: 'not_used' | 'succeeded' | 'conflict' | 'failed';
-  quota: { checked: boolean; blocked: boolean; exhausted: boolean };
+  quota: {
+    checked: boolean;
+    blocked: boolean;
+    exhausted: boolean;
+    reservationOutcome?: 'quota_reserved' | 'quota_exhausted' | 'cas_conflict_retry' | 'quota_infrastructure_failure';
+    casConflictRetries?: number;
+  };
   exceptionClass?: 'Error' | 'TypeError' | 'QuotaError' | 'AdminDocumentUnavailableError';
 };
 
@@ -106,7 +112,10 @@ export function mutationDiagnosticEvent(
     firestoreWriteOutcome: writeOutcome,
     firestoreDurationMs: diagnostics.firestoreDurationMs,
     upstreamDurationMs: diagnostics.upstreamDurationMs,
-    quotaOutcome: diagnostics.quota.exhausted ? 'exhausted' : diagnostics.quota.blocked ? 'blocked' : diagnostics.quota.checked ? 'allowed' : 'not_checked',
+    quotaOutcome: diagnostics.quota.reservationOutcome || (diagnostics.quota.exhausted ? 'exhausted' : diagnostics.quota.blocked ? 'blocked' : diagnostics.quota.checked ? 'allowed' : 'not_checked'),
+    ...(diagnostics.quota.casConflictRetries ? {
+      casConflictRetry: { occurred: true, count: diagnostics.quota.casConflictRetries },
+    } : {}),
     casOutcome: diagnostics.cas || 'not_used',
     release: safeRelease(release),
     ...(diagnostics.exceptionClass ? { exceptionClass: diagnostics.exceptionClass } : {}),

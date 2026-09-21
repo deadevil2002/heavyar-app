@@ -16,6 +16,7 @@ import { evaluateCanonicalCompleteness, isOperationallyBlocked, isSecuritySuspen
 import { reviewEquipmentProjection, searchPublicEquipment, type FirestoreQuery, type EquipmentSearchRow } from './equipment-search';
 import { activeInterval, buildFinalPaymentHandoff, calculateRental, estimateRental, intervalsOverlap, legacyMarketProjection, legacyPricingProjection, marketForCountry, parseV2RequestInput, rateFor, validateListingPricing, validateServerStart, v2TransitionAllowed, type V2RequestInput } from './rental-v2';
 import { mutationDiagnosticEvent, mutationRoute, responseErrorCode, type MutationDiagnostics, type MutationStage } from './observability';
+import { reserveCloudinaryUploadQuota as reserveCloudinaryUploadQuotaAttempt, type CloudinaryQuotaRecord } from './cloudinary-upload-quota';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -101,6 +102,12 @@ function mutationStage(env: Env, stage: MutationStage) {
 }
 const err = (message: string): never => { throw new Error(message); };
 const authErr = (): never => { throw new Error('AUTH_REQUIRED'); };
+export class FirestorePreconditionError extends Error {
+  constructor() {
+    super('precondition failed');
+    this.name = 'FirestorePreconditionError';
+  }
+}
 
 type FirebaseJwk = JsonWebKey & { kid?: string };
 let firebaseKeys: Record<string, FirebaseJwk> = {};
@@ -256,7 +263,7 @@ async function fs(env: Env, path: string, init?: RequestInit): Promise<any> {
   if (!r.ok) {
     const code = typeof (result as any)?.error?.status === 'string' ? (result as any).error.status : undefined;
     if (diagnostics) diagnostics.firestoreFailure = { operation, status: r.status, ...(code ? { code } : {}) };
-    if (code === 'FAILED_PRECONDITION' || r.status === 409) throw new Error('precondition failed');
+     if (code === 'FAILED_PRECONDITION' || r.status === 409) throw new FirestorePreconditionError();
     err('Firestore unavailable');
   }
   if (diagnostics) {
@@ -2357,16 +2364,12 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
   if (!u.admin && evaluateCanonicalCompleteness(u, account || null, roleProfile).state !== 'authenticated_complete') {
     return out(env, req, { success: false, error: 'Complete your account setup before uploading media.', errorCode: 'PROFILE_REQUIRED' }, 409);
   }
-  const now = Date.now(), windowStart = new Date(Math.floor(now / 60000) * 60000).toISOString(), ratePath = `cloudinaryUploadRates/${encodeURIComponent(u.uid)}`;
+  const ratePath = `cloudinaryUploadRates/${encodeURIComponent(u.uid)}`;
   mutationStage(env, 'quota');
-  const rate = await getRawDoc(env, 'cloudinaryUploadRates', u.uid);
-  const count = rate?.data?.windowStart === windowStart ? Number(rate.data.count || 0) : 0;
-  if (count >= 10) return out(env, req, { success: false, error: 'RATE_LIMITED' }, 429);
-  const rateFields = { uid: { stringValue: u.uid }, windowStart: { timestampValue: windowStart }, count: { integerValue: String(count + 1) }, updatedAt: { timestampValue: new Date(now).toISOString() } };
-  try {
-    if (rate?.updateTime) await compareAndSwap(env, ratePath, rate.updateTime, rateFields);
-    else await createDoc(env, ratePath, rateFields);
-  } catch { return out(env, req, { success: false, error: 'RATE_LIMITED' }, 429); }
+  const reservation = await reserveCloudinaryUploadQuota(env, u.uid, ratePath);
+  if (reservation === 'quota_exhausted') return out(env, req, { success: false, error: 'RATE_LIMITED' }, 429);
+  if (reservation !== 'quota_reserved') return out(env, req, { success: false, error: 'Upload quota temporarily unavailable', errorCode: 'SERVICE_TEMPORARILY_BUSY' }, 503);
+  const now = Date.now();
   mutationStage(env, 'validation');
   const form: any = await req.formData().catch(() => null), file = form?.get('file');
   if (!(file instanceof Blob)) return out(env, req, { success: false, error: 'File required' }, 400);
@@ -2393,6 +2396,39 @@ async function cloudinaryUpload(req: Request, env: Env, u: User) {
   if (!response.ok || typeof result.public_id !== 'string' || typeof result.secure_url !== 'string' || !result.public_id.startsWith(`${folder}/`)) return out(env, req, { success: false, error: 'Upload failed', errorCode: 'CLOUDINARY_UPLOAD_FAILED' }, 502);
   mutationStage(env, 'response');
   return out(env, req, { success: true, url: result.secure_url, publicId: result.public_id });
+}
+async function reserveCloudinaryUploadQuota(env: Env, uid: string, ratePath: string): Promise<'quota_reserved' | 'quota_exhausted' | 'cas_conflict_retry' | 'quota_infrastructure_failure'> {
+  const result = await reserveCloudinaryUploadQuotaAttempt({
+    uid,
+    read: async currentUid => {
+      const raw = await getRawDoc(env, 'cloudinaryUploadRates', currentUid);
+      return raw ? { ...raw.data, version: raw.updateTime } as CloudinaryQuotaRecord : null;
+    },
+    write: async reservation => {
+      const now = Date.now();
+      const fields = {
+        uid: { stringValue: uid },
+        windowStart: { timestampValue: reservation.windowStart },
+        count: { integerValue: String(reservation.count) },
+        updatedAt: { timestampValue: new Date(now).toISOString() },
+      };
+      if (reservation.prior?.version) await compareAndSwap(env, ratePath, reservation.prior.version, fields);
+      else await createDoc(env, ratePath, fields);
+    },
+    isConflict: error => error instanceof FirestorePreconditionError,
+  });
+  if (env.__diagnostics) {
+    env.__diagnostics.quota.reservationOutcome = result.outcome;
+    env.__diagnostics.quota.casConflictRetries = result.casConflictRetries || undefined;
+    if (result.outcome === 'quota_exhausted') env.__diagnostics.quota.exhausted = true;
+    if (result.outcome === 'quota_reserved') {
+      env.__diagnostics.cas = 'succeeded';
+      env.__diagnostics.firestoreFailure = undefined;
+    } else if (result.casConflictRetries) {
+      env.__diagnostics.cas = 'conflict';
+    }
+  }
+  return result.outcome;
 }
 export const DEFAULT_AUTH_CONFIG = Object.freeze({
   requirePhoneOnSignup: false,

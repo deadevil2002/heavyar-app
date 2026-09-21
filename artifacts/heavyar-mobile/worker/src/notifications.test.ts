@@ -11,7 +11,7 @@ const request = (path: string, init: RequestInit = {}) => new Request(`https://w
   ...init, headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json', ...(init.headers || {}) },
 });
 
-afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setDeliveryQuery(undefined); });
+afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setDeliveryQuery(undefined); __test.setReservationConflict(false); });
 
 describe('trusted notification foundation', () => {
   test('notification payload has localized safe copy and allowlisted action', async () => {
@@ -175,9 +175,15 @@ describe('trusted notification foundation', () => {
     __test.setFirestore((collection) => collection === 'cloudinaryUploadRates'
       ? { count: 10, windowStart: new Date(Math.floor(Date.now() / 60000) * 60000).toISOString() }
       : collection === 'users' ? completeCustomer('owner-2') : null);
-    const response = await worker.fetch(request('/cloudinary/upload', { method: 'POST', body: '{}', headers: { 'Content-Length': '100' } }), { ...env, CLOUDINARY_CLOUD_NAME: 'cloud', CLOUDINARY_API_KEY: 'public', CLOUDINARY_API_SECRET: 'secret' });
-    expect(response.status).toBe(429);
-    expect((await response.json() as any).errorCode).toBe('RATE_LIMITED');
+    let upstreamCalls = 0;
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = (async () => { upstreamCalls++; return new Response('{}'); }) as typeof fetch;
+    try {
+      const response = await worker.fetch(request('/cloudinary/upload', { method: 'POST', body: '{}', headers: { 'Content-Length': '100' } }), { ...env, CLOUDINARY_CLOUD_NAME: 'cloud', CLOUDINARY_API_KEY: 'public', CLOUDINARY_API_SECRET: 'secret' });
+      expect(response.status).toBe(429);
+      expect((await response.json() as any).errorCode).toBe('RATE_LIMITED');
+      expect(upstreamCalls).toBe(0);
+    } finally { globalThis.fetch = oldFetch; }
   });
   test('upload proxy accepts only bounded allowlisted multipart images and returns canonical DTO', async () => {
     __test.setAuth({ uid: 'u-upload', admin: false });
