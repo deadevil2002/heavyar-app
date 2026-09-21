@@ -11,7 +11,7 @@ type Props = {
   disabled?: boolean;
 };
 
-export default function ListingPricingFields({ value, onChange, currency, isRTL, disabled }: Props) {
+export default React.memo(function ListingPricingFields({ value, onChange, currency, isRTL, disabled }: Props) {
   const code = normalizeCurrency(currency);
   const direction = isRTL ? 'row-reverse' as const : 'row' as const;
   const decimalHint = currencyMinorDigits(code) === 3 ? '0.000' : '0.00';
@@ -33,6 +33,7 @@ export default function ListingPricingFields({ value, onChange, currency, isRTL,
             <Text style={[styles.currency, { textAlign: isRTL ? 'right' : 'left' }]}>{code}</Text>
           </View>
           <Switch
+            accessibilityLabel={title}
             value={enabled}
             disabled={disabled}
             onValueChange={(next) => update(unit === 'hourly' ? { hourlyEnabled: next } : { dailyEnabled: next })}
@@ -42,6 +43,7 @@ export default function ListingPricingFields({ value, onChange, currency, isRTL,
         </View>
         {enabled && (
           <TextInput
+            accessibilityLabel={title}
             style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]}
             value={amount}
             editable={!disabled}
@@ -67,7 +69,7 @@ export default function ListingPricingFields({ value, onChange, currency, isRTL,
       {rate('daily', value.dailyEnabled, value.dailyAmount)}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: { gap: 10 },

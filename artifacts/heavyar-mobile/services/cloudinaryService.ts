@@ -1,5 +1,7 @@
 import { getFirebaseAuth } from './firebaseConfig';
 import { WORKER_BASE_URL } from '@/constants/worker';
+import { Platform } from 'react-native';
+import { MutationError } from './mutationError';
 
 const UPLOAD_FOLDER = 'heavyar';
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -15,36 +17,77 @@ export interface UploadProgress {
 }
 
 export async function uploadImageToCloudinary(
-  localUri: string
+  localUri: string,
+  expectedUid?: string,
 ): Promise<CloudinaryImage> {
-  const uid = getFirebaseAuth().currentUser?.uid;
-  if (!uid) throw new Error('Please sign in before uploading images');
-  const localResponse = await fetch(localUri);
-  const blob = await localResponse.blob();
-  const contentType = String(blob.type || '').toLowerCase();
+  const auth = getFirebaseAuth(), user = auth.currentUser;
+  const uid = user?.uid;
+  if (!uid) throw new MutationError('AUTH_REQUIRED', 401);
+  if (expectedUid && uid !== expectedUid) throw new MutationError('AUTH_SESSION_CHANGED');
+  const assertSession = () => {
+    if (auth.currentUser?.uid !== uid) throw new MutationError('AUTH_SESSION_CHANGED', 0);
+  };
+  let blob: Blob | undefined;
+  try {
+    const localResponse = await fetch(localUri);
+    blob = await localResponse.blob();
+  } catch { throw new MutationError('IMAGE_READ_FAILED'); }
+  const contentType = String(blob.type || '').toLowerCase().split(';')[0].trim();
+  const size = blob.size;
+  if (Platform.OS !== 'web') {
+    // Native multipart reads the URI itself. Release RN's validation-only Blob
+    // allocation before networking rather than retaining two image buffers.
+    (blob as Blob & { close?: () => void }).close?.();
+    blob = undefined;
+  }
+  assertSession();
   const extension = (localUri.split(/[?#]/)[0].match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase();
-  const imageExtension = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif'].includes(extension);
-  if (!contentType.startsWith('image/') && !imageExtension) throw new Error('Only image files are allowed');
-  if (blob.size > MAX_IMAGE_BYTES) throw new Error('Image is too large');
+  // Match the authoritative Worker allowlist. URI suffix is only a fallback
+  // for missing/generic metadata, never an override of an unsupported MIME.
+  const extensions: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif' };
+  const type = !contentType || contentType === 'application/octet-stream' ? extensions[extension] : contentType;
+  if (!type || !Object.values(extensions).includes(type)) throw new MutationError('INVALID_IMAGE', 415);
+  if (!Number.isSafeInteger(size) || size <= 0) throw new MutationError('INVALID_IMAGE_SIZE', 400);
+  if (size > MAX_IMAGE_BYTES) throw new MutationError('IMAGE_TOO_LARGE', 413);
+  const filename = `upload.${type === 'image/jpeg' ? 'jpg' : type.slice('image/'.length)}`;
 
   const folder = `${UPLOAD_FOLDER}/${uid}`;
   const formData = new FormData();
-  formData.append('file', blob, 'upload.jpg');
-  const auth = getFirebaseAuth();
-  const token = await auth.currentUser?.getIdToken();
-  if (!token) throw new Error('AUTH_REQUIRED');
-  const send = (authToken: string) => fetch(`${WORKER_BASE_URL}/cloudinary/upload`, {
+  if (blob) formData.append('file', blob.type === type ? blob : blob.slice(0, size, type), filename);
+  else {
+    // RN FormData does NOT accept a web Blob: Android's multipart bridge
+    // requires uri/name/type. A Blob has no uri and fails before any Worker call.
+    formData.append('file', { uri: localUri, name: filename, type } as unknown as Blob);
+  }
+  let token: string | undefined;
+  try { token = await user.getIdToken(); }
+  catch { throw new MutationError('AUTH_TOKEN_UNAVAILABLE'); }
+  if (!token) throw new MutationError('AUTH_REQUIRED', 401);
+  const send = (authToken: string) => {
+    assertSession();
+    return fetch(`${WORKER_BASE_URL}/cloudinary/upload`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${authToken}` },
     body: formData,
-  });
-  let response = await send(token);
-  if (response.status === 401 && auth.currentUser) response = await send(await auth.currentUser.getIdToken(true));
+    });
+  };
+  let response: Response;
+  try {
+    response = await send(token);
+    assertSession();
+    if (response.status === 401) response = await send(await user.getIdToken(true));
+    assertSession();
+  } catch (error) {
+    if (error instanceof MutationError) throw error;
+    throw new MutationError('UPLOAD_NETWORK_UNAVAILABLE');
+  }
   if (!response.ok) {
-    await response.text();
-    throw new Error(`Cloudinary upload failed: ${response.status}`);
+    const body = await response.json().catch(() => ({}));
+    assertSession();
+    throw new MutationError(typeof body.errorCode === 'string' ? body.errorCode : 'UPLOAD_FAILED', response.status, response.headers.get('X-Request-ID') || body.supportCode);
   }
   const body = await response.json().catch(() => ({})) as { success?: boolean; url?: unknown; publicId?: unknown; data?: { url?: unknown; publicId?: unknown } };
+  assertSession();
   const data = body.data || body;
   const url = typeof data.url === 'string' ? data.url : '';
   const publicId = typeof data.publicId === 'string' ? data.publicId : '';
@@ -52,26 +95,35 @@ export async function uploadImageToCloudinary(
   if (body.success === false
     || !/^https:\/\/res\.cloudinary\.com\/[A-Za-z0-9_-]+\/image\/upload\/.+$/.test(url)
     || !publicId.startsWith(expectedPrefix)) {
-    throw new Error('Invalid Cloudinary upload response');
+    throw new MutationError('INVALID_UPLOAD_RESPONSE', 502, response.headers.get('X-Request-ID'));
   }
   return { url, publicId };
 }
 
 export async function uploadMultipleImages(
   localUris: string[],
-  onProgress?: (completed: number, total: number) => void
+  onProgress?: (completed: number, total: number) => void | Promise<void>,
+  expectedUid?: string,
 ): Promise<CloudinaryImage[]> {
+  const auth = getFirebaseAuth(), uid = auth.currentUser?.uid;
+  if (!uid) throw new MutationError('AUTH_REQUIRED', 401);
+  if (expectedUid && uid !== expectedUid) throw new MutationError('AUTH_SESSION_CHANGED');
   const results: CloudinaryImage[] = [];
   let completed = 0;
   try {
     for (const uri of localUris) {
-      const result = await uploadImageToCloudinary(uri);
+      if (auth.currentUser?.uid !== uid) throw new MutationError('AUTH_SESSION_CHANGED');
+      const result = await uploadImageToCloudinary(uri, uid);
       results.push(result);
       completed++;
-      onProgress?.(completed, localUris.length);
+      try {
+        const progress = onProgress?.(completed, localUris.length);
+        if (progress) void Promise.resolve(progress).catch(() => console.warn('[media] upload progress observer failed'));
+      }
+      catch { console.warn('[media] upload progress observer failed'); }
     }
   } catch (error) {
-    await Promise.all(results.map(image => deleteCloudinaryImage(image.publicId)));
+    if (auth.currentUser?.uid === uid) await Promise.all(results.map(image => deleteCloudinaryImage(image.publicId)));
     throw error;
   }
 

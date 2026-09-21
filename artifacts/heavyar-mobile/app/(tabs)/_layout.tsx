@@ -1,32 +1,31 @@
-import { Tabs, useFocusEffect } from "expo-router";
+import { Tabs } from "expo-router";
 import { Home, Search, PlusCircle, FileText, User } from "lucide-react-native";
-import React, { useCallback, useState } from "react";
+import React from "react";
 import { View, StyleSheet } from "react-native";
 import Colors from "@/constants/colors";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAuth } from "@/contexts/AuthContext";
-import { listNotifications } from "@/services/notificationService";
+import { useNotificationUnread } from "@/hooks/useNotificationUnread";
+import { mobilePerformance } from "@/utils/mobilePerformance";
 
 export default function TabLayout() {
   const { t } = useLanguage();
-  const { isAuthenticated } = useAuth();
-  const [unreadCount, setUnreadCount] = useState(0);
-
-  useFocusEffect(useCallback(() => {
-    let active = true;
-    if (!isAuthenticated) {
-      setUnreadCount(0);
-      return () => { active = false; };
-    }
-    void listNotifications()
-      .then((page) => { if (active) setUnreadCount(page.unreadCount); })
-      .catch(() => { if (active) setUnreadCount(0); });
-    return () => { active = false; };
-  }, [isAuthenticated]));
+  const { isAuthenticated, user } = useAuth();
+  const { unreadCount } = useNotificationUnread(isAuthenticated ? user?.uid || '' : '');
+  mobilePerformance.countRender('Tabs');
 
   return (
     <Tabs
+      screenListeners={{
+        tabPress: () => {
+          if (!mobilePerformance.isEnabled()) return;
+          const press = mobilePerformance.startPress('Tabs:next-js-frame');
+          // Frame scheduling is only a JS-visible proxy, not native paint latency.
+          requestAnimationFrame(() => press.visible());
+        },
+      }}
       screenOptions={{
+        lazy: true,
         headerShown: false,
         tabBarActiveTintColor: Colors.gold,
         tabBarInactiveTintColor: Colors.textMuted,
@@ -77,7 +76,7 @@ export default function TabLayout() {
         name="profile"
         options={{
           title: t('profile'),
-          tabBarBadge: unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : undefined,
+          tabBarBadge: unreadCount && unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : undefined,
           tabBarIcon: ({ color, size }) => <User size={size} color={color} />,
         }}
       />

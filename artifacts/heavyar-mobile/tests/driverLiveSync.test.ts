@@ -3,7 +3,7 @@ import { LatestRequestGuard, refreshLoadedPages } from '../services/driverLiveSy
 
 vi.mock('../services/firebaseConfig', () => ({
   getFirebaseAuth: () => ({
-    currentUser: { getIdToken: async () => 'test-token' },
+    currentUser: { uid: 'test-driver-request-user', getIdToken: async () => 'test-token' },
   }),
 }));
 

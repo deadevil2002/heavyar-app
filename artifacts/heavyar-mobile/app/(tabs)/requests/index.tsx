@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Lock } from 'lucide-react-native';
@@ -16,8 +16,10 @@ import RequestCard from '@/components/RequestCard';
 import EmptyState from '@/components/EmptyState';
 import { Equipment, EquipmentRequest } from '@/types';
 import { hasCapability } from '@/services/roleCapabilities';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 export default function RequestsScreen() {
+  mobilePerformance.countRender('Requests');
   const { isRTL, t } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
@@ -31,15 +33,31 @@ export default function RequestsScreen() {
   const firstPageCursorRef = useRef<FirestoreCursor | null>(null);
   const firstPageHasMoreRef = useRef(false);
   const hasOlderPagesRef = useRef(false);
-  const visibleRequests = status === 'active'
+  const visibleRequests = useMemo(() => status === 'active'
     ? requests.filter(item => ['accepted', 'in_progress', 'completion_requested'].includes(item.status))
-    : requests;
+    : requests, [requests, status]);
+  useEffect(() => { mobilePerformance.markContextCommit('Requests:auth'); }, [user]);
+  useEffect(() => { mobilePerformance.markContextCommit('Requests:language'); }, [t, isRTL]);
 
   const currentUid = user?.uid || '';
   const requestPerspective = user?.role === 'provider' ? 'provider' : 'customer';
+  const identity = `${currentUid}:${requestPerspective}`;
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
   const canViewDriverRequests = hasCapability(user?.role, 'driverRequests');
 
   useEffect(() => {
+    // Never merge a previous identity's older pages into the next account.
+    let active = true;
+    setRequests([]);
+    setEquipmentById(new Map());
+    setCursor(null);
+    setHasMore(false);
+    setHasOlderPages(false);
+    setLoadingMore(false);
+    hasOlderPagesRef.current = false;
+    firstPageCursorRef.current = null;
+    firstPageHasMoreRef.current = false;
     if (!currentUid) {
       setRequests([]);
       return;
@@ -49,6 +67,8 @@ export default function RequestsScreen() {
       return;
     }
     const unsub = subscribeToUserRequests(currentUid, requestPerspective, (page) => {
+      if (!active) return;
+      mobilePerformance.markRefetch('Requests:bounded-live-page');
       setRequests((previous) => {
         const older = previous.slice(20);
         const liveIds = new Set(page.items.map(item => item.id));
@@ -61,10 +81,11 @@ export default function RequestsScreen() {
         setHasMore(page.hasMore);
       }
       void fetchEquipmentByIds(page.items.map(item => item.equipmentId)).then((equipment) => {
+        if (!active) return;
         setEquipmentById(previous => new Map([...previous, ...equipment]));
       });
     });
-    return () => unsub();
+    return () => { active = false; unsub(); };
   }, [canViewDriverRequests, currentUid, requestPerspective]);
 
   const renderItem = useCallback(({ item }: { item: EquipmentRequest }) => (
@@ -77,6 +98,7 @@ export default function RequestsScreen() {
     try {
       const page = await fetchUserRequests(currentUid, requestPerspective, cursor);
       const equipment = await fetchEquipmentByIds(page.items.map(item => item.equipmentId));
+      if (identityRef.current !== identity) return;
       setEquipmentById(previous => new Map([...previous, ...equipment]));
       setRequests(previous => {
         const seen = new Set(previous.map(item => item.id));
@@ -87,9 +109,9 @@ export default function RequestsScreen() {
       setHasOlderPages(true);
       hasOlderPagesRef.current = true;
     } finally {
-      setLoadingMore(false);
+      if (identityRef.current === identity) setLoadingMore(false);
     }
-  }, [cursor, currentUid, hasMore, loadingMore, requestPerspective]);
+  }, [cursor, currentUid, hasMore, identity, loadingMore, requestPerspective]);
 
   const refreshOlder = useCallback(() => {
     setRequests(previous => previous.slice(0, 20));

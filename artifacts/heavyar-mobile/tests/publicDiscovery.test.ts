@@ -150,7 +150,7 @@ describe('canonical mobile public discovery', () => {
   it('keeps horizontal Home scrolling but hides web and native indicators', () => {
     const home = source('../app/(tabs)/(home)/index.tsx');
     const horizontalRows = home.match(/<ScrollView\b[^>]*\bhorizontal\b[^>]*>/g) || [];
-    expect(horizontalRows).toHaveLength(2);
+    expect(horizontalRows).toHaveLength(1);
     for (const row of horizontalRows) {
       expect(row).toContain('showsHorizontalScrollIndicator={false}');
       expect(row).not.toContain('scrollEnabled={false}');

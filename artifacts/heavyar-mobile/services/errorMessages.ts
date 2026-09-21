@@ -76,7 +76,9 @@ const messages: Record<Language, Record<string, string>> = {
   },
 };
 export function safeErrorMessage(error: unknown, language: Language) {
-  const value = error as { code?: unknown; errorCode?: unknown };
+  const value = error as { code?: unknown; errorCode?: unknown; supportCode?: unknown };
   const code = typeof value?.errorCode === 'string' ? value.errorCode : typeof value?.code === 'string' ? value.code : '';
-  return messages[language][code] || messages[language].REQUEST_FAILED;
+  const message = messages[language][code] || messages[language].REQUEST_FAILED;
+  const support = typeof value?.supportCode === 'string' && /^(?:[A-F0-9]{10}|CLIENT-[A-Z0-9-]{3,48})$/.test(value.supportCode) ? value.supportCode : undefined;
+  return support ? `${message}\n${language === 'ar' ? 'رمز الدعم' : 'Support code'}: ${support}` : message;
 }

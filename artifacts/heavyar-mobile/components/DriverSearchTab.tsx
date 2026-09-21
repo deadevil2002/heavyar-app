@@ -4,7 +4,7 @@ import { Search as SearchIcon, SlidersHorizontal, X } from 'lucide-react-native'
 import { useRouter, useFocusEffect } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { useDiscovery } from '@/contexts/DiscoveryContext';
+import { useDiscoveryMarkets } from '@/contexts/DiscoveryContext';
 import { searchDrivers, type DriverPublicProfile } from '@/services/workerClient';
 import DriverCard from './DriverCard';
 import EmptyState from './EmptyState';
@@ -19,7 +19,7 @@ const DRIVER_SEARCH_STALE_MS = 2 * 60_000;
 
 export default function DriverSearchTab() {
   const { isRTL, t } = useLanguage();
-  const { markets } = useDiscovery();
+  const markets = useDiscoveryMarkets();
   const router = useRouter();
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');

@@ -1,35 +1,48 @@
-import React, { useState, useCallback, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Animated, ActivityIndicator, RefreshControl, TextInput } from 'react-native';
+import React, { useState, useCallback, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, FlatList, Pressable, ActivityIndicator, RefreshControl, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Search, Bell, Globe, ChevronLeft, ChevronRight, Package, PlusCircle, Inbox, Activity, UserSearch } from 'lucide-react-native';
+import { Search, Bell, Globe, Grid2X2, List, Package, PlusCircle, Inbox, Activity, UserSearch } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories } from '@/mocks/categories';
-import { useDiscovery } from '@/contexts/DiscoveryContext';
+import { useDiscovery, useDiscoveryDraft } from '@/contexts/DiscoveryContext';
 import DiscoveryFilters from '@/components/DiscoveryFilters';
 import EquipmentCard from '@/components/EquipmentCard';
 import CategoryCard from '@/components/CategoryCard';
 import EmptyState from '@/components/EmptyState';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { loadEquipmentView, saveEquipmentView, type EquipmentView } from '@/services/equipmentViewPreference';
+import type { Equipment } from '@/types';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 export default function HomeScreen() {
+  mobilePerformance.countRender('home');
   const { isRTL, t, localizedText, setLanguage } = useLanguage();
   const { user, isAuthenticated } = useAuth();
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
-  const { equipment: filteredEquipment, filters, markets, setFilter, resetFilters, loading, refreshing, error, refresh, hasFilters, loadMore, hasMore, loadingMore } = useDiscovery();
+  const discovery = useDiscovery();
+  const { equipment: filteredEquipment, filters, markets, loading, refreshing, error, refresh, hasFilters, loadMore, hasMore, loadingMore } = discovery;
+  const { text, changeText, commitText, draftFilters, beginFilters, changeFilter, commitFilters, resetAll } = useDiscoveryDraft(discovery);
   const [showFilters, setShowFilters] = useState(false);
-  const selectedCategory = filters.category;
-  const scrollAnim = useRef(new Animated.Value(0)).current;
-  const featuredEquipment = filteredEquipment.filter(e => e.availability).slice(0, 5);
+  const [view, setView] = useState<EquipmentView>('list');
+  useEffect(() => { void loadEquipmentView().then(setView); }, []);
+  const selectedCategory = showFilters ? draftFilters.category : filters.category;
+  const renderItem = useCallback(({ item }: { item: Equipment }) => (
+    <View style={view === 'grid' ? styles.gridItem : styles.listItem}>
+      <EquipmentCard equipment={item} compact={view === 'grid'} />
+    </View>
+  ), [view]);
 
   const handleCategoryPress = useCallback((categoryId: string) => {
-    setFilter('category', selectedCategory === categoryId ? '' : categoryId);
-  }, [selectedCategory, setFilter]);
+    if (!showFilters) beginFilters();
+    changeFilter('category', selectedCategory === categoryId ? '' : categoryId);
+    setShowFilters(true);
+  }, [selectedCategory, changeFilter, showFilters, beginFilters]);
 
   const handleSearch = useCallback(() => {
     router.push('/(tabs)/search?mode=equipment');
@@ -55,12 +68,21 @@ export default function HomeScreen() {
   return (
     <View style={styles.container}>
       <SafeAreaView edges={['top']} style={styles.safeArea}>
-        <Animated.ScrollView
+        <FlatList
+          data={filteredEquipment}
+          renderItem={renderItem}
+          keyExtractor={item => item.id}
+          key={view}
+          numColumns={view === 'grid' ? 2 : 1}
+          columnWrapperStyle={view === 'grid' ? styles.gridRow : undefined}
+          initialNumToRender={6}
+          maxToRenderPerBatch={6}
+          windowSize={5}
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing && !loading} onRefresh={refresh} tintColor={Colors.gold} />}
-          onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollAnim } } }], { useNativeDriver: true })}
-          scrollEventThrottle={16}
-        >
+          onEndReached={() => { if (filteredEquipment.length) loadMore(); }}
+          onEndReachedThreshold={0.5}
+          ListHeaderComponent={<>
           <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start', flex: 1 }}>
               <Text style={[styles.greeting, { textAlign: isRTL ? 'right' : 'left' }]}>
@@ -112,7 +134,7 @@ export default function HomeScreen() {
             <Search size={20} color={Colors.textMuted} />
             <TextInput testID="home-search-input" style={[styles.searchText, { textAlign: isRTL ? 'right' : 'left', color: Colors.textPrimary }]}
               placeholder={t('search_placeholder')} placeholderTextColor={Colors.textMuted}
-              value={filters.text} onChangeText={text => setFilter('text', text)} onSubmitEditing={handleSearch} />
+               value={text} onChangeText={changeText} onSubmitEditing={() => { commitText(); handleSearch(); }} />
           </View>
 
           <View style={styles.section}>
@@ -130,12 +152,17 @@ export default function HomeScreen() {
           </View>
           <View style={styles.locationFilters}>
             <View style={[styles.filterRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Pressable accessibilityRole="button" accessibilityState={{ expanded: showFilters }} onPress={() => setShowFilters(value => !value)} style={styles.filterChip}>
+              <Pressable accessibilityRole="button" accessibilityState={{ expanded: showFilters }} onPress={() => { if (!showFilters) beginFilters(); setShowFilters(value => !value); }} style={styles.filterChip}>
                 <Text style={styles.seeAll}>{t('filters')} · {filters.countryCode}</Text>
               </Pressable>
-              {hasFilters && <Pressable accessibilityRole="button" onPress={resetFilters} style={styles.filterChip}><Text style={styles.seeAll}>{t('reset_filters')}</Text></Pressable>}
+              {hasFilters && <Pressable accessibilityRole="button" onPress={() => { resetAll(); setShowFilters(false); }} style={styles.filterChip}><Text style={styles.seeAll}>{t('reset_filters')}</Text></Pressable>}
             </View>
-            {showFilters && <DiscoveryFilters filters={filters} markets={markets} setFilter={setFilter} />}
+            {showFilters && <>
+              <DiscoveryFilters filters={draftFilters} markets={markets} setFilter={changeFilter} />
+              <Pressable accessibilityRole="button" testID="home-apply-filters" onPress={() => { commitFilters(); setShowFilters(false); }} style={styles.filterChip}>
+                <Text style={styles.seeAll}>{isRTL ? 'تطبيق الفلاتر' : 'Apply Filters'}</Text>
+              </Pressable>
+            </>}
           </View>
 
           <View style={styles.driverCtaContainer}>
@@ -155,7 +182,25 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {loading ? (
+          <View style={[styles.sectionHeader, styles.section, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <Text style={styles.sectionTitle}>{t('all_equipment')}</Text>
+            <View style={styles.filterRow}>
+              <Pressable accessibilityRole="button" accessibilityLabel={t('list_view')} accessibilityState={{ selected: view === 'list' }}
+                onPress={() => { setView('list'); void saveEquipmentView('list'); }} style={styles.filterChip}>
+                <List size={18} color={view === 'list' ? Colors.gold : Colors.textMuted} />
+              </Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={t('grid_view')} accessibilityState={{ selected: view === 'grid' }}
+                onPress={() => { setView('grid'); void saveEquipmentView('grid'); }} style={styles.filterChip}>
+                <Grid2X2 size={18} color={view === 'grid' ? Colors.gold : Colors.textMuted} />
+              </Pressable>
+            </View>
+          </View>
+          {refreshing && <ActivityIndicator size="small" color={Colors.gold} />}
+          {error && filteredEquipment.length > 0 && <Pressable accessibilityRole="button" onPress={refresh} style={styles.filterChip}>
+            <Text style={styles.seeAll}>{t('discovery_load_error')} · {t('discovery_retry')}</Text>
+          </Pressable>}
+          </>}
+          ListEmptyComponent={loading ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color={Colors.gold} />
             </View>
@@ -164,54 +209,19 @@ export default function HomeScreen() {
               <EmptyState title={t('discovery_load_error')} />
               <Pressable accessibilityRole="button" onPress={refresh} style={styles.filterChip}><Text style={styles.seeAll}>{t('discovery_retry')}</Text></Pressable>
             </View>
-          ) : filteredEquipment.length === 0 ? (
+          ) : (
             <View style={styles.emptyContainer}>
               <EmptyState title={hasFilters ? t('no_results') : t('no_equipment')} />
             </View>
-          ) : (
-            <>
-              {featuredEquipment.length > 0 && (
-                <View style={styles.section}>
-                  <View style={[styles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                    <Text style={styles.sectionTitle}>{t('featured')}</Text>
-                    <Pressable onPress={handleSearch}>
-                      <View style={[styles.seeAllRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                        <Text style={styles.seeAll}>{t('see_all')}</Text>
-                        {isRTL ? <ChevronLeft size={16} color={Colors.gold} /> : <ChevronRight size={16} color={Colors.gold} />}
-                      </View>
-                    </Pressable>
-                  </View>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.featuredScroll}>
-                    {featuredEquipment.map(eq => (
-                      <EquipmentCard key={eq.id} equipment={eq} compact />
-                    ))}
-                  </ScrollView>
-                </View>
-              )}
-
-              <View style={styles.section}>
-                <View style={[styles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                    <Text style={styles.sectionTitle}>{t('all_equipment')}</Text>
-                  <Pressable onPress={handleSearch}>
-                    <Text style={styles.seeAll}>{t('see_all')}</Text>
-                  </Pressable>
-                </View>
-                <View style={styles.recentList}>
-                  {filteredEquipment.map(eq => (
-                    <EquipmentCard key={eq.id} equipment={eq} />
-                  ))}
-                    {loadingMore ? <ActivityIndicator size="small" color={Colors.gold} /> : hasMore ? (
-                      <Pressable accessibilityRole="button" testID="home-equipment-load-more" onPress={loadMore} style={styles.loadMoreButton}>
-                        <Text style={styles.seeAll}>{isRTL ? 'تحميل المزيد' : 'Load more'}</Text>
-                      </Pressable>
-                    ) : null}
-                </View>
-              </View>
-            </>
           )}
-
-          <View style={styles.bottomPadding} />
-        </Animated.ScrollView>
+          ListFooterComponent={<View style={styles.footer}>
+            {loadingMore ? <ActivityIndicator size="small" color={Colors.gold} /> : hasMore ? (
+              <Pressable accessibilityRole="button" testID="home-equipment-load-more" onPress={loadMore} style={styles.loadMoreButton}>
+                <Text style={styles.seeAll}>{isRTL ? 'تحميل المزيد' : 'Load more'}</Text>
+              </Pressable>
+            ) : null}
+          </View>}
+        />
       </SafeAreaView>
 
       <AppDialog
@@ -411,12 +421,10 @@ const styles = StyleSheet.create({
     fontWeight: '700' as const,
     fontSize: 15,
   },
-  featuredScroll: {
-    paddingHorizontal: 20,
-  },
-  recentList: {
-    paddingHorizontal: 20,
-  },
+  gridRow: { paddingHorizontal: 20, gap: 12 },
+  gridItem: { width: '48%', flexGrow: 0, flexShrink: 1 },
+  listItem: { paddingHorizontal: 20 },
+  footer: { paddingBottom: 20 },
   loadMoreButton: { alignSelf: 'center', paddingHorizontal: 20, paddingVertical: 12, marginVertical: 8 },
   bottomPadding: {
     height: 20,

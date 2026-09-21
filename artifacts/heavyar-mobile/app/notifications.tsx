@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { Bell, CheckCheck, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
+import { createNotificationOperationGuard } from '@/services/notificationOperationGuard';
 import {
   defaultPreferences,
   getNotificationPreferences,
@@ -20,7 +21,11 @@ import {
 
 export default function NotificationsScreen() {
   const { t, isRTL, localizedText } = useLanguage();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
+  const uid = isAuthenticated ? user?.uid || '' : '';
+  const operations = useRef(createNotificationOperationGuard()).current;
+  operations.setIdentity(uid);
+  useEffect(() => () => operations.invalidate(), [operations]);
   const router = useRouter();
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [preferences, setPreferences] = useState<NotificationPreferences>(defaultPreferences);
@@ -34,72 +39,100 @@ export default function NotificationsScreen() {
   const [readAllRemaining, setReadAllRemaining] = useState(0);
 
   const load = useCallback(async (append = false) => {
-    if (!isAuthenticated) return;
+    if (!uid) return;
+    const isCurrent = operations.begin(uid, 'load');
     append ? setLoadingMore(true) : setLoading(true);
     setError(null);
     try {
       const [page, prefs] = await Promise.all([
-        listNotifications(append ? nextPageToken : null),
-        append ? Promise.resolve(preferences) : getNotificationPreferences(),
+        listNotifications(append ? nextPageToken : null, uid),
+        append ? Promise.resolve(preferences) : getNotificationPreferences(uid),
       ]);
-      setItems((current) => append ? [...current, ...page.notifications] : page.notifications);
+      if (!isCurrent()) return;
+      setItems((current) => {
+        const combined = append ? [...current, ...page.notifications] : page.notifications;
+        return [...new Map(combined.map(item => [item.id, item])).values()];
+      });
       setNextPageToken(page.nextPageToken || null);
       setUnreadCount(page.unreadCount);
       if (!append) setPreferences(prefs);
     } catch (e) {
+      if (!isCurrent()) return;
       setError((e as Error).message === 'SESSION_EXPIRED' ? t('session_expired') : t('notifications_error'));
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (isCurrent()) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, [isAuthenticated, nextPageToken, preferences, t]);
+  }, [uid, nextPageToken, operations, preferences, t]);
 
-  useEffect(() => { void load(); }, [isAuthenticated]); // intentionally only reload on session changes
+  useEffect(() => {
+    setItems([]);
+    setUnreadCount(0);
+    setNextPageToken(null);
+    setPreferences(defaultPreferences);
+    setOpeningId(null);
+    setSavingPreference(null);
+    setLoadingMore(false);
+    setReadAllRemaining(0);
+    setError(null);
+    setLoading(!!uid);
+    void load();
+  }, [uid]); // only reload on actual identity changes, not preference edits
 
   const openItem = useCallback(async (item: NotificationItem) => {
-    if (openingId) return;
+    if (openingId || !uid) return;
+    const isCurrent = operations.begin(uid, 'open');
     setOpeningId(item.id);
     try {
       if (!item.read) {
-        await markNotificationRead(item.id);
+        await markNotificationRead(item.id, uid);
+        if (!isCurrent()) return;
         setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, read: true } : entry));
         setUnreadCount((count) => Math.max(0, count - 1));
       }
+      if (!isCurrent()) return;
       const route = notificationActionRoute(item.action);
       if (route) router.push(route as never);
     } catch {
-      setError(t('notifications_error'));
+      if (isCurrent()) setError(t('notifications_error'));
     } finally {
-      setOpeningId(null);
+      if (isCurrent()) setOpeningId(null);
     }
-  }, [openingId, router, t]);
+  }, [openingId, operations, router, t, uid]);
 
   const markAll = useCallback(async () => {
-    if (!unreadCount) return;
+    if (!unreadCount || !uid) return;
+    const isCurrent = operations.begin(uid, 'markAll');
     try {
-      const result = await markAllNotificationsRead();
+      const result = await markAllNotificationsRead(10, uid);
+      if (!isCurrent()) return;
       if (!result.hasMore) setItems((current) => current.map((item) => ({ ...item, read: true })));
       setUnreadCount(result.remainingCount);
       setReadAllRemaining(result.hasMore ? result.remainingCount : 0);
       if (result.hasMore) await load();
-    } catch { setError(t('notifications_error')); }
-  }, [load, t, unreadCount]);
+    } catch { if (isCurrent()) setError(t('notifications_error')); }
+  }, [load, operations, t, unreadCount, uid]);
 
   const togglePreference = useCallback(async (category: keyof NotificationPreferences) => {
-    if (category === 'payment' || category === 'verification' || category === 'security' || savingPreference) return;
+    if (!uid || category === 'payment' || category === 'verification' || category === 'security' || savingPreference) return;
+    const isCurrent = operations.begin(uid, 'preference');
     const next = { ...preferences, [category]: !preferences[category] };
     setPreferences(next);
     setSavingPreference(category);
     try {
-      const saved = await updateNotificationPreferences(next);
+      const saved = await updateNotificationPreferences(next, uid);
+      if (!isCurrent()) return;
       setPreferences(saved);
     } catch {
+      if (!isCurrent()) return;
       setPreferences(preferences);
       setError(t('notifications_error'));
     } finally {
-      setSavingPreference(null);
+      if (isCurrent()) setSavingPreference(null);
     }
-  }, [preferences, savingPreference, t]);
+  }, [operations, preferences, savingPreference, t, uid]);
 
   const Chevron = isRTL ? ChevronLeft : ChevronRight;
   return (

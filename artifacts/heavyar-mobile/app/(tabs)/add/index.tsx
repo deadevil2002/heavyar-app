@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useLayoutEffect, memo } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -17,14 +17,89 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 import { preferredDisplayCurrency } from '@/services/currency';
 import { safeErrorMessage } from '@/services/errorMessages';
 import ListingPricingFields from '@/components/ListingPricingFields';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 import {
   buildListingPricing,
   ListingPricingInput,
 } from '@/services/listingPricing';
 
+const initialPricing = (): ListingPricingInput => ({
+  hourlyEnabled: false, hourlyAmount: '', dailyEnabled: true, dailyAmount: '',
+});
+
+// Keep rate keystrokes inside this section. The ref is a screen-local submit
+// snapshot, not shared state; it is updated synchronously before submit can run.
+const PricingSection = memo(function PricingSection({
+  draft, currency, isRTL, disabled,
+}: {
+  draft: React.MutableRefObject<ListingPricingInput>;
+  currency: string;
+  isRTL: boolean;
+  disabled: boolean;
+}) {
+  mobilePerformance.countRender('AddEquipment.Pricing');
+  const [value, setValue] = useState(() => draft.current);
+  const pending = useRef<ReturnType<typeof mobilePerformance.startPress> | null>(null);
+  useLayoutEffect(() => { pending.current?.visible(); pending.current = null; });
+  const onChange = useCallback((next: ListingPricingInput) => {
+    pending.current = mobilePerformance.startPress('AddEquipment.pricing');
+    draft.current = next;
+    setValue(next);
+  }, [draft]);
+  return <ListingPricingFields value={value} onChange={onChange} currency={currency} isRTL={isRTL} disabled={disabled} />;
+});
+
+const ImagesSection = memo(function ImagesSection({ images, label, isRTL, pickImage, removeImage }: {
+  images: string[]; label: string; isRTL: boolean;
+  pickImage: () => void; removeImage: (index: number) => void;
+}) {
+  mobilePerformance.countRender('AddEquipment.Images');
+  return (
+    <View style={styles.imagesSection}>
+      <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{label}</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <View style={styles.imagesRow}>
+          <Pressable style={styles.addImageButton} onPress={pickImage}>
+            <Camera size={28} color={Colors.gold} />
+            <Text style={styles.addImageText}>{label}</Text>
+          </Pressable>
+          {images.map((uri, index) => (
+            <View key={`${uri}-${index}`} style={styles.imageWrapper}>
+              <Image source={{ uri }} style={styles.imagePreview} contentFit="cover" cachePolicy="memory-disk" />
+              <Pressable style={styles.removeImage} onPress={() => removeImage(index)}>
+                <X size={14} color={Colors.white} />
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+    </View>
+  );
+});
+
 export default function AddEquipmentScreen() {
+  const auth = useAuth();
+  const uid = auth.isAuthenticated ? auth.user?.uid : undefined;
+  const activeUid = useRef(uid);
+  activeUid.current = uid;
+  // One identity owns the entire draft, including refs, pickers and dialogs.
+  return <AddEquipmentForm key={uid || 'signed-out'} auth={auth} activeUid={activeUid} />;
+}
+
+function AddEquipmentForm({ auth, activeUid }: {
+  auth: ReturnType<typeof useAuth>;
+  activeUid: React.MutableRefObject<string | undefined>;
+}) {
+  mobilePerformance.countRender('AddEquipment');
   const { isRTL, t, localizedText } = useLanguage();
-  const { user, isAuthenticated, requiresEmailVerification } = useAuth();
+  const { user, isAuthenticated, requiresEmailVerification } = auth;
+  const mounted = useRef(true);
+  const publishingRef = useRef(false);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const ownsDraft = useCallback(() => mounted.current && !!user?.uid && activeUid.current === user.uid, [activeUid, user?.uid]);
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
   const [titleAr, setTitleAr] = useState<string>('');
@@ -39,12 +114,13 @@ export default function AddEquipmentScreen() {
   const [district, setDistrict] = useState<string>('');
   const [showRegionPicker, setShowRegionPicker] = useState<boolean>(false);
   const [citySearch, setCitySearch] = useState<string>('');
-  const [pricingInput, setPricingInput] = useState<ListingPricingInput>({
-    hourlyEnabled: false,
-    hourlyAmount: '',
-    dailyEnabled: true,
-    dailyAmount: '',
-  });
+  const pricingDraft = useRef<ListingPricingInput>(initialPricing());
+  const [pricingRevision, setPricingRevision] = useState(0);
+  const pendingInteraction = useRef<ReturnType<typeof mobilePerformance.startPress> | null>(null);
+  useLayoutEffect(() => { pendingInteraction.current?.visible(); pendingInteraction.current = null; });
+  const beginLocalInteraction = useCallback(() => {
+    pendingInteraction.current = mobilePerformance.startPress('AddEquipment.local');
+  }, []);
   const [images, setImages] = useState<string[]>([]);
   const [showCategoryPicker, setShowCategoryPicker] = useState<boolean>(false);
   const [showCityPicker, setShowCityPicker] = useState<boolean>(false);
@@ -64,7 +140,9 @@ export default function AddEquipmentScreen() {
   const isProvider = user?.role === 'provider';
 
   const pickImage = useCallback(async () => {
+    if (!ownsDraft()) return;
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!ownsDraft()) return;
     if (!perm.granted) {
       showDialog('إذن مرفوض', 'يرجى السماح بالوصول للصور لاختيار صور المعدات', [{ text: 'حسناً', style: 'default' }]);
       return;
@@ -74,17 +152,18 @@ export default function AddEquipmentScreen() {
       allowsMultipleSelection: true,
       quality: 0.8,
     });
+    if (!ownsDraft()) return;
     if (!result.canceled && result.assets) {
       setImages(prev => [...prev, ...result.assets.map(a => a.uri)]);
     }
-  }, [showDialog]);
+  }, [showDialog, ownsDraft]);
 
   const removeImage = useCallback((index: number) => {
     setImages(prev => prev.filter((_, i) => i !== index));
   }, []);
 
   const handlePublish = useCallback(async () => {
-    if (!user) return;
+    if (!user || !ownsDraft() || publishingRef.current) return;
     if (requiresEmailVerification('listing')) {
       showDialog(t('email_verification_required_title'), t('email_verification_required_listing'), [{ text: t('ok'), style: 'default' }]);
       return;
@@ -107,7 +186,7 @@ export default function AddEquipmentScreen() {
       return;
     }
     const currency = user.nativeCurrency || 'SAR';
-    const pricingResult = buildListingPricing(pricingInput, currency);
+    const pricingResult = buildListingPricing(pricingDraft.current, currency);
     if (!pricingResult.ok) {
       const message = pricingResult.reason === 'RATE_REQUIRED'
         ? (isRTL ? 'فعّل سعراً واحداً على الأقل.' : 'Enable at least one rental rate.')
@@ -119,20 +198,31 @@ export default function AddEquipmentScreen() {
       showDialog(t('validation_error'), t('validation_images_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
+    // Lock synchronously; a second press can arrive before React commits.
+    publishingRef.current = true;
+    const submitUid = user.uid;
+    const isCurrentSubmission = () => ownsDraft() && activeUid.current === submitUid;
     setPublishing(true);
     setUploading(true);
     setUploadProgress(`${t('uploading_images')} 0/${images.length}`);
     let uploadedImages: CloudinaryImage[] = [];
+    let listingSubmitted = false;
+    let listingCommitted = false;
     try {
+      if (!isCurrentSubmission()) return;
       uploadedImages = await uploadMultipleImages(
         images,
         (completed, total) => {
+          if (!isCurrentSubmission()) return;
           setUploadProgress(`${t('uploading_images')} ${completed}/${total}`);
-        }
+        },
+        submitUid,
       );
+      if (!isCurrentSubmission()) return;
       setUploading(false);
       setUploadProgress(t('saving'));
 
+      listingSubmitted = true;
       await createListing({
         titleAr,
         titleEn: titleEn || titleAr,
@@ -152,7 +242,9 @@ export default function AddEquipmentScreen() {
         displayCurrency: preferredDisplayCurrency(user.countryCode, user.displayCurrency),
         images: uploadedImages,
         availability: { from: new Date().toISOString().slice(0, 10), temporarilyUnavailable: false },
-      });
+      }, submitUid);
+      listingCommitted = true;
+      if (!isCurrentSubmission()) return;
       showDialog(t('success'), '', [{ text: t('confirm'), style: 'default' }]);
       setTitleAr('');
       setTitleEn('');
@@ -164,17 +256,37 @@ export default function AddEquipmentScreen() {
       setCity('');
       setCustomCity('');
       setDistrict('');
-      setPricingInput({ hourlyEnabled: false, hourlyAmount: '', dailyEnabled: true, dailyAmount: '' });
+      pricingDraft.current = initialPricing();
+      setPricingRevision(revision => revision + 1);
       setImages([]);
     } catch (e) {
-      await Promise.all(uploadedImages.map(image => deleteCloudinaryImage(image.publicId)));
-      showDialog(t('error_title'), safeErrorMessage(e, isRTL ? 'ar' : 'en'), [{ text: t('ok'), style: 'default' }]);
+      // Never issue cleanup under a different authenticated identity.
+      if (!isCurrentSubmission()) return;
+      const failure = e as { code?: unknown; status?: unknown } | null;
+      const transportFailure = failure?.code === 'NETWORK_TIMEOUT' || failure?.code === 'NETWORK_UNAVAILABLE'
+        || failure?.code === 'AUTH_SESSION_CHANGED';
+      const definitiveRejection = !transportFailure && typeof failure?.status === 'number'
+        && failure.status >= 400 && failure.status < 500 && failure.status !== 408;
+      const uncertainOutcome = listingSubmitted && !listingCommitted && !definitiveRejection;
+      // A lost response is not a rejected write. Never delete media that the
+      // Worker may already have attached to a listing, or retry implicitly.
+      if (!listingCommitted && (!listingSubmitted || definitiveRejection)) {
+        await Promise.allSettled(uploadedImages.map(image => deleteCloudinaryImage(image.publicId)));
+      }
+      if (!isCurrentSubmission()) return;
+      const message = safeErrorMessage(e, isRTL ? 'ar' : 'en');
+      showDialog(t('error_title'), uncertainOutcome
+        ? `${message}\n${isRTL ? 'تعذر تأكيد النشر. تحقق من إعلاناتك قبل المحاولة مجددًا.' : 'Publishing could not be confirmed. Check your listings before trying again.'}`
+        : message, [{ text: t('ok'), style: 'default' }]);
     } finally {
-      setPublishing(false);
-      setUploading(false);
-      setUploadProgress('');
+      publishingRef.current = false;
+      if (isCurrentSubmission()) {
+        setPublishing(false);
+        setUploading(false);
+        setUploadProgress('');
+      }
     }
-  }, [titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, pricingInput, images, user, t, showDialog, requiresEmailVerification, isRTL]);
+  }, [titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, images, user, t, showDialog, requiresEmailVerification, isRTL, ownsDraft, activeUid]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 
@@ -218,25 +330,7 @@ export default function AddEquipmentScreen() {
           </View>
 
           <View style={styles.form}>
-            <View style={styles.imagesSection}>
-              <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('add_images')}</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                <View style={styles.imagesRow}>
-                  <Pressable style={styles.addImageButton} onPress={pickImage}>
-                    <Camera size={28} color={Colors.gold} />
-                    <Text style={styles.addImageText}>{t('add_images')}</Text>
-                  </Pressable>
-                  {images.map((uri, index) => (
-                    <View key={index} style={styles.imageWrapper}>
-                      <Image source={{ uri }} style={styles.imagePreview} contentFit="cover" />
-                      <Pressable style={styles.removeImage} onPress={() => removeImage(index)}>
-                        <X size={14} color={Colors.white} />
-                      </Pressable>
-                    </View>
-                  ))}
-                </View>
-              </ScrollView>
-            </View>
+            <ImagesSection images={images} label={t('add_images')} isRTL={isRTL} pickImage={pickImage} removeImage={removeImage} />
 
             <View style={styles.inputGroup}>
               <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('title_ar')}</Text>
@@ -290,7 +384,7 @@ export default function AddEquipmentScreen() {
               <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_category')}</Text>
               <Pressable
                 style={[styles.picker, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
-                onPress={() => setShowCategoryPicker(!showCategoryPicker)}
+                onPress={() => { beginLocalInteraction(); setShowCategoryPicker(!showCategoryPicker); }}
               >
                 <Text style={[styles.pickerText, !category && styles.pickerPlaceholder]}>
                   {selectedCategory ? localizedText(selectedCategory.nameAr, selectedCategory.nameEn) : t('select_category')}
@@ -303,7 +397,7 @@ export default function AddEquipmentScreen() {
                     <Pressable
                       key={cat.id}
                       style={[styles.pickerItem, category === cat.id && styles.pickerItemSelected]}
-                      onPress={() => { setCategory(cat.id); if (cat.id !== 'other') setCustomCategory(''); setShowCategoryPicker(false); }}
+                      onPress={() => { beginLocalInteraction(); setCategory(cat.id); if (cat.id !== 'other') setCustomCategory(''); setShowCategoryPicker(false); }}
                     >
                       <Text style={[styles.pickerItemText, category === cat.id && styles.pickerItemTextSelected]}>
                         {localizedText(cat.nameAr, cat.nameEn)}
@@ -331,7 +425,7 @@ export default function AddEquipmentScreen() {
               <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_region')}</Text>
               <Pressable
                 style={[styles.picker, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
-                onPress={() => { setShowRegionPicker(!showRegionPicker); setShowCityPicker(false); }}
+                onPress={() => { beginLocalInteraction(); setShowRegionPicker(!showRegionPicker); setShowCityPicker(false); }}
               >
                 <Text style={[styles.pickerText, !region && styles.pickerPlaceholder]}>
                   {selectedRegion ? localizedText(selectedRegion.nameAr, selectedRegion.nameEn) : t('select_region')}
@@ -344,7 +438,7 @@ export default function AddEquipmentScreen() {
                     <Pressable
                       key={r.id}
                       style={[styles.pickerItem, region === r.id && styles.pickerItemSelected]}
-                      onPress={() => { setRegion(r.id); setCity(''); setCustomCity(''); setCitySearch(''); setShowRegionPicker(false); }}
+                      onPress={() => { beginLocalInteraction(); setRegion(r.id); setCity(''); setCustomCity(''); setCitySearch(''); setShowRegionPicker(false); }}
                     >
                       <Text style={[styles.pickerItemText, region === r.id && styles.pickerItemTextSelected]}>
                         {localizedText(r.nameAr, r.nameEn)}
@@ -360,7 +454,7 @@ export default function AddEquipmentScreen() {
                 <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('select_city')}</Text>
                 <Pressable
                   style={[styles.picker, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
-                  onPress={() => { setShowCityPicker(!showCityPicker); setShowRegionPicker(false); }}
+                  onPress={() => { beginLocalInteraction(); setShowCityPicker(!showCityPicker); setShowRegionPicker(false); }}
                 >
                   <Text style={[styles.pickerText, !city && styles.pickerPlaceholder]}>
                     {selectedCityObj ? localizedText(selectedCityObj.nameAr, selectedCityObj.nameEn) : t('select_city')}
@@ -374,14 +468,14 @@ export default function AddEquipmentScreen() {
                       placeholder={t('search_city')}
                       placeholderTextColor={Colors.textMuted}
                       value={citySearch}
-                      onChangeText={setCitySearch}
+                      onChangeText={(text) => { beginLocalInteraction(); setCitySearch(text); }}
                     />
                     <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled>
                       {filteredCities.map(c => (
                         <Pressable
                           key={c.id}
                           style={[styles.pickerItem, city === c.id && styles.pickerItemSelected]}
-                          onPress={() => { setCity(c.id); setCustomCity(''); setShowCityPicker(false); setCitySearch(''); }}
+                          onPress={() => { beginLocalInteraction(); setCity(c.id); setCustomCity(''); setShowCityPicker(false); setCitySearch(''); }}
                         >
                           <Text style={[styles.pickerItemText, city === c.id && styles.pickerItemTextSelected]}>
                             {localizedText(c.nameAr, c.nameEn)}
@@ -412,9 +506,9 @@ export default function AddEquipmentScreen() {
               />
             </View>
 
-            <ListingPricingFields
-              value={pricingInput}
-              onChange={setPricingInput}
+            <PricingSection
+              key={pricingRevision}
+              draft={pricingDraft}
               currency={user.nativeCurrency || 'SAR'}
               isRTL={isRTL}
               disabled={publishing}

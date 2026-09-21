@@ -1,4 +1,5 @@
 import { getFirebaseAuth } from './firebaseConfig';
+import { safeSupportCode } from './mutationError';
 import { WORKER_BASE_URL } from '../constants/worker';
 import { listingLifecyclePath } from './listingContracts';
 import { sanitizeCreateListingPayload, sanitizeListingPayload } from './listingPayload';
@@ -64,11 +65,13 @@ export type DriverRequest = {
 export class WorkerError extends Error {
   status: number;
   code: string;
-  constructor(message: string, status = 500, code = 'WORKER_ERROR') {
+  supportCode: string;
+  constructor(message: string, status = 500, code = 'WORKER_ERROR', supportCode?: unknown) {
     super(message);
     this.name = 'WorkerError';
     this.status = status;
     this.code = code;
+    this.supportCode = safeSupportCode(supportCode) || `CLIENT-${code.replace(/[^A-Z0-9-]/g, '-').slice(0, 48)}`;
   }
 }
 
@@ -93,14 +96,27 @@ function requestSignal(external?: AbortSignal | null) {
   };
 }
 
-async function request<T>(path: string, init: RequestInit = {}, authenticated = true): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}, authenticated = true, expectedUid?: string): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('Content-Type', 'application/json');
+  const auth = authenticated ? getFirebaseAuth() : undefined;
+  const user = auth?.currentUser;
+  const uid = expectedUid || user?.uid;
+  const assertSession = () => {
+    if (authenticated && (!uid || user?.uid !== uid || auth?.currentUser?.uid !== uid)) {
+      throw new WorkerError('Authentication session changed', 0, 'AUTH_SESSION_CHANGED');
+    }
+  };
   if (authenticated) {
-    const token = await getFirebaseAuth().currentUser?.getIdToken();
+    if (!user) throw new WorkerError('Authentication required', 401, 'AUTH_REQUIRED');
+    assertSession();
+    let token: string | undefined;
+    try { token = await user.getIdToken(); }
+    catch { throw new WorkerError('Authentication unavailable', 0, 'AUTH_TOKEN_UNAVAILABLE'); }
     if (!token) throw new WorkerError('Authentication required', 401, 'AUTH_REQUIRED');
     headers.set('Authorization', `Bearer ${token}`);
   }
+  assertSession();
   const bounded = requestSignal(init.signal);
   let response: Response;
   try {
@@ -112,8 +128,10 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
   } finally {
     bounded.cleanup();
   }
+  assertSession();
   let body: any = null;
   try { body = await response.json(); } catch { /* server may return an empty response */ }
+  assertSession();
   if (!response.ok || body?.success === false) {
     const code = typeof body?.errorCode === 'string' ? body.errorCode
       : typeof body?.code === 'string' ? body.code
@@ -124,7 +142,7 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
         : response.status === 403 ? 'Action not permitted'
           : response.status === 404 ? 'Requested item was not found'
             : 'Request could not be completed';
-    throw new WorkerError(message, response.status, code);
+    throw new WorkerError(message, response.status, code, response.headers.get('X-Request-ID') || body?.supportCode);
   }
   return body as T;
 }
@@ -137,9 +155,9 @@ export async function updateListing(id: string, patch: Record<string, unknown>) 
   return result;
 }
 
-export async function createListing(payload: Record<string, unknown>) {
+export async function createListing(payload: Record<string, unknown>, expectedUid?: string) {
   const result = await request<{ success: true; id: string; listing?: Record<string, unknown> }>(
-    '/api/listings', { method: 'POST', body: JSON.stringify(sanitizeCreateListingPayload(payload)) },
+    '/api/listings', { method: 'POST', body: JSON.stringify(sanitizeCreateListingPayload(payload)) }, true, expectedUid,
   );
   invalidatePublicEquipment();
   return result;

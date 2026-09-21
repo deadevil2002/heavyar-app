@@ -1,0 +1,14 @@
+{
+  "sourceCommit": "41f9929c6c1e94fb52c43ce230ca1e74501c5cbe",
+  "environment": "Vitest 3.2.7, React DOM/jsdom; mounted actual DiscoveryProvider and QueryClient, mocked equipment transport; no native timing measurements",
+  "interaction": "five separate act-wrapped search text commits: c, cr, cra, cran, crane",
+  "baseline": {
+    "immediate": { "homeConsumerRenders": 5, "searchConsumerRenders": 5, "equipmentServiceCalls": 0 },
+    "settled": { "homeConsumerRenders": 7, "searchConsumerRenders": 7, "equipmentServiceCalls": 1 }
+  },
+  "after": {
+    "immediate": { "homeConsumerRenders": 5, "searchConsumerRenders": 0, "marketConsumerRenders": 0, "equipmentServiceCalls": 0 },
+    "settled": { "homeConsumerRenders": 8, "searchConsumerRenders": 2, "marketConsumerRenders": 0, "equipmentServiceCalls": 1 }
+  },
+  "limitations": "Probe renders, not full native screen/card renders. Baseline had no market-only probe. No real Worker traffic, press-to-native-paint timings, device frame rates, JS long-task measurements, or measured Tabbakheen comparison."
+}

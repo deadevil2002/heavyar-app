@@ -6,7 +6,7 @@ import { Image } from 'expo-image';
 import { MapPin, Wrench, ChevronLeft, ChevronRight, Info } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { useDiscovery } from '@/contexts/DiscoveryContext';
+import { useDiscoveryMarkets } from '@/contexts/DiscoveryContext';
 import { getPublicDriverProfile, type DriverPublicProfile } from '@/services/workerClient';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatDriverLocation, formatEquipmentCapability, canRequestDriver, getAvailabilityLabel } from '@/services/driverUtils';
@@ -15,7 +15,7 @@ import { LatestRequestGuard } from '@/services/driverLiveSync';
 export default function DriverDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { isRTL } = useLanguage();
-  const { markets } = useDiscovery();
+  const markets = useDiscoveryMarkets();
   const router = useRouter();
   const { user, isAuthenticated } = useAuth();
   const accountStatus = (user as (typeof user & { accountStatus?: string }))?.accountStatus;

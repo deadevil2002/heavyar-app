@@ -80,9 +80,9 @@ export async function fetchAuthPolicy(): Promise<AuthPolicy> {
 
 export type MarketConfig = { code: GccCountryCode; enabled: boolean; marketplaceAvailable?: boolean; providerOnboardingAvailable?: boolean; currency?: string };
 
-export async function fetchMarketConfig(): Promise<MarketConfig[]> {
+export async function fetchMarketConfig(signal?: AbortSignal): Promise<MarketConfig[]> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}/api/config/markets`);
+    const response = await fetch(`${WORKER_BASE_URL}/api/config/markets`, { signal });
     if (!response.ok) throw new Error('MARKET_CONFIG_UNAVAILABLE');
     const data = await response.json() as { countries?: MarketConfig[] };
     if (!Array.isArray(data.countries)) throw new Error('MARKET_CONFIG_INVALID');
@@ -90,6 +90,7 @@ export async function fetchMarketConfig(): Promise<MarketConfig[]> {
   } catch {
     // Preserve the launch default while keeping every other GCC market closed
     // until the Admin market configuration is available.
+    if (signal?.aborted) throw new Error('MARKET_CONFIG_CANCELLED');
     return GCC_COUNTRIES.map(country => ({ code: country.code, enabled: country.code === 'SA', marketplaceAvailable: country.code === 'SA' }));
   }
 }

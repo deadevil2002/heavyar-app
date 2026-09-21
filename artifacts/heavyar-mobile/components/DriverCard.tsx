@@ -4,7 +4,7 @@ import { Image } from 'expo-image';
 import { MapPin, Wrench } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { useDiscovery } from '@/contexts/DiscoveryContext';
+import { useDiscoveryMarkets } from '@/contexts/DiscoveryContext';
 import { type DriverPublicProfile } from '@/services/workerClient';
 import { formatDriverLocation, formatEquipmentCapability, getAvailabilityLabel } from '@/services/driverUtils';
 
@@ -17,7 +17,7 @@ const getInitials = (name?: string) => {
 
 export default function DriverCard({ driver, onPress }: { driver: DriverPublicProfile, onPress: () => void }) {
   const { isRTL } = useLanguage();
-  const { markets } = useDiscovery();
+  const markets = useDiscoveryMarkets();
   const location = formatDriverLocation(driver.countryCode, driver.region, driver.city, driver.customCity, isRTL, markets);
 
   return (

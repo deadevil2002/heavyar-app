@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Search as SearchIcon, SlidersHorizontal, X, Grid2X2, List } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { useDiscovery } from '@/contexts/DiscoveryContext';
+import { useDiscovery, useDiscoveryDraft } from '@/contexts/DiscoveryContext';
 import DiscoveryFilters from '@/components/DiscoveryFilters';
 import EquipmentCard from '@/components/EquipmentCard';
 import EmptyState from '@/components/EmptyState';
@@ -13,14 +13,16 @@ import { loadEquipmentView, saveEquipmentView, type EquipmentView } from '@/serv
 
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import DriverSearchTab from '@/components/DriverSearchTab';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 export default function SearchScreen() {
+  mobilePerformance.countRender('search');
   const { isRTL, t } = useLanguage();
   const params = useLocalSearchParams();
   const router = useRouter();
-  const { equipment: filteredEquipment, filters, markets, setFilter, resetFilters, hasFilters, loading, refreshing, error, refresh, loadMore, hasMore, loadingMore } = useDiscovery();
-  const query = filters.text;
-  const setQuery = (text: string) => setFilter('text', text);
+  const discovery = useDiscovery();
+  const { equipment: filteredEquipment, filters, markets, hasFilters, loading, refreshing, error, refresh, loadMore, hasMore, loadingMore } = discovery;
+  const { text: query, changeText: setQuery, commitText, draftFilters, beginFilters, changeFilter, commitFilters, resetAll } = useDiscoveryDraft(discovery);
   const [showFilters, setShowFilters] = useState<boolean>(false);
   const [view, setView] = useState<EquipmentView>('list');
   const [mode, setMode] = useState<'equipment' | 'drivers'>('equipment');
@@ -35,8 +37,9 @@ export default function SearchScreen() {
   }, []);
 
   const toggleFilters = useCallback(() => {
+    if (!showFilters) beginFilters();
     setShowFilters(prev => !prev);
-  }, []);
+  }, [showFilters, beginFilters]);
 
   const renderItem = useCallback(({ item }: { item: Equipment }) => (
     <View style={view === 'grid' ? styles.gridItem : undefined}>
@@ -71,6 +74,7 @@ export default function SearchScreen() {
               placeholderTextColor={Colors.textMuted}
               value={query}
               onChangeText={setQuery}
+              onSubmitEditing={commitText}
               testID="search-input"
             />
             {query.length > 0 && (
@@ -86,14 +90,18 @@ export default function SearchScreen() {
         </View>
 
         {showFilters && <ScrollView style={styles.filtersScroll} contentContainerStyle={styles.filtersContainer}>
-          <DiscoveryFilters filters={filters} markets={markets} setFilter={setFilter} includeCategories />
+          <DiscoveryFilters filters={draftFilters} markets={markets} setFilter={changeFilter} includeCategories />
+          <Pressable accessibilityRole="button" testID="search-apply-filters" onPress={() => { commitFilters(); setShowFilters(false); }} style={styles.clearButton}>
+            <Text style={styles.loadMoreText}>{isRTL ? 'تطبيق الفلاتر' : 'Apply Filters'}</Text>
+          </Pressable>
         </ScrollView>}
-        {hasFilters && <Pressable accessibilityRole="button" style={styles.clearButton} onPress={resetFilters}>
+        {hasFilters && <Pressable accessibilityRole="button" style={styles.clearButton} onPress={() => { resetAll(); setShowFilters(false); }}>
           <Text style={styles.clearText}>{t('reset_filters')}</Text>
         </Pressable>}
 
         <View style={[styles.resultsHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
           <Text style={styles.resultsText}>{filters.countryCode} · {loading ? t('loading') : `${filteredEquipment.length} ${t('results')}`}</Text>
+          {refreshing && <ActivityIndicator size="small" color={Colors.gold} />}
           <View style={[styles.viewToggle, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <Pressable accessibilityRole="button" accessibilityLabel={t('list_view')} onPress={() => { setView('list'); void saveEquipmentView('list'); }} style={[styles.viewButton, view === 'list' && styles.viewButtonSelected]}>
               <List size={18} color={view === 'list' ? Colors.primary : Colors.gold} />
@@ -105,18 +113,22 @@ export default function SearchScreen() {
         </View>
 
         <FlatList
-          data={error || loading ? [] : filteredEquipment}
+          data={filteredEquipment}
           renderItem={renderItem}
           keyExtractor={item => item.id}
           key={view}
           numColumns={view === 'grid' ? 2 : 1}
+          columnWrapperStyle={view === 'grid' ? { gap: 12 } : undefined}
+          initialNumToRender={6}
+          maxToRenderPerBatch={6}
+          windowSize={5}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           refreshing={refreshing && !loading}
           onRefresh={refresh}
           onEndReached={() => { if (filteredEquipment.length > 0) loadMore(); }}
           onEndReachedThreshold={0.5}
-          ListFooterComponent={loadingMore
+          ListFooterComponent={error && filteredEquipment.length > 0 ? <Pressable accessibilityRole="button" onPress={refresh}><Text style={styles.clearText}>{t('discovery_load_error')} · {t('discovery_retry')}</Text></Pressable> : loadingMore
             ? <ActivityIndicator size="small" color={Colors.gold} />
             : hasMore
               ? <Pressable accessibilityRole="button" accessibilityLabel={isRTL ? 'تحميل المزيد' : 'Load more'} testID="equipment-load-more" onPress={loadMore} style={styles.loadMoreButton}>
@@ -300,8 +312,7 @@ const styles = StyleSheet.create({
   },
   gridItem: {
     flex: 1,
-    maxWidth: '50%',
-    paddingHorizontal: 4,
+    maxWidth: '48%',
   },
   loadMoreButton: { alignSelf: 'center', paddingHorizontal: 20, paddingVertical: 12, marginVertical: 12 },
   loadMoreText: { color: Colors.gold, fontSize: 14, fontWeight: '700' },

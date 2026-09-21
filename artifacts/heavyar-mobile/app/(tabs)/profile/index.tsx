@@ -13,11 +13,12 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionById, findRegionByCityId } from '@/mocks/saudiRegions';
 import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloudinaryService';
 import { requestAccountDeletion } from '@/services/paymentService';
-import { fetchEquipmentByOwner, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
 import { getVerificationProfile, type VerificationProfile } from '@/services/verificationService';
 import { hasCapability, roleLabel } from '@/services/roleCapabilities';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 export default function ProfileScreen() {
+  mobilePerformance.countRender('Profile');
   const { isRTL, t, localizedText } = useLanguage();
   const { user, isAuthenticated, logout, updateProfile, refreshProfile, accountState } = useAuth();
   const router = useRouter();
@@ -38,6 +39,8 @@ export default function ProfileScreen() {
   const [trustedVerification, setTrustedVerification] = useState<VerificationProfile | null>(null);
   const [trustLoading, setTrustLoading] = useState<boolean>(false);
   const userId = user?.uid;
+  useEffect(() => { mobilePerformance.markContextCommit('Profile:auth'); }, [user, accountState]);
+  useEffect(() => { mobilePerformance.markContextCommit('Profile:language'); }, [t, isRTL]);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,7 +50,7 @@ export default function ProfileScreen() {
       return () => { cancelled = true; };
     }
     setTrustLoading(true);
-    void getVerificationProfile()
+    void mobilePerformance.trackNetwork('Profile:verification-service', () => getVerificationProfile())
       .then((profile) => {
         if (!cancelled) setTrustedVerification(profile);
       })
@@ -59,32 +62,6 @@ export default function ProfileScreen() {
       });
     return () => { cancelled = true; };
   }, [isAuthenticated, userId]);
-
-  useEffect(() => {
-    if (!user) return;
-    if (user.role !== 'provider') return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { items: list } = await fetchEquipmentByOwner(user.uid);
-        if (cancelled) return;
-        const snapshot = {
-          uid: user.uid,
-          nameAr: user.nameAr,
-          nameEn: user.nameEn,
-          avatar: user.avatar,
-        };
-        await Promise.all(
-          list
-            .filter((eq) => !eq.ownerPublic)
-            .map((eq) => tryBackfillEquipmentOwnerPublic(eq.id, snapshot))
-        );
-      } catch {}
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [user]);
 
   const handleLogin = useCallback(() => {
     router.push('/login');

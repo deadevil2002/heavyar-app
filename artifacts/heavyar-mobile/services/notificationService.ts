@@ -3,6 +3,9 @@ import { Platform } from 'react-native';
 import { getFirebaseAuth } from './firebaseConfig';
 import { signOut } from 'firebase/auth';
 import { WORKER_BASE_URL } from '@/constants/worker';
+import { publishNotificationRead } from './notificationUnreadPolicy';
+import { assertNotificationIdentity } from './notificationOperationGuard';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 const INSTALLATION_KEY = 'heavyar_installation_id';
 const PAGE_SIZE = 20;
@@ -65,27 +68,40 @@ async function installationId(): Promise<string> {
   return value;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, expectedUid?: string): Promise<T> {
   const auth = getFirebaseAuth();
-  const token = await auth.currentUser?.getIdToken();
+  const user = auth.currentUser;
+  const uid = expectedUid ?? user?.uid ?? '';
+  const assertCurrent = () => {
+    assertNotificationIdentity(uid, auth.currentUser?.uid, init?.signal);
+    if (auth.currentUser !== user) throw new Error('SESSION_EXPIRED');
+  };
+  assertCurrent();
+  const token = await user?.getIdToken();
+  assertCurrent();
   if (!token) throw new Error('AUTH_REQUIRED');
-  const send = (authToken: string) => fetch(`${WORKER_BASE_URL}${path}`, {
+  const send = (authToken: string) => mobilePerformance.trackNetwork('notifications', () => fetch(`${WORKER_BASE_URL}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${authToken}`,
       ...(init?.headers || {}),
     },
-  });
+  }));
   let response = await send(token);
-  if (response.status === 401 && auth.currentUser) {
-    response = await send(await auth.currentUser.getIdToken(true));
+  assertCurrent();
+  if (response.status === 401 && user) {
+    const refreshedToken = await user.getIdToken(true);
+    assertCurrent();
+    response = await send(refreshedToken);
+    assertCurrent();
     if (response.status === 401) {
       await signOut(auth).catch(() => undefined);
       throw new Error('SESSION_EXPIRED');
     }
   }
   const body = await response.json().catch(() => ({}));
+  assertCurrent();
   if (!response.ok || body.success === false) {
     const error = new Error(typeof body.error === 'string' ? body.error : response.status === 401 ? 'SESSION_EXPIRED' : 'NOTIFICATIONS_UNAVAILABLE');
     (error as Error & { status?: number }).status = response.status;
@@ -165,10 +181,18 @@ export async function requestNotificationPermission(): Promise<string | null> {
   }
 }
 
-export async function listNotifications(pageToken?: string | null): Promise<NotificationPage> {
+export async function getNotificationUnreadCount(expectedUid: string, signal?: AbortSignal): Promise<number> {
+  const result = await request<{ unreadCount: number }>('/api/notifications/unread-count', { signal }, expectedUid);
+  if (!Number.isSafeInteger(result.unreadCount) || result.unreadCount < 0) {
+    throw new Error('NOTIFICATION_COUNT_INVALID');
+  }
+  return result.unreadCount;
+}
+
+export async function listNotifications(pageToken?: string | null, expectedUid?: string): Promise<NotificationPage> {
   const query = new URLSearchParams({ limit: String(PAGE_SIZE) });
   if (pageToken) query.set('cursor', pageToken);
-  const result = await request<Partial<NotificationPage>>(`/api/notifications?${query.toString()}`);
+  const result = await request<Partial<NotificationPage>>(`/api/notifications?${query.toString()}`, undefined, expectedUid);
   const raw = Array.isArray(result.notifications) ? result.notifications : [];
   return {
     notifications: raw.map((entry) => {
@@ -189,34 +213,38 @@ export async function listNotifications(pageToken?: string | null): Promise<Noti
   };
 }
 
-export async function markNotificationRead(id: string): Promise<void> {
+export async function markNotificationRead(id: string, expectedUid?: string): Promise<void> {
   if (!/^[A-Za-z0-9:_-]{3,180}$/.test(id)) throw new Error('INVALID_NOTIFICATION');
-  await request(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', body: '{}' });
+  const uid = getFirebaseAuth().currentUser?.uid;
+  await request(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', body: '{}' }, expectedUid);
+  if (uid) publishNotificationRead(uid);
 }
 
-export async function markAllNotificationsRead(maxPasses = 10): Promise<{ hasMore: boolean; remainingCount: number }> {
+export async function markAllNotificationsRead(maxPasses = 10, expectedUid?: string): Promise<{ hasMore: boolean; remainingCount: number }> {
+  const uid = expectedUid ?? getFirebaseAuth().currentUser?.uid;
   let remainingCount = 0;
   for (let pass = 0; pass < maxPasses; pass++) {
-    const result = await request<{ hasMore?: boolean; remainingCount?: number }>('/api/notifications/read-all', { method: 'POST', body: '{}' });
+    if (getFirebaseAuth().currentUser?.uid !== uid) throw new Error('SESSION_EXPIRED');
+    const result = await request<{ hasMore?: boolean; remainingCount?: number }>('/api/notifications/read-all', { method: 'POST', body: '{}' }, uid);
+    if (uid) publishNotificationRead(uid);
     if (result.hasMore === false) return { hasMore: false, remainingCount: Number(result.remainingCount || 0) };
-    const page = await listNotifications();
-    remainingCount = page.unreadCount;
+    remainingCount = await getNotificationUnreadCount(uid || '');
     if (!remainingCount) return { hasMore: false, remainingCount: 0 };
     if (result.hasMore === undefined && pass >= maxPasses - 1) break;
   }
   return { hasMore: true, remainingCount };
 }
 
-export async function getNotificationPreferences(): Promise<NotificationPreferences> {
-  const result = await request<{ preferences?: Partial<NotificationPreferences> }>('/api/notifications/preferences');
+export async function getNotificationPreferences(expectedUid?: string): Promise<NotificationPreferences> {
+  const result = await request<{ preferences?: Partial<NotificationPreferences> }>('/api/notifications/preferences', undefined, expectedUid);
   return { ...defaultPreferences, ...(result.preferences || {}) };
 }
 
-export async function updateNotificationPreferences(preferences: NotificationPreferences): Promise<NotificationPreferences> {
+export async function updateNotificationPreferences(preferences: NotificationPreferences, expectedUid?: string): Promise<NotificationPreferences> {
   const result = await request<{ preferences?: Partial<NotificationPreferences> }>('/api/notifications/preferences', {
     method: 'PUT',
     body: JSON.stringify(preferences),
-  });
+  }, expectedUid);
   return { ...defaultPreferences, ...(result.preferences || preferences) };
 }
 

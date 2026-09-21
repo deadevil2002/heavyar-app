@@ -761,17 +761,26 @@ async function notificationList(req: Request, env: Env, u: User) {
     bodyAr: x.bodyAr || x.titleAr, bodyEn: x.bodyEn || x.titleEn, read: x.read === true, critical: x.critical === true, createdAt: x.createdAt, action: x.action, subjectId: x.subjectId || null,
   }));
   const last = items[items.length - 1];
-  let unreadCount = items.filter((x: any) => !x.read).length;
+  let unreadCount: number;
   try {
-    const aggregate = await fs(env, ':runAggregationQuery', { method: 'POST', body: JSON.stringify({ structuredAggregationQuery: {
+    unreadCount = await notificationUnreadCount(env, u.uid);
+  } catch { return out(env, req, { success: false, errorCode: 'NOTIFICATION_COUNT_UNAVAILABLE' }, 503); }
+  return out(env, req, { success: true, notifications: items, unreadCount, nextPageToken: last ? nextNotificationCursor(last.createdAt, last.id) : null });
+}
+async function notificationUnreadCount(env: Env, uid: string): Promise<number> {
+  const aggregate = await fs(env, ':runAggregationQuery', { method: 'POST', body: JSON.stringify({ structuredAggregationQuery: {
       structuredQuery: { from: [{ collectionId: 'notifications' }], where: { compositeFilter: { op: 'AND', filters: [
-        { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: u.uid } } },
+        { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: uid } } },
         { fieldFilter: { field: { fieldPath: 'read' }, op: 'EQUAL', value: { booleanValue: false } } },
       ] } } }, aggregations: [{ alias: 'unread', count: {} }],
     } }) });
-    unreadCount = Number(aggregate?.[0]?.result?.aggregateFields?.unread?.integerValue || unreadCount);
-  } catch { /* page-local count remains a safe fallback if aggregation is unavailable */ }
-  return out(env, req, { success: true, notifications: items, unreadCount, nextPageToken: last ? nextNotificationCursor(last.createdAt, last.id) : null });
+  const raw = aggregate?.[0]?.result?.aggregateFields?.unread?.integerValue;
+  if (raw === undefined || !/^\d+$/.test(String(raw)) || !Number.isSafeInteger(Number(raw))) throw new Error('Invalid unread aggregate');
+  return Number(raw);
+}
+async function notificationCount(req: Request, env: Env, u: User) {
+  try { return out(env, req, { success: true, unreadCount: await notificationUnreadCount(env, u.uid) }); }
+  catch { return out(env, req, { success: false, errorCode: 'NOTIFICATION_COUNT_UNAVAILABLE' }, 503); }
 }
 async function notificationRead(req: Request, env: Env, u: User, id: string) {
   if (!safeNotificationId(id)) return out(env, req, { success: false, error: 'Not found' }, 404);
@@ -3468,6 +3477,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     if (identityCallbackMatch && req.method === 'POST') return await identityCallback(req, env, identityCallbackMatch[1]);
      if (path === '/api/webhooks/resend' && req.method === 'POST') return await resendWebhook(req, env);
       if (path === '/api/notifications' && req.method === 'GET') return await notificationList(req, env, await authenticatedUser(req, env));
+      if (path === '/api/notifications/unread-count' && req.method === 'GET') return await notificationCount(req, env, await authenticatedUser(req, env));
       if (path === '/api/notifications/read-all' && req.method === 'POST') return await notificationReadAll(req, env, await authenticatedUser(req, env));
       if (path === '/api/notifications/preferences' && (req.method === 'GET' || req.method === 'PUT')) return await notificationPreferences(req, env, await authenticatedUser(req, env));
       if (path === '/api/notifications/devices' && req.method === 'POST') return await registerDevice(req, env, await authenticatedUser(req, env));
