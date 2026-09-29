@@ -14,7 +14,7 @@ import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 import { getRentalSummary, transitionRentalRequest } from '@/services/workerClient';
-import { formatMinorAmount, prorateHourlyMinor } from '@/services/rentalV2';
+import { formatMinorAmount, liveRentalEstimateMinor, rentalRequestPricingState } from '@/services/rentalV2';
 import { safeErrorMessage } from '@/services/errorMessages';
 
 export default function RequestDetailScreen() {
@@ -150,6 +150,8 @@ export default function RequestDetailScreen() {
   const requestMode = request.requestMode || 'fixed_days';
   const isOpenEnded = requestMode === 'open_ended';
   const isV2 = request.pricingModelVersion === 2;
+  const pricingState = rentalRequestPricingState(request, rentalSummary);
+  const pricingSnapshot = pricingState.kind === 'v2' ? pricingState.snapshot : null;
 
   const canChat = request.allowChat && ['accepted', 'in_progress'].includes(request.status);
   const canPay = !isProvider && request.status === 'completed' && request.paymentStatus === 'unpaid';
@@ -197,7 +199,7 @@ export default function RequestDetailScreen() {
     return new Intl.DateTimeFormat(isRTL ? 'ar-SA' : 'en-GB', {
       day: 'numeric', month: 'short', year: 'numeric',
       ...(includeTime ? { hour: '2-digit', minute: '2-digit' } : {}),
-      timeZone: request.pricingSnapshot?.marketTimezone,
+      timeZone: pricingSnapshot?.marketTimezone,
     }).format(parsed);
   };
   const liveElapsedMinutes = (() => {
@@ -210,12 +212,7 @@ export default function RequestDetailScreen() {
     const locallyElapsed = Math.max(0, (typeof performance !== 'undefined' ? performance.now() : anchor!.monotonicAtSync) - anchor!.monotonicAtSync);
     return Math.max(1, Math.ceil((serverReference + locallyElapsed - actualStart) / 60_000));
   })();
-  const liveEstimatedMinor = (() => {
-    if (!rentalSummary || !liveElapsedMinutes || rentalSummary.actualEndAt) return rentalSummary?.currentEstimate?.baseAmountMinor ?? rentalSummary?.final?.baseAmountMinor;
-    const snapshot = rentalSummary.pricingSnapshot;
-    if (snapshot.rateUnit === 'hourly') return prorateHourlyMinor(snapshot.rateAmountMinor, liveElapsedMinutes);
-    return Number(BigInt(snapshot.rateAmountMinor) * BigInt(Math.ceil(liveElapsedMinutes / 1440)));
-  })();
+  const liveEstimatedMinor = liveRentalEstimateMinor(rentalSummary, liveElapsedMinutes);
 
   return (
     <View style={styles.container}>
@@ -261,17 +258,17 @@ export default function RequestDetailScreen() {
             </Text>
           </View>
 
-           {isV2 && request.pricingSnapshot ? (
+           {isV2 && pricingSnapshot ? (
              <View style={styles.card}>
                <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('locked_pricing')}</Text>
                <View style={styles.paymentRows}>
                  <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                    <Text style={styles.paymentLabel}>{isRTL ? 'أساس الحساب' : 'Billing basis'}</Text>
-                   <Text style={styles.paymentValue}>{request.pricingSnapshot.rateUnit === 'hourly' ? (isRTL ? 'بالساعة' : 'Hourly') : (isRTL ? 'باليوم' : 'Daily')}</Text>
+                   <Text style={styles.paymentValue}>{pricingSnapshot.rateUnit === 'hourly' ? (isRTL ? 'بالساعة' : 'Hourly') : (isRTL ? 'باليوم' : 'Daily')}</Text>
                  </View>
                  <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                    <Text style={styles.paymentLabel}>{t('locked_rate')}</Text>
-                   <Text style={styles.paymentValue}>{formatMinorAmount(request.pricingSnapshot.rateAmountMinor, request.pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
+                   <Text style={styles.paymentValue}>{formatMinorAmount(pricingSnapshot.rateAmountMinor, pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
                  </View>
                  {rentalSummary?.actualStartAt && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                    <Text style={styles.paymentLabel}>{isRTL ? 'البدء الفعلي' : 'Actual start'}</Text>
@@ -285,21 +282,24 @@ export default function RequestDetailScreen() {
                    <Text style={styles.paymentLabel}>{t('current_elapsed')}</Text>
                    <Text style={styles.paymentValue}>{Math.floor(liveElapsedMinutes / 60)}:{String(liveElapsedMinutes % 60).padStart(2, '0')}</Text>
                   </View>}
-                 {liveEstimatedMinor !== undefined && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                 {liveEstimatedMinor !== null && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                    <Text style={styles.paymentLabel}>{t('current_estimated_cost')}</Text>
-                   <Text style={styles.paymentTotal}>{formatMinorAmount(liveEstimatedMinor, request.pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
+                   <Text style={styles.paymentTotal}>{formatMinorAmount(liveEstimatedMinor, pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
                  </View>}
                  {request.finalRentalSnapshot && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                    <Text style={styles.paymentTotalLabel}>{isRTL ? 'المبلغ النهائي' : 'Final amount'}</Text>
-                   <Text style={styles.paymentTotal}>{formatMinorAmount(request.finalRentalSnapshot.amountMinor, request.pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
+                   <Text style={styles.paymentTotal}>{formatMinorAmount(request.finalRentalSnapshot.amountMinor, pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
                  </View>}
                  {!request.finalRentalSnapshot && rentalSummary?.final && <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                    <Text style={styles.paymentTotalLabel}>{isRTL ? 'المبلغ النهائي' : 'Final amount'}</Text>
-                   <Text style={styles.paymentTotal}>{formatMinorAmount(rentalSummary.final.baseAmountMinor, request.pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
+                   <Text style={styles.paymentTotal}>{formatMinorAmount(rentalSummary.final.baseAmountMinor, pricingSnapshot.currency, isRTL ? 'ar' : 'en')}</Text>
                  </View>}
                </View>
              </View>
-           ) : <View style={styles.card}>
+           ) : isV2 ? <View style={styles.card}>
+            <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('locked_pricing')}</Text>
+            <Text style={[styles.paymentLabel, { textAlign: isRTL ? 'right' : 'left' }]}>{t('pricing_unavailable')}</Text>
+          </View> : <View style={styles.card}>
             <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('payment_summary')}</Text>
             <View style={styles.paymentRows}>
               <View style={[styles.paymentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>

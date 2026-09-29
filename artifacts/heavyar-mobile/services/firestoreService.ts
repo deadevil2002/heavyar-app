@@ -25,6 +25,12 @@ import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
 import { WORKER_BASE_URL } from '@/constants/worker';
 import { listingCountryCode } from './locationHierarchy';
+import {
+  decodeCommercialSnapshot,
+  decodeFinalRentalSnapshot,
+  decodeRentalPricingSnapshot,
+  reportInvalidRentalMoney,
+} from './rentalV2';
 
 const loggedIndexFallbacks = new Set<string>();
 
@@ -190,6 +196,22 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
   const rawDays = typeof data.numberOfDays === 'number' ? data.numberOfDays : undefined;
   const inferredDays = calculateNumberOfDays(startDate, endDate);
   const numberOfDays = requestMode === 'fixed_days' ? (rawDays || inferredDays) : undefined;
+  const pricingSnapshot = decodeRentalPricingSnapshot(data.pricingSnapshot);
+  const finalRentalSnapshot = decodeFinalRentalSnapshot(data.finalRentalSnapshot);
+  const commercialSnapshot = decodeCommercialSnapshot(data.commercialSnapshot);
+  const finalCommercialSnapshot = decodeCommercialSnapshot(data.finalCommercialSnapshot);
+  if (data.pricingModelVersion === 2 && !pricingSnapshot) {
+    reportInvalidRentalMoney({ context: 'firestore_request', code: 'INVALID_PRICING_SNAPSHOT', fields: ['pricingSnapshot'], requestId: id });
+  }
+  if (data.finalRentalSnapshot != null && !finalRentalSnapshot) {
+    reportInvalidRentalMoney({ context: 'firestore_request', code: 'INVALID_FINAL_RENTAL_SNAPSHOT', fields: ['finalRentalSnapshot'], requestId: id });
+  }
+  if (data.commercialSnapshot != null && !commercialSnapshot) {
+    reportInvalidRentalMoney({ context: 'firestore_request', code: 'INVALID_COMMERCIAL_SNAPSHOT', fields: ['commercialSnapshot'], requestId: id });
+  }
+  if (data.finalCommercialSnapshot != null && !finalCommercialSnapshot) {
+    reportInvalidRentalMoney({ context: 'firestore_request', code: 'INVALID_COMMERCIAL_SNAPSHOT', fields: ['finalCommercialSnapshot'], requestId: id });
+  }
 
   return {
     id,
@@ -209,8 +231,8 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     requestedEndAt,
     actualStartAt: data.actualStartAt ? toISOString(data.actualStartAt) : null,
     actualEndAt: data.actualEndAt ? toISOString(data.actualEndAt) : null,
-    pricingSnapshot: data.pricingSnapshot as EquipmentRequest['pricingSnapshot'],
-    finalRentalSnapshot: data.finalRentalSnapshot as EquipmentRequest['finalRentalSnapshot'],
+    pricingSnapshot: pricingSnapshot || undefined,
+    finalRentalSnapshot,
     cancellationReason: typeof data.cancellationReason === 'string' ? data.cancellationReason : undefined,
     completionRequestedBy: typeof data.completionRequestedBy === 'string' ? data.completionRequestedBy : undefined,
     numberOfDays,
@@ -231,9 +253,9 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     finalAmount: typeof data.finalAmount === 'number' ? data.finalAmount : undefined,
     finalPlatformFee: typeof data.finalPlatformFee === 'number' ? data.finalPlatformFee : undefined,
     finalProviderAmount: typeof data.finalProviderAmount === 'number' ? data.finalProviderAmount : undefined,
-    commercialSnapshot: data.commercialSnapshot as EquipmentRequest['commercialSnapshot'],
+    commercialSnapshot: commercialSnapshot || undefined,
     commercialSnapshotStatus: data.commercialSnapshotStatus === 'estimated' || data.commercialSnapshotStatus === 'finalized' ? data.commercialSnapshotStatus : undefined,
-    finalCommercialSnapshot: data.finalCommercialSnapshot as EquipmentRequest['finalCommercialSnapshot'],
+    finalCommercialSnapshot: finalCommercialSnapshot || undefined,
     createdAt: toISOString(data.createdAt),
     updatedAt: toISOString(data.updatedAt),
   };

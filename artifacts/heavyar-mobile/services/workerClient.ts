@@ -7,7 +7,13 @@ import { driverRequestActions } from './driverRequestContract';
 import type { GccCountryCode } from '@/constants/gcc';
 import { invalidatePublicEquipment } from './discoveryInvalidation';
 import type { RentalEstimate, RentalSummary } from '@/types';
-import { buildRentalRequestPayload, normalizeEstimate, type RentalRequestInput } from './rentalV2';
+import {
+  buildRentalRequestPayload,
+  decodeRentalSummary,
+  normalizeEstimate,
+  reportInvalidRentalMoney,
+  type RentalRequestInput,
+} from './rentalV2';
 export { driverRequestActions } from './driverRequestContract';
 
 export type AvailabilityRange = { from: string; until?: string };
@@ -222,7 +228,13 @@ export async function getRentalSummary(requestId: string): Promise<RentalSummary
   const result = await request<RentalSummary | { success: true; serverNow: string; summary: RentalSummary }>(
     `/api/requests/${encodeURIComponent(requestId)}/rental-summary`,
   );
-  return 'summary' in result ? { ...result.summary, serverNow: result.serverNow } : result;
+  const raw = 'summary' in result ? { ...result.summary, serverNow: result.serverNow } : result;
+  const decoded = decodeRentalSummary(raw);
+  if (!decoded) {
+    reportInvalidRentalMoney({ context: 'rental_summary', code: 'INVALID_RENTAL_SUMMARY', fields: ['summary'], requestId });
+    throw new WorkerError('Invalid rental summary response', 502, 'INVALID_RENTAL_SUMMARY');
+  }
+  return decoded;
 }
 
 export function transitionRentalRequest(

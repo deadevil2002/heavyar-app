@@ -8,7 +8,7 @@ import { EquipmentRequest, Equipment } from '@/types';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 import StatusBadge from './StatusBadge';
-import { formatMinorAmount } from '@/services/rentalV2';
+import { formatMinorAmount, rentalRequestPricingState } from '@/services/rentalV2';
 
 interface RequestCardProps {
   request: EquipmentRequest;
@@ -31,6 +31,8 @@ export default React.memo(function RequestCard({ request, equipment = null }: Re
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
   const requestMode = request.pricingModelVersion === 2 ? request.rentalMode : (request.requestMode || 'fixed_days');
   const isOpenEnded = requestMode === 'open_ended';
+  const pricingState = rentalRequestPricingState(request);
+  const pricingSnapshot = pricingState.kind === 'v2' ? pricingState.snapshot : null;
 
   const formatDate = (dateStr: string) => {
     try {
@@ -68,8 +70,10 @@ export default React.memo(function RequestCard({ request, equipment = null }: Re
           <View style={[styles.bottomRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
             <StatusBadge status={request.status} />
             <Text style={styles.amount}>
-              {request.pricingModelVersion === 2 && request.pricingSnapshot
-                ? formatMinorAmount(request.pricingSnapshot.baseAmountMinor as number || request.pricingSnapshot.rateAmountMinor, request.pricingSnapshot.currency, isRTL ? 'ar' : 'en')
+              {request.pricingModelVersion === 2
+                ? pricingSnapshot
+                  ? formatMinorAmount(pricingSnapshot.rateAmountMinor, pricingSnapshot.currency, isRTL ? 'ar' : 'en')
+                  : t('pricing_unavailable')
                 : `${request.amount.toLocaleString()} ${request.currency || t('sar')}`}
             </Text>
           </View>
