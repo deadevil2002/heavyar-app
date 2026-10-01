@@ -21,6 +21,7 @@ import { dailyEarlyAccessRetention } from './early-access-retention';
 import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-access-delivery';
 import { processEarlyAccessCampaigns } from './early-access-campaign-delivery';
 import { driverEligibility, driverDiscoveryMarket } from './driver-eligibility';
+import { effectiveDocumentStatus, regulatoryReviewStatuses } from './regulatory';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
@@ -242,6 +243,7 @@ const FILTERS: Record<string, string[]> = {
   complaints: ['status', 'requestId', 'customerUid', 'providerUid'],
   verificationCases: ['status', 'type'],
   verificationProfiles: ['uid', 'overallTrust.status', 'identity.status'],
+  regulatoryDocuments: ['ownerUid', 'documentType', 'reviewStatus', 'expiryDate'],
   verificationAttempts: ['uid', 'status', 'provider', 'verificationType'],
   verificationEvents: ['uid', 'attemptId', 'type', 'status'],
   verificationPolicies: ['enabled'],
@@ -821,7 +823,7 @@ async function bulkEmailVerificationReminder(req: Request, env: Env, user: Admin
   return { success: true, ...counts, results };
 }
 
-const deletionCollections = ['users', 'userProfiles', 'providerProfiles', 'driverProfiles', 'deviceTokens', 'notificationTokenOwners', 'notificationInstallations', 'notifications', 'notificationPreferences', 'notificationDeliveries', 'notificationOutbox', 'emailVerificationRateLimits', 'phoneAliases', 'phoneOwners', 'recoveryCodes', 'temporaryRecovery', 'verificationIndexes', 'verificationProfiles', 'verificationAttempts', 'equipment', 'equipmentDrafts'];
+const deletionCollections = ['users', 'userProfiles', 'providerProfiles', 'driverProfiles', 'deviceTokens', 'notificationTokenOwners', 'notificationInstallations', 'notifications', 'notificationPreferences', 'notificationDeliveries', 'notificationOutbox', 'emailVerificationRateLimits', 'phoneAliases', 'phoneOwners', 'recoveryCodes', 'temporaryRecovery', 'verificationIndexes', 'verificationProfiles', 'verificationAttempts', 'regulatoryDocuments', 'regulatoryExpiryQueue', 'equipment', 'equipmentDrafts'];
 function deletionProtected(user: any) {
   return user?.bootstrap === true || user?.system === true || user?.service === true || user?.isOwner === true || user?.currentOwner === true || user?.isCurrentOwner === true || user?.isSuperAdmin === true ||
     user?.role === 'owner' || user?.role === 'super_admin' || user?.activeStaff === true || user?.staffActive === true;
@@ -1061,7 +1063,7 @@ async function processDeletionJob(env: Env, row: any) {
           notificationDeliveries: ['uid', 'userUid'], notificationOutbox: ['uid', 'userUid'], emailVerificationRateLimits: ['uid'],
           phoneAliases: ['uid', 'userUid'], phoneOwners: ['uid', 'userUid'], recoveryCodes: ['uid', 'userUid'],
           temporaryRecovery: ['uid', 'userUid'], verificationIndexes: ['uid', 'userUid'], equipment: ['ownerUid', 'uid'],
-          verificationProfiles: ['uid', 'userUid'], verificationAttempts: ['uid', 'userUid'],
+          verificationProfiles: ['uid', 'userUid'], verificationAttempts: ['uid', 'userUid'], regulatoryDocuments: ['ownerUid'], regulatoryExpiryQueue: ['ownerUid'],
           equipmentDrafts: ['ownerUid', 'uid'], driverRequests: ['driverUid', 'requesterUid'],
         };
         for (const collection of deletionCollections) {
@@ -1292,7 +1294,7 @@ function canReadCollection(user: AdminUser, collection: string) {
   // documents remain finance-scoped until a dedicated payout source exists.
   if (['payments', 'invoices', 'refunds'].includes(collection)) return can(user, 'finance.read');
   if (collection === 'paymentGateways') return can(user, 'finance.read') || can(user, 'payouts.read');
-  if (['verificationCases', 'verificationProfiles', 'verificationAttempts', 'verificationEvents', 'verificationPolicies', 'identityIntegrations'].includes(collection)) return can(user, 'verification.manage') || (broadOperationalRead && role !== 'auditor');
+  if (['verificationCases', 'verificationProfiles', 'verificationAttempts', 'verificationEvents', 'verificationPolicies', 'identityIntegrations', 'regulatoryDocuments'].includes(collection)) return can(user, 'verification.manage') || (broadOperationalRead && role !== 'auditor');
   if (['users', 'complaints', 'deletionRequests'].includes(collection)) return can(user, 'support.manage') || broadOperationalRead;
   if (['equipment', 'equipmentRequests', 'driverProfiles', 'driverRequests'].includes(collection)) return can(user, 'operations.manage') || can(user, 'moderation.manage') || broadOperationalRead;
   if (['providerConfigs', 'heavyarConfig'].includes(collection)) return can(user, 'config.manage');
@@ -1685,6 +1687,7 @@ const TARGET_COLLECTIONS: Record<string, string> = {
   config: 'heavyarConfig', heavyarConfig: 'heavyarConfig', authConfig: 'heavyarConfig', verification: 'verificationCases', verificationCase: 'verificationCases', verificationCases: 'verificationCases', 'verification-case': 'verificationCases', 'verification-cases': 'verificationCases',
   verificationPolicy: 'verificationPolicies', verificationPolicies: 'verificationPolicies',
   verificationProfile: 'verificationProfiles', verificationProfiles: 'verificationProfiles',
+  regulatoryDocument: 'regulatoryDocuments', regulatoryDocuments: 'regulatoryDocuments',
   verificationAttempt: 'verificationAttempts', verificationAttempts: 'verificationAttempts',
   equipment: 'equipment', listing: 'equipment', listings: 'equipment', refund: 'refunds', refunds: 'refunds',
   driverProfile: 'driverProfiles', driverProfiles: 'driverProfiles',
@@ -1849,6 +1852,27 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
       Object.values(payload.config).some(value => typeof value !== 'string' || value.length > 500)) return { error: 'Only structured non-secret business configuration is allowed', status: 400 };
     fields = { ...Object.fromEntries(Object.entries(payload.config).map(([key, value]) => [key, jsonValue(value)])), version: { integerValue: String(Number(current.version || 0) + 1) }, updatedBy: jsonValue(u.uid), updatedAt: { timestampValue: new Date().toISOString() } };
     }
+  } else if (targetCollection === 'regulatoryDocuments' && ['begin_document_review', 'approve_document', 'reject_document', 'request_document_resubmission', 'revoke_document'].includes(actionName)) {
+    if (!can(u, 'verification.manage')) return { error: 'Verification permission required', status: 403 };
+    const currentStatus = effectiveDocumentStatus({ reviewStatus: current.reviewStatus, expiryDate: current.expiryDate });
+    const transitions: Record<string, string[]> = {
+      begin_document_review: ['PENDING'], approve_document: ['PENDING', 'UNDER_REVIEW'],
+      reject_document: ['PENDING', 'UNDER_REVIEW'], request_document_resubmission: ['PENDING', 'UNDER_REVIEW', 'REJECTED'],
+      revoke_document: ['VERIFIED'],
+    };
+    if (!regulatoryReviewStatuses.includes(currentStatus) || !transitions[actionName].includes(currentStatus)) return { error: 'Invalid regulatory document transition', errorCode: 'TRANSITION_NOT_ALLOWED', status: 409 };
+    if (actionName === 'approve_document' && current.expiryDate && Date.parse(String(current.expiryDate)) <= Date.now()) return { error: 'Expired regulatory document cannot be verified', errorCode: 'DOCUMENT_EXPIRED', status: 409 };
+    if (['reject_document', 'request_document_resubmission', 'revoke_document'].includes(actionName) && !reason) return { error: 'Reason is required', errorCode: 'VALIDATION_FAILED', status: 400 };
+    const now = new Date().toISOString();
+    const next = actionName === 'begin_document_review' ? 'UNDER_REVIEW' : actionName === 'approve_document' ? 'VERIFIED' : actionName === 'reject_document' ? 'REJECTED' : actionName === 'revoke_document' ? 'REVOKED' : 'PENDING';
+    fields = {
+      reviewStatus: jsonValue(next), updatedAt: { timestampValue: now },
+      reviewedBy: jsonValue(u.uid), reviewMethod: jsonValue('HEAVYAR_MANUAL'),
+      ...(next === 'VERIFIED' ? { verifiedAt: { timestampValue: now }, verifiedBy: jsonValue(u.uid), verificationMethod: jsonValue('HEAVYAR_MANUAL'), rejectedAt: jsonValue(null), rejectionReason: jsonValue(null), revokedAt: jsonValue(null), revocationReason: jsonValue(null) } : {}),
+      ...(next === 'REJECTED' ? { rejectedAt: { timestampValue: now }, rejectionReason: jsonValue(reason) } : {}),
+      ...(next === 'REVOKED' ? { revokedAt: { timestampValue: now }, revocationReason: jsonValue(reason) } : {}),
+      ...(actionName === 'request_document_resubmission' ? { resubmissionRequestedAt: { timestampValue: now }, resubmissionReason: jsonValue(reason) } : {}),
+    };
   } else if (targetCollection === 'verificationProfiles' && ['start_manual_review', 'complete_manual_review', 'reject_manual_review', 'add_verification_note', 'set_provider_component', 'set_provider_requirements'].includes(actionName)) {
     if (!can(u, 'verification.manage')) return { error: 'Verification permission required', status: 403 };
     const manualAction = actionName as 'start_manual_review' | 'complete_manual_review' | 'reject_manual_review';
@@ -2761,7 +2785,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const pathMap: Record<string, string> = {
     '/api/admin/users': 'users', '/api/admin/providers': 'users', '/api/admin/equipment': 'equipment', '/api/admin/requests': 'equipmentRequests',
     '/api/admin/payments': 'payments', '/api/admin/invoices': 'invoices', '/api/admin/refunds': 'refunds', '/api/admin/complaints': 'complaints',
-    '/api/admin/verification': 'verificationCases', '/api/admin/verification-profiles': 'verificationProfiles', '/api/admin/verification-attempts': 'verificationAttempts', '/api/admin/verification-events': 'verificationEvents', '/api/admin/provider-configs': 'providerConfigs', '/api/admin/config': 'heavyarConfig', '/api/admin/audit': 'adminAudit', '/api/admin/deletion-requests': 'deletionRequests', '/api/admin/drivers': 'driverProfiles', '/api/admin/campaigns': 'campaigns',
+    '/api/admin/verification': 'verificationCases', '/api/admin/verification-profiles': 'verificationProfiles', '/api/admin/verification-attempts': 'verificationAttempts', '/api/admin/verification-events': 'verificationEvents', '/api/admin/regulatory-documents': 'regulatoryDocuments', '/api/admin/provider-configs': 'providerConfigs', '/api/admin/config': 'heavyarConfig', '/api/admin/audit': 'adminAudit', '/api/admin/deletion-requests': 'deletionRequests', '/api/admin/drivers': 'driverProfiles', '/api/admin/campaigns': 'campaigns',
   };
   if (url.pathname === '/api/admin/overview') {
     const requestStatuses = ['pending', 'requested', 'accepted', 'in_progress', 'completion_requested', 'under_investigation', 'escalated'];

@@ -12,6 +12,7 @@ import {
   useVerificationPolicy,
   useVerificationProfileDetail,
   useVerificationProfiles,
+  useRegulatoryDocuments,
   type TrustFields,
 } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
@@ -41,6 +42,8 @@ const statusLabel = (status: string | undefined, language: 'ar' | 'en') => {
     unverified: ['غير موثق', 'Unverified'], pending: ['جاري التحقق', 'Pending'], verified: ['موثق', 'Verified'],
     rejected: ['مرفوض', 'Rejected'], expired: ['منتهي الصلاحية', 'Expired'], manual_review: ['تحت المراجعة', 'Manual review'],
     restricted: ['مقيّد', 'Restricted'],
+    PENDING: ['قيد الانتظار', 'Pending'], UNDER_REVIEW: ['تحت المراجعة', 'Under review'], VERIFIED: ['موثق بواسطة Heavyar', 'Heavyar verified'],
+    REJECTED: ['مرفوض', 'Rejected'], EXPIRED: ['منتهي الصلاحية', 'Expired'], REVOKED: ['ملغى', 'Revoked'],
   };
   const label = labels[status || ''];
   return label ? label[language === 'ar' ? 0 : 1] : status || '—';
@@ -125,6 +128,7 @@ export default function Verification() {
   const [componentStates, setComponentStates] = useState<Record<string, string>>({});
   const { triggerAction, actionDialog } = useAdminAction();
   const attempts = useVerificationAttempts({ status: attemptStatus === 'all' ? undefined : attemptStatus, limit: 50 });
+  const regulatoryDocuments = useRegulatoryDocuments({ limit: 50 });
   const profiles = useVerificationProfiles({ ...(profileStatus === 'all' ? {} : { 'overallTrust.status': profileStatus }), uid: profileUid.trim() || undefined, limit: 50 });
   const session = useAdminSession();
   const detail = useVerificationProfileDetail(selectedUid);
@@ -155,6 +159,14 @@ export default function Verification() {
       payload: { component, status },
     });
   };
+  const reviewDocument = (item: any, action: string) => {
+    const labels: Record<string, [string, string]> = {
+      begin_document_review: ['بدء مراجعة المستند', 'Begin document review'], approve_document: ['اعتماد المستند بواسطة Heavyar', 'Heavyar-verify document'],
+      reject_document: ['رفض المستند', 'Reject document'], request_document_resubmission: ['طلب إعادة التقديم', 'Request resubmission'], revoke_document: ['إلغاء التحقق', 'Revoke verification'],
+    };
+    const [ar, en] = labels[action];
+    triggerAction({ targetType: 'regulatoryDocument', targetId: item.id, action, title: t(ar, en), description: t('هذا تحقق يدوي من Heavyar ولا يمثل اعتماداً حكومياً.', 'This is Heavyar manual verification and is not government endorsement.') });
+  };
 
   return (
     <div className="space-y-6">
@@ -167,6 +179,7 @@ export default function Verification() {
         <TabsList className="h-auto flex-wrap justify-start">
           <TabsTrigger value="attempts" data-testid="tab-verification-attempts"><FileClock className="me-2 h-4 w-4" />{t('محاولات التحقق', 'Attempts')}</TabsTrigger>
           <TabsTrigger value="profiles" data-testid="tab-verification-profiles"><UserRoundCheck className="me-2 h-4 w-4" />{t('الملفات والمراجعة', 'Profiles & review')}</TabsTrigger>
+          <TabsTrigger value="documents" data-testid="tab-regulatory-documents"><FileText className="me-2 h-4 w-4" />{t('المستندات التنظيمية', 'Regulatory documents')}</TabsTrigger>
           <TabsTrigger value="policy" data-testid="tab-verification-policy"><ClipboardList className="me-2 h-4 w-4" />{t('الضوابط', 'Controls')}</TabsTrigger>
         </TabsList>
          <TabsContent value="attempts" className="space-y-4">
@@ -176,6 +189,11 @@ export default function Verification() {
             {attempts.isLoading ? <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{t('جاري تحميل المحاولات…', 'Loading attempts…')}</TableCell></TableRow> : attempts.data?.items?.length ? attempts.data.items.map((item: any) => <TableRow key={item.id}><TableCell className="font-mono text-xs">{shortId(item.id || item.attemptId)}</TableCell><TableCell className="font-mono text-xs">{shortId(item.uid)}</TableCell><TableCell><div>{item.verificationType || 'identity'}</div><div className="text-xs text-muted-foreground">{item.provider || '—'}</div></TableCell><TableCell><TrustIndicator value={{ trustStatus: item.status }} language={language} /></TableCell><TableCell className="text-sm">{formatDate(item.expiresAt, language)}</TableCell><TableCell><Button variant="ghost" size="sm" onClick={() => setSelectedAttempt(item.id || item.attemptId)} data-testid={`button-attempt-history-${item.id || item.attemptId}`}>{t('السجل', 'History')}</Button></TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{t('لا توجد محاولات تطابق هذا الفلتر.', 'No attempts match this filter.')}</TableCell></TableRow>}
           </TableBody></Table></CardContent></Card>
           {selectedAttempt && <Card data-testid="card-attempt-history"><CardHeader><CardTitle className="text-base">{t('سجل المحاولة', 'Attempt history')} <span className="font-mono text-xs text-muted-foreground">{shortId(selectedAttempt)}</span></CardTitle><CardDescription>{t('أحداث التدقيق الآمنة فقط، دون حمولة الموفر.', 'Safe audit events only; no provider payloads are displayed.')}</CardDescription></CardHeader><CardContent className="space-y-2">{events.isLoading ? <p className="text-sm text-muted-foreground">{t('جاري التحميل…', 'Loading…')}</p> : events.data?.items?.length ? events.data.items.map((event: any) => <div key={event.id} className="flex items-center justify-between rounded-md border p-3"><div><p className="font-medium">{event.type || 'verification_event'}</p><p className="text-xs text-muted-foreground">{event.status || '—'}</p></div><p className="text-xs text-muted-foreground">{formatDate(event.timestamp, language)}</p></div>) : <p className="text-sm text-muted-foreground">{t('لا توجد أحداث آمنة مسجلة لهذه المحاولة.', 'No safe events were recorded for this attempt.')}</p>}</CardContent></Card>}
+        </TabsContent>
+        <TabsContent value="documents" className="space-y-4">
+          <Card><CardHeader><CardTitle>{t('المستندات التنظيمية', 'Regulatory documents')}</CardTitle><CardDescription>{t('مراجعة Heavyar اليدوية لا تعني اعتماداً من جهة حكومية. لا تظهر صور المستندات في القوائم العامة.', 'Heavyar manual review is not government endorsement. Document images are never exposed in public lists.')}</CardDescription></CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow><TableHead>{t('المالك', 'Owner')}</TableHead><TableHead>{t('النوع', 'Type')}</TableHead><TableHead>{t('الجهة المصدرة', 'Issuer')}</TableHead><TableHead>{t('الحالة', 'Status')}</TableHead><TableHead>{t('الانتهاء', 'Expiry')}</TableHead><TableHead>{t('الإجراءات', 'Actions')}</TableHead></TableRow></TableHeader><TableBody>
+            {regulatoryDocuments.isLoading ? <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{t('جاري التحميل…', 'Loading…')}</TableCell></TableRow> : regulatoryDocuments.data?.items?.length ? regulatoryDocuments.data.items.map((item: any) => <TableRow key={item.id}><TableCell className="font-mono text-xs">{shortId(item.ownerUid)}</TableCell><TableCell>{item.documentType}</TableCell><TableCell>{item.issuingAuthority || '—'}</TableCell><TableCell>{statusLabel(item.reviewStatus, language)}</TableCell><TableCell>{formatDate(item.expiryDate, language)}</TableCell><TableCell><div className="flex flex-wrap gap-1">{item.reviewStatus === 'PENDING' && <Button size="sm" variant="outline" onClick={() => reviewDocument(item, 'begin_document_review')}>{t('مراجعة', 'Review')}</Button>}{['PENDING', 'UNDER_REVIEW'].includes(item.reviewStatus) && <><Button size="sm" variant="outline" onClick={() => reviewDocument(item, 'approve_document')}>{t('اعتماد Heavyar', 'Heavyar verify')}</Button><Button size="sm" variant="destructive" onClick={() => reviewDocument(item, 'reject_document')}>{t('رفض', 'Reject')}</Button></>}{['PENDING', 'UNDER_REVIEW', 'REJECTED'].includes(item.reviewStatus) && <Button size="sm" variant="ghost" onClick={() => reviewDocument(item, 'request_document_resubmission')}>{t('إعادة تقديم', 'Resubmit')}</Button>}{item.reviewStatus === 'VERIFIED' && <Button size="sm" variant="destructive" onClick={() => reviewDocument(item, 'revoke_document')}>{t('إلغاء', 'Revoke')}</Button>}</div></TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{t('لا توجد مستندات.', 'No documents.')}</TableCell></TableRow>}
+          </TableBody></Table></CardContent></Card>
         </TabsContent>
         <TabsContent value="profiles" className="space-y-4">
           <Card><CardContent className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-center"><div className="flex items-center gap-2"><label className="text-sm font-medium" htmlFor="profile-status">{t('الحالة', 'Status')}</label><select id="profile-status" value={profileStatus} onChange={event => setProfileStatus(event.target.value as typeof profileStatus)} className="h-9 rounded-md border bg-background px-3 text-sm" data-testid="select-profile-status">{statuses.map(status => <option key={status} value={status}>{status === 'all' ? t('كل الحالات', 'All statuses') : statusLabel(status, language)}</option>)}</select></div><div className="relative flex-1"><Search className="absolute start-3 top-2.5 h-4 w-4 text-muted-foreground" /><Input value={profileUid} onChange={event => setProfileUid(event.target.value)} placeholder={t('معرف المستخدم الدقيق', 'Exact user ID')} className="ps-9" data-testid="input-profile-uid" /></div></CardContent></Card>

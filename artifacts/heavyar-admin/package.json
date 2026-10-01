@@ -8,7 +8,8 @@
     "build": "vite build --config vite.config.ts",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run src/lib/early-access.test.ts src/lib/early-access-live.integration.test.tsx"
+    "test:vitest": "vitest run --config vitest.config.ts",
+    "test": "node ../../scripts/run-admin-tests.mjs"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",

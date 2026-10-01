@@ -26,6 +26,9 @@ const messages = {
   WEAK_PASSWORD: ['اختر كلمة مرور من 6 أحرف على الأقل.', 'Choose a password with at least 6 characters.'],
   ACCOUNT_EXISTS: ['يوجد حساب بهذا البريد. سجّل الدخول بدلًا من إنشاء حساب.', 'An account already exists for this email. Sign in instead.'],
   REAUTHENTICATION_REQUIRED: ['يرجى تسجيل الدخول مجددًا قبل تنفيذ هذا الإجراء.', 'Please sign in again before performing this action.'],
+  DOCUMENT_EXPIRED: ['انتهت صلاحية المستند ولا يمكن اعتماده.', 'The document has expired and cannot be verified.'],
+  TRANSITION_NOT_ALLOWED: ['لم تعد هذه الخطوة متاحة للحالة الحالية.', 'This transition is not available for the current state.'],
+  REGULATORY_CAPABILITY_REQUIRED: ['يلزم استكمال التحقق التنظيمي المحدد.', 'The required scoped regulatory verification must be completed.'],
 } as const;
 export type SafeErrorCode = keyof typeof messages;
 

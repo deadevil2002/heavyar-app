@@ -17,6 +17,7 @@ import { reviewEquipmentProjection, searchPublicEquipment, type FirestoreQuery, 
 import { activeInterval, buildFinalPaymentHandoff, calculateRental, estimateRental, intervalsOverlap, legacyMarketProjection, legacyPricingProjection, marketForCountry, parseV2RequestInput, rateFor, validateListingPricing, validateServerStart, v2TransitionAllowed, type V2RequestInput } from './rental-v2';
 import { mutationDiagnosticEvent, mutationRoute, responseErrorCode, type MutationDiagnostics, type MutationStage } from './observability';
 import { reserveCloudinaryUploadQuota as reserveCloudinaryUploadQuotaAttempt, type CloudinaryQuotaRecord } from './cloudinary-upload-quota';
+import { evaluateCapabilities, isSaudiTruckRentalWithoutDriver, validateRegulatoryDocumentSubmission, type RegulatoryDocument } from './regulatory';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -602,7 +603,7 @@ async function identityOnlyDeletion(req: Request, env: Env, u: User) {
   if (marker?.data?.status === 'completed') return out(env, req, { success: true, status: 'completed', alreadyDeleted: true });
   // Shared marketplace transactions are deliberately preserved. This cleanup
   // only removes identity-owned profile, device, verification, and draft media.
-  const targets: Array<[string, string[]]> = [['phoneOwners', ['uid']], ['driverProfiles', ['uid']], ['providerProfiles', ['uid']], ['equipment', ['ownerUid']], ['notifications', ['uid']], ['deviceTokens', ['uid']], ['notificationTokenOwners', ['uid']], ['notificationInstallations', ['uid']], ['verificationProfiles', ['uid']], ['verificationAttempts', ['uid']], ['verificationEvents', ['uid']]];
+  const targets: Array<[string, string[]]> = [['phoneOwners', ['uid']], ['driverProfiles', ['uid']], ['providerProfiles', ['uid']], ['equipment', ['ownerUid']], ['notifications', ['uid']], ['deviceTokens', ['uid']], ['notificationTokenOwners', ['uid']], ['notificationInstallations', ['uid']], ['verificationProfiles', ['uid']], ['verificationAttempts', ['uid']], ['verificationEvents', ['uid']], ['regulatoryDocuments', ['ownerUid']]];
   const rows: any[] = profile ? [{ collection: 'users', id: u.uid, ...profile }] : [];
   for (const [collection, fields] of targets) {
     const owned = await queryOwnedDocuments(env, collection, u.uid, fields);
@@ -1196,9 +1197,63 @@ function safeProfile(profile: any, uid: string) {
 function safeAttempt(id: string, value: any) {
   return { attemptId: id, status: String(value?.status || 'unverified'), provider: String(value?.provider || 'unconfigured'), verificationType: String(value?.verificationType || 'identity'), createdAt: value?.createdAt || null, expiresAt: value?.expiresAt || null, verifiedAt: value?.verifiedAt || null, failureCode: value?.failureCode || null, reviewRequired: value?.reviewRequired === true };
 }
+async function regulatoryDocumentsForOwner(env: Env, ownerUid: string): Promise<RegulatoryDocument[]> {
+  if (firestoreOverride) {
+    const injected = firestoreOverride('__queries', 'regulatoryDocuments');
+    return Array.isArray(injected)
+      ? injected.filter(document => document?.ownerUid === ownerUid).slice(0, 50) as RegulatoryDocument[]
+      : [];
+  }
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'regulatoryDocuments' }],
+    where: { fieldFilter: { field: { fieldPath: 'ownerUid' }, op: 'EQUAL', value: { stringValue: ownerUid } } },
+    limit: 50,
+  } }) }) as any[] || [];
+  return rows.filter(row => row?.document?.name && row?.document?.fields).map(row => ({
+    id: String(row.document.name).split('/').pop(), ...decode(row.document),
+  })) as RegulatoryDocument[];
+}
+function safeRegulatoryDocument(document: RegulatoryDocument) {
+  const { documentNumber, ...safe } = document;
+  return { ...safe, documentNumberMasked: documentNumber.length <= 4 ? '****' : `***${documentNumber.slice(-4)}` };
+}
+async function regulatoryDocumentList(req: Request, env: Env, u: User) {
+  const documents = await regulatoryDocumentsForOwner(env, u.uid);
+  return out(env, req, { success: true, items: documents.map(safeRegulatoryDocument) });
+}
+async function submitRegulatoryDocument(req: Request, env: Env, u: User) {
+  let body: unknown; try { body = await req.json(); } catch { return out(env, req, { success: false, error: 'Invalid document submission', errorCode: 'VALIDATION_FAILED' }, 400); }
+  const valid = validateRegulatoryDocumentSubmission(body);
+  if (!valid) return out(env, req, { success: false, error: 'Invalid document submission', errorCode: 'VALIDATION_FAILED' }, 400);
+  const id = `rd_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
+  const document: RegulatoryDocument = { id, ownerUid: u.uid, ...valid, submittedAt: now, reviewStatus: 'PENDING', updatedAt: now };
+  const writes: any[] = [{ update: { name: fullName(env, `regulatoryDocuments/${id}`), fields: Object.fromEntries(Object.entries(document).filter(([, value]) => value !== undefined).map(([key, value]) => [key, firestoreValue(value)])) }, currentDocument: { exists: false } }];
+  if (valid.expiryDate) writes.push({ update: { name: fullName(env, `regulatoryExpiryQueue/${id}`), fields: { documentId: { stringValue: id }, ownerUid: { stringValue: u.uid }, expiresAt: { timestampValue: `${valid.expiryDate}T00:00:00.000Z` }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } });
+  await commitWrites(env, writes);
+  return out(env, req, { success: true, document: safeRegulatoryDocument(document) }, 201);
+}
+async function processRegulatoryExpiry(env: Env) {
+  const now = new Date().toISOString();
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'regulatoryExpiryQueue' }], where: { fieldFilter: { field: { fieldPath: 'expiresAt' }, op: 'LESS_THAN_OR_EQUAL', value: { timestampValue: now } } },
+    orderBy: [{ field: { fieldPath: 'expiresAt' }, direction: 'ASCENDING' }], limit: 25,
+  } }) }) as any[] || [];
+  for (const row of rows.filter(item => item?.document?.name && item?.document?.fields)) {
+    const queueId = String(row.document.name).split('/').pop()!;
+    const queue = decode(row.document), raw = await getRawDoc(env, 'regulatoryDocuments', String(queue.documentId || queueId));
+    const writes: any[] = [{ delete: fullName(env, `regulatoryExpiryQueue/${queueId}`) }];
+    if (raw && !['EXPIRED', 'REVOKED', 'REJECTED'].includes(String(raw.data.reviewStatus || ''))) {
+      writes.unshift({ update: { name: fullName(env, `regulatoryDocuments/${encodeURIComponent(String(queue.documentId || queueId))}`), fields: { reviewStatus: { stringValue: 'EXPIRED' }, expiredAt: { timestampValue: now }, updatedAt: { timestampValue: now } }, updateMask: { fieldPaths: ['reviewStatus', 'expiredAt', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } } });
+      writes.push(await notificationWrite(fullName.bind(null, env), String(raw.data.ownerUid), 'verification_expired', now, String(queue.documentId || queueId), `regulatory-expired:${queueId}`));
+    }
+    await commitWrites(env, writes);
+  }
+}
 async function verificationProfile(req: Request, env: Env, u: User) {
-  const profile = await getDoc(env, 'verificationProfiles', u.uid);
-  return out(env, req, { success: true, profile: safeProfile(profile, u.uid) });
+  const [profile, account, documents] = await Promise.all([getDoc(env, 'verificationProfiles', u.uid), getDoc(env, 'users', u.uid), regulatoryDocumentsForOwner(env, u.uid)]);
+  const safe = safeProfile(profile, u.uid);
+  const decision = evaluateCapabilities({ uid: u.uid, canonicalRole: String(account?.role || ''), accountType: account?.providerType === 'company' || account?.accountType === 'business' || account?.businessType === 'business' ? 'business' : 'individual', suspended: ['suspended', 'restricted', 'deletion_requested', 'deleted'].includes(String(account?.accountStatus || account?.suspensionStatus || '')), identityVerified: safe.identity.status === 'verified', documents });
+  return out(env, req, { success: true, profile: { ...safe, capabilities: decision.capabilities, verificationBadges: decision.badges } });
 }
 async function verificationAttempt(req: Request, env: Env, u: User, attemptId: string) {
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(attemptId)) return out(env, req, { success: false, error: 'Not found' }, 404);
@@ -1625,6 +1680,20 @@ async function transitionV2Request(req: Request, env: Env, u: User, requestId: s
   if (Object.keys(body).some(key => !['action', 'reason'].includes(key))) return out(env, req, { success: false, error: 'Unsupported transition field' }, 400);
   const reason = body.reason === undefined ? '' : String(body.reason).trim();
   if (action === 'cancel' && (!reason || reason.length > 500 || /[\u0000-\u001f\u007f]/.test(reason))) return out(env, req, { success: false, error: 'A valid cancellation reason is required' }, 400);
+  if (action === 'accept' && isSaudiTruckRentalWithoutDriver({ countryCode: r.countryCode, categoryId: r.categoryId, transactionType: 'rental', includesDriver: r.includesDriver })) {
+    const [provider, documents] = await Promise.all([getDoc(env, 'users', String(r.providerUid)), regulatoryDocumentsForOwner(env, String(r.providerUid))]);
+    const decision = evaluateCapabilities({
+      uid: String(r.providerUid), canonicalRole: String(provider?.role || 'provider'),
+      accountType: provider?.providerType === 'company' || provider?.accountType === 'business' || provider?.businessType === 'business' ? 'business' : 'individual',
+      suspended: ['suspended', 'restricted', 'deletion_requested', 'deleted'].includes(String(provider?.accountStatus || provider?.suspensionStatus || '')),
+      countryCode: r.countryCode, categoryId: r.categoryId, transactionType: 'rental', includesDriver: r.includesDriver,
+      equipmentId: String(r.equipmentId || ''), documents,
+    });
+    if (!decision.capabilities.CAN_ACCEPT_REGULATED_RENTAL) return out(env, req, {
+      success: false, error: 'Required regulatory verification is unavailable.', errorCode: 'REGULATORY_CAPABILITY_REQUIRED',
+      requiredCapability: 'CAN_ACCEPT_REGULATED_RENTAL', reasons: decision.reasons.CAN_ACCEPT_REGULATED_RENTAL || [],
+    }, 403);
+  }
   const now = new Date().toISOString(), updates: Record<string, any> = { updatedAt: { timestampValue: now } };
   let next = '';
   if (action === 'accept') { next = 'accepted'; updates.allowChat = { booleanValue: true }; }
@@ -3506,6 +3575,8 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (path === '/api/account/deletion-request' && req.method === 'GET') return await accountDeletionStatus(req, env, await authenticatedUser(req, env, true));
      if (path === '/api/account/deletion-request' && req.method === 'POST') return await accountDeletionRequest(req, env, await authenticatedUser(req, env, true));
      if (path === '/api/verification/profile' && req.method === 'GET') return await verificationProfile(req, env, await authenticatedUser(req, env));
+     if (path === '/api/regulatory-documents' && req.method === 'GET') return await regulatoryDocumentList(req, env, await authenticatedUser(req, env));
+     if (path === '/api/regulatory-documents' && req.method === 'POST') return await submitRegulatoryDocument(req, env, await authenticatedUser(req, env));
      if (path === '/api/verification/policy' && req.method === 'GET') return await verificationPolicy(req, env, await authenticatedUser(req, env));
      if (path === '/api/verification/attempts' && req.method === 'POST') return await startVerification(req, env, await authenticatedUser(req, env));
       if (path === '/api/requests/estimate' && req.method === 'POST') return await estimateV2Request(req, env, await authenticatedUser(req, env));
@@ -3650,7 +3721,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     // Sequence processors so exhaustion in one prevents the next scan. Existing
     // per-record leases/idempotency remain unchanged; future ticks can recover.
     for (const processor of [processPendingNotificationOutbox, processScheduledCampaigns, processScheduledEarlyAccessCampaigns,
-      processStaffClaimSync, processDeletionJobs, retryDueNotificationDeliveries, pollNotificationReceipts, processEarlyAccessRetention]) {
+      processStaffClaimSync, processDeletionJobs, processRegulatoryExpiry, retryDueNotificationDeliveries, pollNotificationReceipts, processEarlyAccessRetention]) {
       if (quotaBlocked()) break;
       try { await processor(requestEnv); }
       catch (error) { if (isQuotaError(error)) break; processorFailed = true; }

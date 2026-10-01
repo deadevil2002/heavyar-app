@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
@@ -8,15 +8,13 @@ import { safeErrorMessage } from '../services/errorMessages';
 import { sanitizeCreateListingPayload } from '../services/listingPayload';
 
 const require = createRequire(import.meta.url);
-const root = path.resolve(import.meta.dirname, '../../../');
 const mobile = path.resolve(import.meta.dirname, '..');
 const babel = require('@babel/core');
-const store = path.join(root, 'node_modules/.pnpm');
-const flow = readdirSync(store).find(name => name.startsWith('@babel+plugin-transform-flow-strip-types@'))!;
+const flowStripTypes = require('@babel/plugin-transform-flow-strip-types');
 // Execute the installed RN implementation, not a browser FormData stand-in.
 const nativeSource = readFileSync(path.join(mobile, 'node_modules/react-native/Libraries/Network/FormData.js'), 'utf8');
 const compiled = babel.transformSync(nativeSource, { configFile: false, babelrc: false,
-  plugins: [require(path.join(store, flow, 'node_modules/@babel/plugin-transform-flow-strip-types'))] }).code;
+  plugins: [flowStripTypes] }).code;
 const NativeFormData = new Function(`${compiled.replace('export default FormData;', '')}; return FormData;`)();
 function service(auth = { currentUser: { uid: 'qa', getIdToken: async (_force?: boolean) => 'test-only' } }) {
   const source = ts.transpileModule(readFileSync(path.join(mobile, 'services/cloudinaryService.ts'), 'utf8'), {

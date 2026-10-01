@@ -265,6 +265,20 @@ describe('Firestore authorization baseline', () => {
     }));
   });
 
+  it('makes chat operation IDs idempotent while keeping different messages separate and outsiders blocked', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(asModularFirestore(context.firestore()), 'equipmentRequests/request-1'), { allowChat: true, status: 'accepted' });
+    });
+    const customer = authed('customer-1');
+    const message = { requestId: 'request-1', senderUid: 'customer-1', clientMessageId: 'operation_00000001', text: 'one logical send', createdAt: new Date(), read: false };
+    const same = doc(customer, 'equipmentRequests/request-1/messages/customer-1__operation_00000001');
+    await assertSucceeds(setDoc(same, message));
+    await assertSucceeds(setDoc(same, message));
+    await assertFails(setDoc(same, { ...message, text: 'changed replay' }));
+    await assertSucceeds(setDoc(doc(customer, 'equipmentRequests/request-1/messages/customer-1__operation_00000002'), { ...message, clientMessageId: 'operation_00000002', text: 'different message' }));
+    await assertFails(setDoc(doc(authed('outsider'), 'equipmentRequests/request-1/messages/outsider__operation_00000003'), { ...message, senderUid: 'outsider', clientMessageId: 'operation_00000003' }));
+  });
+
   it('blocks every direct mutation for deletion-requested users while preserving self reads', async () => {
     await env.withSecurityRulesDisabled(async (context) => {
       const db = asModularFirestore(context.firestore());

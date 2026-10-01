@@ -32,6 +32,8 @@ export default function ChatScreen() {
   const loadedOlderRef = useRef(false);
   const enrichedEquipmentIdRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
+  const pendingSendRef = useRef<{ text: string; operation: { id: string; createdAtMs: number } } | null>(null);
+  const sendingRef = useRef(false);
 
   const currentUid = user?.uid || '';
 
@@ -125,13 +127,22 @@ export default function ChatScreen() {
   }, [hasOlder, loadingOlder, messageCursor, messages, requestId]);
 
   const handleSend = useCallback(async () => {
-    if (!message.trim() || !requestId) return;
+    if (!message.trim() || !requestId || sendingRef.current) return;
     const text = message.trim();
+    const pending = pendingSendRef.current?.text === text ? pendingSendRef.current : {
+      text,
+      operation: { id: `msg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`, createdAtMs: Date.now() },
+    };
+    pendingSendRef.current = pending;
+    sendingRef.current = true;
     setMessage('');
     try {
-      await sendMessage(requestId, currentUid, text);
+      await sendMessage(requestId, currentUid, text, pending.operation);
+      pendingSendRef.current = null;
     } catch (e) {
       setMessage(text);
+    } finally {
+      sendingRef.current = false;
     }
   }, [message, requestId, currentUid]);
 

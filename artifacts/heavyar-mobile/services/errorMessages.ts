@@ -37,6 +37,9 @@ const messages: Record<Language, Record<string, string>> = {
     INVALID_RENTAL_INTERVAL: 'وقت الانتهاء يجب أن يكون بعد وقت البدء.',
     RENTAL_UNIT_UNAVAILABLE: 'وحدة التأجير المحددة غير متاحة لهذه المعدة.',
     REQUEST_CHANGED: 'تم تحديث الطلب. راجع التفاصيل الحالية وحاول مجددًا.',
+    REGULATORY_CAPABILITY_REQUIRED: 'يلزم استكمال التحقق التنظيمي المحدد قبل تنفيذ هذا الإجراء.',
+    DOCUMENT_EXPIRED: 'انتهت صلاحية مستند التحقق المطلوب. حدّث المستند ثم حاول مجددًا.',
+    TRANSITION_NOT_ALLOWED: 'لا يمكن تنفيذ هذا الإجراء في الحالة الحالية.',
   },
   en: {
     ACTIVE_RENTAL_OVERLAP: 'The equipment is not available for the full selected period. Choose another time or date.',
@@ -74,6 +77,9 @@ const messages: Record<Language, Record<string, string>> = {
     INVALID_RENTAL_INTERVAL: 'The end time must be after the start time.',
     RENTAL_UNIT_UNAVAILABLE: 'The selected rental unit is unavailable for this equipment.',
     REQUEST_CHANGED: 'The request has changed. Review its current details and try again.',
+    REGULATORY_CAPABILITY_REQUIRED: 'The required scoped regulatory verification must be completed before this action.',
+    DOCUMENT_EXPIRED: 'A required verification document has expired. Update it and try again.',
+    TRANSITION_NOT_ALLOWED: 'This action is unavailable in the current state.',
   },
 };
 export function safeErrorMessage(error: unknown, language: Language) {

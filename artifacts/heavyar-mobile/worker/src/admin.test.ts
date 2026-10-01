@@ -974,6 +974,32 @@ describe('admin authorization and operational boundary', () => {
     expect(response.status).toBe(400);
   });
 
+  test('regulatory document review is authorized, audited, scoped, and rejects invalid transitions', async () => {
+    __test.setAuth({ uid: 'super-1', admin: true, role: 'super_admin' });
+    __adminTest.setFirestore((collection) => collection === 'regulatoryDocuments' ? {
+      ownerUid: 'provider-1', documentType: 'ACTIVITY_LICENSE', reviewStatus: 'UNDER_REVIEW',
+      expiryDate: '2030-01-01', issuingAuthority: 'Transport authority',
+    } : null);
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    const approved = await worker.fetch(request('/api/admin/action', {
+      action: 'approve_document', targetType: 'regulatoryDocument', targetId: 'rd_1', reason: 'evidence reviewed',
+    }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'regulatory-review-0001' }), env);
+    expect(approved.status).toBe(200);
+    const fields = (commits[0][0] as any).update.fields;
+    expect(fields.reviewStatus.stringValue).toBe('VERIFIED');
+    expect(fields.verificationMethod.stringValue).toBe('HEAVYAR_MANUAL');
+    expect(JSON.stringify(commits[0])).toContain('adminAudit');
+
+    __adminTest.setFirestore((collection) => collection === 'regulatoryDocuments' ? {
+      ownerUid: 'provider-1', documentType: 'ACTIVITY_LICENSE', reviewStatus: 'VERIFIED', expiryDate: '2030-01-01',
+    } : null);
+    const invalid = await worker.fetch(request('/api/admin/action', {
+      action: 'approve_document', targetType: 'regulatoryDocument', targetId: 'rd_1', reason: 'duplicate approval',
+    }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'regulatory-review-0002' }), env);
+    expect(invalid.status).toBe(409);
+  });
+
   test('retention cleanup is super-admin-only, bounded, and uses guarded deletes', async () => {
     __test.setAuth({ uid: 'admin-1', admin: true, role: 'admin' });
     expect((await worker.fetch(request('/api/admin/verification-cleanup', { limit: 1 }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'retention-cleanup-id-01' }), env)).status).toBe(403);

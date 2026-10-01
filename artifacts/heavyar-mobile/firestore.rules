@@ -241,16 +241,29 @@ service cloud.firestore {
         allow read: if participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data)
           && get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.allowChat == true;
         allow create: if signedIn()
+          && messageId == request.auth.uid + '__' + request.resource.data.clientMessageId
           && request.resource.data.requestId == requestId
           && request.resource.data.senderUid == request.auth.uid
+          && request.resource.data.clientMessageId is string
+          && request.resource.data.clientMessageId.matches('^[A-Za-z0-9_-]{16,128}$')
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.createdAt >= request.time - duration.value(5, 'm')
+          && request.resource.data.createdAt <= request.time + duration.value(1, 'm')
           && notSuspended(request.auth.uid)
-          && request.resource.data.keys().hasOnly(['requestId', 'senderUid', 'text', 'createdAt', 'read'])
+          && request.resource.data.keys().hasOnly(['requestId', 'senderUid', 'clientMessageId', 'text', 'createdAt', 'read'])
           && get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.allowChat == true
           && participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data)
           && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.customerUid)
           && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.providerUid)
           && publicListing(get(/databases/$(database)/documents/equipment/$(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.equipmentId)).data);
-        allow update, delete: if false;
+        // Replaying the exact same logical operation is a no-op success. Any
+        // content, sender, timestamp or read-state mutation remains denied.
+        allow update: if signedIn()
+          && messageId == request.auth.uid + '__' + request.resource.data.clientMessageId
+          && request.resource.data == resource.data
+          && participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data)
+          && get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.allowChat == true;
+        allow delete: if false;
       }
     }
 

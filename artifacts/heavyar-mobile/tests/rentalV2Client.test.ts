@@ -205,7 +205,7 @@ describe('rental V2 client contract', () => {
   });
 
   it('maps canonical backend errors to professional localized text', () => {
-    for (const code of ['PAST_START_TIME', 'INVALID_RENTAL_INTERVAL', 'INVALID_START_TIME', 'RENTAL_UNIT_UNAVAILABLE', 'REQUEST_CHANGED']) {
+    for (const code of ['PAST_START_TIME', 'INVALID_RENTAL_INTERVAL', 'INVALID_START_TIME', 'RENTAL_UNIT_UNAVAILABLE', 'REQUEST_CHANGED', 'REGULATORY_CAPABILITY_REQUIRED', 'DOCUMENT_EXPIRED', 'TRANSITION_NOT_ALLOWED']) {
       expect(safeErrorMessage({ errorCode: code }, 'en')).not.toContain(code);
       expect(safeErrorMessage({ errorCode: code }, 'ar')).not.toContain(code);
     }

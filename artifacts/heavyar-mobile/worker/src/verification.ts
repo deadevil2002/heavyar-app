@@ -1,6 +1,6 @@
 export type VerificationStatus = 'unverified' | 'pending' | 'verified' | 'rejected' | 'expired' | 'manual_review' | 'restricted';
 export type RiskOutcome = 'allow' | 'require_verification' | 'require_manual_review' | 'restrict' | 'block';
-export const providerComponentNames = ['individualIdentity', 'businessLegalEntity', 'commercialRegistration', 'ownershipAuthorization', 'payoutBank'] as const;
+export const providerComponentNames = ['individualIdentity', 'businessLegalEntity', 'commercialRegistration', 'ownershipAuthorization', 'activityLicense', 'operatingCard', 'payoutBank'] as const;
 export type ProviderComponentName = typeof providerComponentNames[number];
 export type ProviderComponents = Record<ProviderComponentName, VerificationStatus>;
 
@@ -66,6 +66,7 @@ export const defaultVerificationProfile = (uid: string, now: string): Verificati
     components: {
     individualIdentity: 'unverified', businessLegalEntity: 'unverified',
     commercialRegistration: 'unverified', ownershipAuthorization: 'unverified',
+    activityLicense: 'unverified', operatingCard: 'unverified',
     payoutBank: 'unverified',
     },
   },

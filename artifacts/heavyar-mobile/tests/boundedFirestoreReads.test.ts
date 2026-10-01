@@ -51,12 +51,25 @@ describe('bounded Firestore read paths', () => {
     expect(source('../app/chat/[requestId].tsx')).toContain('Load older messages');
   });
 
-  it('bounds the rating duplicate fallback and avoids repeated listener enrichment reads', () => {
+  it('bounds the rating duplicate fallback, uses a deterministic id, and avoids repeated listener enrichment reads', () => {
     const rating = implementation('async function submitRating', 'async function fetchRatingsForUser');
     expect(rating).toContain("where('requestId', '==', data.requestId),");
     expect(rating).toContain('limit(10)');
+    expect(rating).toContain('const ratingId = `${data.requestId}__${data.fromUid}`');
+    expect(rating).toContain("setDoc(doc(db, 'ratings', ratingId)");
+    expect(rating).not.toContain("addDoc(collection(db, 'ratings')");
     expect(source('../app/request/[id].tsx')).toContain('fetchedEquipmentIdRef.current !== req.equipmentId');
     expect(source('../app/chat/[requestId].tsx')).toContain('enrichedEquipmentIdRef.current !== req.equipmentId');
+  });
+
+  it('uses deterministic chat operation ids and preserves them across ambiguous retries', () => {
+    const chat = implementation('async function sendMessage', 'async function submitRating');
+    expect(chat).toContain('const messageId = `${senderUid}__${operation.id}`');
+    expect(chat).toContain("setDoc(doc(db, 'equipmentRequests', requestId, 'messages', messageId)");
+    expect(chat).toContain('clientMessageId: operation.id');
+    const screen = source('../app/chat/[requestId].tsx');
+    expect(screen).toContain('pendingSendRef.current?.text === text');
+    expect(screen).toContain('sendingRef.current');
   });
 
   it('routes Active Rentals to an actual requests status filter', () => {

@@ -3,7 +3,7 @@ import {
   doc,
   getDoc,
   getDocs,
-  addDoc,
+  setDoc,
   updateDoc,
   deleteDoc,
   query,
@@ -653,9 +653,14 @@ export async function fetchOlderMessages(
 export async function sendMessage(
   requestId: string,
   senderUid: string,
-  text: string
+  text: string,
+  operation: { id: string; createdAtMs: number },
 ): Promise<string> {
   const db = getFirebaseDb();
+
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(operation.id) || !Number.isSafeInteger(operation.createdAtMs)) {
+    throw new Error('Invalid message operation');
+  }
 
   const reqSnap = await getDoc(doc(db, 'equipmentRequests', requestId));
   if (!reqSnap.exists()) throw new Error('Request not found');
@@ -666,17 +671,16 @@ export async function sendMessage(
   const isParticipant = request.customerUid === senderUid || request.providerUid === senderUid;
   if (!isParticipant) throw new Error('You are not a participant in this request');
 
-  const docRef = await addDoc(
-    collection(db, 'equipmentRequests', requestId, 'messages'),
-    {
-      requestId,
-      senderUid,
-      text,
-      createdAt: serverTimestamp(),
-      read: false,
-    }
-  );
-  return docRef.id;
+  const messageId = `${senderUid}__${operation.id}`;
+  await setDoc(doc(db, 'equipmentRequests', requestId, 'messages', messageId), {
+    requestId,
+    senderUid,
+    clientMessageId: operation.id,
+    text,
+    createdAt: Timestamp.fromMillis(operation.createdAtMs),
+    read: false,
+  });
+  return messageId;
 }
 
 export async function submitRating(data: Omit<Rating, 'id' | 'createdAt'>): Promise<string> {
@@ -715,11 +719,16 @@ export async function submitRating(data: Omit<Rating, 'id' | 'createdAt'>): Prom
   }
   if (!existingSnap.empty) throw new Error('You have already rated this request');
 
-  const docRef = await addDoc(collection(db, 'ratings'), {
+  // A stable id makes the create race-safe: Firestore rules allow creates but
+  // deny rating updates, so concurrent/retried submissions cannot create a
+  // second rating for the same request and author. The query above remains for
+  // compatibility with ratings written before deterministic ids were used.
+  const ratingId = `${data.requestId}__${data.fromUid}`;
+  await setDoc(doc(db, 'ratings', ratingId), {
     ...data,
     createdAt: serverTimestamp(),
   });
-  return docRef.id;
+  return ratingId;
 }
 
 export async function fetchRatingsForUser(

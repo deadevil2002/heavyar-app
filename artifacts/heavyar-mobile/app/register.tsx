@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, Pressable, KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Pressable, KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Mail, Lock, Eye, EyeOff, User, Phone, Briefcase, ShoppingCart, Truck, FileText, ChevronDown, MapPin, CheckCircle, ArrowLeft, ArrowRight, Search } from 'lucide-react-native';
@@ -15,6 +15,7 @@ import { saudiRegions, getCitiesByRegion } from '@/mocks/saudiRegions';
 import { GCC_COUNTRIES, countryFor, normalizePhoneForCountry, type GccCountryCode } from '@/constants/gcc';
 import { registrationErrorMessage } from '@/services/registrationErrors';
 import { registrationFieldForCode } from '@/services/registrationState';
+import { PUBLIC_LINKS } from '@/constants/publicLinks';
 
 type RegistrationStep = 'email' | 'info' | 'role';
 const crRules: Record<GccCountryCode, { maxLength: number; placeholder: string }> = {
@@ -388,6 +389,11 @@ export default function RegisterScreen() {
         </View>
         <Text style={styles.termsText}>{t('terms_acceptance')}</Text>
       </Pressable>
+      <View style={[styles.legalLinks, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+        <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(PUBLIC_LINKS.terms)}><Text style={styles.legalLink}>{isRTL ? 'شروط الاستخدام' : 'Terms'}</Text></Pressable>
+        <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(PUBLIC_LINKS.privacy)}><Text style={styles.legalLink}>{isRTL ? 'سياسة الخصوصية' : 'Privacy'}</Text></Pressable>
+        {role === 'provider' && <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(PUBLIC_LINKS.providerTerms)}><Text style={styles.legalLink}>{isRTL ? 'شروط مقدم الخدمة' : 'Provider terms'}</Text></Pressable>}
+      </View>
       {!allowPhoneLogin && <Text style={styles.policyHint}>{t('phone_login_unavailable')}</Text>}
 
       <View style={styles.locationSection}>
@@ -614,6 +620,8 @@ const styles = StyleSheet.create({
   checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: Colors.border, alignItems: 'center', justifyContent: 'center' },
   checkboxChecked: { backgroundColor: Colors.gold, borderColor: Colors.gold },
   termsText: { color: Colors.textSecondary, fontSize: 13, flex: 1 },
+  legalLinks: { flexWrap: 'wrap', gap: 14, paddingHorizontal: 2, paddingBottom: 4 },
+  legalLink: { color: Colors.gold, fontSize: 13, textDecorationLine: 'underline' },
   policyHint: { color: Colors.textMuted, fontSize: 12, textAlign: 'center' as const },
   locationSection: { gap: 8 },
   sectionLabel: { fontSize: 14, fontWeight: '600' as const, color: Colors.textSecondary },

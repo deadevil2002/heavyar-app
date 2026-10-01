@@ -347,6 +347,7 @@ export function useVerification(params: Record<string, any> = {}) { return useLi
 export function useVerificationProfiles(params: Record<string, any> = {}) { return useListQuery<any>('verificationProfiles', '/verification-profiles', params); }
 export function useVerificationAttempts(params: Record<string, any> = {}) { return useListQuery<any>('verificationAttempts', '/verification-attempts', params); }
 export function useVerificationEvents(params: Record<string, any> = {}) { return useListQuery<any>('verificationEvents', '/verification-events', params); }
+export function useRegulatoryDocuments(params: Record<string, any> = {}) { return useListQuery<any>('regulatoryDocuments', '/regulatory-documents', params); }
 export function useVerificationPolicy() {
   return useQuery({
     queryKey: ['verificationPolicy', 'default'],

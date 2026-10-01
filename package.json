@@ -3,10 +3,17 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "preinstall": "node scripts/enforce-pnpm.mjs",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
+    "test:mobile": "pnpm --dir artifacts/heavyar-mobile run test:unit",
+    "test:worker": "pnpm --dir artifacts/heavyar-mobile run test:worker",
+    "test:admin": "node scripts/run-admin-tests.mjs",
+    "test:shared": "node scripts/run-shared-tests.mjs",
+    "test:all": "pnpm run test:mobile && pnpm run test:worker && pnpm run test:admin && pnpm run test:shared",
+    "test:rules": "pnpm --dir artifacts/heavyar-mobile run test:rules",
+    "test:worker:rules": "pnpm --dir artifacts/heavyar-mobile run test:worker:rules"
   },
   "private": true,
   "dependencies": {
@@ -15,12 +22,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "prettier": "^3.9.6",
+    "tsx": "catalog:",
     "typescript": "~5.9.3"
-  },
-  "pnpm": {
-    "overrides": {
-      "@expo/metro-config>postcss": "^8.5.28",
-      "orval>js-yaml": "4.3.2"
-    }
   }
 }
