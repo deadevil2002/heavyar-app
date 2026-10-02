@@ -1,3 +1,5 @@
+import { normalizeTapEnvironment, tapEnvironmentStatus, type TapEnvironment } from './payment';
+
 export const STAFF_ROLES = [
   'owner',
   'super_admin',
@@ -118,11 +120,12 @@ export function publicDriverProfile(profile: Record<string, unknown>): Record<st
 
 export type GatewayName = 'tap' | 'moyasar' | 'myfatoorah';
 
-export function gatewayRegistry(env: { TAP_SECRET_KEY_TEST?: string; MOYASAR_SECRET_KEY?: string; MYFATOORAH_API_KEY?: string }) {
+export function gatewayRegistry(env: { TAP_SECRET_KEY_TEST?: string; TAP_SECRET_KEY_LIVE?: string; TAP_MERCHANT_ID?: string; MOYASAR_SECRET_KEY?: string; MYFATOORAH_API_KEY?: string }, tapEnvironment: TapEnvironment = 'TEST') {
+  const tap = tapEnvironmentStatus(env, normalizeTapEnvironment(tapEnvironment));
   return {
-    tap: { provider: 'tap' as const, configured: typeof env.TAP_SECRET_KEY_TEST === 'string' && env.TAP_SECRET_KEY_TEST.length > 0, environment: 'TEST' as const, adapterAvailable: true, enabled: false, supportsSplit: false },
-    moyasar: { provider: 'moyasar' as const, configured: typeof env.MOYASAR_SECRET_KEY === 'string' && env.MOYASAR_SECRET_KEY.length > 0, environment: 'TEST' as const, adapterAvailable: false, enabled: false, supportsSplit: false },
-    myfatoorah: { provider: 'myfatoorah' as const, configured: typeof env.MYFATOORAH_API_KEY === 'string' && env.MYFATOORAH_API_KEY.length > 0, environment: 'TEST' as const, adapterAvailable: false, enabled: false, supportsSplit: false },
+    tap: { provider: 'tap' as const, configured: tap.configured, environment: tap.environment, adapterAvailable: true, enabled: false, supportsSplit: false, methods: ['card', '3ds'], testConfigured: tap.testConfigured, liveConfigured: tap.liveConfigured, merchantConfigured: tap.merchantConfigured },
+    moyasar: { provider: 'moyasar' as const, configured: typeof env.MOYASAR_SECRET_KEY === 'string' && env.MOYASAR_SECRET_KEY.length > 0, environment: 'TEST' as const, adapterAvailable: false, enabled: false, supportsSplit: false, methods: ['card'] },
+    myfatoorah: { provider: 'myfatoorah' as const, configured: typeof env.MYFATOORAH_API_KEY === 'string' && env.MYFATOORAH_API_KEY.length > 0, environment: 'TEST' as const, adapterAvailable: false, enabled: false, supportsSplit: false, methods: ['card'] },
   };
 }
 

@@ -22,6 +22,7 @@ export default defineConfig({
     include: ['tests/**/*.test.{ts,tsx}'],
     exclude: [
       'tests/firestore.rules.test.ts',
+      'tests/authTransitionIntegration.test.tsx',
       'tests/discoveryInteraction.test.tsx',
       'tests/equipmentCardRendering.test.tsx',
       'tests/roleAwareDiscovery.test.tsx',

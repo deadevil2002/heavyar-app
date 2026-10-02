@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { TapPaymentProvider, quoteForRequest, quoteFromCommercial, canTransition, stateForProvider, tapConfig, invoiceNumberForPayment } from './payment';
+import { TapPaymentProvider, quoteForRequest, quoteFromCommercial, canTransition, stateForProvider, tapConfig, tapCredentials, tapEnvironmentStatus, normalizeTapEnvironment, invoiceNumberForPayment } from './payment';
 
 describe('payment trust core', () => {
   test('quote is rounded and exposes fee, payout, tax and expiry', () => {
@@ -25,6 +25,11 @@ describe('payment trust core', () => {
     expect(canTransition('paid', 'paid')).toBe(true);
     expect(stateForProvider('CAPTURED')).toBe('paid');
     expect(stateForProvider('DECLINED')).toBe('failed');
+    expect(stateForProvider('PENDING')).toBe('pending');
+    expect(stateForProvider('FAILED')).toBe('failed');
+    expect(stateForProvider('CANCELLED')).toBe('cancelled');
+    expect(stateForProvider('REFUNDED')).toBe('refunded');
+    expect(stateForProvider('PARTIALLY_REFUNDED')).toBe('partially_refunded');
   });
   test('payment adapter uses the authoritative commercial customer payable unchanged', () => {
     const snapshot = {
@@ -45,7 +50,7 @@ describe('payment trust core', () => {
   });
   test('Tap adapter sends idempotency and normalizes response', async () => {
     const calls: RequestInit[] = [];
-    const provider = new TapPaymentProvider('test', (async (_url, init) => {
+    const provider = new TapPaymentProvider('test-credential', 'merchant-test-id', (async (_url, init) => {
       calls.push(init || {});
       return new Response(JSON.stringify({ id: 'ch_1', status: 'INITIATED', amount: 11.51, currency: 'SAR', redirect: { url: 'https://checkout' } }));
     }) as typeof fetch);
@@ -54,7 +59,26 @@ describe('payment trust core', () => {
     expect(p.checkoutUrl).toBe('https://checkout');
     expect(new Headers(calls[0].headers).get('Idempotency-Key')).toBe('k');
     expect(JSON.parse(String(calls[0].body)).metadata.requestId).toBe('r');
-    expect(tapConfig(true).environment).toBe('test');
+    const payload = JSON.parse(String(calls[0].body));
+    expect(payload.merchant).toEqual({ id: 'merchant-test-id' });
+    expect(payload.threeDSecure).toBe(true);
+    expect(payload.customer_initiated).toBe(true);
+    expect(payload.save_card).toBe(false);
+    expect(payload.amount).toBe(11.51);
+    expect(payload.currency).toBe('SAR');
+    expect(tapConfig(true).environment).toBe('TEST');
+  });
+  test('Tap environment selection is explicit and incomplete configuration fails closed', () => {
+    const env = { TAP_SECRET_KEY_TEST: 'test-credential', TAP_SECRET_KEY_LIVE: 'live-credential', TAP_MERCHANT_ID: 'merchant-id' };
+    expect(tapCredentials(env, 'TEST').secret).toBe('test-credential');
+    expect(tapCredentials(env, 'LIVE').secret).toBe('live-credential');
+    expect(tapCredentials(env, 'LIVE').merchantId).toBe('merchant-id');
+    expect(normalizeTapEnvironment(undefined)).toBe('TEST');
+    expect(normalizeTapEnvironment('invalid')).toBe('TEST');
+    expect(tapEnvironmentStatus({ TAP_SECRET_KEY_TEST: 'test-credential' }, 'TEST').configured).toBe(false);
+    expect(() => tapCredentials({ TAP_MERCHANT_ID: 'merchant-id' }, 'TEST')).toThrow('Tap configuration unavailable');
+    expect(() => tapCredentials({ TAP_SECRET_KEY_LIVE: 'live-credential', TAP_MERCHANT_ID: 'merchant-id' }, 'TEST')).toThrow('Tap configuration unavailable');
+    expect(() => tapCredentials({ TAP_SECRET_KEY_TEST: 'test-credential', TAP_MERCHANT_ID: 'merchant-id' }, 'LIVE')).toThrow('Tap configuration unavailable');
   });
   test('invoice numbers are deterministic and payment-scoped', () => {
     expect(invoiceNumberForPayment('request-1', 'charge-abcdef123456')).toBe('INV-request-1-ef123456');

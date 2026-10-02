@@ -268,16 +268,21 @@ export default function ProfileScreen() {
     return (
       <View style={styles.container}>
         <SafeAreaView edges={['top']} style={styles.safeArea}>
+          <View style={styles.headerRow}>
+            <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>{t('profile')}</Text>
+          </View>
           <View style={styles.loginContainer}>
-            <Image source={require('@/assets/images/logo.png')} style={styles.loginLogo} contentFit="contain" />
-            <Text style={styles.loginTitle}>{t('app_name')}</Text>
-            <Text style={styles.loginSubtitle}>{t('browse_equipment')}</Text>
-            <Pressable style={styles.loginButton} onPress={handleLogin}>
-              <Text style={styles.loginButtonText}>{t('login')}</Text>
-            </Pressable>
-            <Pressable style={styles.registerLink} onPress={() => router.push('/register')}>
-              <Text style={styles.registerText}>{t('dont_have_account')} <Text style={styles.registerHighlight}>{t('register')}</Text></Text>
-            </Pressable>
+            <View style={styles.loginSurface}>
+              <Image source={require('@/assets/images/logo.png')} style={styles.loginLogo} contentFit="contain" />
+              <Text style={styles.loginTitle}>{t('app_name')}</Text>
+              <Text style={styles.loginSubtitle}>{t('browse_equipment')}</Text>
+              <Pressable style={styles.loginButton} onPress={handleLogin}>
+                <Text style={styles.loginButtonText}>{t('login')}</Text>
+              </Pressable>
+              <Pressable style={styles.registerLink} onPress={() => router.push('/register')}>
+                <Text style={styles.registerText}>{t('dont_have_account')} <Text style={styles.registerHighlight}>{t('register')}</Text></Text>
+              </Pressable>
+            </View>
           </View>
         </SafeAreaView>
       </View>
@@ -589,40 +594,55 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   title: {
-    fontSize: 24,
-    fontWeight: '700' as const,
+    width: '100%',
+    fontSize: 26,
+    lineHeight: 34,
+    fontWeight: '800' as const,
     color: Colors.textPrimary,
   },
   loginContainer: {
     flex: 1,
     justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+  },
+  loginSurface: {
     alignItems: 'center',
-    paddingHorizontal: 40,
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 24,
+    backgroundColor: Colors.card,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   loginLogo: {
-    width: 100,
-    height: 100,
-    borderRadius: 24,
-    marginBottom: 20,
+    width: 64,
+    height: 64,
+    borderRadius: 17,
+    marginBottom: 12,
   },
   loginTitle: {
-    fontSize: 28,
-    fontWeight: '700' as const,
+    fontSize: 23,
+    lineHeight: 31,
+    fontWeight: '800' as const,
     color: Colors.textPrimary,
-    marginBottom: 8,
+    marginBottom: 4,
   },
   loginSubtitle: {
     fontSize: 15,
     color: Colors.textSecondary,
-    marginBottom: 32,
+    marginBottom: 22,
     textAlign: 'center',
   },
   loginButton: {
     backgroundColor: Colors.gold,
     paddingHorizontal: 48,
-    paddingVertical: 14,
+    paddingVertical: 13,
     borderRadius: 14,
-    marginBottom: 16,
+    marginBottom: 10,
     width: '100%',
     alignItems: 'center',
   },

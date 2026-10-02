@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, FlatList, Pressable, ScrollView, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Search as SearchIcon, SlidersHorizontal, X, Grid2X2, List } from 'lucide-react-native';
+import { Grid2X2, List } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useDiscovery, useDiscoveryDraft } from '@/contexts/DiscoveryContext';
@@ -16,6 +16,13 @@ import DriverSearchTab from '@/components/DriverSearchTab';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import { useAuth } from '@/contexts/AuthContext';
 import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
+import {
+  HeavyarIconButton,
+  HeavyarSegment,
+  HeavyarSegmentedControl,
+  HeavyarSegmentText,
+} from '@/components/ui/heavyar';
+import HeavyarSearchBar from '@/components/ui/HeavyarSearchBar';
 
 export default function SearchScreen() {
   const auth = useAuth();
@@ -23,8 +30,8 @@ export default function SearchScreen() {
   if (canBrowsePublicEquipment(auth)) return <MarketplaceSearch />;
   return <View style={styles.container}><SafeAreaView edges={['top']} style={styles.safeArea}>
     <View style={styles.headerRow}><Text style={styles.title}>{auth.user?.role === 'provider' ? (isRTL ? 'البحث عن سائق' : 'Find Driver') : t('search')}</Text></View>
-    {auth.isLoading ? <ActivityIndicator color={Colors.gold} /> : auth.user?.role === 'provider' ? <DriverSearchTab /> :
-      <EmptyState title={isRTL ? 'تابع طلباتك من صفحة الطلبات' : 'Manage your work in Requests'} />}
+    {auth.isLoading ? <View style={styles.roleStateViewport}><ActivityIndicator color={Colors.gold} /></View> : auth.user?.role === 'provider' ? <DriverSearchTab /> :
+      <View style={styles.roleStateViewport}><EmptyState title={isRTL ? 'تابع طلباتك من صفحة الطلبات' : 'Manage your work in Requests'} /></View>}
   </SafeAreaView></View>;
 }
 
@@ -67,40 +74,31 @@ function MarketplaceSearch() {
           <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>{t('search')}</Text>
         </View>
 
-        <View style={[styles.segmentedControl, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-          <Pressable accessibilityRole="button" onPress={() => { setMode('equipment'); router.setParams({ mode: 'equipment' }); }} style={[styles.segment, mode === 'equipment' && styles.segmentActive]}>
-            <Text style={[styles.segmentText, mode === 'equipment' && styles.segmentTextActive]}>{isRTL ? 'المعدات' : 'Equipment'}</Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" onPress={() => { setMode('drivers'); router.setParams({ mode: 'drivers' }); }} style={[styles.segment, mode === 'drivers' && styles.segmentActive]}>
-            <Text style={[styles.segmentText, mode === 'drivers' && styles.segmentTextActive]}>{isRTL ? 'السائقون' : 'Drivers'}</Text>
-          </Pressable>
-        </View>
+        <HeavyarSegmentedControl mx="$md" mb="$sm" p="$xxs" flexDirection={isRTL ? 'row-reverse' : 'row'}>
+          <HeavyarSegment height={40} minH={40} accessibilityRole="button" selected={mode === 'equipment'}
+            onPress={() => { setMode('equipment'); router.setParams({ mode: 'equipment' }); }}>
+            <HeavyarSegmentText selected={mode === 'equipment'}>{isRTL ? 'المعدات' : 'Equipment'}</HeavyarSegmentText>
+          </HeavyarSegment>
+          <HeavyarSegment height={40} minH={40} accessibilityRole="button" selected={mode === 'drivers'}
+            onPress={() => { setMode('drivers'); router.setParams({ mode: 'drivers' }); }}>
+            <HeavyarSegmentText selected={mode === 'drivers'}>{isRTL ? 'السائقون' : 'Drivers'}</HeavyarSegmentText>
+          </HeavyarSegment>
+        </HeavyarSegmentedControl>
 
         {mode === 'equipment' ? (
           <>
-            <View style={[styles.searchRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-          <View style={[styles.searchInput, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-            <SearchIcon size={20} color={Colors.textMuted} />
-            <TextInput
-              style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]}
-              placeholder={t('search_placeholder')}
-              placeholderTextColor={Colors.textMuted}
+            <HeavyarSearchBar
               value={query}
               onChangeText={setQuery}
               onSubmitEditing={commitText}
+              onClear={() => setQuery('')}
+              placeholder={t('search_placeholder')}
+              filterLabel={t('filters')}
+              filtersExpanded={showFilters}
+              onFilterPress={toggleFilters}
+              isRTL={isRTL}
               testID="search-input"
             />
-            {query.length > 0 && (
-              <Pressable onPress={() => setQuery('')}>
-                <X size={18} color={Colors.textMuted} />
-              </Pressable>
-            )}
-          </View>
-          <Pressable accessibilityRole="button" accessibilityLabel={t('filters')} accessibilityState={{ expanded: showFilters }}
-            style={[styles.filterButton, showFilters && styles.filterActive]} onPress={toggleFilters}>
-            <SlidersHorizontal size={20} color={showFilters ? Colors.primary : Colors.gold} />
-          </Pressable>
-        </View>
 
         {showFilters && <ScrollView style={styles.filtersScroll} contentContainerStyle={styles.filtersContainer}>
           <DiscoveryFilters filters={draftFilters} markets={markets} setFilter={changeFilter} includeCategories />
@@ -115,14 +113,14 @@ function MarketplaceSearch() {
         <View style={[styles.resultsHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
           <Text style={styles.resultsText}>{filters.countryCode} · {loading ? t('loading') : `${filteredEquipment.length} ${t('results')}`}</Text>
           {refreshing && <ActivityIndicator size="small" color={Colors.gold} />}
-          <View style={[styles.viewToggle, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-            <Pressable accessibilityRole="button" accessibilityLabel={t('list_view')} onPress={() => { setView('list'); void saveEquipmentView('list'); }} style={[styles.viewButton, view === 'list' && styles.viewButtonSelected]}>
+          <HeavyarSegmentedControl p="$xxs" flexDirection={isRTL ? 'row-reverse' : 'row'}>
+            <HeavyarIconButton width={40} height={40} circular={false} tone={view === 'list' ? 'active' : 'ghost'} accessibilityRole="button" accessibilityLabel={t('list_view')} onPress={() => { setView('list'); void saveEquipmentView('list'); }}>
               <List size={18} color={view === 'list' ? Colors.primary : Colors.gold} />
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel={t('grid_view')} onPress={() => { setView('grid'); void saveEquipmentView('grid'); }} style={[styles.viewButton, view === 'grid' && styles.viewButtonSelected]}>
+            </HeavyarIconButton>
+            <HeavyarIconButton width={40} height={40} circular={false} tone={view === 'grid' ? 'active' : 'ghost'} accessibilityRole="button" accessibilityLabel={t('grid_view')} onPress={() => { setView('grid'); void saveEquipmentView('grid'); }}>
               <Grid2X2 size={18} color={view === 'grid' ? Colors.primary : Colors.gold} />
-            </Pressable>
-          </View>
+            </HeavyarIconButton>
+          </HeavyarSegmentedControl>
         </View>
 
         <FlatList
@@ -135,7 +133,7 @@ function MarketplaceSearch() {
           initialNumToRender={6}
           maxToRenderPerBatch={6}
           windowSize={5}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, filteredEquipment.length === 0 && styles.emptyListContent]}
           showsVerticalScrollIndicator={false}
           refreshing={refreshing && !loading}
           onRefresh={refresh}
@@ -167,10 +165,16 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
+  roleStateViewport: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 72,
+  },
   headerRow: {
     paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 8,
+    paddingTop: 8,
+    paddingBottom: 6,
   },
   segmentedControl: {
     marginHorizontal: 20,
@@ -199,36 +203,16 @@ const styles = StyleSheet.create({
     color: Colors.gold,
   },
   title: {
+    width: '100%',
     fontSize: 24,
-    fontWeight: '700' as const,
+    lineHeight: 32,
+    fontWeight: '800' as const,
     color: Colors.textPrimary,
-  },
-  searchRow: {
-    paddingHorizontal: 20,
-    gap: 10,
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  searchInput: {
-    flex: 1,
-    backgroundColor: Colors.inputBg,
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    alignItems: 'center',
-    gap: 10,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  input: {
-    flex: 1,
-    color: Colors.textPrimary,
-    fontSize: 15,
   },
   filterButton: {
     width: 48,
     height: 48,
-    borderRadius: 14,
+    borderRadius: 16,
     backgroundColor: Colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
@@ -305,6 +289,10 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 20,
+  },
+  emptyListContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
   },
   viewToggle: {
     gap: 6,

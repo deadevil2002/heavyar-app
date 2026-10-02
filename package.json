@@ -5,6 +5,8 @@
   "scripts": {
     "preinstall": "node scripts/enforce-pnpm.mjs",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "build:admin:firebase": "node scripts/build-admin-firebase.mjs",
+    "deploy:admin:firebase": "pnpm run build:admin:firebase && firebase deploy --only hosting --project heavyar-app --config artifacts/heavyar-admin/firebase.json --non-interactive",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
     "test:mobile": "pnpm --dir artifacts/heavyar-mobile run test:unit",

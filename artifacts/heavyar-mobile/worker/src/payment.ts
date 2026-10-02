@@ -22,10 +22,37 @@ export interface PaymentProvider {
   create(input: { amount: number; currency: string; metadata: Record<string, string>; idempotencyKey: string }): Promise<ProviderPayment>;
   retrieve(providerReference: string): Promise<ProviderPayment>;
 }
-export type PaymentProviderConfig = { enabled: boolean; environment: 'test'; priority: number; methods: string[]; marketplace: boolean; health: 'unknown' | 'healthy' | 'unhealthy' };
+export type TapEnvironment = 'TEST' | 'LIVE';
+export type TapRuntimeEnv = {
+  TAP_SECRET_KEY_TEST?: string;
+  TAP_SECRET_KEY_LIVE?: string;
+  TAP_MERCHANT_ID?: string;
+};
+export type PaymentProviderConfig = { enabled: boolean; environment: TapEnvironment; priority: number; methods: string[]; marketplace: boolean; health: 'unknown' | 'healthy' | 'unhealthy' };
 export type PaymentPricingConfig = { platformFeeRate: number; vatRate: number };
-export function tapConfig(enabled: boolean): PaymentProviderConfig {
-  return { enabled, environment: 'test', priority: 1, methods: ['card', '3ds'], marketplace: false, health: 'unknown' };
+export function normalizeTapEnvironment(value: unknown): TapEnvironment {
+  return typeof value === 'string' && value.toUpperCase() === 'LIVE' ? 'LIVE' : 'TEST';
+}
+export function tapEnvironmentStatus(env: TapRuntimeEnv, environment: TapEnvironment) {
+  const merchantConfigured = typeof env.TAP_MERCHANT_ID === 'string' && env.TAP_MERCHANT_ID.trim().length > 0;
+  const testConfigured = typeof env.TAP_SECRET_KEY_TEST === 'string' && env.TAP_SECRET_KEY_TEST.length > 0;
+  const liveConfigured = typeof env.TAP_SECRET_KEY_LIVE === 'string' && env.TAP_SECRET_KEY_LIVE.length > 0;
+  return {
+    environment,
+    configured: merchantConfigured && (environment === 'LIVE' ? liveConfigured : testConfigured),
+    merchantConfigured,
+    testConfigured,
+    liveConfigured,
+  };
+}
+export function tapCredentials(env: TapRuntimeEnv, environment: TapEnvironment) {
+  const status = tapEnvironmentStatus(env, environment);
+  const secret = environment === 'LIVE' ? env.TAP_SECRET_KEY_LIVE : env.TAP_SECRET_KEY_TEST;
+  if (!status.configured || !secret || !env.TAP_MERCHANT_ID) throw new Error('Tap configuration unavailable');
+  return { environment, secret, merchantId: env.TAP_MERCHANT_ID };
+}
+export function tapConfig(enabled: boolean, environment: TapEnvironment = 'TEST'): PaymentProviderConfig {
+  return { enabled, environment, priority: 1, methods: ['card', '3ds'], marketplace: false, health: 'unknown' };
 }
 export function pricingConfig(platformFeeRate = 0.10, vatRate = 0.15): PaymentPricingConfig {
   if (!Number.isFinite(platformFeeRate) || platformFeeRate < 0 || platformFeeRate >= 1) throw new Error('Invalid platform fee rate');
@@ -36,7 +63,7 @@ export function pricingConfig(platformFeeRate = 0.10, vatRate = 0.15): PaymentPr
 const TAP = 'https://api.tap.company/v2';
 export class TapPaymentProvider implements PaymentProvider {
   readonly name = 'tap';
-  constructor(private readonly secret: string, private readonly http: typeof fetch = fetch) {}
+  constructor(private readonly secret: string, private readonly merchantId: string, private readonly http: typeof fetch = fetch) {}
   private async call(path: string, init?: RequestInit): Promise<any> {
     const r = await this.http(`${TAP}${path}`, { ...init, headers: { Authorization: `Bearer ${this.secret}`, 'Content-Type': 'application/json', ...(init?.headers || {}) } });
     const data = await r.json() as any;
@@ -44,7 +71,7 @@ export class TapPaymentProvider implements PaymentProvider {
     return data;
   }
   async create(input: { amount: number; currency: string; metadata: Record<string, string>; idempotencyKey: string }) {
-    const d = await this.call('/charges', { method: 'POST', headers: { 'Idempotency-Key': input.idempotencyKey }, body: JSON.stringify({ amount: input.amount, currency: input.currency, customer_initiated: true, threeDSecure: true, save_card: false, description: 'Heavyar rental payment', metadata: input.metadata, source: { id: 'src_all' }, redirect: { url: 'https://heavyar.app/payment/callback' } }) });
+    const d = await this.call('/charges', { method: 'POST', headers: { 'Idempotency-Key': input.idempotencyKey }, body: JSON.stringify({ amount: input.amount, currency: input.currency, customer_initiated: true, threeDSecure: true, save_card: false, description: 'Heavyar rental payment', metadata: input.metadata, source: { id: 'src_all' }, merchant: { id: this.merchantId }, redirect: { url: 'https://heavyar.app/payment/callback' } }) });
     return { id: String(d.id), status: String(d.status || ''), amount: Number(d.amount), currency: String(d.currency), checkoutUrl: d.redirect?.url || '', metadata: d.metadata || input.metadata };
   }
   async retrieve(id: string) {

@@ -678,12 +678,13 @@ const styles = StyleSheet.create({
   },
   headerRow: {
     paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 8,
+    paddingTop: 20,
+    paddingBottom: 14,
   },
   title: {
-    fontSize: 24,
-    fontWeight: '700' as const,
+    fontSize: 26,
+    lineHeight: 34,
+    fontWeight: '800' as const,
     color: Colors.textPrimary,
   },
   form: {
@@ -728,7 +729,7 @@ const styles = StyleSheet.create({
     right: 4,
     width: 24,
     height: 24,
-    borderRadius: 12,
+    borderRadius: 16,
     backgroundColor: Colors.error,
     justifyContent: 'center',
     alignItems: 'center',
@@ -743,7 +744,7 @@ const styles = StyleSheet.create({
   },
   textInput: {
     backgroundColor: Colors.inputBg,
-    borderRadius: 12,
+    borderRadius: 16,
     paddingHorizontal: 16,
     paddingVertical: 14,
     color: Colors.textPrimary,
@@ -753,7 +754,7 @@ const styles = StyleSheet.create({
   },
   textArea: {
     backgroundColor: Colors.inputBg,
-    borderRadius: 12,
+    borderRadius: 16,
     paddingHorizontal: 16,
     paddingVertical: 14,
     color: Colors.textPrimary,
@@ -806,7 +807,7 @@ const styles = StyleSheet.create({
   },
   publishButton: {
     backgroundColor: Colors.gold,
-    borderRadius: 14,
+    borderRadius: 16,
     paddingVertical: 16,
     alignItems: 'center',
     marginTop: 8,

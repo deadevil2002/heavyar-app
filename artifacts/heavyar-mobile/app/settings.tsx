@@ -123,7 +123,7 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 20, gap: 20, paddingBottom: 40 },
   section: {
     backgroundColor: Colors.card,
-    borderRadius: 16,
+    borderRadius: 20,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: Colors.border,
@@ -145,7 +145,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  menuLabel: { fontSize: 16, color: Colors.textPrimary, fontWeight: '500' as const },
+  menuLabel: { fontSize: 15, color: Colors.textPrimary, fontWeight: '700' as const },
   menuSub: { fontSize: 13, color: Colors.textMuted, marginTop: 2 },
   versionText: { color: Colors.textMuted, fontSize: 13 },
 });

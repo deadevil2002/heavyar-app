@@ -20,6 +20,7 @@ import { fetchPublicEquipmentById } from '@/services/equipmentSearchService';
 import { loadRoleEquipmentDetail, ownerEquipmentFallbackUid } from '@/services/equipmentDetailAccess';
 import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
 import ListingPriceDisplay from '@/components/ListingPriceDisplay';
+import { HeavyarButton, HeavyarButtonText, HeavyarIconButton } from '@/components/ui/heavyar';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -220,16 +221,16 @@ export default function EquipmentDetailScreen() {
 
           <SafeAreaView edges={['top']} style={styles.imageOverlay}>
             <View style={[styles.imageActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Pressable style={styles.backButton} onPress={() => router.back()}>
+              <HeavyarIconButton theme="dark" width={44} height={44} tone="subtle" bg="rgba(1, 17, 48, 0.88)" borderColor="rgba(241, 181, 20, 0.45)" accessibilityLabel={t('back')} onPress={() => router.back()}>
                 <BackIcon size={22} color={Colors.white} />
-              </Pressable>
+              </HeavyarIconButton>
               <View style={[styles.imageActionsRight, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                <Pressable style={styles.actionButton} onPress={() => setLiked(!liked)}>
+                <HeavyarIconButton theme="dark" width={44} height={44} tone="subtle" bg="rgba(1, 17, 48, 0.88)" borderColor="rgba(255,255,255,0.22)" accessibilityLabel={isRTL ? 'المفضلة' : 'Favorite'} onPress={() => setLiked(!liked)}>
                   <Heart size={20} color={liked ? Colors.error : Colors.white} fill={liked ? Colors.error : 'transparent'} />
-                </Pressable>
-                <Pressable style={styles.actionButton}>
+                </HeavyarIconButton>
+                <HeavyarIconButton theme="dark" width={44} height={44} tone="subtle" bg="rgba(1, 17, 48, 0.88)" borderColor="rgba(255,255,255,0.22)" accessibilityLabel={isRTL ? 'مشاركة' : 'Share'}>
                   <Share2 size={20} color={Colors.white} />
-                </Pressable>
+                </HeavyarIconButton>
               </View>
             </View>
           </SafeAreaView>
@@ -313,10 +314,10 @@ export default function EquipmentDetailScreen() {
               <View>
                 <ListingPriceDisplay listing={equipment} isRTL={isRTL} textStyle={styles.bottomPrice} />
               </View>
-              <Pressable style={[styles.requestButton, (authLoading || !isEligibleRequester) && styles.requestButtonDisabled]} onPress={handleRequestRental} disabled={authLoading}>
+              <HeavyarButton theme="dark" tone="primary" style={[styles.requestButton, (authLoading || !isEligibleRequester) && styles.requestButtonDisabled]} onPress={handleRequestRental} disabled={authLoading}>
                 {authLoading ? <ActivityIndicator size="small" color={Colors.primary} /> : <Calendar size={18} color={Colors.primary} />}
-                <Text style={styles.requestButtonText}>{authLoading ? t('loading') : t('request_rental')}</Text>
-              </Pressable>
+                <HeavyarButtonText tone="primary">{authLoading ? t('loading') : t('request_rental')}</HeavyarButtonText>
+              </HeavyarButton>
             </View>
           </SafeAreaView>
         </View>
@@ -356,11 +357,11 @@ const styles = StyleSheet.create({
   },
   imageCarousel: {
     position: 'relative',
-    height: 320,
+    height: 300,
   },
   carouselImage: {
     width: SCREEN_WIDTH,
-    height: 320,
+    height: 300,
   },
   imageOverlay: {
     position: 'absolute',
@@ -374,24 +375,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
   },
-  backButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
   imageActionsRight: {
     gap: 10,
-  },
-  actionButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   dotsContainer: {
     position: 'absolute',
@@ -441,7 +426,8 @@ const styles = StyleSheet.create({
     fontWeight: '700' as const,
   },
   content: {
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingTop: 18,
   },
   titleRow: {
     justifyContent: 'space-between',
@@ -450,8 +436,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   title: {
-    fontSize: 22,
-    fontWeight: '700' as const,
+    fontSize: 24,
+    lineHeight: 32,
+    fontWeight: '800' as const,
     color: Colors.textPrimary,
     flex: 1,
   },
@@ -461,16 +448,18 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   priceTag: {
-    backgroundColor: Colors.gold,
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    backgroundColor: Colors.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
     alignItems: 'center',
   },
   priceValue: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '800' as const,
-    color: Colors.primary,
+    color: Colors.gold,
   },
   priceUnit: {
     fontSize: 11,
@@ -504,7 +493,7 @@ const styles = StyleSheet.create({
   },
   ownerCard: {
     backgroundColor: Colors.card,
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 16,
     alignItems: 'center',
     gap: 14,
@@ -572,7 +561,7 @@ const styles = StyleSheet.create({
     fontWeight: '700' as const,
   },
   bottomSpacer: {
-    height: 140,
+    height: 116,
   },
   bottomBar: {
     position: 'absolute',
@@ -583,7 +572,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: Colors.border,
     paddingHorizontal: 20,
-    paddingTop: 14,
+    paddingTop: 10,
   },
   bottomContent: {
     alignItems: 'center',
@@ -591,7 +580,7 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   bottomPrice: {
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: '800' as const,
     color: Colors.gold,
   },
@@ -600,20 +589,11 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
   },
   requestButton: {
-    flexDirection: 'row',
-    backgroundColor: Colors.gold,
-    borderRadius: 14,
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    alignItems: 'center',
-    gap: 8,
+    minHeight: 52,
+    borderRadius: 16,
+    paddingHorizontal: 20,
   },
   requestButtonDisabled: {
     opacity: 0.7,
-  },
-  requestButtonText: {
-    color: Colors.primary,
-    fontSize: 16,
-    fontWeight: '700' as const,
   },
 });

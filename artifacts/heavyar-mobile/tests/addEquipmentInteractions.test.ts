@@ -235,6 +235,16 @@ describe('Add Equipment local interaction isolation', () => {
         submission = button!.props.onPress();
         await button!.props.onPress();
       });
+      // Under full-suite load the mocked 1 ms upload timer may not have fired
+      // before act() yields. Wait for the create boundary we intend to suspend
+      // so the session switch exercises create-in-flight, not upload-in-flight.
+      if (code === 'SWITCH_DURING_CREATE') {
+        await act(async () => {
+          for (let attempt = 0; attempt < 50 && effects.create.mock.calls.length === 0; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, 1));
+          }
+        });
+      }
       expect(effects.upload).toHaveBeenCalledTimes(1);
       expect(effects.upload.mock.calls[0][2]).toBe('provider-a');
       user = { ...user, uid: 'provider-b' };

@@ -34,7 +34,7 @@ export default function ProvisioningRecoveryScreen({ state = 'provisioning_incom
 }
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary }, safe: { flex: 1, justifyContent: 'center', padding: 24 },
-  card: { backgroundColor: Colors.card, borderRadius: 22, padding: 24, gap: 16 }, eyebrow: { color: Colors.gold, fontSize: 13, fontWeight: '700' },
+  card: { backgroundColor: Colors.card, borderRadius: 22, padding: 24, gap: 16, borderWidth: 1, borderColor: Colors.border }, eyebrow: { color: Colors.gold, fontSize: 13, fontWeight: '700' },
   title: { color: Colors.textPrimary, fontSize: 26, fontWeight: '800', lineHeight: 34 }, body: { color: Colors.textMuted, fontSize: 16, lineHeight: 25 },
   email: { color: Colors.textPrimary, fontSize: 14 }, primary: { width: '100%', padding: 16, borderRadius: 14, backgroundColor: Colors.gold, alignItems: 'center' },
   primaryText: { color: Colors.primary, fontWeight: '800', fontSize: 16 }, secondary: { width: '100%', padding: 15, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, alignItems: 'center' },

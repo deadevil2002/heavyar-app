@@ -9,10 +9,13 @@ vi.mock('react-native', () => ({
   Text: ({ children, numberOfLines }: any) => <span data-lines={numberOfLines}>{children}</span>,
   Pressable: ({ children, style, testID }: any) => <button data-testid={testID} data-style={JSON.stringify(style)}>{children}</button>,
   StyleSheet: { create: (value: unknown) => value },
+  Platform: { OS: 'web' },
+  I18nManager: { isRTL: false },
 }));
 vi.mock('expo-image', () => ({ Image: ({ source, cachePolicy }: any) => <img src={source.uri} data-cache={cachePolicy} /> }));
-vi.mock('lucide-react-native', () => ({ MapPin: () => null, Package: () => <span>image unavailable</span> }));
+vi.mock('lucide-react-native', () => ({ ArrowLeft: () => null, ArrowRight: () => null, MapPin: () => null, Package: () => <span>image unavailable</span> }));
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('tamagui', () => ({ Card: ({ children }: any) => <div>{children}</div> }));
 vi.mock('../contexts/LanguageContext', () => ({ useLanguage: () => ({ isRTL: false, t: (key: string) => key, localizedText: (_ar: string, en: string) => en }) }));
 
 const equipment = {

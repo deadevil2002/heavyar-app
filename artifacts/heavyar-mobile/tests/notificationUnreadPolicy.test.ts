@@ -40,9 +40,10 @@ describe('authoritative unread cache policy', () => {
     releaseB();
     client.clear();
   });
-  it('keeps tabs mounted and never reads notification documents just to render the badge', () => {
+  it('keeps tabs mounted and never renders the notification count on the Profile tab', () => {
     const layout = readFileSync('app/(tabs)/_layout.tsx', 'utf8');
     expect(layout).not.toMatch(/listNotifications|unmountOnBlur|key=\{.*uid/);
+    expect(layout).not.toMatch(/tabBarBadge|useNotificationUnread/);
     expect(layout).toContain('lazy: true');
     const hook = readFileSync('hooks/useNotificationUnread.ts', 'utf8');
     expect(hook).not.toMatch(/setInterval|refetchInterval/);

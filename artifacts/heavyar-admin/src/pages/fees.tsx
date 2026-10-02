@@ -20,6 +20,21 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { parseDecimalToMinor } from '@/lib/currency-utils';
 import { extractCreatePayload } from '@/lib/commercial-form';
 
+const intendedTwentyPercentDraft = (): Partial<CommercialRule> => ({
+  mode: 'percentage',
+  payer: 'provider',
+  currency: '*',
+  percentageBps: 2000,
+  fixedAmountMinor: 0,
+  minimumFeeMinor: 0,
+  maximumFeeMinor: null,
+  customerShareBps: 0,
+  scope: { countryCode: null, categoryId: null, providerUid: null },
+  effectiveFrom: '',
+  effectiveTo: null,
+  notes: 'HEAVYAR 20% provider-paid platform commission',
+});
+
 // Provider selector using useProviders
 function ProviderSelector({ value, onChange, language }: { value?: string | null; onChange: (uid?: string | null) => void; language: string }) {
   const [open, setOpen] = useState(false);
@@ -103,20 +118,7 @@ export default function Fees() {
 
   // Draft Rule form state
   const [isImmediate, setIsImmediate] = useState(true);
-  const [draftRule, setDraftRule] = useState<Partial<CommercialRule>>({
-    mode: 'percentage',
-    payer: 'provider',
-    currency: 'SAR',
-    percentageBps: 0,
-    fixedAmountMinor: 0,
-    minimumFeeMinor: 0,
-    maximumFeeMinor: null,
-    customerShareBps: 5000,
-    scope: { countryCode: null, categoryId: null, providerUid: null },
-    effectiveFrom: '',
-    effectiveTo: null,
-    notes: '',
-  });
+  const [draftRule, setDraftRule] = useState<Partial<CommercialRule>>(intendedTwentyPercentDraft);
 
   const lastRevision = useRef<number | undefined>(undefined);
 
@@ -293,7 +295,7 @@ export default function Fees() {
             {t('المحاكي', 'Simulator')}
           </Button>
           {data.canManage && (
-            <Button onClick={() => setCreateRuleOpen(true)}>
+            <Button onClick={() => { setDraftRule(intendedTwentyPercentDraft()); setIsImmediate(true); setDraftReason(''); setCreateRuleOpen(true); }}>
               <Plus className="h-4 w-4 me-2" />
               {t('قاعدة جديدة', 'New Rule')}
             </Button>
@@ -517,7 +519,7 @@ export default function Fees() {
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>{t('قاعدة رسوم جديدة (مسودة)', 'New Fee Rule (Draft)')}</DialogTitle>
-            <DialogDescription>{t('سيتم إنشاء القاعدة كمسودة قابلة للمراجعة قبل تفعيلها.', 'Rule will be created as a draft and requires publishing later.')}</DialogDescription>
+            <DialogDescription>{t('تم تجهيز مسودة HEAVYAR المعتمدة: عمولة 20% يدفعها المزود، وحصة العميل 0%. ستبقى مسودة حتى نشرها بتأكيد مستقل.', 'The approved HEAVYAR draft is prefilled: 20% provider-paid commission and 0% customer share. It remains a draft until separately confirmed and published.')}</DialogDescription>
           </DialogHeader>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-4 max-h-[70vh] overflow-y-auto">

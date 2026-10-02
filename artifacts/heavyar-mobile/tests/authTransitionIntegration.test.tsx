@@ -1,0 +1,148 @@
+import React, { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AuthProvider, useAuth } from '../contexts/AuthContext';
+
+const mocks = vi.hoisted(() => ({
+  listener: undefined as undefined | ((user: any) => Promise<void>),
+  loginWithEmail: vi.fn(),
+  fetchUserProfile: vi.fn(),
+  fetchAccountProfileStatus: vi.fn(),
+  logoutUser: vi.fn(),
+  storage: new Map<string, string>(),
+}));
+
+vi.mock('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: vi.fn((key: string) => Promise.resolve(mocks.storage.get(key) ?? null)),
+    setItem: vi.fn((key: string, value: string) => { mocks.storage.set(key, value); return Promise.resolve(); }),
+    removeItem: vi.fn((key: string) => { mocks.storage.delete(key); return Promise.resolve(); }),
+  },
+}));
+vi.mock('../contexts/LanguageContext', () => ({ useLanguage: () => ({ language: 'en' }) }));
+vi.mock('../services/authService', () => ({
+  subscribeToAuthState: (listener: (user: any) => Promise<void>) => { mocks.listener = listener; return vi.fn(); },
+  loginWithEmail: mocks.loginWithEmail,
+  loginWithPhone: vi.fn(),
+  fetchAuthPolicy: vi.fn(() => Promise.resolve({ allowEmailLogin: true, allowPhoneLogin: false })),
+  registerWithEmail: vi.fn(),
+  provisionCurrentIdentity: vi.fn(),
+  deleteIncompleteIdentity: vi.fn(),
+  fetchAccountProfileStatus: mocks.fetchAccountProfileStatus,
+  logoutUser: mocks.logoutUser,
+  fetchUserProfile: mocks.fetchUserProfile,
+  updateUserProfile: vi.fn(),
+  refreshFirebaseEmailVerification: vi.fn(),
+  sendVerificationEmail: vi.fn(),
+  fetchEmailVerificationStatus: vi.fn(() => Promise.resolve(null)),
+}));
+vi.mock('../services/notificationService', () => ({
+  registerCurrentDevice: vi.fn(() => Promise.resolve()),
+  revokeCurrentDevice: vi.fn(() => Promise.resolve()),
+}));
+vi.mock('../services/authLocalStorage', () => ({ clearAccountLocalStorage: vi.fn(() => Promise.resolve()) }));
+
+let root: Root;
+let host: HTMLDivElement;
+let auth: ReturnType<typeof useAuth>;
+
+function Probe() {
+  auth = useAuth();
+  return null;
+}
+
+async function mountAuth() {
+  host = document.createElement('div');
+  root = createRoot(host);
+  await act(async () => root.render(<AuthProvider><Probe /></AuthProvider>));
+  expect(mocks.listener).toBeTypeOf('function');
+}
+
+async function publishFirebaseUser(uid = 'fixture') {
+  await mocks.listener?.({ uid, email: `${uid}@example.test`, emailVerified: true });
+}
+
+describe('AuthContext canonical session transitions', () => {
+  beforeEach(() => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    vi.clearAllMocks();
+    mocks.storage.clear();
+    mocks.listener = undefined;
+    mocks.loginWithEmail.mockResolvedValue({ uid: 'fixture' });
+    mocks.fetchAccountProfileStatus.mockResolvedValue({ state: 'authenticated_complete', accountStatus: 'active' });
+  });
+
+  afterEach(async () => {
+    if (root) await act(async () => root.unmount());
+  });
+
+  it.each(['customer', 'provider', 'driver'] as const)('waits for canonical %s profile before finishing login', async (role) => {
+    mocks.fetchUserProfile.mockResolvedValue({ uid: 'fixture', role });
+    await mountAuth();
+    await act(async () => { await mocks.listener?.(null); });
+
+    let settled = false;
+    let loginPromise!: Promise<void>;
+    await act(async () => {
+      loginPromise = auth.login('fixture@example.test', 'secret').then(() => { settled = true; });
+      await Promise.resolve();
+    });
+    expect(settled).toBe(false);
+    expect(auth.isResolvingSession).toBe(true);
+
+    await act(async () => { await publishFirebaseUser(); });
+    await act(async () => { await loginPromise; });
+    expect(auth.sessionReady).toBe(true);
+    expect(auth.user?.role).toBe(role);
+  });
+
+  it('returns to a stable guest session after wrong credentials', async () => {
+    await mountAuth();
+    await act(async () => { await mocks.listener?.(null); });
+    mocks.loginWithEmail.mockRejectedValueOnce({ code: 'auth/invalid-credential' });
+    await act(async () => {
+      await expect(auth.login('fixture@example.test', 'wrong')).rejects.toBeInstanceOf(Error);
+    });
+    expect(auth.sessionReady).toBe(true);
+    expect(auth.isAuthenticated).toBe(false);
+  });
+
+  it('surfaces profile-resolution failure and never reveals guest content mid-transition', async () => {
+    await mountAuth();
+    await act(async () => { await mocks.listener?.(null); });
+    mocks.fetchUserProfile.mockRejectedValueOnce(new Error('network'));
+    let loginResult!: Promise<unknown>;
+    await act(async () => {
+      loginResult = auth.login('fixture@example.test', 'secret').then(
+        () => null,
+        (error) => error,
+      );
+      await Promise.resolve();
+    });
+    expect(auth.isResolvingSession).toBe(true);
+    await act(async () => { await publishFirebaseUser(); });
+    await act(async () => { expect(await loginResult).toBeInstanceOf(Error); });
+    expect(auth.sessionReady).toBe(true);
+    expect(auth.isAuthenticated).toBe(false);
+  });
+
+  it('keeps cold restore blocked until the persisted identity is canonical', async () => {
+    mocks.fetchUserProfile.mockResolvedValue({ uid: 'persisted', role: 'provider' });
+    await mountAuth();
+    expect(auth.isResolvingSession).toBe(true);
+    await act(async () => { await publishFirebaseUser('persisted'); });
+    expect(auth.sessionReady).toBe(true);
+    expect(auth.user?.uid).toBe('persisted');
+  });
+
+  it('finishes logout as a stable guest session', async () => {
+    mocks.fetchUserProfile.mockResolvedValue({ uid: 'fixture', role: 'customer' });
+    await mountAuth();
+    await act(async () => { await publishFirebaseUser(); });
+    mocks.logoutUser.mockImplementationOnce(async () => { await mocks.listener?.(null); });
+    await act(async () => { await auth.logout(); });
+    expect(auth.sessionReady).toBe(true);
+    expect(auth.isAuthenticated).toBe(false);
+    expect(auth.user).toBeNull();
+  });
+});

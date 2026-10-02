@@ -198,13 +198,13 @@ export default function RentalRequestModal({ visible, equipment, onClose, onSubm
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,.6)', justifyContent: 'flex-end' },
-  sheet: { maxHeight: '94%', backgroundColor: Colors.primary, borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, borderColor: Colors.border },
+  sheet: { maxHeight: '94%', backgroundColor: Colors.primary, borderTopLeftRadius: 26, borderTopRightRadius: 26, borderWidth: 1, borderColor: Colors.border },
   header: { alignItems: 'center', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderBottomColor: Colors.divider },
   title: { color: Colors.textPrimary, fontSize: 18, fontWeight: '800' },
   close: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: Colors.surface },
   content: { padding: 16, gap: 10 },
   label: { color: Colors.textSecondary, fontSize: 13, fontWeight: '700' },
-  option: { borderWidth: 1, borderColor: Colors.border, borderRadius: 14, padding: 12, backgroundColor: Colors.card },
+  option: { borderWidth: 1, borderColor: Colors.border, borderRadius: 16, padding: 12, backgroundColor: Colors.card },
   optionActive: { borderColor: Colors.gold },
   optionRow: { alignItems: 'center', gap: 10 },
   optionText: { color: Colors.textPrimary, fontSize: 14, fontWeight: '600' },

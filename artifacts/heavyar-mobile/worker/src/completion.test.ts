@@ -35,11 +35,15 @@ describe('trusted completion primitives', () => {
   });
 
   test('gateway output exposes capabilities, not credentials', () => {
-    const registry = gatewayRegistry({ TAP_SECRET_KEY_TEST: 'test-secret', MOYASAR_SECRET_KEY: 'secret' });
+    const registry = gatewayRegistry({ TAP_SECRET_KEY_TEST: 'test-secret', TAP_SECRET_KEY_LIVE: 'live-secret', TAP_MERCHANT_ID: 'merchant-id', MOYASAR_SECRET_KEY: 'secret' });
     expect(registry.tap.configured).toBe(true);
+    expect(registry.tap.environment).toBe('TEST');
+    expect(gatewayRegistry({ TAP_SECRET_KEY_TEST: 'test-secret', TAP_SECRET_KEY_LIVE: 'live-secret', TAP_MERCHANT_ID: 'merchant-id' }, 'LIVE').tap.configured).toBe(true);
     expect(registry.moyasar.adapterAvailable).toBe(false);
     expect(enabledConfiguredGateways(registry, { tap: true, moyasar: true }).length).toBe(1);
     expect(JSON.stringify(registry).includes('test-secret')).toBe(false);
+    expect(JSON.stringify(registry).includes('live-secret')).toBe(false);
+    expect(JSON.stringify(registry).includes('merchant-id')).toBe(false);
   });
 
   test('campaign recipients honor opt-out and chunking', () => {

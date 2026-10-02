@@ -57,6 +57,34 @@ describe('admin operations table contract', () => {
       { id: 'hyperpay', provider: 'hyperpay', supportedMethods: ['card'] },
     ]);
   });
+  it('keeps Tap mode control owner-gated, confirmed for LIVE, and credential-free', () => {
+    const page = readFileSync('artifacts/heavyar-admin/src/pages/gateways.tsx', 'utf8');
+    const operations = readFileSync('artifacts/heavyar-admin/src/lib/operations.ts', 'utf8');
+    assert.equal(page.includes("session?.role === 'super_admin' || session?.role === 'owner'"), true);
+    assert.equal(page.includes('تحويل Tap إلى الوضع الفعلي سيجعل المدفوعات حقيقية.'), true);
+    assert.equal(operations.includes("action: 'update_gateway_environment'"), true);
+    assert.equal(operations.includes('confirmLive: data.confirmLive === true'), true);
+    for (const secretName of ['TAP_SECRET_KEY_TEST', 'TAP_SECRET_KEY_LIVE', 'TAP_MERCHANT_ID']) {
+      assert.equal(page.includes(secretName), false);
+      assert.equal(operations.includes(secretName), false);
+    }
+  });
+  it('shows the persisted payment environment and authoritative commercial breakdown', () => {
+    const page = readFileSync('artifacts/heavyar-admin/src/pages/payments.tsx', 'utf8');
+    assert.equal(page.includes("selected.environment || t('سجل قديم (TEST)', 'Legacy record (TEST)')"), true);
+    assert.equal(page.includes('snapshot={selected.commercialSnapshot}'), true);
+    assert.equal(page.includes("t('بيئة الدفع', 'Payment environment')"), true);
+  });
+  it('prefills the approved 20 percent provider-paid rule as an unpublished draft', () => {
+    const page = readFileSync('artifacts/heavyar-admin/src/pages/fees.tsx', 'utf8');
+    assert.equal(page.includes('percentageBps: 2000'), true);
+    assert.equal(page.includes("payer: 'provider'"), true);
+    assert.equal(page.includes('customerShareBps: 0'), true);
+    assert.equal(page.includes("currency: '*'"), true);
+    assert.equal(page.includes("action: 'create'"), true);
+    assert.equal(page.includes("action: 'publish'"), true);
+    assert.equal(page.includes('remains a draft until separately confirmed and published'), true);
+  });
   it('keeps provider and driver account bulk deletion controls wired to canonical dialogs', () => {
     for (const page of ['providers.tsx', 'drivers.tsx']) {
       const source = readFileSync(`artifacts/heavyar-admin/src/pages/${page}`, 'utf8');

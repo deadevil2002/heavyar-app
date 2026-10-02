@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { Text, XStack, YStack } from 'tamagui';
 import Colors from '@/constants/colors';
 import { RequestStatus, PaymentStatus } from '@/types';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -29,29 +29,12 @@ export default React.memo(function StatusBadge({ status }: StatusBadgeProps) {
   const colors = statusColors[status] || statusColors.pending;
 
   return (
-    <View style={[styles.badge, { backgroundColor: colors.bg }]}>
-      <View style={[styles.dot, { backgroundColor: colors.text }]} />
-      <Text style={[styles.text, { color: colors.text }]}>{t(status as TranslationKey)}</Text>
-    </View>
+    <XStack items="center" self="flex-start" gap="$xs" minH={28} px="$sm" rounded="$pill"
+      borderWidth={1} style={{ borderColor: colors.text, backgroundColor: colors.bg }}>
+      <YStack width={6} height={6} rounded="$pill" style={{ backgroundColor: colors.text }} />
+      <Text fontSize={11} fontWeight="700" lineHeight={15} style={{ color: colors.text }}>
+        {t(status as TranslationKey)}
+      </Text>
+    </XStack>
   );
-});
-
-const styles = StyleSheet.create({
-  badge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 8,
-    gap: 5,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  text: {
-    fontSize: 12,
-    fontWeight: '600' as const,
-  },
 });

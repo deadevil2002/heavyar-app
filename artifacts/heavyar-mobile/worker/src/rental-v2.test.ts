@@ -5,6 +5,7 @@ import {
   validateServerStart, v2TransitionAllowed,
 } from './rental-v2';
 import worker, { __test } from './index';
+import { buildLegacyCatalog } from './commercial';
 
 const both = validateListingPricing({
   currency: 'SAR',
@@ -106,7 +107,7 @@ describe('Rental V2 calculations', () => {
     expect(() => estimateRental(request(), both, 'SA', '2030-09-20T09:00:00.000Z')).toThrow('past');
   });
 
-  it('builds a deterministic minor-unit payment handoff without enabling settlement', () => {
+  it('builds a deterministic settlement-enabled minor-unit payment handoff', () => {
     expect(buildFinalPaymentHandoff('rental-v2:r_123:final', {
       currency: 'SAR', baseAmountMinor: 24_000, platformFeeMinor: 2_400,
       taxAmountMinor: 3_600, gatewayFeeMinor: null,
@@ -115,7 +116,7 @@ describe('Rental V2 calculations', () => {
       amountUnit: 'minor', currency: 'SAR', baseAmount: 24_000,
       platformCommission: 2_400, tax: 3_600, gatewayFee: null,
       customerPayable: 27_600, providerReceivable: 21_600,
-      commercialSnapshotId: 'rental-v2:r_123:final', settlementEnabled: false,
+      commercialSnapshotId: 'rental-v2:r_123:final', settlementEnabled: true,
     });
   });
 });
@@ -188,6 +189,7 @@ describe('Rental V2 HTTP authority boundary', () => {
     __test.setFirestore((collection, id) => {
       if (extra[`${collection}/${id}`] !== undefined) return extra[`${collection}/${id}`];
       if (collection === 'equipment' && id === 'eq_1') return listing;
+      if (collection === 'commercialSettings' && id === 'catalog') return buildLegacyCatalog();
       if (collection === 'users' && id === actor.uid) return { uid: actor.uid, role: actor.accountRole || 'customer', accountPurpose: actor.accountPurpose, emailVerified: true };
       if (collection === '__queries') return extra[`__queries/${id}`] || [];
       return undefined;
@@ -253,14 +255,14 @@ describe('Rental V2 HTTP authority boundary', () => {
     __test.setAuth(); __test.setFirestore();
   });
 
-  it('rejects V2 payment initialization before any provider settlement', async () => {
+  it('rejects an unfinalized V2 request before any provider settlement', async () => {
     fixture({ 'equipmentRequests/r_v2': { pricingModelVersion: 2, equipmentId: 'eq_1', customerUid: 'customer' } });
     const response = await worker.fetch(new Request('https://api.test/api/create-payment', {
       method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
       body: JSON.stringify({ requestId: 'r_v2' }),
     }), env);
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ success: false, errorCode: 'V2_SETTLEMENT_DISABLED' });
+    expect(await response.json()).toMatchObject({ success: false, error: 'Invalid payment quote' });
     __test.setAuth(); __test.setFirestore();
   });
 

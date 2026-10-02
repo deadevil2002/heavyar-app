@@ -1,6 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { View, Text, TextInput, Pressable, FlatList, ActivityIndicator, StyleSheet, ScrollView } from 'react-native';
-import { Search as SearchIcon, SlidersHorizontal, X } from 'lucide-react-native';
+import { View, Text, Pressable, FlatList, ActivityIndicator, StyleSheet, ScrollView } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -14,6 +13,8 @@ import { isMarketEnabled } from '@/services/locationHierarchy';
 import { mockCategories } from '@/mocks/categories';
 import { defaultDriverCountry, resetDriverSearchFilters } from '@/services/driverUtils';
 import { LatestRequestGuard, mergeUniqueById } from '@/services/driverLiveSync';
+import HeavyarSearchBar from './ui/HeavyarSearchBar';
+import { HeavyarChip, HeavyarChipText } from './ui/heavyar';
 
 const DRIVER_SEARCH_STALE_MS = 2 * 60_000;
 
@@ -132,32 +133,29 @@ export default function DriverSearchTab() {
   const renderFilterChips = (items: {id: string, nameAr: string, nameEn: string, disabled?: boolean}[], selected: string, onSelect: (id: string) => void) => (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.chipRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
       {items.map(item => (
-        <Pressable key={item.id} accessibilityRole="button" accessibilityState={{ disabled: Boolean(item.disabled), selected: selected === item.id }} disabled={item.disabled} onPress={() => onSelect(item.id === selected ? '' : item.id)} style={[styles.chip, selected === item.id && styles.chipSelected, item.disabled && styles.chipDisabled]}>
-          <Text style={[styles.chipText, selected === item.id && styles.chipTextSelected, item.disabled && styles.chipTextDisabled]}>{isRTL ? item.nameAr : item.nameEn}</Text>
-        </Pressable>
+        <HeavyarChip key={item.id} selected={selected === item.id} accessibilityRole="button"
+          accessibilityState={{ disabled: Boolean(item.disabled), selected: selected === item.id }}
+          disabled={item.disabled} opacity={item.disabled ? 0.45 : 1}
+          onPress={() => onSelect(item.id === selected ? '' : item.id)}>
+          <HeavyarChipText selected={selected === item.id}>{isRTL ? item.nameAr : item.nameEn}</HeavyarChipText>
+        </HeavyarChip>
       ))}
     </ScrollView>
   );
 
   return (
     <View style={styles.container}>
-      <View style={[styles.searchRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-        <View style={[styles.searchInput, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-          <SearchIcon size={20} color={Colors.textMuted} />
-          <TextInput
-            style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]}
-            placeholder={isRTL ? 'ابحث باسم السائق...' : 'Search driver by name...'}
-            placeholderTextColor={Colors.textMuted}
-            value={q}
-            onChangeText={setQ}
-            onSubmitEditing={() => setDebouncedQ(q.trim())}
-          />
-          {q.length > 0 && <Pressable onPress={() => { setQ(''); }}><X size={18} color={Colors.textMuted} /></Pressable>}
-        </View>
-        <Pressable accessibilityRole="button" accessibilityLabel={isRTL ? 'تصفية السائقين' : 'Filter drivers'} style={[styles.filterButton, showFilters && styles.filterActive]} onPress={() => setShowFilters(!showFilters)}>
-          <SlidersHorizontal size={20} color={showFilters ? Colors.primary : Colors.gold} />
-        </Pressable>
-      </View>
+      <HeavyarSearchBar
+        value={q}
+        onChangeText={setQ}
+        onSubmitEditing={() => setDebouncedQ(q.trim())}
+        onClear={() => setQ('')}
+        placeholder={isRTL ? 'ابحث باسم السائق...' : 'Search driver by name...'}
+        filterLabel={isRTL ? 'تصفية السائقين' : 'Filter drivers'}
+        filtersExpanded={showFilters}
+        onFilterPress={() => setShowFilters(value => !value)}
+        isRTL={isRTL}
+      />
 
       {showFilters && (
         <ScrollView showsVerticalScrollIndicator={false} style={styles.filtersScroll} contentContainerStyle={styles.filtersContainer}>
@@ -203,7 +201,7 @@ export default function DriverSearchTab() {
         showsVerticalScrollIndicator={false}
         data={loading ? [] : drivers}
         keyExtractor={item => item.id}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, !loading && drivers.length === 0 && styles.emptyListContent]}
         onEndReached={() => { if (drivers.length > 0) void fetchDrivers(true); }}
         onEndReachedThreshold={0.5}
         refreshing={refreshing}
@@ -235,25 +233,15 @@ export default function DriverSearchTab() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  searchRow: { paddingHorizontal: 20, gap: 10, alignItems: 'center', marginBottom: 12 },
-  searchInput: { flex: 1, backgroundColor: Colors.inputBg, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, alignItems: 'center', gap: 10, borderWidth: 1, borderColor: Colors.border },
-  input: { flex: 1, color: Colors.textPrimary, fontSize: 15 },
-  filterButton: { width: 48, height: 48, borderRadius: 14, backgroundColor: Colors.surface, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.border },
-  filterActive: { backgroundColor: Colors.gold, borderColor: Colors.gold },
-  filtersContainer: { paddingHorizontal: 20, paddingBottom: 12, gap: 16 },
-  filtersScroll: { maxHeight: 250, flexGrow: 0, flexShrink: 1 },
+  filtersContainer: { paddingHorizontal: 20, paddingBottom: 12, gap: 12 },
+  filtersScroll: { maxHeight: '45%', flexGrow: 0, flexShrink: 1 },
   filterSection: { gap: 8 },
   filterLabel: { color: Colors.textSecondary, fontSize: 14, fontWeight: '600' },
   chipRow: { gap: 8 },
-  chip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
-  chipSelected: { backgroundColor: Colors.gold, borderColor: Colors.gold },
-  chipText: { color: Colors.textSecondary, fontSize: 13, fontWeight: '500' },
-  chipTextSelected: { color: Colors.primary, fontWeight: '700' },
-  chipDisabled: { opacity: 0.45 },
-  chipTextDisabled: { color: Colors.textMuted },
   clearButton: { alignSelf: 'center', paddingVertical: 6, marginBottom: 8 },
   clearText: { color: Colors.error, fontSize: 13, fontWeight: '600' },
   loadMoreButton: { alignSelf: 'center', paddingHorizontal: 20, paddingVertical: 12, marginVertical: 12 },
   loadMoreText: { color: Colors.gold, fontSize: 14, fontWeight: '700' },
   listContent: { paddingHorizontal: 20, paddingBottom: 20 },
+  emptyListContent: { flexGrow: 1, justifyContent: 'center' },
 });

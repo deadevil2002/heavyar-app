@@ -156,15 +156,18 @@ describe('canonical mobile public discovery', () => {
       expect(row).not.toContain('scrollEnabled={false}');
     }
     const categories = horizontalRows.find(row => row.includes('home-category-scroll'));
-    expect(categories).toContain("flexDirection: isRTL ? 'row-reverse' : 'row'");
+    expect(categories).toContain('flexDirection: rowDirection');
+    expect(home).toContain("const rowDirection = Platform.OS === 'web'");
     expect(categories).toContain('styles.categoriesScroll');
   });
   it('wraps full country labels in both directions and never restores fake category counts', () => {
     const filters = source('../components/DiscoveryFilters.tsx');
-    expect(filters).toContain("flexWrap: 'wrap'");
+    expect(filters).toContain('flexWrap="wrap"');
     expect(filters).not.toContain('ScrollView');
-    expect(filters).toContain("maxWidth: '100%'");
-    expect(filters).toContain("'row-reverse'");
+    expect(filters).toContain('HeavyarChip');
+    const primitives = source('../components/ui/heavyar.tsx');
+    expect(primitives).toContain("maxW: '100%'");
+    expect(filters).toContain('rowDirection');
     expect(filters).toContain("t('inactive')");
     expect(source('../components/CategoryCard.tsx')).not.toMatch(/category\.count|equipmentCount/);
   });

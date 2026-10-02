@@ -95,7 +95,7 @@ export function buildFinalPaymentHandoff(
     customerPayable: snapshot.customerPayableMinor,
     providerReceivable: snapshot.providerReceivableMinor,
     commercialSnapshotId,
-    settlementEnabled: false as const,
+    settlementEnabled: true as const,
   };
 }
 

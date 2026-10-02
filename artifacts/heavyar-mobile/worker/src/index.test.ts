@@ -1,8 +1,11 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { createVerify, generateKeyPairSync } from 'node:crypto';
 import worker, { __test, GCC_COUNTRIES, heavyarEmailVerificationTemplate, heavyarPasswordResetTemplate, normalizeGccPhone, type Env } from './index';
+import { buildLegacyCatalog, calculateCommercial } from './commercial';
+import { quoteFromCommercial } from './payment';
+import { buildFinalPaymentHandoff } from './rental-v2';
 
-const env = { CORS_ORIGINS: 'http://localhost' } as Env;
+const env = { CORS_ORIGINS: 'http://localhost', TAP_MERCHANT_ID: 'merchant-test-id' } as Env;
 const request = (path: string, body: unknown, headers: Record<string, string> = {}) =>
   new Request(`https://worker.test${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
 const paidFixture = {
@@ -27,9 +30,53 @@ const tapTransaction = (overrides: Record<string, unknown> = {}) => ({
   metadata: {
     requestId: 'r', customerUid: 'customer-1', amount: '115', currency: 'SAR',
     quoteId: 'quote:r:100.00:SAR', paymentId: 'payment:r',
+    idempotencyKey: 'heavyar-payment:customer-1:r', paymentEnvironment: 'TEST',
   },
   ...overrides,
 });
+const intendedRule = {
+  ...buildLegacyCatalog().rules[0],
+  version: '20000000-0000-4000-8000-000000000020',
+  percentageBps: 2000,
+  createdBy: 'owner-1', updatedBy: 'owner-1',
+};
+function v2Commercial(baseAmountMinor = 10_000) {
+  return {
+    ...calculateCommercial(intendedRule, {
+      baseAmountMinor, countryCode: 'SA', categoryId: 'other', providerUid: 'provider-1',
+      currency: 'SAR', calculatedAt: '2026-10-02T00:00:00.000Z',
+      taxAmountMinor: Math.round(baseAmountMinor * 0.15), taxReference: 'legacy-sar-vat-policy',
+    }),
+    taxRateBps: 1500,
+  };
+}
+function finalizedV2Request(baseAmountMinor = 10_000) {
+  const commercialSnapshot = v2Commercial(baseAmountMinor);
+  const finalCommercialSnapshot = { ...commercialSnapshot, calculatedAt: '2026-10-03T00:00:00.000Z' };
+  const finalCommercialSnapshotId = 'rental-v2:r:final';
+  return {
+    id: 'r', pricingModelVersion: 2, customerUid: 'customer-1', providerUid: 'provider-1', equipmentId: 'e',
+    status: 'completed', paymentStatus: 'unpaid', paymentState: null, paymentId: '',
+    currency: 'SAR', nativeCurrency: 'SAR', commercialSnapshotStatus: 'finalized',
+    finalBaseAmountMinor: baseAmountMinor, commercialSnapshot, finalCommercialSnapshot, finalCommercialSnapshotId,
+    paymentHandoff: buildFinalPaymentHandoff(finalCommercialSnapshotId, finalCommercialSnapshot),
+    customerPublic: { nameEn: 'Customer' }, providerPublic: { nameEn: 'Provider' },
+  };
+}
+function storedV2Quote(baseAmountMinor = 10_000) {
+  return { requestId: 'r', ...quoteFromCommercial(finalizedV2Request(baseAmountMinor).finalCommercialSnapshot, 'r', 0) };
+}
+function v2TapTransaction(baseAmountMinor = 10_000, overrides: Record<string, unknown> = {}) {
+  const quote = storedV2Quote(baseAmountMinor);
+  return {
+    id: 'charge-v2', status: 'CAPTURED', amount: quote.amount, currency: 'SAR',
+    metadata: {
+      requestId: 'r', customerUid: 'customer-1', amount: String(quote.amount), currency: 'SAR',
+      quoteId: quote.quoteId, paymentId: 'payment:r', idempotencyKey: 'heavyar-payment:customer-1:r', paymentEnvironment: 'TEST',
+    },
+    ...overrides,
+  };
+}
 
 describe('worker security boundary', () => {
   beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.setPublicEquipmentLimiter(undefined); __test.captureDriverQueries(undefined); __test.captureEquipmentQueries(undefined); __test.resetMutationLimits(); });
@@ -358,11 +405,14 @@ describe('worker security boundary', () => {
       const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
       expect(response.status).toBe(200);
       expect(tapBody.amount).toBe(115);
+      expect(tapBody.merchant).toEqual({ id: 'merchant-test-id' });
       expect(tapHeaders?.get('Idempotency-Key')).toBe('heavyar-payment:customer-1:r');
       expect(commits.length).toBe(2);
       expect((commits[0][0] as any).update.fields.paymentId.stringValue).toBe('reservation:heavyar-payment:customer-1:r');
       expect((commits[0] as any[]).some(write => String(write.update.name).includes('/paymentQuotes/r'))).toBe(true);
       expect((commits[0] as any[]).some(write => String(write.update.name).includes('/paymentIdempotency/'))).toBe(true);
+      const paymentReservation = (commits[0] as any[]).find(write => String(write.update.name).includes('/payments/r'));
+      expect(paymentReservation.update.fields.environment.stringValue).toBe('TEST');
       expect((commits[1][0] as any).update.fields.paymentId.stringValue).toBe('charge-1');
       const result = await response.json();
       expect(result.paymentId).toBe('charge-1');
@@ -370,6 +420,41 @@ describe('worker security boundary', () => {
       expect(result.checkoutUrl).toBe('https://tap.test');
       expect(result.quote.total).toBe(115);
     } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
+  });
+
+  test('new LIVE payment uses only the LIVE credential, includes merchant, and persists its environment', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    __test.setFirestore((collection) => collection === 'equipmentRequests'
+      ? { id: 'r', customerUid: 'customer-1', status: 'completed', amount: 100, paymentStatus: 'unpaid', equipmentId: 'e' }
+      : collection === 'paymentGateways' ? { enabled: true, environment: 'LIVE' }
+      : null);
+    const commits: unknown[][] = []; __test.captureCommits(commits);
+    const old = globalThis.fetch; let authorization = ''; let tapBody: any;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      authorization = new Headers(init?.headers).get('Authorization') || '';
+      tapBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ id: 'charge-live', status: 'INITIATED', amount: 115, currency: 'SAR', redirect: { url: 'https://tap.test/live' } }));
+    }) as typeof fetch;
+    try {
+      const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test-credential', TAP_SECRET_KEY_LIVE: 'live-credential' });
+      expect(response.status).toBe(200);
+      expect(authorization).toBe('Bearer live-credential');
+      expect(tapBody.merchant).toEqual({ id: 'merchant-test-id' });
+      expect(tapBody.metadata.paymentEnvironment).toBe('LIVE');
+      const paymentWrite = (commits[0] as any[]).find(write => String(write.update.name).includes('/payments/r'));
+      expect(paymentWrite.update.fields.environment.stringValue).toBe('LIVE');
+      expect(JSON.stringify(await response.json()).includes('live-credential')).toBe(false);
+    } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
+  });
+
+  test('Tap payment creation fails closed when merchant configuration is absent', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    __test.setFirestore((collection) => collection === 'equipmentRequests'
+      ? { id: 'r', customerUid: 'customer-1', status: 'completed', amount: 100, paymentStatus: 'unpaid', equipmentId: 'e' }
+      : null);
+    const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { CORS_ORIGINS: 'http://localhost', TAP_SECRET_KEY_TEST: 'test-credential' });
+    expect(response.status).toBe(503);
+    expect(JSON.stringify(await response.json()).includes('test-credential')).toBe(false);
   });
 
   test('an immediately captured create settles request, invoice, and events atomically', async () => {
@@ -386,7 +471,10 @@ describe('worker security boundary', () => {
     });
     const commits: unknown[][] = []; __test.captureCommits(commits);
     const old = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify(tapTransaction()))) as typeof fetch;
+    globalThis.fetch = (async (_input, init) => {
+      const submitted = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify(tapTransaction({ metadata: submitted.metadata })));
+    }) as typeof fetch;
     try {
       const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
       const result = await response.json();
@@ -791,7 +879,7 @@ describe('worker security boundary', () => {
     const old = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify(tapTransaction()))) as typeof fetch;
     try {
-      const response = await worker.fetch(request('/api/webhooks/tap', { id: 'charge-1' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
+      const response = await worker.fetch(request('/api/webhooks/tap', { id: 'charge-1', metadata: { requestId: 'r' } }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
       expect(response.status).toBe(200);
       expect((await response.json()).status).toBe('paid');
       expect(commits.length).toBe(1);
@@ -843,6 +931,177 @@ describe('worker security boundary', () => {
         expect(names.some(name => name.includes('invoice_created'))).toBe(true);
       } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
     }
+  });
+
+  test('finalized Rental V2 creates Tap payments from the locked 20 percent matrix only', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    const old = globalThis.fetch;
+    try {
+      for (const row of [
+        { baseMinor: 10_000, subtotal: 100, fee: 20, provider: 80, vat: 15, total: 115 },
+        { baseMinor: 50_000, subtotal: 500, fee: 100, provider: 400, vat: 75, total: 575 },
+        { baseMinor: 100_000, subtotal: 1_000, fee: 200, provider: 800, vat: 150, total: 1_150 },
+        { baseMinor: 250_000, subtotal: 2_500, fee: 500, provider: 2_000, vat: 375, total: 2_875 },
+        { baseMinor: 1_000_000, subtotal: 10_000, fee: 2_000, provider: 8_000, vat: 1_500, total: 11_500 },
+      ]) {
+        const rental = finalizedV2Request(row.baseMinor);
+        __test.setFirestore((collection, id) => collection === 'equipmentRequests' ? rental
+          : collection === 'equipment' ? { ownerUid: 'provider-1', nativeCurrency: 'SAR', countryCode: 'SA' }
+          : collection === 'users' ? { uid: id, role: id === 'customer-1' ? 'customer' : 'provider', nameEn: id === 'customer-1' ? 'Customer' : 'Provider', accountStatus: 'active' }
+          : collection === 'paymentGateways' ? { enabled: true, environment: 'TEST' }
+          : null);
+        const commits: unknown[][] = []; __test.captureCommits(commits);
+        let sent: any;
+        globalThis.fetch = (async (_input, init) => {
+          sent = JSON.parse(String(init?.body));
+          return new Response(JSON.stringify({ id: `charge-v2-${row.baseMinor}`, status: 'INITIATED', amount: row.total, currency: 'SAR', metadata: sent.metadata, redirect: { url: 'https://checkout.test' } }));
+        }) as typeof fetch;
+        const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
+        const result: any = await response.json();
+        expect(response.status).toBe(200);
+        expect(result.amount).toBe(row.total);
+        expect(result.quote).toMatchObject({ subtotal: row.subtotal, platformFee: row.fee, providerAmount: row.provider, vatAmount: row.vat, total: row.total, policyVersion: intendedRule.version });
+        expect(sent.amount).toBe(row.total);
+        expect(sent.metadata.quoteId).toBe(result.quote.quoteId);
+        const firstCommit = commits[0] as any[];
+        const quoteWrite = firstCommit.find(write => String(write.update.name).includes('/paymentQuotes/r'));
+        const paymentWrite = firstCommit.find(write => String(write.update.name).includes('/payments/r'));
+        expect(Number(quoteWrite.update.fields.commercialSnapshot.mapValue.fields.percentageBps.integerValue
+          ?? quoteWrite.update.fields.commercialSnapshot.mapValue.fields.percentageBps.doubleValue)).toBe(2000);
+        expect(paymentWrite.update.fields.amount.doubleValue).toBe(row.total);
+        expect(paymentWrite.update.fields.environment.stringValue).toBe('TEST');
+        __test.captureCommits(undefined);
+      }
+    } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
+  });
+
+  test('Rental V2 lost create response remains reconcilable and retry reuses its durable identity', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    const rental = finalizedV2Request();
+    __test.setFirestore((collection, id) => collection === 'equipmentRequests' ? rental
+      : collection === 'equipment' ? { ownerUid: 'provider-1', nativeCurrency: 'SAR' }
+      : collection === 'users' ? { uid: id, role: id === 'customer-1' ? 'customer' : 'provider', nameEn: 'Participant', accountStatus: 'active' }
+      : collection === 'paymentGateways' ? { enabled: true, environment: 'TEST' }
+      : null);
+    const commits: unknown[][] = []; __test.captureCommits(commits);
+    const old = globalThis.fetch;
+    globalThis.fetch = (async () => { throw new Error('response lost'); }) as typeof fetch;
+    try {
+      const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({ paymentState: 'processing', retryable: true });
+      expect((commits[0] as any[]).some(write => String(write.update.name).includes('/paymentIdempotency/'))).toBe(true);
+      expect((commits[1] as any[]).some(write => String(write.update.name).includes('payment_creation_uncertain'))).toBe(true);
+    } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
+  });
+
+  test('repeated Rental V2 create returns the existing logical payment without a second Tap charge', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    const quote = storedV2Quote();
+    const rental = { ...finalizedV2Request(), paymentStatus: 'pending_payment', paymentState: 'pending', paymentId: 'charge-v2' };
+    __test.setFirestore((collection, id) => collection === 'equipmentRequests' ? rental
+      : collection === 'equipment' ? { ownerUid: 'provider-1', nativeCurrency: 'SAR' }
+      : collection === 'users' ? { uid: id, role: id === 'customer-1' ? 'customer' : 'provider', nameEn: 'Participant', accountStatus: 'active' }
+      : collection === 'paymentGateways' ? { enabled: true, environment: 'LIVE' }
+      : collection === 'paymentQuotes' ? quote
+      : collection === 'payments' ? { requestId: 'r', provider: 'tap', providerReference: 'charge-v2', state: 'pending', amount: 115, currency: 'SAR', customerUid: 'customer-1', quoteId: quote.quoteId, environment: 'TEST', checkoutUrl: 'https://checkout.test', commercialSnapshot: rental.finalCommercialSnapshot }
+      : null);
+    const old = globalThis.fetch; let calls = 0;
+    globalThis.fetch = (async () => { calls++; throw new Error('must not call Tap'); }) as typeof fetch;
+    try {
+      const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test', TAP_SECRET_KEY_LIVE: 'live' });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ paymentId: 'charge-v2', amount: 115, paymentState: 'pending' });
+      expect(calls).toBe(0);
+    } finally { globalThis.fetch = old; }
+  });
+
+  test('verification always uses the environment persisted with the original payment', async () => {
+    for (const paymentEnvironment of ['TEST', 'LIVE'] as const) {
+      __test.setAuth({ uid: 'customer-1', admin: false });
+      __test.setFirestore((collection) => collection === 'equipmentRequests' ? paidFixture
+        : collection === 'paymentQuotes' ? quoteFixture
+        : collection === 'payments' ? { ...paymentFixture, environment: paymentEnvironment }
+        : collection === 'users' ? { nameEn: 'Participant' } : null);
+      const commits: unknown[][] = []; __test.captureCommits(commits);
+      const old = globalThis.fetch; let authorization = '';
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        authorization = new Headers(init?.headers).get('Authorization') || '';
+        return new Response(JSON.stringify(tapTransaction({ metadata: { ...tapTransaction().metadata, paymentEnvironment } })));
+      }) as typeof fetch;
+      try {
+        const response = await worker.fetch(request('/api/verify-payment', { paymentId: 'charge-1' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test-credential', TAP_SECRET_KEY_LIVE: 'live-credential' });
+        expect(response.status).toBe(200);
+        expect(authorization).toBe(`Bearer ${paymentEnvironment === 'LIVE' ? 'live-credential' : 'test-credential'}`);
+      } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
+    }
+  });
+
+  test('Rental V2 verify/webhook ordering settles once and keeps the original TEST environment after Admin switches LIVE', async () => {
+    for (const firstPath of ['/api/verify-payment', '/api/webhooks/tap'] as const) {
+      const secondPath = firstPath === '/api/verify-payment' ? '/api/webhooks/tap' : '/api/verify-payment';
+      __test.setAuth({ uid: 'customer-1', admin: false });
+      const quote = storedV2Quote();
+      const pending = { ...finalizedV2Request(), paymentStatus: 'pending_payment', paymentState: 'processing', paymentId: 'charge-v2' };
+      const payment = { requestId: 'r', paymentId: 'payment:r', provider: 'tap', providerReference: 'charge-v2', state: 'processing', amount: 115, currency: 'SAR', customerUid: 'customer-1', quoteId: quote.quoteId, environment: 'TEST', commercialSnapshot: pending.finalCommercialSnapshot };
+      const firestore = (settled: boolean) => (collection: string, id: string) => collection === 'equipmentRequests'
+        ? settled ? { ...pending, paymentStatus: 'paid', paymentState: 'paid', invoiceId: 'INV-r-charge-v2' } : pending
+        : collection === 'equipment' ? { ownerUid: 'provider-1', nativeCurrency: 'SAR' }
+        : collection === 'users' ? { uid: id, nameEn: id === 'customer-1' ? 'Customer' : 'Provider' }
+        : collection === 'paymentGateways' ? { enabled: true, environment: 'LIVE' }
+        : collection === 'paymentQuotes' ? quote
+        : collection === 'payments' ? settled ? { ...payment, state: 'paid', invoiceId: 'INV-r-charge-v2' } : payment
+        : collection === 'invoices' && settled ? { invoiceNumber: 'INV-r-charge-v2', status: 'paid' }
+        : null;
+      __test.setFirestore(firestore(false));
+      const old = globalThis.fetch; let authorization = '';
+      globalThis.fetch = (async (_input, init) => {
+        authorization = new Headers(init?.headers).get('Authorization') || '';
+        return new Response(JSON.stringify(v2TapTransaction()));
+      }) as typeof fetch;
+      try {
+        const firstCommits: unknown[][] = []; __test.captureCommits(firstCommits);
+        const first = await worker.fetch(request(firstPath, firstPath.includes('verify') ? { paymentId: 'charge-v2' } : { id: 'charge-v2', status: 'FAILED' }, firstPath.includes('verify') ? { Authorization: 'Bearer test' } : {}), { ...env, TAP_SECRET_KEY_TEST: 'test-credential', TAP_SECRET_KEY_LIVE: 'live-credential' });
+        expect(first.status).toBe(200);
+        expect((await first.json()).paymentState).toBe('paid');
+        expect(authorization).toBe('Bearer test-credential');
+        expect(firstCommits.length).toBe(1);
+        const settlement = firstCommits[0] as any[];
+        const invoiceWrite = settlement.find(write => String(write.update.name).includes('/invoices/'));
+        const requestWrite = settlement.find(write => String(write.update.name).includes('/equipmentRequests/r'));
+        expect(Number(invoiceWrite.update.fields.commercialSnapshot.mapValue.fields.percentageBps.integerValue
+          ?? invoiceWrite.update.fields.commercialSnapshot.mapValue.fields.percentageBps.doubleValue)).toBe(2000);
+        expect(invoiceWrite.update.fields.totalAmount.doubleValue).toBe(115);
+        expect(invoiceWrite.update.fields.providerAmount.doubleValue).toBe(80);
+        expect(invoiceWrite.update.fields.paymentEnvironment.stringValue).toBe('TEST');
+        expect(requestWrite.update.fields.paymentEnvironment.stringValue).toBe('TEST');
+
+        __test.setFirestore(firestore(true));
+        const duplicateCommits: unknown[][] = []; __test.captureCommits(duplicateCommits);
+        const second = await worker.fetch(request(secondPath, secondPath.includes('verify') ? { paymentId: 'charge-v2' } : { id: 'charge-v2' }, secondPath.includes('verify') ? { Authorization: 'Bearer test' } : {}), { ...env, TAP_SECRET_KEY_TEST: 'test-credential', TAP_SECRET_KEY_LIVE: 'live-credential' });
+        expect(second.status).toBe(200);
+        expect(duplicateCommits.length).toBe(0);
+      } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
+    }
+  });
+
+  test('Rental V2 verification fails closed when quote and final commercial snapshots differ', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    const rental = { ...finalizedV2Request(), paymentStatus: 'pending_payment', paymentState: 'processing', paymentId: 'charge-v2' };
+    const wrongQuote = { ...storedV2Quote(), commercialSnapshot: { ...rental.finalCommercialSnapshot, percentageBps: 1000, platformFeeMinor: 1000, providerFeeMinor: 1000, providerReceivableMinor: 9000 } };
+    __test.setFirestore((collection) => collection === 'equipmentRequests' ? rental
+      : collection === 'equipment' ? { ownerUid: 'provider-1', nativeCurrency: 'SAR' }
+      : collection === 'paymentQuotes' ? wrongQuote
+      : collection === 'payments' ? { requestId: 'r', provider: 'tap', providerReference: 'charge-v2', state: 'processing', amount: 115, currency: 'SAR', customerUid: 'customer-1', quoteId: wrongQuote.quoteId, environment: 'TEST', commercialSnapshot: rental.finalCommercialSnapshot }
+      : null);
+    const commits: unknown[][] = []; __test.captureCommits(commits);
+    const old = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify(v2TapTransaction()))) as typeof fetch;
+    try {
+      const response = await worker.fetch(request('/api/verify-payment', { paymentId: 'charge-v2' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
+      expect(response.status).toBe(409);
+      expect(commits.length).toBe(0);
+    } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
   });
 
   test('paid request markers cannot hide a missing invoice or incomplete payment record', async () => {
@@ -1249,6 +1508,7 @@ describe('worker security boundary', () => {
       };
       if (collection === 'users') return { accountStatus: 'active' };
       if (collection === 'publicIdentifierCounters') return { nextSequence: 42 };
+      if (collection === 'commercialSettings') return buildLegacyCatalog();
       return null;
     });
     const commits: unknown[][] = [];

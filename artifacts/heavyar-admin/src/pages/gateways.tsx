@@ -1,13 +1,16 @@
-import { useGateways, useUpdateGateway } from '@/lib/operations';
+import { useState } from 'react';
+import { useGateways, useUpdateGateway, useUpdateGatewayEnvironment } from '@/lib/operations';
 import { userErrorMessage } from '@/lib/error-messages';
 import { useAdminSession } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ShieldCheck, ServerCrash, CreditCard, Loader2 } from 'lucide-react';
+import { ShieldCheck, ServerCrash, CreditCard, Loader2, AlertTriangle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
+import { Button } from '@/components/ui/button';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 
 export default function Gateways() {
   const { language } = useAppState();
@@ -18,12 +21,24 @@ export default function Gateways() {
 
   const { data, isLoading } = useGateways();
   const updateGateway = useUpdateGateway();
+  const updateEnvironment = useUpdateGatewayEnvironment();
+  const [liveConfirmationOpen, setLiveConfirmationOpen] = useState(false);
 
   const handleToggle = (gatewayId: string, enabled: boolean) => {
     if (!isSuperAdmin) return;
     updateGateway.mutate({ gatewayId, enabled }, {
       onSuccess: () => toast({ title: t('تم التحديث بنجاح', 'Updated successfully') }),
       onError: (err: any) => toast({ title: t('فشل التحديث', 'Update failed'), description: userErrorMessage(err, language), variant: 'destructive' })
+    });
+  };
+
+  const saveEnvironment = (environment: 'TEST' | 'LIVE', confirmLive = false) => {
+    updateEnvironment.mutate({ gatewayId: 'tap', environment, confirmLive }, {
+      onSuccess: () => {
+        setLiveConfirmationOpen(false);
+        toast({ title: t('تم تحديث بيئة Tap', 'Tap environment updated') });
+      },
+      onError: (err: any) => toast({ title: t('تعذر تحديث البيئة', 'Environment update failed'), description: userErrorMessage(err, language), variant: 'destructive' }),
     });
   };
 
@@ -112,22 +127,79 @@ export default function Gateways() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid sm:grid-cols-2 gap-4 mb-6">
+                  <div className="grid sm:grid-cols-3 gap-4 mb-6">
                     <div className="p-3 rounded-md border border-border/50 bg-background/50">
                       <p className="text-xs text-muted-foreground mb-1">{t('البيئة', 'Environment')}</p>
-                      <p className="font-semibold">{gateway.environment?.toUpperCase() || '—'}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className={`font-semibold ${gateway.environment === 'LIVE' ? 'text-red-500' : 'text-amber-500'}`}>{gateway.environment?.toUpperCase() || '—'}</p>
+                        {gateway.provider === 'tap' && gateway.environment === 'TEST' && <Badge variant="secondary">{t('اختباري — لا توجد مدفوعات حقيقية', 'Test — no real payments')}</Badge>}
+                        {gateway.provider === 'tap' && gateway.environment === 'LIVE' && <Badge variant="destructive">{t('فعلي — مدفوعات حقيقية', 'Live — real payments')}</Badge>}
+                      </div>
                     </div>
                     <div className="p-3 rounded-md border border-border/50 bg-background/50">
                       <p className="text-xs text-muted-foreground mb-1">{t('طرق الدفع المدعومة', 'Supported Methods')}</p>
                       <p className="font-semibold text-sm">{gateway.supportedMethods?.join(', ') || '—'}</p>
                     </div>
+                    <div className="p-3 rounded-md border border-border/50 bg-background/50">
+                      <p className="text-xs text-muted-foreground mb-1">{t('القدرات', 'Capabilities')}</p>
+                      <p className="font-semibold text-sm">
+                        {[
+                          gateway.capabilities?.refunds && t('استرداد', 'Refunds'),
+                          gateway.capabilities?.savedCards && t('بطاقات محفوظة', 'Saved cards'),
+                          gateway.capabilities?.split && t('تقسيم', 'Split'),
+                        ].filter(Boolean).join(', ') || t('الدفع والتحقق الخادمي', 'Payment and server verification')}
+                      </p>
+                    </div>
                   </div>
+                  {gateway.provider === 'tap' && isSuperAdmin && (
+                    <div className="rounded-md border border-border/60 bg-background/60 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold">{t('بيئة تشغيل Tap', 'Tap operating environment')}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{t('يتم اختيار المفتاح داخل الخادم فقط ولا يظهر في المتصفح.', 'The server selects the credential; no key reaches the browser.')}</p>
+                        </div>
+                        {updateEnvironment.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button variant={gateway.environment === 'TEST' ? 'default' : 'outline'} size="sm" disabled={updateEnvironment.isPending || gateway.environment === 'TEST'} onClick={() => saveEnvironment('TEST')}>
+                          TEST
+                        </Button>
+                        <Button variant={gateway.environment === 'LIVE' ? 'destructive' : 'outline'} size="sm" disabled={updateEnvironment.isPending || gateway.environment === 'LIVE'} onClick={() => setLiveConfirmationOpen(true)}>
+                          LIVE
+                        </Button>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                        <span>{t('اختبار:', 'Test:')} {gateway.testConfigured ? t('مكوّن', 'Configured') : t('غير مكوّن', 'Not configured')}</span>
+                        <span>•</span>
+                        <span>{t('فعلي:', 'Live:')} {gateway.liveConfigured ? t('مكوّن', 'Configured') : t('غير مكوّن', 'Not configured')}</span>
+                        <span>•</span>
+                        <span>{t('التاجر:', 'Merchant:')} {gateway.merchantConfigured ? t('مكوّن', 'Configured') : t('غير مكوّن', 'Not configured')}</span>
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             );
           })}
         </div>
       )}
+      <AlertDialog open={liveConfirmationOpen} onOpenChange={setLiveConfirmationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-red-500"><AlertTriangle className="h-5 w-5" />{t('تأكيد الوضع الفعلي', 'Confirm live mode')}</AlertDialogTitle>
+            <AlertDialogDescription className="text-foreground">
+              {t('تحويل Tap إلى الوضع الفعلي سيجعل المدفوعات حقيقية.', 'Switching Tap to live mode will make payments real.')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={updateEnvironment.isPending}>{t('إلغاء', 'Cancel')}</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={updateEnvironment.isPending} onClick={(event) => { event.preventDefault(); saveEnvironment('LIVE', true); }}>
+              {updateEnvironment.isPending ? <Loader2 className="me-2 h-4 w-4 animate-spin" /> : null}
+              {t('أؤكد التحويل إلى LIVE', 'Confirm switch to LIVE')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

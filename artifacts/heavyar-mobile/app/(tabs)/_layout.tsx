@@ -1,22 +1,27 @@
 import { Tabs } from "expo-router";
-import { Home, Search, PlusCircle, FileText, User } from "lucide-react-native";
+import { House, Search, Plus, ClipboardList, CircleUserRound } from "lucide-react-native";
 import React from "react";
 import { View, StyleSheet } from "react-native";
 import Colors from "@/constants/colors";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAuth } from "@/contexts/AuthContext";
-import { useNotificationUnread } from "@/hooks/useNotificationUnread";
 import { mobilePerformance } from "@/utils/mobilePerformance";
+import { HeavyarLoadingState } from "@/components/ui/heavyar";
 
 export default function TabLayout() {
   const { t } = useLanguage();
-  const { isAuthenticated, isLoading, accountState, user } = useAuth();
+  const { isAuthenticated, isLoading, isResolvingSession, accountState, user } = useAuth();
   const canonicalProvider = !isLoading
     && isAuthenticated
     && accountState === 'authenticated_complete'
     && user?.role === 'provider';
-  const { unreadCount } = useNotificationUnread(isAuthenticated ? user?.uid || '' : '');
   mobilePerformance.countRender('Tabs');
+
+  if (isResolvingSession) {
+    return <View style={styles.sessionLoading}>
+      <HeavyarLoadingState />
+    </View>;
+  }
 
   return (
     <Tabs
@@ -37,10 +42,13 @@ export default function TabLayout() {
           backgroundColor: Colors.tabBar,
           borderTopColor: Colors.border,
           borderTopWidth: 1,
+          height: 68,
+          paddingTop: 7,
+          paddingBottom: 8,
         },
         tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: '600' as const,
+          fontSize: 10,
+          fontWeight: '700' as const,
         },
       }}
     >
@@ -48,14 +56,14 @@ export default function TabLayout() {
         name="(home)"
         options={{
           title: t('home'),
-          tabBarIcon: ({ color, size }) => <Home size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <House size={size} color={color} strokeWidth={2} />,
         }}
       />
       <Tabs.Screen
         name="search"
         options={{
           title: t('search'),
-          tabBarIcon: ({ color, size }) => <Search size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Search size={size} color={color} strokeWidth={2} />,
         }}
       />
       <Tabs.Screen
@@ -68,7 +76,7 @@ export default function TabLayout() {
           title: t('add'),
           tabBarIcon: () => (
             <View style={styles.addButton}>
-              <PlusCircle size={28} color={Colors.primary} />
+              <Plus size={26} color={Colors.primary} strokeWidth={2.2} />
             </View>
           ),
         }}
@@ -77,15 +85,14 @@ export default function TabLayout() {
         name="requests"
         options={{
           title: t('requests'),
-          tabBarIcon: ({ color, size }) => <FileText size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <ClipboardList size={size} color={color} strokeWidth={2} />,
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
           title: t('profile'),
-          tabBarBadge: unreadCount && unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : undefined,
-          tabBarIcon: ({ color, size }) => <User size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <CircleUserRound size={size} color={color} strokeWidth={2} />,
         }}
       />
     </Tabs>
@@ -93,6 +100,11 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
+  sessionLoading: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: Colors.primary,
+  },
   addButton: {
     width: 48,
     height: 48,
@@ -101,10 +113,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 4,
-    shadowColor: Colors.gold,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    shadowColor: Colors.primary,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 8,
+    shadowOpacity: 0.22,
+    shadowRadius: 6,
+    elevation: 4,
   },
 });

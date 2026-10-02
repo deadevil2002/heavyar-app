@@ -1,6 +1,6 @@
 import React from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
-import Colors from '@/constants/colors';
+import { Text, XStack, YStack } from 'tamagui';
+import { HeavyarChip, HeavyarChipText, useHeavyarDirection } from '@/components/ui/heavyar';
 import { GCC_COUNTRIES } from '@/constants/gcc';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { citiesForLocation, isMarketEnabled, regionsForCountry, type MarketAvailability } from '@/services/locationHierarchy';
@@ -15,43 +15,32 @@ type Props = {
 };
 
 export default function DiscoveryFilters({ filters, markets, setFilter, includeCategories }: Props) {
-  const { isRTL, t, localizedText } = useLanguage();
-  const row = { flexDirection: isRTL ? 'row-reverse' as const : 'row' as const };
+  const { t, localizedText } = useLanguage();
+  const { rowDirection, textAlign } = useHeavyarDirection();
   const chip = (key: keyof Filters, value: string, label: string, disabled = false) => {
     const selected = filters[key] === value;
-    return <Pressable key={value} accessibilityRole="button" accessibilityState={{ disabled, selected }}
+    return <HeavyarChip key={value} accessibilityRole="button" accessibilityState={{ disabled, selected }}
       disabled={disabled} testID={`filter-${key}-${value}`}
-      style={[styles.chip, selected && styles.selected, disabled && styles.disabled]}
+      selected={selected} opacity={disabled ? 0.42 : 1}
       onPress={() => setFilter(key, key !== 'countryCode' && selected ? '' : value)}>
-      <Text style={[styles.chipText, selected && styles.selectedText]}>{label}</Text>
-    </Pressable>;
+      <HeavyarChipText selected={selected} numberOfLines={1}>{label}</HeavyarChipText>
+    </HeavyarChip>;
   };
-  return <View style={styles.container}>
-    <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('country')}</Text>
-    <View style={[styles.row, row]}>{GCC_COUNTRIES.map(country => {
+  return <YStack gap="$sm">
+    <Text fontSize={13} color="$colorMuted" fontWeight="700" mt="$xs" text={textAlign}>{t('country')}</Text>
+    <XStack flexDirection={rowDirection} flexWrap="wrap" gap="$sm" width="100%">{GCC_COUNTRIES.map(country => {
       const disabled = !isMarketEnabled(country.code, markets);
       return chip('countryCode', country.code, `${localizedText(country.nameAr, country.nameEn)}${disabled ? ` (${t('inactive')})` : ''}`, disabled);
-    })}</View>
+    })}</XStack>
     {includeCategories && <>
-      <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('category')}</Text>
-      <View style={[styles.row, row]}>{mockCategories.map(category => chip('category', category.id, localizedText(category.nameAr, category.nameEn)))}</View>
+      <Text fontSize={13} color="$colorMuted" fontWeight="700" mt="$xs" text={textAlign}>{t('category')}</Text>
+      <XStack flexDirection={rowDirection} flexWrap="wrap" gap="$sm" width="100%">{mockCategories.map(category => chip('category', category.id, localizedText(category.nameAr, category.nameEn)))}</XStack>
     </>}
-    <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('region')}</Text>
-    <View style={[styles.row, row]}>{regionsForCountry(filters.countryCode, markets).map(region => chip('region', region.id, localizedText(region.nameAr, region.nameEn)))}</View>
+    <Text fontSize={13} color="$colorMuted" fontWeight="700" mt="$xs" text={textAlign}>{t('region')}</Text>
+    <XStack flexDirection={rowDirection} flexWrap="wrap" gap="$sm" width="100%">{regionsForCountry(filters.countryCode, markets).map(region => chip('region', region.id, localizedText(region.nameAr, region.nameEn)))}</XStack>
     {!!filters.region && <>
-      <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('city')}</Text>
-      <View style={[styles.row, row]}>{citiesForLocation(filters.countryCode, filters.region, markets).map(city => chip('city', city.id, localizedText(city.nameAr, city.nameEn)))}</View>
+      <Text fontSize={13} color="$colorMuted" fontWeight="700" mt="$xs" text={textAlign}>{t('city')}</Text>
+      <XStack flexDirection={rowDirection} flexWrap="wrap" gap="$sm" width="100%">{citiesForLocation(filters.countryCode, filters.region, markets).map(city => chip('city', city.id, localizedText(city.nameAr, city.nameEn)))}</XStack>
     </>}
-  </View>;
+  </YStack>;
 }
-
-const styles = StyleSheet.create({
-  container: { gap: 8 },
-  label: { fontSize: 14, color: Colors.textSecondary, fontWeight: '600', marginTop: 4 },
-  row: { flexWrap: 'wrap', gap: 8, width: '100%' },
-  chip: { maxWidth: '100%', minHeight: 40, justifyContent: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surface },
-  selected: { backgroundColor: Colors.gold, borderColor: Colors.gold },
-  disabled: { opacity: 0.5 },
-  chipText: { fontSize: 12, color: Colors.textSecondary, flexShrink: 1 },
-  selectedText: { color: Colors.primary, fontWeight: '700' },
-});

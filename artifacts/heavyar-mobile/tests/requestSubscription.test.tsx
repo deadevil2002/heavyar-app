@@ -44,6 +44,11 @@ vi.mock('../contexts/LanguageContext', () => ({ useLanguage: () => ({ isRTL: fal
 vi.mock('../components/DriverRequestsSection', () => ({ default: () => null }));
 vi.mock('../components/RequestCard', () => ({ default: ({ request }: any) => <span>{request.id}</span> }));
 vi.mock('../components/EmptyState', () => ({ default: () => <span>No requests</span> }));
+vi.mock('../components/ui/heavyar', () => ({
+  HeavyarSegmentedControl: ({ children }: any) => <div>{children}</div>,
+  HeavyarSegment: ({ children, onPress }: any) => <button onClick={onPress}>{children}</button>,
+  HeavyarSegmentText: ({ children }: any) => <span>{children}</span>,
+}));
 vi.mock('../utils/mobilePerformance', () => ({ mobilePerformance: { countRender: vi.fn(), markContextCommit: vi.fn(), markRefetch: vi.fn() } }));
 
 let root: ReturnType<typeof createRoot> | undefined;

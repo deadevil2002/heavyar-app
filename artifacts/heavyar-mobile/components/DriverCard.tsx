@@ -57,8 +57,8 @@ export default function DriverCard({ driver, onPress }: { driver: DriverPublicPr
 const styles = StyleSheet.create({
   card: {
     backgroundColor: Colors.surface,
-    borderRadius: 14,
-    padding: 16,
+    borderRadius: 18,
+    padding: 14,
     borderWidth: 1,
     borderColor: Colors.border,
     marginBottom: 12,
@@ -71,13 +71,13 @@ const styles = StyleSheet.create({
   avatar: {
     width: 50,
     height: 50,
-    borderRadius: 25,
+    borderRadius: 16,
   },
   avatarFallback: {
     width: 50,
     height: 50,
-    borderRadius: 25,
-    backgroundColor: Colors.inputBg,
+    borderRadius: 16,
+    backgroundColor: Colors.surfaceLight,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
@@ -94,7 +94,8 @@ const styles = StyleSheet.create({
   },
   name: {
     fontSize: 16,
-    fontWeight: '700',
+    lineHeight: 22,
+    fontWeight: '800',
     color: Colors.textPrimary,
   },
   row: {

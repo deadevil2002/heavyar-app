@@ -1,5 +1,5 @@
-import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, type PaymentQuote, type PaymentState } from './payment';
-import { buildLegacyCatalog, calculateCommercial, majorToMinor, minorToMajor, resolveRule, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
+import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, normalizeTapEnvironment, tapCredentials, type PaymentQuote, type PaymentState, type TapEnvironment } from './payment';
+import { calculateCommercial, majorToMinor, minorToMajor, resolveRule, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
 import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
@@ -22,7 +22,7 @@ import { evaluateCapabilities, isSaudiTruckRentalWithoutDriver, validateRegulato
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
   CLOUDINARY_CLOUD_NAME?: string; CLOUDINARY_API_KEY?: string; CLOUDINARY_API_SECRET?: string;
-  CLOUDINARY_FOLDER?: string; TAP_SECRET_KEY_TEST?: string; MOYASAR_SECRET_KEY?: string; MYFATOORAH_API_KEY?: string; RESEND_API_KEY?: string;
+  CLOUDINARY_FOLDER?: string; TAP_SECRET_KEY_TEST?: string; TAP_SECRET_KEY_LIVE?: string; TAP_MERCHANT_ID?: string; MOYASAR_SECRET_KEY?: string; MYFATOORAH_API_KEY?: string; RESEND_API_KEY?: string;
   FIREBASE_PROJECT_ID?: string; FIREBASE_CLIENT_EMAIL?: string; FIREBASE_PRIVATE_KEY?: string; FIREBASE_WEB_API_KEY?: string;
   RESEND_FROM_EMAIL?: string; RESEND_SUPPORT_EMAIL?: string; RESEND_SENDER_DOMAIN_VERIFIED?: string; RESEND_WEBHOOK_SECRET?: string;
   CORS_ORIGINS?: string; PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string; OTP_KV?: KVNamespace;
@@ -971,7 +971,10 @@ function paymentPricing(env: Env) {
   );
 }
 async function paymentQuote(env: Env, r: any, e: any, requestId: string) {
-  if (r?.pricingModelVersion === 2) err('V2_SETTLEMENT_DISABLED');
+  if (r?.pricingModelVersion === 2) {
+    const snapshot = v2FinalPaymentSnapshot(r, requestId);
+    return quoteFromCommercial(snapshot, requestId);
+  }
   const baseAmount = Number(r?.finalAmount ?? r?.amount);
   const calculatedAt = new Date().toISOString();
   const snapshot = r?.finalCommercialSnapshot
@@ -983,7 +986,9 @@ async function paymentQuote(env: Env, r: any, e: any, requestId: string) {
 }
 async function commercialCatalog(env: Env): Promise<CommercialCatalog> {
   const stored = await getDoc(env, 'commercialSettings', 'catalog');
-  if (stored === null || stored === undefined) return buildLegacyCatalog(paymentPricing(env).platformFeeRate);
+  // New rentals must never inherit an accidental environment/default rate.
+  // Historical V1 records continue through their stored commercial values.
+  if (stored === null || stored === undefined) err('Commercial configuration unavailable');
   if (!Number.isSafeInteger(stored.revision) || !Array.isArray(stored.rules)) err('Commercial configuration unavailable');
   return stored as CommercialCatalog;
 }
@@ -1140,7 +1145,7 @@ function legacyRecordCommercialSnapshot(env: Env, r: any, e: any, baseAmount: nu
   };
 }
 function assertSarSettlement(r: any, e: any) {
-  const currency = String(e?.nativeCurrency || r?.nativeCurrency || r?.currency || 'SAR').toUpperCase();
+  const currency = String(r?.finalCommercialSnapshot?.currency || r?.paidCommercialSnapshot?.currency || r?.nativeCurrency || r?.currency || e?.nativeCurrency || e?.currency || 'SAR').toUpperCase();
   if (currency !== 'SAR') err('FOREIGN_SETTLEMENT_DISABLED');
 }
 function owned(u: User, r: any) { return !!r && (u.admin || r.customerUid === u.uid || r.renterUid === u.uid); }
@@ -1957,8 +1962,9 @@ function quoteFromDoc(d: any): PaymentQuote {
     vatRate: Number.isFinite(Number(d?.vatRate)) ? Number(d.vatRate) : 0,
     policyVersion: String(d?.policyVersion || 'legacy-record-values'),
     quoteId: String(d?.quoteId || ''), expiresAt: String(d?.expiresAt || ''),
-    ...(d?.commercialSnapshot ? { commercialSnapshot: d.commercialSnapshot as CommercialSnapshot } : {}),
+    ...(d?.commercialSnapshot ? { commercialSnapshot: verifiedStoredCommercial(d.commercialSnapshot, String(d?.currency || '')) || undefined } : {}),
   };
+  if (d?.commercialSnapshot && !quote.commercialSnapshot) err('Invalid payment quote');
   if (!quote.quoteId || !Number.isFinite(quote.amount) || quote.amount <= 0 ||
       ![quote.total, subtotal, platformFee, quote.providerAmount, vatAmount, quote.tax].every(Number.isFinite) ||
       Math.abs(quote.total - quote.amount) > 0.0001 || Math.abs(subtotal + (quote.commercialSnapshot?.customerFeeMinor ? Number(minorToMajor(quote.commercialSnapshot.customerFeeMinor, quote.currency)) : 0) + vatAmount - quote.total) > 0.0001) err('Invalid payment quote');
@@ -1966,6 +1972,14 @@ function quoteFromDoc(d: any): PaymentQuote {
     const canonical = quoteFromCommercial(quote.commercialSnapshot, String(d?.requestId || 'stored'), 0);
     if (['amount', 'total', 'subtotal', 'platformFee', 'providerAmount', 'vatAmount'].some(key => Math.abs(Number((quote as any)[key]) - Number((canonical as any)[key])) > 0.0001) ||
         canonical.currency !== quote.currency || canonical.policyVersion !== quote.policyVersion) err('Invalid payment quote');
+  }
+  return quote;
+}
+async function lockedPaymentQuote(env: Env, r: any, e: any, requestId: string, stored: any): Promise<PaymentQuote> {
+  const quote = stored?.quoteId ? quoteFromDoc(stored) : await paymentQuote(env, r, e, requestId);
+  if (r?.pricingModelVersion === 2) {
+    const finalSnapshot = v2FinalPaymentSnapshot(r, requestId);
+    if (!sameStoredCommercial(finalSnapshot, quote.commercialSnapshot)) err('V2 payment quote does not match finalized pricing');
   }
   return quote;
 }
@@ -2017,6 +2031,34 @@ function verifiedStoredCommercial(snapshot: any, currency: string): CommercialSn
       snapshot.customerPayableMinor !== snapshot.baseAmountMinor + snapshot.customerFeeMinor + (snapshot.taxAmountMinor ?? 0)) return null;
   return snapshot as CommercialSnapshot;
 }
+function v2FinalPaymentSnapshot(r: any, requestId?: string): CommercialSnapshot {
+  if (r?.pricingModelVersion !== 2 || r?.status !== 'completed' || r?.commercialSnapshotStatus !== 'finalized') throw new Error('V2 payment is not finalized');
+  const currency = String(r?.finalCommercialSnapshot?.currency || '');
+  const snapshot = verifiedStoredCommercial(r?.finalCommercialSnapshot, currency);
+  const locked = verifiedStoredCommercial(r?.commercialSnapshot, String(r?.commercialSnapshot?.currency || ''));
+  const snapshotId = String(r?.finalCommercialSnapshotId || '');
+  const expectedId = requestId ? `rental-v2:${requestId}:final` : snapshotId;
+  const handoff = r?.paymentHandoff;
+  const lockedFields = [
+    'ruleVersion', 'ruleStatus', 'mode', 'percentageBps', 'fixedAmountMinor', 'minimumFeeMinor',
+    'maximumFeeMinor', 'payer', 'customerShareBps', 'currency', 'countryCode', 'categoryId',
+    'providerUid', 'taxReference', 'taxRateBps', 'ruleEffectiveFrom', 'ruleEffectiveTo',
+    'ruleCreatedAt', 'ruleCreatedBy', 'ruleUpdatedAt', 'ruleUpdatedBy', 'ruleNotes',
+  ];
+  const termsAgree = !!snapshot && !!locked && lockedFields.every(field => (snapshot as any)[field] === (locked as any)[field]) &&
+    snapshot.scope?.countryCode === locked.scope?.countryCode &&
+    snapshot.scope?.categoryId === locked.scope?.categoryId &&
+    snapshot.scope?.providerUid === locked.scope?.providerUid;
+  if (!snapshot || !locked || !termsAgree || !/^rental-v2:[A-Za-z0-9_-]{1,128}:final$/.test(snapshotId) || snapshotId !== expectedId ||
+      !handoff || handoff.settlementEnabled !== true || handoff.amountUnit !== 'minor' || handoff.currency !== snapshot.currency ||
+      handoff.commercialSnapshotId !== snapshotId || handoff.baseAmount !== snapshot.baseAmountMinor ||
+      handoff.platformCommission !== snapshot.platformFeeMinor || handoff.tax !== snapshot.taxAmountMinor ||
+      handoff.gatewayFee !== snapshot.gatewayFeeMinor || handoff.customerPayable !== snapshot.customerPayableMinor ||
+      handoff.providerReceivable !== snapshot.providerReceivableMinor || r.finalBaseAmountMinor !== snapshot.baseAmountMinor) {
+    throw new Error('Invalid finalized V2 commercial snapshot');
+  }
+  return snapshot;
+}
 function sameStoredCommercial(left: any, right: any): boolean {
   const fields = [
     'ruleVersion', 'ruleStatus', 'mode', 'percentageBps', 'fixedAmountMinor', 'minimumFeeMinor',
@@ -2047,7 +2089,9 @@ async function trustedInvoiceSource(env: Env, invoiceId: string): Promise<Truste
   const vatAmount = Number(invoice.vatAmount);
   const total = Number(invoice.totalAmount);
   const paymentAmount = Number(payment?.amount);
-  const rentalSubtotal = Number(rental?.finalAmount ?? rental?.amount);
+  const rentalSubtotal = rental?.pricingModelVersion === 2
+    ? Number(minorToMajor(Number(rental?.finalBaseAmountMinor), String(invoice.currency)))
+    : Number(rental?.finalAmount ?? rental?.amount);
   const commercial = verifiedStoredCommercial(invoice.commercialSnapshot, String(invoice.currency));
   const customerFee = commercial ? Number(minorToMajor(commercial.customerFeeMinor, String(invoice.currency))) : 0;
   const providerReceivable = commercial ? Number(minorToMajor(commercial.providerReceivableMinor, String(invoice.currency))) : undefined;
@@ -2176,6 +2220,7 @@ async function settlePaid(env: Env, requestId: string, raw: { data: any; updateT
   if (!sellerName || !buyerName) err('Invoice participants unavailable');
   const invoice = invoiceNumberForPayment(requestId, d.id);
   const now = new Date().toISOString();
+  const paymentEnvironment = storedPaymentEnvironment(payment);
   const invoiceFields = {
     invoiceNumber: { stringValue: invoice }, requestId: { stringValue: requestId },
     equipmentId: { stringValue: String(r.equipmentId || '') }, providerId: { stringValue: String(r.providerUid || '') },
@@ -2188,13 +2233,15 @@ async function settlePaid(env: Env, requestId: string, raw: { data: any; updateT
     ...(quote.commercialSnapshot ? { commercialSnapshot: firestoreValue(quote.commercialSnapshot) } : {}),
     status: { stringValue: 'paid' }, createdAt: { timestampValue: now }, paidAt: { timestampValue: now },
     paymentReference: { stringValue: d.id },
+    paymentEnvironment: { stringValue: paymentEnvironment },
   };
   const writes: any[] = [
     { update: { name: fullName(env, `equipmentRequests/${encodeURIComponent(requestId)}`), fields: {
       paymentStatus: { stringValue: 'paid' }, paymentState: { stringValue: 'paid' },
       paymentId: { stringValue: d.id }, paidAt: { timestampValue: now }, invoiceId: { stringValue: invoice },
+      paymentEnvironment: { stringValue: paymentEnvironment },
        ...(quote.commercialSnapshot ? { paidCommercialSnapshot: firestoreValue(quote.commercialSnapshot) } : {}),
-    } }, updateMask: { fieldPaths: ['paymentStatus', 'paymentState', 'paymentId', 'paidAt', 'invoiceId', ...(quote.commercialSnapshot ? ['paidCommercialSnapshot'] : [])] }, currentDocument: { updateTime: raw.updateTime } },
+    } }, updateMask: { fieldPaths: ['paymentStatus', 'paymentState', 'paymentId', 'paidAt', 'invoiceId', 'paymentEnvironment', ...(quote.commercialSnapshot ? ['paidCommercialSnapshot'] : [])] }, currentDocument: { updateTime: raw.updateTime } },
     { update: { name: fullName(env, `invoices/${encodeURIComponent(invoice)}`), fields: invoiceFields }, currentDocument: { exists: false } },
     payment
       ? { update: { name: fullName(env, `payments/${encodeURIComponent(requestId)}`), fields: {
@@ -2243,15 +2290,39 @@ async function persistProviderState(env: Env, requestId: string, raw: { data: an
       ...(await enqueueNotifications(env, fullName.bind(null, env), String(r.customerUid || ''), state === 'failed' ? 'payment_failed' : 'payment_pending', requestId, now, `${requestId}:attempt_${attempt}:payment_${state}`)),
   ]);
 }
+
+function storedPaymentEnvironment(payment: any): TapEnvironment {
+  // Payments created before environment persistence were TEST-only.
+  return normalizeTapEnvironment(payment?.environment);
+}
+
+async function tapPaymentForCharge(env: Env, chargeId: string, requestIdHint?: string): Promise<any | null> {
+  if (requestIdHint) {
+    const hinted = await getDoc(env, 'payments', requestIdHint);
+    if (hinted?.provider === 'tap' && (!hinted.providerReference || hinted.providerReference === chargeId)) return hinted;
+  }
+  if (firestoreOverride) {
+    const injected = await getDoc(env, 'payments', chargeId);
+    return injected?.provider === 'tap' && injected.providerReference === chargeId ? injected : null;
+  }
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'payments' }],
+    where: { fieldFilter: { field: { fieldPath: 'providerReference' }, op: 'EQUAL', value: { stringValue: chargeId } } },
+    limit: 2,
+  } }) }) as any[] || [];
+  const matches = rows.filter(row => row.document).map(row => decode(row.document));
+  return matches.length === 1 && matches[0]?.provider === 'tap' ? matches[0] : null;
+}
+
 async function create(req: Request, env: Env, u: User) {
   const body = await req.json() as { requestId?: string; amount?: number; purpose?: string };
   if (!body.requestId || Object.keys(body).some(key => !['requestId', 'purpose'].includes(key)) || (body.purpose && body.purpose !== 'equipment_request')) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', body.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
-  if (r?.pricingModelVersion === 2) return out(env, req, { success: false, error: 'Rental V2 settlement is not enabled', errorCode: 'V2_SETTLEMENT_DISABLED' }, 409);
   try {
     await enforceOperationalAccess(env, u, e);
     const customer = r?.customerUid ? await getDoc(env, 'users', String(r.customerUid)) : null;
-    const provider = e?.ownerUid ? await getDoc(env, 'users', String(e.ownerUid)) : null;
+    const providerUid = String(r?.providerUid || e?.ownerUid || '');
+    const provider = providerUid ? await getDoc(env, 'users', providerUid) : null;
     if (isStoreReviewAccount(customer) || isStoreReviewAccount(provider)) err('STORE_REVIEW_FINANCIAL_DISABLED');
     await enforceTrustForPayment(env, u, r, e);
   } catch (error) {
@@ -2265,7 +2336,7 @@ async function create(req: Request, env: Env, u: User) {
   let quote: PaymentQuote;
   const storedQuote = await getDoc(env, 'paymentQuotes', body.requestId);
   try {
-    quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : await paymentQuote(env, r, e, body.requestId);
+    quote = await lockedPaymentQuote(env, r, e, body.requestId, storedQuote);
   } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
   if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
   const expected = quote.amount;
@@ -2278,7 +2349,12 @@ async function create(req: Request, env: Env, u: User) {
     ? String(existingPayment?.idempotencyKey || String(r.paymentId).replace(/^reservation:/, ''))
     : `${idempotencyKeyForPayment(u.uid, body.requestId)}${attempt > 1 ? `:${attempt}` : ''}`;
   const reservation = `reservation:${idempotencyKey}`;
-  const tapConfig = await getDoc(env, 'paymentGateways', 'tap'), tapGateway = gatewayRegistry(env).tap;
+  const tapConfig = await getDoc(env, 'paymentGateways', 'tap');
+  const paymentEnvironment = existingPayment ? storedPaymentEnvironment(existingPayment) : normalizeTapEnvironment(tapConfig?.environment);
+  const tapGateway = gatewayRegistry(env, paymentEnvironment).tap;
+  let tapRuntime: ReturnType<typeof tapCredentials>;
+  try { tapRuntime = tapCredentials(env, paymentEnvironment); }
+  catch { return out(env, req, { success: false, error: 'Payment gateway unavailable' }, 503); }
   if (!tapConfig || tapConfig.enabled !== true || !tapGateway.configured || !tapGateway.adapterAvailable) return out(env, req, { success: false, error: 'Payment gateway unavailable' }, 503);
   if (r.paymentStatus === 'pending_payment' && r.paymentId && !String(r.paymentId).startsWith('reservation:')) {
     const state = String(existingPayment?.state || r.paymentState || 'pending') as PaymentState;
@@ -2297,16 +2373,16 @@ async function create(req: Request, env: Env, u: User) {
       if (!existingPayment) {
         writes.push(
           quoteWrite(env, body.requestId, r, quote, now),
-          { update: { name: fullName(env, `payments/${encodeURIComponent(body.requestId)}`), fields: { requestId: { stringValue: body.requestId }, paymentId: { stringValue: paymentIdForRequest(body.requestId) }, provider: { stringValue: 'tap' }, state: { stringValue: 'created' }, quoteId: { stringValue: quote.quoteId }, amount: { doubleValue: expected }, currency: { stringValue: 'SAR' }, customerUid: { stringValue: u.uid }, idempotencyKey: { stringValue: idempotencyKey }, attempt: { integerValue: attempt }, ...(quote.commercialSnapshot ? { commercialSnapshot: firestoreValue(quote.commercialSnapshot) } : {}) } }, currentDocument: { exists: false } },
+          { update: { name: fullName(env, `payments/${encodeURIComponent(body.requestId)}`), fields: { requestId: { stringValue: body.requestId }, paymentId: { stringValue: paymentIdForRequest(body.requestId) }, provider: { stringValue: 'tap' }, environment: { stringValue: paymentEnvironment }, state: { stringValue: 'created' }, quoteId: { stringValue: quote.quoteId }, amount: { doubleValue: expected }, currency: { stringValue: 'SAR' }, customerUid: { stringValue: u.uid }, idempotencyKey: { stringValue: idempotencyKey }, attempt: { integerValue: attempt }, ...(quote.commercialSnapshot ? { commercialSnapshot: firestoreValue(quote.commercialSnapshot) } : {}) } }, currentDocument: { exists: false } },
           eventWrite(env, `${body.requestId}:payment_created`, body.requestId, r, 'payment_created', 'created', now),
         );
       } else {
         writes.push(
-          { update: { name: fullName(env, `payments/${encodeURIComponent(body.requestId)}`), fields: { state: { stringValue: 'created' }, idempotencyKey: { stringValue: idempotencyKey }, attempt: { integerValue: attempt }, providerReference: { nullValue: null }, checkoutUrl: { nullValue: null } } }, updateMask: { fieldPaths: ['state', 'idempotencyKey', 'attempt', 'providerReference', 'checkoutUrl'] }, currentDocument: { exists: true } },
+          { update: { name: fullName(env, `payments/${encodeURIComponent(body.requestId)}`), fields: { state: { stringValue: 'created' }, environment: { stringValue: paymentEnvironment }, idempotencyKey: { stringValue: idempotencyKey }, attempt: { integerValue: attempt }, providerReference: { nullValue: null }, checkoutUrl: { nullValue: null } } }, updateMask: { fieldPaths: ['state', 'environment', 'idempotencyKey', 'attempt', 'providerReference', 'checkoutUrl'] }, currentDocument: { exists: true } },
           eventWrite(env, `${body.requestId}:payment_retry_${attempt}`, body.requestId, r, 'payment_retry', 'created', now),
         );
       }
-      writes.push({ update: { name: fullName(env, `paymentIdempotency/${encodeURIComponent(idempotencyKey)}`), fields: { requestId: { stringValue: body.requestId }, customerUid: { stringValue: u.uid }, provider: { stringValue: 'tap' }, key: { stringValue: idempotencyKey }, attempt: { integerValue: attempt }, state: { stringValue: 'created' } } }, currentDocument: { exists: false } });
+      writes.push({ update: { name: fullName(env, `paymentIdempotency/${encodeURIComponent(idempotencyKey)}`), fields: { requestId: { stringValue: body.requestId }, customerUid: { stringValue: u.uid }, provider: { stringValue: 'tap' }, environment: { stringValue: paymentEnvironment }, key: { stringValue: idempotencyKey }, attempt: { integerValue: attempt }, state: { stringValue: 'created' } } }, currentDocument: { exists: false } });
       await commitWrites(env, writes);
     } catch {
       const current = await getDoc(env, 'equipmentRequests', body.requestId);
@@ -2314,8 +2390,9 @@ async function create(req: Request, env: Env, u: User) {
       return out(env, req, { success: false, error: 'Payment reservation conflict' }, 409);
     }
   }
-  const provider = new TapPaymentProvider(env.TAP_SECRET_KEY_TEST!);
-  let data; try { data = await provider.create({ amount: expected, currency: 'SAR', idempotencyKey, metadata: { requestId: body.requestId, customerUid: u.uid, amount: String(expected), currency: 'SAR', quoteId: quote.quoteId, paymentId: paymentIdForRequest(body.requestId), idempotencyKey } }); } catch {
+  const provider = new TapPaymentProvider(tapRuntime.secret, tapRuntime.merchantId);
+  const tapMetadata = { requestId: body.requestId, customerUid: u.uid, amount: String(expected), currency: 'SAR', quoteId: quote.quoteId, paymentId: paymentIdForRequest(body.requestId), idempotencyKey, paymentEnvironment };
+  let data; try { data = await provider.create({ amount: expected, currency: 'SAR', idempotencyKey, metadata: tapMetadata }); } catch {
     const reservedRaw = capturedCommits ? { data: { ...r, paymentId: reservation, paymentState: 'pending' }, updateTime: 'test-reserved' } : await getRawDoc(env, 'equipmentRequests', body.requestId);
     if (reservedRaw?.updateTime && reservedRaw.data.paymentId === reservation && reservedRaw.data.paymentState !== 'processing') {
       const now = new Date().toISOString();
@@ -2327,7 +2404,10 @@ async function create(req: Request, env: Env, u: User) {
       ]);
     }
     return out(env, req, { success: false, error: 'Payment status uncertain; retry verification', paymentState: 'processing', canonicalStatus: 'processing', retryable: true }, 502); }
-  if (!data.id || data.amount !== expected || data.currency !== quote.currency) return out(env, req, { success: false, error: 'Invalid provider response' }, 502);
+  if (!data.id || data.amount !== expected || data.currency !== quote.currency ||
+      Object.entries(tapMetadata).some(([key, value]) => data.metadata?.[key] !== value)) {
+    return out(env, req, { success: false, error: 'Invalid provider response' }, 502);
+  }
   const state = stateForProvider(data.status);
   if (!canTransition('created', state)) return out(env, req, { success: false, error: 'Invalid payment transition' }, 409);
   const reservedRaw = capturedCommits ? { data: { ...r, paymentId: reservation }, updateTime: 'test-reserved' } : await getRawDoc(env, 'equipmentRequests', body.requestId);
@@ -2356,20 +2436,26 @@ async function create(req: Request, env: Env, u: User) {
 async function verify(req: Request, env: Env, u: User) {
   const body = await req.json() as { chargeId?: string; paymentId?: string }, chargeId = body.paymentId || body.chargeId;
   if (Object.keys(body).some(key => !['chargeId', 'paymentId'].includes(key))) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
-  if (!chargeId || !env.TAP_SECRET_KEY_TEST) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
-  let d; try { d = await new TapPaymentProvider(env.TAP_SECRET_KEY_TEST).retrieve(chargeId); } catch { return out(env, req, { success: false, error: 'Payment unavailable' }, 502); }
+  if (!chargeId) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
+  const persistedPayment = await tapPaymentForCharge(env, chargeId);
+  if (!persistedPayment) return out(env, req, { success: false, error: 'Payment unavailable' }, 404);
+  const paymentEnvironment = storedPaymentEnvironment(persistedPayment);
+  let tapRuntime: ReturnType<typeof tapCredentials>;
+  try { tapRuntime = tapCredentials(env, paymentEnvironment); }
+  catch { return out(env, req, { success: false, error: 'Payment unavailable' }, 503); }
+  let d; try { d = await new TapPaymentProvider(tapRuntime.secret, tapRuntime.merchantId).retrieve(chargeId); } catch { return out(env, req, { success: false, error: 'Payment unavailable' }, 502); }
   const m = d.metadata || {};
   const raw = await getRawDoc(env, 'equipmentRequests', m.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
-  if (r?.pricingModelVersion === 2) return out(env, req, { success: false, error: 'Rental V2 settlement is not enabled', errorCode: 'V2_SETTLEMENT_DISABLED' }, 409);
   let quote: PaymentQuote; const storedQuote = await getDoc(env, 'paymentQuotes', String(m.requestId));
-  try { assertSarSettlement(r, e); quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : await paymentQuote(env, r, e, String(m.requestId)); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
+  try { assertSarSettlement(r, e); quote = await lockedPaymentQuote(env, r, e, String(m.requestId), storedQuote); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
   if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
   const expected = quote.amount;
   if (!owned(u, r) || m.customerUid !== u.uid && !u.admin) return out(env, req, { success: false, error: 'Forbidden' }, 403);
   const payment = await getDoc(env, 'payments', String(m.requestId));
   const reservation = `reservation:${String(m.idempotencyKey || idempotencyKeyForPayment(String(m.customerUid), String(m.requestId)))}`;
-  const valid = !!raw && (r?.paymentId === chargeId || r?.paymentId === reservation) && d.id === chargeId && Number(d.amount) === expected && String(m.amount) === String(expected) && m.currency === 'SAR' && d.currency === 'SAR' && m.requestId === String(r?.id || m.requestId) && m.customerUid === r?.customerUid &&
-    (!payment || (payment.provider === 'tap' && (!payment.providerReference || payment.providerReference === chargeId) && Number(payment.amount) === expected && payment.currency === 'SAR' && payment.customerUid === r.customerUid));
+  const metadataEnvironmentMatches = m.paymentEnvironment ? normalizeTapEnvironment(m.paymentEnvironment) === paymentEnvironment : paymentEnvironment === 'TEST';
+  const valid = !!raw && persistedPayment.requestId === String(m.requestId) && storedPaymentEnvironment(persistedPayment) === paymentEnvironment && metadataEnvironmentMatches && (r?.paymentId === chargeId || r?.paymentId === reservation) && d.id === chargeId && Number(d.amount) === expected && String(m.amount) === String(expected) && m.currency === 'SAR' && d.currency === 'SAR' && m.requestId === String(r?.id || m.requestId) && m.customerUid === r?.customerUid && m.quoteId === quote.quoteId &&
+    (!payment || (payment.provider === 'tap' && storedPaymentEnvironment(payment) === paymentEnvironment && (!payment.providerReference || payment.providerReference === chargeId) && Number(payment.amount) === expected && payment.currency === 'SAR' && payment.customerUid === r.customerUid && payment.quoteId === quote.quoteId));
   if (!valid) return out(env, req, { success: false, error: 'Transaction association mismatch' }, 409);
   const state = stateForProvider(d.status);
   if (state === 'paid') {
@@ -2387,22 +2473,28 @@ async function verify(req: Request, env: Env, u: User) {
 /** Tap sends no trusted identity in a webhook. The transaction is always re-fetched. */
 async function tapWebhook(req: Request, env: Env) {
   let body: any; try { body = await req.json(); } catch { return out(env, req, { success: false, error: 'Invalid webhook' }, 400); }
-  if (!env.TAP_SECRET_KEY_TEST) return out(env, req, { success: false, error: 'Payment unavailable' }, 503);
   const chargeId = String(body.id || body.chargeId || body.transaction?.id || '');
   if (!chargeId) return out(env, req, { success: false, error: 'Invalid webhook' }, 400);
-  let d; try { d = await new TapPaymentProvider(env.TAP_SECRET_KEY_TEST).retrieve(chargeId); } catch { return out(env, req, { success: false, error: 'Invalid transaction' }, 400); }
+  const requestIdHint = typeof body?.metadata?.requestId === 'string' ? body.metadata.requestId : typeof body?.transaction?.metadata?.requestId === 'string' ? body.transaction.metadata.requestId : undefined;
+  const persistedPayment = await tapPaymentForCharge(env, chargeId, requestIdHint);
+  if (!persistedPayment) return out(env, req, { success: false, error: 'Invalid transaction' }, 400);
+  const paymentEnvironment = storedPaymentEnvironment(persistedPayment);
+  let tapRuntime: ReturnType<typeof tapCredentials>;
+  try { tapRuntime = tapCredentials(env, paymentEnvironment); }
+  catch { return out(env, req, { success: false, error: 'Payment unavailable' }, 503); }
+  let d; try { d = await new TapPaymentProvider(tapRuntime.secret, tapRuntime.merchantId).retrieve(chargeId); } catch { return out(env, req, { success: false, error: 'Invalid transaction' }, 400); }
   const m = d.metadata || {}, requestId = String(m.requestId || '');
   if (!requestId || d.id !== chargeId) return out(env, req, { success: false, error: 'Invalid transaction' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
-  if (r?.pricingModelVersion === 2) return out(env, req, { success: false, error: 'Rental V2 settlement is not enabled', errorCode: 'V2_SETTLEMENT_DISABLED' }, 409);
   const storedQuote = await getDoc(env, 'paymentQuotes', requestId);
-  let quote; try { assertSarSettlement(r, e); quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : await paymentQuote(env, r, e, requestId); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid transaction' }, 400); }
+  let quote; try { assertSarSettlement(r, e); quote = await lockedPaymentQuote(env, r, e, requestId, storedQuote); } catch (error) { if (error instanceof Error && error.message === 'FOREIGN_SETTLEMENT_DISABLED') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409); return out(env, req, { success: false, error: 'Invalid transaction' }, 400); }
   if (quote.currency !== 'SAR') return out(env, req, { success: false, error: 'FOREIGN_SETTLEMENT_DISABLED', code: 'FOREIGN_SETTLEMENT_DISABLED' }, 409);
   const payment = await getDoc(env, 'payments', requestId);
   const reservation = `reservation:${String(m.idempotencyKey || idempotencyKeyForPayment(String(m.customerUid), requestId))}`;
-  const valid = !!r && (r.paymentId === chargeId || r.paymentId === reservation) && m.requestId === String(r.id || requestId) && m.customerUid === r.customerUid &&
+  const metadataEnvironmentMatches = m.paymentEnvironment ? normalizeTapEnvironment(m.paymentEnvironment) === paymentEnvironment : paymentEnvironment === 'TEST';
+  const valid = !!r && persistedPayment.requestId === requestId && storedPaymentEnvironment(payment) === paymentEnvironment && metadataEnvironmentMatches && (r.paymentId === chargeId || r.paymentId === reservation) && m.requestId === String(r.id || requestId) && m.customerUid === r.customerUid && m.quoteId === quote.quoteId &&
     m.currency === 'SAR' && d.currency === 'SAR' && String(m.amount) === String(quote.amount) && Number(d.amount) === quote.amount &&
-    (!payment || (payment.provider === 'tap' && (!payment.providerReference || payment.providerReference === chargeId) && Number(payment.amount) === quote.amount && payment.currency === 'SAR'));
+    (!payment || (payment.provider === 'tap' && (!payment.providerReference || payment.providerReference === chargeId) && Number(payment.amount) === quote.amount && payment.currency === 'SAR' && payment.quoteId === quote.quoteId));
   if (!valid) return out(env, req, { success: false, error: 'Transaction association mismatch' }, 409);
   const state = stateForProvider(d.status);
   if (state === 'paid') {
@@ -3196,9 +3288,10 @@ async function publicGatewayDiscovery(req: Request, env: Env, u: User) {
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({
     structuredQuery: { from: [{ collectionId: 'paymentGateways' }], limit: 20 },
   }) });
-  const registry = gatewayRegistry(env), enabled: any[] = [];
+  const enabled: any[] = [];
   for (const row of (result || [])) {
-    const id = String(row.document?.name || '').split('/').pop() as keyof typeof registry, config: any = decode(row.document || row), gateway = registry[id];
+    const config: any = decode(row.document || row), registry = gatewayRegistry(env, normalizeTapEnvironment(config.environment));
+    const id = String(row.document?.name || '').split('/').pop() as keyof typeof registry, gateway = registry[id];
     if (gateway && config.enabled === true && gateway.configured && gateway.adapterAvailable) enabled.push({ provider: gateway.provider, environment: gateway.environment, supportsSplit: gateway.supportsSplit, capabilities: { refunds: false, savedCards: false, split: gateway.supportsSplit } });
   }
   return out(env, req, { success: true, gateways: enabled });

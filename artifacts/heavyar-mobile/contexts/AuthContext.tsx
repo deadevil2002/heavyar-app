@@ -29,6 +29,14 @@ import {
   registerCurrentDevice,
   revokeCurrentDevice,
 } from '@/services/notificationService';
+import { clearAccountLocalStorage } from '@/services/authLocalStorage';
+import {
+  createSessionResolutionWaiter,
+  isAuthSessionTransitioning,
+  type AuthTransition,
+  type SessionResolution,
+  type SessionResolutionWaiter,
+} from '@/services/authSessionTransition';
 
 const AUTH_PROFILE_KEY = 'heavyar_user_profile';
 
@@ -44,8 +52,20 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const [identityEmail, setIdentityEmail] = useState<string | null>(null);
   const [recoveryRegistrationOpen, setRecoveryRegistrationOpen] = useState(false);
   const [registrationTransaction, setRegistrationTransaction] = useState<RegistrationTransaction>('idle');
+  const [authTransition, setAuthTransition] = useState<AuthTransition>('initializing');
   const registrationTransactionRef = useRef<RegistrationTransaction>('idle');
   const registrationGenerationRef = useRef(0);
+  const authTransitionRef = useRef<AuthTransition>('initializing');
+  const pendingLoginResolutionRef = useRef<SessionResolutionWaiter | null>(null);
+  const setAuthTransitionPhase = useCallback((phase: AuthTransition) => {
+    authTransitionRef.current = phase;
+    setAuthTransition(phase);
+  }, []);
+  const settlePendingLogin = useCallback((resolution: SessionResolution) => {
+    const pending = pendingLoginResolutionRef.current;
+    pendingLoginResolutionRef.current = null;
+    pending?.resolve(resolution);
+  }, []);
   const setRegistrationPhase = useCallback((phase: RegistrationTransaction) => {
     if (phase === 'preflight' && registrationTransactionRef.current === 'idle') {
       registrationGenerationRef.current += 1;
@@ -82,6 +102,11 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         }
         return;
       }
+      setIsLoading(true);
+      if (authTransitionRef.current !== 'signing_out') {
+        setAuthTransitionPhase('resolving_session');
+      }
+      let resolution: SessionResolution = { status: 'ready' };
       if (firebaseUser) {
         setIdentityEmail(firebaseUser.email || null);
         setEmailVerified(firebaseUser.emailVerified);
@@ -139,6 +164,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
           if (isStale()) return;
           setAuthError('SESSION_EXPIRED');
           setAccountState(null);
+          resolution = { status: 'failed', errorCode: 'SESSION_EXPIRED' };
         }
       } else {
         setEmailVerified(false);
@@ -147,12 +173,17 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         setAccountState(null);
         setIdentityEmail(null);
         await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+        if (pendingLoginResolutionRef.current) {
+          resolution = { status: 'failed', errorCode: 'SESSION_EXPIRED' };
+        }
       }
       setIsLoading(false);
+      setAuthTransitionPhase('idle');
+      settlePendingLogin(resolution);
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [setAuthTransitionPhase, settlePendingLogin]);
 
   useEffect(() => {
     void fetchAuthPolicy().then(setAuthPolicy);
@@ -178,6 +209,13 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
   const login = useCallback(async (email: string, password: string) => {
     setAuthError(null);
+    if (pendingLoginResolutionRef.current) {
+      throw Object.assign(new Error('AUTH_IN_PROGRESS'), { errorCode: 'AUTH_IN_PROGRESS' });
+    }
+    const canonicalResolution = createSessionResolutionWaiter();
+    pendingLoginResolutionRef.current = canonicalResolution;
+    setIsLoading(true);
+    setAuthTransitionPhase('signing_in');
     try {
       const policy = await fetchAuthPolicy();
       const isPhone = isGccPhone(email) || /^[+\d][\d ()-]{5,}$/.test(email.trim());
@@ -188,13 +226,26 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         if (!policy.allowEmailLogin) throw new Error('EMAIL_LOGIN_UNAVAILABLE');
         await loginWithEmail(email, password);
       }
+      if (pendingLoginResolutionRef.current === canonicalResolution) {
+        setAuthTransitionPhase('resolving_session');
+      }
+      const resolution = await canonicalResolution.promise;
+      if (resolution.status === 'failed') {
+        throw Object.assign(new Error(resolution.errorCode), { errorCode: resolution.errorCode });
+      }
     } catch (e: unknown) {
+      if (pendingLoginResolutionRef.current === canonicalResolution) {
+        pendingLoginResolutionRef.current = null;
+      }
+      canonicalResolution.resolve({ status: 'failed', errorCode: 'AUTH_CANCELLED' });
+      setIsLoading(false);
+      setAuthTransitionPhase('idle');
       const error = e as { code?: string; message?: string; errorCode?: string };
       const errorMsg = safeErrorMessage({ errorCode: error.errorCode || error.code || error.message }, language);
       setAuthError(errorMsg);
       throw Object.assign(new Error(errorMsg), { errorCode: error.errorCode || error.code });
     }
-  }, [language]);
+  }, [language, setAuthTransitionPhase]);
 
   const register = useCallback(async (
     name: string, email: string, phone: string, password: string,
@@ -283,11 +334,13 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
   const logout = useCallback(async (options?: { clearLocalStorage?: boolean }) => {
     setAuthError(null);
+    setIsLoading(true);
+    setAuthTransitionPhase('signing_out');
     try {
       await revokeCurrentDevice().catch(() => undefined);
       await logoutUser();
       await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
-      if (options?.clearLocalStorage) await AsyncStorage.clear();
+      if (options?.clearLocalStorage) await clearAccountLocalStorage();
       setUser(null);
       setIsAuthenticated(false);
       setAccountState(null);
@@ -295,14 +348,18 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       setRecoveryRegistrationOpen(false);
     } catch {
       await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
-      if (options?.clearLocalStorage) await AsyncStorage.clear();
+      if (options?.clearLocalStorage) await clearAccountLocalStorage();
       setUser(null);
       setIsAuthenticated(false);
       setAccountState(null);
       setIdentityEmail(null);
       setRecoveryRegistrationOpen(false);
+    } finally {
+      settlePendingLogin({ status: 'failed', errorCode: 'SESSION_EXPIRED' });
+      setIsLoading(false);
+      setAuthTransitionPhase('idle');
     }
-  }, []);
+  }, [setAuthTransitionPhase, settlePendingLogin]);
 
   const refreshProfile = useCallback(async () => {
     if (!user?.uid) return;
@@ -380,5 +437,8 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     sendEmailVerification,
     requiresEmailVerification,
     registrationTransaction,
-  }), [user, accountState, identityEmail, recoveryRegistrationOpen, registrationTransaction, isLoading, isAuthenticated, authError, login, register, resumeRegistration, beginRecoveryRegistration, deleteIncompleteAccount, logout, refreshProfile, updateProfile, emailVerified, authPolicy, refreshEmailVerification, sendEmailVerification, requiresEmailVerification]);
+    authTransition,
+    isResolvingSession: isAuthSessionTransitioning(isLoading, authTransition),
+    sessionReady: !isAuthSessionTransitioning(isLoading, authTransition),
+  }), [user, accountState, identityEmail, recoveryRegistrationOpen, registrationTransaction, authTransition, isLoading, isAuthenticated, authError, login, register, resumeRegistration, beginRecoveryRegistration, deleteIncompleteAccount, logout, refreshProfile, updateProfile, emailVerified, authPolicy, refreshEmailVerification, sendEmailVerification, requiresEmailVerification]);
 });

@@ -180,11 +180,12 @@ export default function NotificationsScreen() {
   }, [operations, preferences, savingPreference, t, uid]);
 
   const Chevron = isRTL ? ChevronLeft : ChevronRight;
+  const BackChevron = isRTL ? ChevronRight : ChevronLeft;
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
         <Pressable accessibilityRole="button" accessibilityLabel={t('back')} onPress={() => router.back()} style={styles.iconButton}>
-          <ChevronLeft size={22} color={Colors.textPrimary} />
+          <BackChevron size={22} color={Colors.textPrimary} />
         </Pressable>
         <Text accessibilityRole="header" style={styles.title}>{t('notifications')}</Text>
         <Pressable testID="notifications-mark-all" accessibilityRole="button" accessibilityLabel={t('mark_all_read')} onPress={markAll} style={styles.markAllButton} disabled={!unreadCount || mutationBusy}>
@@ -257,8 +258,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
   header: { alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
   iconButton: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
-  title: { color: Colors.textPrimary, fontSize: 20, fontWeight: '700' },
-  preferenceBar: { alignItems: 'center', justifyContent: 'space-between', margin: 16, padding: 14, borderRadius: 12, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border },
+  title: { color: Colors.textPrimary, fontSize: 20, fontWeight: '800' },
+  preferenceBar: { alignItems: 'center', justifyContent: 'space-between', margin: 16, padding: 14, borderRadius: 18, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border },
   preferenceText: { color: Colors.textPrimary, fontSize: 14, fontWeight: '600' },
   preferenceValue: { color: Colors.gold, fontWeight: '700' },
   preferenceList: { marginHorizontal: 16, marginBottom: 8, gap: 2 },
@@ -266,7 +267,7 @@ const styles = StyleSheet.create({
   preferenceLabel: { color: Colors.textPrimary, fontSize: 13 },
   list: { padding: 16, gap: 10 },
   emptyList: { flexGrow: 1 },
-  card: { minHeight: 92, alignItems: 'center', gap: 10, padding: 14, borderRadius: 14, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border },
+  card: { minHeight: 92, alignItems: 'center', gap: 10, padding: 14, borderRadius: 18, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border },
   unreadCard: { borderColor: Colors.gold, backgroundColor: Colors.surfaceLight },
   dot: { width: 14, height: 14, alignItems: 'center', justifyContent: 'center' },
   dotInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.gold },

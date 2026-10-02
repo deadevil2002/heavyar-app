@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import worker, { __test, type Env } from './index';
+import { buildLegacyCatalog } from './commercial';
 import { defaultNotificationPreferences, notificationFields, notificationWrite } from './notifications';
 
 const env = { FIREBASE_PROJECT_ID: 'test-project' } as Env;
@@ -110,6 +111,7 @@ describe('trusted notification foundation', () => {
     __test.setAuth({ uid: 'customer', admin: false });
     __test.setFirestore((collection) => collection === 'equipment'
       ? { ownerUid: 'provider', isActive: true, visibility: 'visible', moderationStatus: 'approved', pricePerDay: 10 }
+      : collection === 'commercialSettings' ? buildLegacyCatalog()
       : null);
     const commits: unknown[] = []; __test.captureCommits(commits);
     const response = await worker.fetch(request('/api/requests', { method: 'POST', body: JSON.stringify({ equipmentId: 'eq1', requestMode: 'fixed_days', numberOfDays: 2 }) }), env);

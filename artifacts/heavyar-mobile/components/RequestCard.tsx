@@ -86,9 +86,9 @@ export default React.memo(function RequestCard({ request, equipment = null }: Re
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: Colors.card,
-    borderRadius: 14,
-    padding: 14,
+    backgroundColor: Colors.surface,
+    borderRadius: 18,
+    padding: 12,
     marginBottom: 12,
     borderWidth: 1,
     borderColor: Colors.border,
@@ -100,19 +100,20 @@ const styles = StyleSheet.create({
   image: {
     width: 70,
     height: 70,
-    borderRadius: 12,
+    borderRadius: 14,
   },
   imagePlaceholder: {
     backgroundColor: Colors.surface,
   },
   info: {
     flex: 1,
-    gap: 6,
+    gap: 8,
   },
   title: {
     color: Colors.textPrimary,
-    fontSize: 15,
-    fontWeight: '600' as const,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '700' as const,
   },
   dateRow: {
     alignItems: 'center',
@@ -120,7 +121,7 @@ const styles = StyleSheet.create({
   },
   dateText: {
     color: Colors.textMuted,
-    fontSize: 12,
+    fontSize: 11,
   },
   bottomRow: {
     alignItems: 'center',
@@ -129,7 +130,7 @@ const styles = StyleSheet.create({
   },
   amount: {
     color: Colors.gold,
-    fontSize: 14,
-    fontWeight: '700' as const,
+    fontSize: 13,
+    fontWeight: '800' as const,
   },
 });

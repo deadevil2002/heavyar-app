@@ -222,7 +222,7 @@ const styles = StyleSheet.create({
   listContent: { paddingHorizontal: 20, paddingBottom: 40 },
   invoiceCard: {
     backgroundColor: Colors.card,
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 16,
     marginBottom: 14,
     borderWidth: 1,

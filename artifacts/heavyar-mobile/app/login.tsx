@@ -1,8 +1,8 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, Pressable, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Mail, Lock, Eye, EyeOff, Chrome, Smartphone, Phone } from 'lucide-react-native';
+import { Mail, Lock, Eye, EyeOff, Phone } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
@@ -13,15 +13,17 @@ import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { fetchAuthPolicy, requestPasswordReset } from '@/services/authService';
 import { isGccPhone } from '@/constants/gcc';
+import { canLeaveLoginAfterResolution } from '@/services/authSessionTransition';
 
 export default function LoginScreen() {
   const { isRTL, t, language } = useLanguage();
-  const { login } = useAuth();
+  const { login, isAuthenticated, accountState, sessionReady } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
+  const [loginAccepted, setLoginAccepted] = useState(false);
   const [allowPhoneLogin, setAllowPhoneLogin] = useState(false);
   const [phoneRecoveryReady, setPhoneRecoveryReady] = useState(false);
   const { dialog, showDialog, hideDialog } = useAppDialog();
@@ -33,19 +35,25 @@ export default function LoginScreen() {
     });
   }, []);
 
+  useEffect(() => {
+    if (!loginAccepted || !canLeaveLoginAfterResolution({ sessionReady, isAuthenticated, accountState })) return;
+    setLoading(false);
+    setLoginAccepted(false);
+    router.back();
+  }, [accountState, isAuthenticated, loginAccepted, router, sessionReady]);
+
   const handleLogin = useCallback(async () => {
     if (!email || !password) return;
     setLoading(true);
     try {
       await login(email, password);
-      router.back();
+      setLoginAccepted(true);
     } catch (e) {
       const errorMsg = safeErrorMessage(e, language);
       showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
-    } finally {
       setLoading(false);
     }
-  }, [email, password, login, router, t, showDialog]);
+  }, [email, password, login, language, t, showDialog]);
 
   const handleForgotPassword = useCallback(async () => {
     const normalized = email.trim().toLowerCase();
@@ -64,10 +72,6 @@ export default function LoginScreen() {
     const result = await requestPasswordReset(normalized, language);
     showDialog(t('success'), result === 'sent' ? t('password_reset_sent') : t('password_reset_unavailable'), [{ text: t('ok'), style: 'default' }]);
   }, [email, language, phoneRecoveryReady, showDialog, t]);
-
-  const handleSocialLogin = useCallback((provider: string) => {
-    showDialog(t('coming_soon'), t('social_login_coming_soon'), [{ text: t('ok'), style: 'default' }]);
-  }, [t, showDialog]);
 
   return (
     <View style={styles.container}>
@@ -133,27 +137,6 @@ export default function LoginScreen() {
                 <Text style={styles.phoneStatus}>{allowPhoneLogin ? t('phone_login_available') : t('phone_login_unavailable')}</Text>
               </View>
 
-              <View style={styles.dividerRow}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>{t('or_continue_with')}</Text>
-                <View style={styles.dividerLine} />
-              </View>
-
-              <View style={styles.socialColumn}>
-                <Pressable style={[styles.socialButton, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => handleSocialLogin('google')}>
-                  <View style={styles.socialIconWrap}>
-                    <Chrome size={20} color="#DB4437" />
-                  </View>
-                  <Text style={styles.socialLabel}>{t('continue_with_google')}</Text>
-                </Pressable>
-                <Pressable style={[styles.socialButton, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => handleSocialLogin('apple')}>
-                  <View style={styles.socialIconWrap}>
-                    <Smartphone size={20} color={Colors.textPrimary} />
-                  </View>
-                  <Text style={styles.socialLabel}>{t('continue_with_apple')}</Text>
-                </Pressable>
-              </View>
-
               <Pressable style={styles.registerRow} onPress={() => { router.back(); router.push('/register'); }}>
                 <Text style={styles.registerText}>
                   {t('dont_have_account')} <Text style={styles.registerHighlight}>{t('register')}</Text>
@@ -176,19 +159,20 @@ export default function LoginScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
-  scrollContent: { flexGrow: 1, paddingHorizontal: 24, paddingBottom: 40 },
-  brandSection: { alignItems: 'center', paddingTop: 40, paddingBottom: 32 },
-  logo: { width: 88, height: 88, borderRadius: 22, marginBottom: 16 },
-  appName: { fontSize: 30, fontWeight: '800' as const, color: Colors.gold },
+  scrollContent: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 24, paddingVertical: 24 },
+  brandSection: { alignItems: 'center', paddingTop: 4, paddingBottom: 14 },
+  logo: { width: 62, height: 62, borderRadius: 17, marginBottom: 8 },
+  appName: { fontSize: 25, lineHeight: 33, fontWeight: '800' as const, color: Colors.textPrimary },
   tagline: { fontSize: 14, color: Colors.textSecondary, marginTop: 4 },
-  formSection: { gap: 16 },
-  formTitle: { fontSize: 24, fontWeight: '700' as const, color: Colors.textPrimary, marginBottom: 4 },
+  formSection: { gap: 12, backgroundColor: Colors.card, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, padding: 16 },
+  formTitle: { width: '100%', fontSize: 20, lineHeight: 27, fontWeight: '800' as const, color: Colors.textPrimary, marginBottom: 2 },
   inputGroup: {},
   inputRow: {
     backgroundColor: Colors.inputBg,
-    borderRadius: 14,
+    borderRadius: 16,
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 0,
+    minHeight: 54,
     alignItems: 'center',
     gap: 12,
     borderWidth: 1,
@@ -197,41 +181,13 @@ const styles = StyleSheet.create({
   input: { flex: 1, color: Colors.textPrimary, fontSize: 16 },
   forgotRow: { marginTop: -4 },
   forgotText: { color: Colors.gold, fontSize: 13, fontWeight: '600' as const },
-  phoneOption: { flexDirection: 'row' as const, alignItems: 'center', gap: 8, paddingVertical: 10, opacity: 0.9 },
+  phoneOption: { flexDirection: 'row' as const, alignItems: 'center', gap: 8, paddingVertical: 6, opacity: 0.9 },
   phoneOptionText: { color: Colors.textSecondary, fontSize: 14, fontWeight: '600' as const },
   phoneStatus: { color: Colors.textMuted, fontSize: 12, flex: 1, textAlign: 'right' as const },
-  loginButton: { backgroundColor: Colors.gold, borderRadius: 14, paddingVertical: 16, alignItems: 'center', marginTop: 4 },
+  loginButton: { minHeight: 52, backgroundColor: Colors.gold, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
   loginDisabled: { opacity: 0.6 },
   loginText: { color: Colors.primary, fontSize: 17, fontWeight: '700' as const },
-  dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginVertical: 4 },
-  dividerLine: { flex: 1, height: 1, backgroundColor: Colors.divider },
-  dividerText: { color: Colors.textMuted, fontSize: 13 },
-  socialColumn: { gap: 10 },
-  socialButton: {
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderRadius: 14,
-    backgroundColor: Colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: Colors.border,
-    gap: 12,
-  },
-  socialIconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    backgroundColor: Colors.inputBg,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  socialLabel: {
-    fontSize: 15,
-    fontWeight: '600' as const,
-    color: Colors.textPrimary,
-  },
-  registerRow: { alignItems: 'center', paddingVertical: 16 },
+  registerRow: { alignItems: 'center', paddingTop: 10, paddingBottom: 4 },
   registerText: { color: Colors.textSecondary, fontSize: 14 },
   registerHighlight: { color: Colors.gold, fontWeight: '600' as const },
 });

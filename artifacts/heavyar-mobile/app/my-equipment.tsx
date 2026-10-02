@@ -271,7 +271,7 @@ const styles = StyleSheet.create({
   list: { paddingHorizontal: 20, paddingBottom: 20 },
   card: {
     backgroundColor: Colors.card,
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 14,
     marginBottom: 14,
     borderWidth: 1,
@@ -280,7 +280,7 @@ const styles = StyleSheet.create({
   cardContent: { alignItems: 'center', gap: 12, marginBottom: 12 },
   image: { width: 80, height: 80, borderRadius: 14 },
   info: { flex: 1, gap: 4 },
-  itemTitle: { fontSize: 16, fontWeight: '600' as const, color: Colors.textPrimary },
+  itemTitle: { fontSize: 16, lineHeight: 22, fontWeight: '800' as const, color: Colors.textPrimary },
   price: { fontSize: 14, fontWeight: '700' as const, color: Colors.gold },
   statusRow: { alignItems: 'center', gap: 4 },
   statusText: { fontSize: 12, fontWeight: '500' as const },

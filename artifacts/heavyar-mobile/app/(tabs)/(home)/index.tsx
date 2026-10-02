@@ -1,9 +1,12 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, FlatList, Pressable, ActivityIndicator, RefreshControl, TextInput } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, FlatList, Pressable, ActivityIndicator, RefreshControl, I18nManager, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Search, Bell, Globe, Grid2X2, List, Package, PlusCircle, Inbox, Activity } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Search, Bell, Globe, Grid2X2, List, Package, PlusCircle, Inbox, Activity, SlidersHorizontal, HardHat, ArrowLeft, ArrowRight } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
+import { Button, Card, Input, XStack, YStack, styled } from 'tamagui';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -22,6 +25,49 @@ import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
 import { useNotificationUnread } from '@/hooks/useNotificationUnread';
 import { driverRequestsAllowed } from '@/services/requestSections';
 
+const HomeIconButton = styled(Button, {
+  animateOnly: ['opacity', 'transform'],
+  variants: {
+    homeTone: {
+      default: {
+        bg: '$surface',
+        borderColor: '$borderColor',
+      },
+      active: {
+        bg: '$surfaceRaised',
+        borderColor: '$accent',
+      },
+      subtle: {
+        bg: 'transparent',
+        borderColor: 'transparent',
+      },
+      accent: {
+        bg: '$accent',
+        borderColor: '$accent',
+      },
+    },
+  } as const,
+  defaultVariants: {
+    homeTone: 'default',
+  },
+});
+
+const HomeChip = styled(Button, {
+  animateOnly: ['opacity', 'transform'],
+  variants: {
+    selected: {
+      true: {
+        bg: '$surfaceRaised',
+        borderColor: '$accent',
+      },
+      false: {
+        bg: '$surface',
+        borderColor: '$borderColor',
+      },
+    },
+  } as const,
+});
+
 export default function HomeScreen() {
   const auth = useAuth();
   if (auth.isLoading) return <View style={styles.container}><ActivityIndicator color={Colors.gold} /></View>;
@@ -32,10 +78,13 @@ function NotificationBell() {
   const { user, isAuthenticated } = useAuth();
   const { unreadCount } = useNotificationUnread(isAuthenticated ? user?.uid || '' : '');
   const router = useRouter();
-  return <Pressable accessibilityRole="button" accessibilityLabel="Notifications" style={styles.notifButton} onPress={() => router.push('/notifications')}>
-    <Bell size={22} color={Colors.textPrimary} />
+  return <HomeIconButton chromeless theme="dark" homeTone="default" bg="$surface" borderColor="$borderColor"
+    accessibilityRole="button" accessibilityLabel="Notifications"
+    style={styles.homeIconButton} pressStyle={styles.homeIconButtonPressed} transition="200ms"
+    onPress={() => router.push('/notifications')}>
+    <Bell size={21} strokeWidth={2} color={Colors.textPrimary} />
     {!!unreadCount && unreadCount > 0 && <View testID="home-notification-dot" style={styles.notifDot} />}
-  </Pressable>;
+  </HomeIconButton>;
 }
 
 function OperationsHome() {
@@ -45,35 +94,79 @@ function OperationsHome() {
   const router = useRouter();
   const provider = user?.role === 'provider';
   const canUseDriverRequests = driverRequestsAllowed(user);
+  const rowDirection = Platform.OS === 'web'
+    ? (isRTL ? 'row-reverse' : 'row')
+    : (isRTL === I18nManager.isRTL ? 'row' : 'row-reverse');
+  const actionIcon = (Icon: typeof Package) => (
+    <View style={styles.operationsIconSurface}><Icon size={21} color={Colors.gold} strokeWidth={2} /></View>
+  );
   return <View style={styles.container}><SafeAreaView edges={['top']} style={styles.safeArea}>
-    <ScrollView>
-      <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.greeting}>{t('welcome_back')} {user ? localizedText(user.nameAr, user.nameEn).split(' ')[0] : ''}</Text>
-          <Text style={styles.subtitle}>{provider ? (isRTL ? 'إدارة عملياتك' : 'Run your operations') : (isRTL ? 'مساحة عمل السائق' : 'Driver workspace')}</Text>
+    <ScrollView contentContainerStyle={styles.operationsContent} showsVerticalScrollIndicator={false}>
+      <LinearGradient colors={['#0B2854', '#061B3B', '#011130']} locations={[0, 0.55, 1]} style={styles.operationsHero}>
+        <View pointerEvents="none" style={styles.heroHighlight} />
+        <View style={[styles.header, { flexDirection: rowDirection }]}>
+          <View style={{ flex: 1, alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
+            <Text style={[styles.greeting, styles.heroGreeting, { textAlign: isRTL ? 'right' : 'left' }]}>
+              {t('welcome_back')} {user ? localizedText(user.nameAr, user.nameEn).split(' ')[0] : ''}
+            </Text>
+            <Text style={[styles.subtitle, styles.heroSubtitle, { textAlign: isRTL ? 'right' : 'left' }]}>
+              {provider ? (isRTL ? 'إدارة عملياتك' : 'Run your operations') : (isRTL ? 'مساحة عمل السائق' : 'Driver workspace')}
+            </Text>
+          </View>
+          <NotificationBell />
+          <Pressable accessibilityRole="button" accessibilityLabel={t('profile')} hitSlop={8} onPress={() => router.push('/(tabs)/profile')}>
+            <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
+          </Pressable>
         </View>
-        <NotificationBell />
-        <Pressable accessibilityRole="button" accessibilityLabel={t('profile')} onPress={() => router.push('/(tabs)/profile')}>
-          <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
-        </Pressable>
-      </View>
-      <View style={styles.providerOperations}>
-        <View style={[styles.providerActionGrid, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+      </LinearGradient>
+
+      <View style={styles.operationsSection}>
+        <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
+          <Text style={styles.operationsSectionTitle}>{isRTL ? 'اختصارات العمليات' : 'Operations shortcuts'}</Text>
+          <Text style={styles.operationsSectionHint}>{provider
+            ? (isRTL ? 'إدارة المعدات والطلبات من مكان واحد' : 'Manage equipment and requests in one place')
+            : (isRTL ? 'تابع فرص العمل وحالة نشاطك' : 'Track jobs and your availability')}</Text>
+        </View>
+        <View style={[styles.providerActionGrid, { flexDirection: rowDirection }]}>
           {provider && <>
-            <Pressable style={styles.providerAction} onPress={() => router.push('/my-equipment')}><Package color={Colors.gold} /><Text style={styles.providerActionText}>{isRTL ? 'معداتي' : 'My Equipment'}</Text></Pressable>
-            <Pressable style={styles.providerAction} onPress={() => router.push('/(tabs)/add')}><PlusCircle color={Colors.gold} /><Text style={styles.providerActionText}>{isRTL ? 'إضافة معدة' : 'Add Equipment'}</Text></Pressable>
-            <Pressable style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'equipment' } })}><Inbox color={Colors.gold} /><Text style={styles.providerActionText}>{isRTL ? 'الطلبات الواردة' : 'Incoming Requests'}</Text></Pressable>
-            <Pressable style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'active' } })}><Activity color={Colors.gold} /><Text style={styles.providerActionText}>{isRTL ? 'الإيجارات النشطة' : 'Active Rentals'}</Text></Pressable>
+            <HomeIconButton chromeless theme="dark" homeTone="default" style={styles.providerAction} onPress={() => router.push('/my-equipment')}>
+              {actionIcon(Package)}<Text style={styles.providerActionText}>{isRTL ? 'معداتي' : 'My Equipment'}</Text>
+            </HomeIconButton>
+            <HomeIconButton chromeless theme="dark" homeTone="default" style={styles.providerAction} onPress={() => router.push('/(tabs)/add')}>
+              {actionIcon(PlusCircle)}<Text style={styles.providerActionText}>{isRTL ? 'إضافة معدة' : 'Add Equipment'}</Text>
+            </HomeIconButton>
+            <HomeIconButton chromeless theme="dark" homeTone="default" style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'equipment' } })}>
+              {actionIcon(Inbox)}<Text style={styles.providerActionText}>{isRTL ? 'الطلبات الواردة' : 'Incoming Requests'}</Text>
+            </HomeIconButton>
+            <HomeIconButton chromeless theme="dark" homeTone="default" style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'active' } })}>
+              {actionIcon(Activity)}<Text style={styles.providerActionText}>{isRTL ? 'الإيجارات النشطة' : 'Active Rentals'}</Text>
+            </HomeIconButton>
           </>}
-          {!provider && <Pressable style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}><Inbox color={Colors.gold} /><Text style={styles.providerActionText}>{t('my_requests')}</Text></Pressable>}
+          {!provider && <HomeIconButton chromeless theme="dark" homeTone="default" style={[styles.providerAction, styles.driverActionWide]} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}>
+            {actionIcon(Inbox)}<Text style={styles.providerActionText}>{t('my_requests')}</Text>
+          </HomeIconButton>}
         </View>
       </View>
-      {provider && canUseDriverRequests && <View style={styles.driverCtaContainer}>
-        <Text style={styles.driverCtaTitle}>{isRTL ? 'تحتاج إلى سائق معدات؟' : 'Need an equipment driver?'}</Text>
-        <View style={[styles.driverCtaActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-          <Pressable style={styles.driverCtaButton} onPress={() => router.push('/(tabs)/search?mode=drivers')}><Text style={styles.driverCtaButtonText}>{isRTL ? 'البحث عن سائق' : 'Find Driver'}</Text></Pressable>
-          <Pressable style={styles.driverCtaOutlineButton} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}><Text style={styles.driverCtaOutlineButtonText}>{t('my_requests')}</Text></Pressable>
-        </View>
+
+      {provider && canUseDriverRequests && <View style={styles.operationsDriverWrap}>
+        <Button chromeless theme="dark" bg="transparent" borderColor="$borderColor" borderWidth={1} rounded="$lg"
+          transition="200ms" pressStyle={{ opacity: 0.9, scale: 0.985 }} style={styles.operationsDriverBanner}
+          onPress={() => router.push('/(tabs)/search?mode=drivers')}>
+          <LinearGradient pointerEvents="none" colors={['#123A70', '#0B2854', '#071C3F']} style={StyleSheet.absoluteFillObject} />
+          <View style={[styles.driverHeadingRow, { flexDirection: rowDirection }]}>
+            <View style={styles.driverIconSurface}><HardHat size={21} color={Colors.gold} strokeWidth={2} /></View>
+            <View style={[styles.driverCopy, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+              <Text style={[styles.driverCompactTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'تحتاج إلى سائق معدات؟' : 'Need an equipment driver?'}</Text>
+              <Text style={[styles.driverCompactSubtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'البحث عن سائق' : 'Find Driver'}</Text>
+            </View>
+            <View style={styles.driverArrowSurface}>{isRTL ? <ArrowLeft size={18} color={Colors.primary} /> : <ArrowRight size={18} color={Colors.primary} />}</View>
+          </View>
+        </Button>
+        <HomeChip chromeless theme="dark" selected={false} bg="$surface" borderColor="$borderColor"
+          style={[styles.homeChip, styles.operationsRequestsLink]} pressStyle={styles.homeChipPressed} transition="200ms"
+          onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}>
+          <Text style={styles.homeChipText}>{t('my_requests')}</Text>
+        </HomeChip>
       </View>}
     </ScrollView>
   </SafeAreaView></View>;
@@ -94,7 +187,7 @@ function MarketplaceHome() {
   const selectedCategory = showFilters ? draftFilters.category : filters.category;
   const renderItem = useCallback(({ item }: { item: Equipment }) => (
     <View style={view === 'grid' ? styles.gridItem : styles.listItem}>
-      <EquipmentCard equipment={item} compact={view === 'grid'} />
+      <EquipmentCard equipment={item} compact={view === 'grid'} home />
     </View>
   ), [view]);
 
@@ -121,6 +214,9 @@ function MarketplaceHome() {
   }, [setLanguage, showDialog, t]);
 
   const userName = user ? localizedText(user.nameAr, user.nameEn).split(' ')[0] : '';
+  const rowDirection = Platform.OS === 'web'
+    ? (isRTL ? 'row-reverse' : 'row')
+    : (isRTL === I18nManager.isRTL ? 'row' : 'row-reverse');
 
   return (
     <View style={styles.container}>
@@ -140,89 +236,137 @@ function MarketplaceHome() {
           onEndReached={() => { if (filteredEquipment.length) loadMore(); }}
           onEndReachedThreshold={0.5}
           ListHeaderComponent={<>
-          <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-            <View style={{ alignItems: isRTL ? 'flex-end' : 'flex-start', flex: 1 }}>
-              <Text style={[styles.greeting, { textAlign: isRTL ? 'right' : 'left' }]}>
-                {isAuthenticated ? `${t('welcome_back')}` : t('welcome')} {userName ? `${userName} 👋` : ''}
-              </Text>
-              <Text style={[styles.subtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('browse_equipment')}</Text>
+          <LinearGradient colors={['#0B2854', '#061B3B', '#011130']} locations={[0, 0.55, 1]} style={styles.heroSurface}>
+            <View pointerEvents="none" style={styles.heroHighlight} />
+            <View style={[styles.header, { flexDirection: rowDirection }]}>
+              <YStack flex={1} gap="$xs" items={isRTL ? 'flex-end' : 'flex-start'}>
+                <XStack items="center" gap="$xs">
+                  <View style={styles.liveDot} />
+                  <Text style={styles.heroEyebrow}>{isRTL ? 'سوق المعدات الثقيلة' : 'Heavy equipment marketplace'}</Text>
+                </XStack>
+                <Text style={[styles.greeting, styles.heroGreeting, { textAlign: isRTL ? 'right' : 'left' }]}>
+                  {isAuthenticated ? `${t('welcome_back')}` : t('welcome')} {userName || ''}
+                </Text>
+                <Text style={[styles.subtitle, styles.heroSubtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('browse_equipment')}</Text>
+              </YStack>
+              <View style={[styles.headerActions, { flexDirection: rowDirection }]}>
+                {isAuthenticated ? (
+                  <NotificationBell />
+                ) : (
+                  <HomeIconButton chromeless theme="dark" homeTone="default" bg="$surface" borderColor="$borderColor"
+                    accessibilityLabel={t('language')} style={styles.homeIconButton}
+                    pressStyle={styles.homeIconButtonPressed} transition="200ms" onPress={handleGuestLanguage}>
+                    <Globe size={21} strokeWidth={2} color={Colors.textPrimary} />
+                  </HomeIconButton>
+                )}
+                <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
+              </View>
             </View>
-            <View style={[styles.headerActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              {isAuthenticated ? (
-                <NotificationBell />
-              ) : (
-                <Pressable style={styles.notifButton} onPress={handleGuestLanguage}>
-                  <Globe size={22} color={Colors.textPrimary} />
-                </Pressable>
-              )}
-              <Image source={require('@/assets/images/logo.png')} style={styles.logo} contentFit="contain" />
-            </View>
-          </View>
 
-          <View style={[styles.searchBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-            <Search size={20} color={Colors.textMuted} />
-            <TextInput testID="home-search-input" style={[styles.searchText, { textAlign: isRTL ? 'right' : 'left', color: Colors.textPrimary }]}
-              placeholder={t('search_placeholder')} placeholderTextColor={Colors.textMuted}
-               value={text} onChangeText={changeText} onSubmitEditing={() => { commitText(); handleSearch(); }} />
-          </View>
+            <XStack style={[styles.discoveryDock, { flexDirection: rowDirection }]} gap="$sm" items="center">
+              <Card theme="dark" bg="$surface" borderColor="$borderColor" rounded="$lg" borderWidth={1} flex={1}
+                style={[styles.searchBar, { flexDirection: rowDirection }]}>
+                <View style={styles.searchIconSurface}>
+                  <Search size={20} color={Colors.gold} strokeWidth={2} />
+                </View>
+                <Input unstyled theme="dark" testID="home-search-input" style={[styles.searchText, { textAlign: isRTL ? 'right' : 'left', color: Colors.textPrimary }]}
+                  placeholder={t('search_placeholder')} placeholderTextColor="$colorMuted"
+                  value={text} onChangeText={changeText} onSubmitEditing={() => { commitText(); handleSearch(); }} />
+              </Card>
+              <HomeChip chromeless theme="dark" accessibilityRole="button" accessibilityState={{ expanded: showFilters }} selected={showFilters}
+                bg={showFilters ? '$accent' : '$surface'} borderColor={showFilters ? '$accent' : '$borderColor'}
+                style={styles.searchFilterButton} pressStyle={styles.homeChipPressed} transition="200ms"
+                onPress={() => { if (!showFilters) beginFilters(); setShowFilters(value => !value); }}>
+                <SlidersHorizontal size={18} color={showFilters ? Colors.primary : Colors.gold} strokeWidth={2.2} />
+                <Text style={[styles.searchFilterText, showFilters && styles.searchFilterTextActive]}>{filters.countryCode}</Text>
+              </HomeChip>
+            </XStack>
+          </LinearGradient>
 
           <View style={styles.section}>
-            <View style={[styles.sectionHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Text style={styles.sectionTitle}>{t('categories')}</Text>
+            <View style={[styles.sectionHeader, { flexDirection: rowDirection }]}>
+              <YStack gap="$xs" items={isRTL ? 'flex-end' : 'flex-start'}>
+                <Text style={styles.sectionTitle}>{t('categories')}</Text>
+                <Text style={styles.sectionHint}>{isRTL ? 'اختر نوع المعدة للوصول أسرع' : 'Choose a type to narrow your search'}</Text>
+              </YStack>
               <Pressable onPress={handleSearch}>
                 <Text style={styles.seeAll}>{t('see_all')}</Text>
               </Pressable>
             </View>
-            <ScrollView testID="home-category-scroll" horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.categoriesScroll, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <ScrollView testID="home-category-scroll" horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.categoriesScroll, { flexDirection: rowDirection }]}>
               {mockCategories.map(cat => (
-                <CategoryCard key={cat.id} category={cat} onPress={handleCategoryPress} isSelected={selectedCategory === cat.id} />
+                <CategoryCard key={cat.id} category={cat} onPress={handleCategoryPress} isSelected={selectedCategory === cat.id} home />
               ))}
             </ScrollView>
           </View>
-          <View style={styles.locationFilters}>
-            <View style={[styles.filterRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Pressable accessibilityRole="button" accessibilityState={{ expanded: showFilters }} onPress={() => { if (!showFilters) beginFilters(); setShowFilters(value => !value); }} style={styles.filterChip}>
-                <Text style={styles.seeAll}>{t('filters')} · {filters.countryCode}</Text>
-              </Pressable>
-              {hasFilters && <Pressable accessibilityRole="button" onPress={() => { resetAll(); setShowFilters(false); }} style={styles.filterChip}><Text style={styles.seeAll}>{t('reset_filters')}</Text></Pressable>}
-            </View>
-            {showFilters && <>
+          {(showFilters || hasFilters) && <View style={styles.locationFilters}>
+            {hasFilters && <HomeChip chromeless theme="dark" selected={false} bg="$surface" borderColor="$borderColor"
+              accessibilityRole="button" style={styles.resetChip}
+              pressStyle={styles.homeChipPressed} transition="200ms" onPress={() => { resetAll(); setShowFilters(false); }}>
+              <Text style={styles.homeChipText}>{t('reset_filters')}</Text>
+            </HomeChip>}
+            {showFilters && <Animated.View entering={FadeInDown.duration(180)} style={styles.filtersPanel}>
               <DiscoveryFilters filters={draftFilters} markets={markets} setFilter={changeFilter} />
-              <Pressable accessibilityRole="button" testID="home-apply-filters" onPress={() => { commitFilters(); setShowFilters(false); }} style={styles.filterChip}>
-                <Text style={styles.seeAll}>{isRTL ? 'تطبيق الفلاتر' : 'Apply Filters'}</Text>
-              </Pressable>
-            </>}
-          </View>
-
-          {user?.accountPurpose !== 'store_review' && <View style={styles.driverCtaContainer}>
-            <View style={[styles.driverCtaTextContainer, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
-              <Text style={[styles.driverCtaTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'تحتاج سائق معدات؟' : 'Need an equipment driver?'}</Text>
-              <Text style={[styles.driverCtaSubtitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'ابحث عن سائق مناسب لمعدتك' : 'Find the right driver for your equipment'}</Text>
-            </View>
-            <View style={[styles.driverCtaActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Pressable style={styles.driverCtaButton} onPress={() => router.push('/(tabs)/search?mode=drivers')}>
-                <Text style={styles.driverCtaButtonText}>{isRTL ? 'البحث عن سائق' : 'Find a Driver'}</Text>
-              </Pressable>
-              {isAuthenticated && user?.role !== 'driver' && (
-                <Pressable style={styles.driverCtaOutlineButton} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}>
-                  <Text style={styles.driverCtaOutlineButtonText}>{isRTL ? 'طلباتي' : 'My Requests'}</Text>
-                </Pressable>
-              )}
-            </View>
+              <HomeChip chromeless theme="dark" accessibilityRole="button" testID="home-apply-filters" selected
+                bg="$accent" borderColor="$accent" style={styles.applyFiltersButton}
+                pressStyle={styles.homeChipPressed} transition="200ms"
+                onPress={() => { commitFilters(); setShowFilters(false); }}>
+                <Text style={styles.applyFiltersText}>{isRTL ? 'تطبيق الفلاتر' : 'Apply Filters'}</Text>
+              </HomeChip>
+            </Animated.View>}
           </View>}
 
-          <View style={[styles.sectionHeader, styles.section, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-            <Text style={styles.sectionTitle}>{t('all_equipment')}</Text>
-            <View style={styles.filterRow}>
-              <Pressable accessibilityRole="button" accessibilityLabel={t('list_view')} accessibilityState={{ selected: view === 'list' }}
-                onPress={() => { setView('list'); void saveEquipmentView('list'); }} style={styles.filterChip}>
-                <List size={18} color={view === 'list' ? Colors.gold : Colors.textMuted} />
-              </Pressable>
-              <Pressable accessibilityRole="button" accessibilityLabel={t('grid_view')} accessibilityState={{ selected: view === 'grid' }}
-                onPress={() => { setView('grid'); void saveEquipmentView('grid'); }} style={styles.filterChip}>
-                <Grid2X2 size={18} color={view === 'grid' ? Colors.gold : Colors.textMuted} />
-              </Pressable>
-            </View>
+          {user?.accountPurpose !== 'store_review' && <Animated.View entering={FadeInDown.duration(220)} style={styles.driverPanelWrap}>
+            <Button chromeless theme="dark" bg="transparent" borderColor="$borderColor" borderWidth={1} rounded="$lg"
+              animateOnly={['opacity', 'transform']}
+              transition="200ms" pressStyle={{ opacity: 0.9, scale: 0.985 }} style={styles.driverBanner}
+              accessibilityLabel={isRTL ? 'البحث عن سائق معدات' : 'Find an equipment driver'}
+              onPress={() => router.push('/(tabs)/search?mode=drivers')}>
+              <LinearGradient pointerEvents="none" colors={['#123A70', '#0B2854', '#071C3F']} style={StyleSheet.absoluteFillObject} />
+              <View style={[styles.driverHeadingRow, { flexDirection: rowDirection }]}>
+                <View style={styles.driverIconSurface}>
+                  <HardHat size={21} color={Colors.gold} strokeWidth={2} />
+                </View>
+                <View style={[styles.driverCopy, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
+                  <Text style={[styles.driverCompactTitle, { textAlign: isRTL ? 'right' : 'left' }]}>
+                    {isRTL ? 'تحتاج سائق معدات؟' : 'Need an equipment driver?'}
+                  </Text>
+                  <Text style={[styles.driverCompactSubtitle, { textAlign: isRTL ? 'right' : 'left' }]}>
+                    {isRTL ? 'اعثر على السائق المناسب' : 'Find the right driver'}
+                  </Text>
+                </View>
+                <View style={styles.driverArrowSurface}>
+                  {isRTL ? <ArrowLeft size={18} color={Colors.primary} strokeWidth={2.4} /> : <ArrowRight size={18} color={Colors.primary} strokeWidth={2.4} />}
+                </View>
+              </View>
+            </Button>
+            {isAuthenticated && user?.role !== 'driver' && (
+              <HomeChip chromeless theme="dark" selected={false} bg="$surface" borderColor="$borderColor"
+                style={[styles.homeChip, styles.driverRequestsLink]}
+                pressStyle={styles.homeChipPressed} transition="200ms"
+                onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}>
+                <Text style={styles.homeChipText}>{isRTL ? 'عرض طلبات السائقين' : 'View driver requests'}</Text>
+              </HomeChip>
+            )}
+          </Animated.View>}
+
+          <View style={[styles.sectionHeader, styles.equipmentHeader, { flexDirection: rowDirection }]}>
+            <YStack gap="$xs" items={isRTL ? 'flex-end' : 'flex-start'}>
+              <Text style={styles.sectionTitle}>{t('all_equipment')}</Text>
+              <Text style={styles.sectionHint}>{isRTL ? 'معدات متاحة للإيجار الآن' : 'Equipment available to rent now'}</Text>
+            </YStack>
+            <Card theme="dark" bg="$surface" borderColor="$borderColor" rounded="$md" borderWidth={1} style={styles.viewToggle}>
+              <HomeIconButton chromeless theme="dark" accessibilityRole="button" accessibilityLabel={t('list_view')} accessibilityState={{ selected: view === 'list' }}
+                homeTone={view === 'list' ? 'active' : 'subtle'} style={styles.viewToggleButton} pressStyle={styles.homeIconButtonPressed} transition="200ms"
+                onPress={() => { setView('list'); void saveEquipmentView('list'); }}>
+                <List size={19} strokeWidth={2} color={view === 'list' ? Colors.gold : Colors.textMuted} />
+              </HomeIconButton>
+              <HomeIconButton chromeless theme="dark" accessibilityRole="button" accessibilityLabel={t('grid_view')} accessibilityState={{ selected: view === 'grid' }}
+                homeTone={view === 'grid' ? 'active' : 'subtle'} style={styles.viewToggleButton} pressStyle={styles.homeIconButtonPressed} transition="200ms"
+                onPress={() => { setView('grid'); void saveEquipmentView('grid'); }}>
+                <Grid2X2 size={18} strokeWidth={2} color={view === 'grid' ? Colors.gold : Colors.textMuted} />
+              </HomeIconButton>
+            </Card>
           </View>
           {refreshing && <ActivityIndicator size="small" color={Colors.gold} />}
           {error && filteredEquipment.length > 0 && <Pressable accessibilityRole="button" onPress={refresh} style={styles.filterChip}>
@@ -272,35 +416,75 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
+  heroSurface: {
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(67, 137, 204, 0.28)',
+    overflow: 'hidden',
+    paddingBottom: 16,
+  },
+  heroHighlight: {
+    backgroundColor: 'rgba(67, 137, 204, 0.12)',
+    borderRadius: 120,
+    height: 180,
+    position: 'absolute',
+    right: -72,
+    top: -96,
+    width: 180,
+  },
   header: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 14,
     alignItems: 'center',
   },
   greeting: {
-    fontSize: 22,
+    fontSize: 21,
+    lineHeight: 29,
     fontWeight: '700' as const,
     color: Colors.textPrimary,
   },
   subtitle: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-    marginTop: 2,
+    fontSize: 13,
+    lineHeight: 20,
+    color: '#A8B6C8',
+  },
+  heroEyebrow: {
+    color: Colors.gold,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  liveDot: {
+    backgroundColor: Colors.gold,
+    borderRadius: 3,
+    height: 6,
+    width: 6,
+  },
+  heroGreeting: {
+    fontSize: 24,
+    lineHeight: 31,
+  },
+  heroSubtitle: {
+    color: '#B9C7D9',
+    fontSize: 13,
   },
   headerActions: {
     alignItems: 'center',
     gap: 12,
   },
-  notifButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    backgroundColor: Colors.surface,
-    justifyContent: 'center',
+  homeIconButton: {
     alignItems: 'center',
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: Colors.border,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  homeIconButtonPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.97 }],
   },
   notifDot: {
     position: 'absolute',
@@ -314,81 +498,158 @@ const styles = StyleSheet.create({
     borderColor: Colors.surface,
   },
   logo: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
   },
   searchBar: {
-    marginHorizontal: 20,
-    marginTop: 16,
-    marginBottom: 8,
-    backgroundColor: Colors.inputBg,
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
     alignItems: 'center',
-    gap: 10,
-    borderWidth: 1,
-    borderColor: Colors.border,
+    gap: 8,
+    height: 56,
+    paddingHorizontal: 12,
   },
-  providerOperations: {
-    marginHorizontal: 20,
-    marginTop: 16,
-    padding: 16,
-    borderRadius: 16,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    gap: 14,
+  discoveryDock: {
+    paddingHorizontal: 16,
   },
+  searchIconSurface: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: Colors.inputBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  operationsContent: { paddingBottom: 24 },
+  operationsHero: { borderBottomLeftRadius: 28, borderBottomRightRadius: 28, borderBottomWidth: 1, borderColor: 'rgba(67, 137, 204, 0.28)', overflow: 'hidden' },
+  operationsSection: { gap: 12, marginTop: 20, paddingHorizontal: 16 },
+  operationsSectionTitle: { color: Colors.textPrimary, fontSize: 18, lineHeight: 25, fontWeight: '800' },
+  operationsSectionHint: { color: Colors.textMuted, fontSize: 12, lineHeight: 18, marginTop: 2 },
   providerActionGrid: { flexWrap: 'wrap', gap: 10 },
   providerAction: {
-    width: '47%',
-    minHeight: 74,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: Colors.inputBg,
+    width: '48%',
+    minHeight: 82,
+    paddingHorizontal: 10,
+    paddingVertical: 11,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: Colors.border,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
-  providerActionText: { color: Colors.textPrimary, fontSize: 12, fontWeight: '600', textAlign: 'center' },
+  operationsIconSurface: { width: 38, height: 38, borderRadius: 12, backgroundColor: Colors.inputBg, borderWidth: 1, borderColor: Colors.border, alignItems: 'center', justifyContent: 'center' },
+  providerActionText: { color: Colors.textPrimary, fontSize: 13, fontWeight: '700', textAlign: 'center' },
+  driverActionWide: { width: '100%' },
+  operationsDriverWrap: { gap: 8, marginHorizontal: 16, marginTop: 20 },
+  operationsDriverBanner: { minHeight: 98, overflow: 'hidden', paddingHorizontal: 16, width: '100%' },
+  operationsRequestsLink: { alignSelf: 'center' },
   marketLink: { alignSelf: 'center', paddingVertical: 4 },
   searchText: {
     flex: 1,
     color: Colors.textMuted,
-    fontSize: 15,
+    fontSize: 14,
+    paddingVertical: 0,
   },
   section: {
-    marginTop: 24,
+    marginTop: 22,
   },
   sectionHeader: {
-    paddingHorizontal: 20,
-    marginBottom: 14,
+    paddingHorizontal: 16,
+    marginBottom: 12,
     justifyContent: 'space-between',
     alignItems: 'center',
   },
   sectionTitle: {
-    fontSize: 18,
+    fontSize: 17,
+    lineHeight: 24,
     fontWeight: '700' as const,
     color: Colors.textPrimary,
   },
   seeAll: {
     color: Colors.gold,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600' as const,
+  },
+  sectionHint: {
+    color: '#8297B1',
+    fontSize: 11,
+    lineHeight: 16,
   },
   seeAllRow: {
     alignItems: 'center',
     gap: 2,
   },
   categoriesScroll: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
+    paddingBottom: 3,
   },
-  locationFilters: { marginTop: 12, gap: 8, paddingHorizontal: 20 },
+  locationFilters: { marginTop: 12, gap: 8, paddingHorizontal: 16 },
   filterRow: { gap: 8, flexDirection: 'row', flexWrap: 'wrap' },
+  homeChip: {
+    alignItems: 'center',
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 5,
+    justifyContent: 'center',
+    minHeight: 40,
+    paddingHorizontal: 14,
+  },
+  homeChipPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.98 }],
+  },
+  homeChipText: {
+    color: Colors.gold,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  searchFilterButton: {
+    alignItems: 'center',
+    borderRadius: 18,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 5,
+    height: 56,
+    justifyContent: 'center',
+    minWidth: 72,
+    paddingHorizontal: 12,
+  },
+  searchFilterText: {
+    color: Colors.gold,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  searchFilterTextActive: {
+    color: Colors.primary,
+  },
+  filtersPanel: {
+    backgroundColor: Colors.surface,
+    borderColor: Colors.border,
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 12,
+    overflow: 'hidden',
+    padding: 12,
+  },
+  resetChip: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    borderWidth: 1,
+    minHeight: 36,
+    paddingHorizontal: 12,
+  },
+  applyFiltersButton: {
+    alignSelf: 'stretch',
+    borderRadius: 13,
+    borderWidth: 1,
+    minHeight: 44,
+  },
+  applyFiltersText: {
+    color: Colors.primary,
+    fontSize: 13,
+    fontWeight: '800',
+  },
   filterChip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 18, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
   filterChipSelected: { backgroundColor: Colors.gold, borderColor: Colors.gold },
   filterChipDisabled: { opacity: 0.5 },
@@ -452,7 +713,81 @@ const styles = StyleSheet.create({
   },
   gridRow: { paddingHorizontal: 20, gap: 12 },
   gridItem: { width: '48%', flexGrow: 0, flexShrink: 1 },
-  listItem: { paddingHorizontal: 20 },
+  listItem: { paddingHorizontal: 16 },
+  driverIconSurface: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(1, 17, 48, 0.62)',
+    borderColor: 'rgba(67, 137, 204, 0.34)',
+    borderRadius: 13,
+    borderWidth: 1,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  driverPanelWrap: {
+    gap: 8,
+    marginBottom: 10,
+    marginHorizontal: 16,
+    marginTop: 20,
+  },
+  driverBanner: {
+    height: 88,
+    overflow: 'hidden',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 4,
+  },
+  driverHeadingRow: {
+    alignItems: 'center',
+    gap: 10,
+  },
+  driverCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  driverCompactTitle: {
+    color: Colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 22,
+  },
+  driverCompactSubtitle: {
+    color: '#A8B6C8',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  driverArrowSurface: {
+    alignItems: 'center',
+    backgroundColor: Colors.gold,
+    borderRadius: 13,
+    height: 42,
+    justifyContent: 'center',
+    width: 42,
+  },
+  driverRequestsLink: {
+    alignSelf: 'center',
+    minHeight: 38,
+  },
+  viewToggle: {
+    flexDirection: 'row',
+    gap: 2,
+    padding: 2,
+  },
+  equipmentHeader: {
+    marginTop: 26,
+  },
+  viewToggleButton: {
+    alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 0,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
   footer: { paddingBottom: 20 },
   loadMoreButton: { alignSelf: 'center', paddingHorizontal: 20, paddingVertical: 12, marginVertical: 8 },
   bottomPadding: {

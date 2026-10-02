@@ -6,7 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 
 export default function EmailVerificationBanner() {
-  const { isAuthenticated, emailVerified, authPolicy, sendEmailVerification, refreshEmailVerification } = useAuth();
+  const { isAuthenticated, emailVerified, authPolicy, sendEmailVerification, refreshEmailVerification, sessionReady } = useAuth();
   const { isRTL, language, t } = useLanguage();
   const [cooldown, setCooldown] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -18,7 +18,7 @@ export default function EmailVerificationBanner() {
     return () => clearInterval(timer);
   }, [cooldown]);
 
-  if (!isAuthenticated || emailVerified || !authPolicy?.emailVerificationEnabled) return null;
+  if (!sessionReady || !isAuthenticated || emailVerified || !authPolicy?.emailVerificationEnabled) return null;
 
   const send = async () => {
     if (busy || cooldown > 0) return;

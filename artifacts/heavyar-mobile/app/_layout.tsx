@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { Platform } from "react-native";
+import { Platform, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import { TamaguiProvider } from "tamagui";
+import tamaguiConfig from "@/tamagui.config";
 import Colors from "@/constants/colors";
 import { LanguageProvider } from "@/contexts/LanguageContext";
 import { AuthProvider } from "@/contexts/AuthContext";
@@ -14,16 +16,26 @@ import { useAuth } from "@/contexts/AuthContext";
 import { notificationRouteFromPayload, subscribeToPushTokenRefresh } from "@/services/notificationService";
 import * as Notifications from "expo-notifications";
 import ProvisioningRecoveryScreen from "@/components/ProvisioningRecoveryScreen";
+import HeavyarLaunchMotion, { claimHeavyarLaunchMotion } from "@/components/HeavyarLaunchMotion";
+import { HeavyarLoadingState } from "@/components/ui/heavyar";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 void SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient();
 
 function RootLayoutNav() {
-  const { accountState, recoveryRegistrationOpen, registrationTransaction } = useAuth();
+  const { accountState, recoveryRegistrationOpen, registrationTransaction, isResolvingSession } = useAuth();
+  const { isRTL } = useLanguage();
   const segments = useSegments();
   const onRegistrationRoute = segments.some(segment => segment === 'register');
+  const onLoginRoute = segments.some(segment => segment === 'login');
   const registrationOwnsTransition = registrationTransaction !== 'idle' || onRegistrationRoute;
+  if (isResolvingSession && !onLoginRoute && !registrationOwnsTransition) {
+    return <View style={{ flex: 1, justifyContent: 'center', backgroundColor: Colors.primary }}>
+      <HeavyarLoadingState label={isRTL ? 'جارٍ تجهيز جلستك…' : 'Preparing your session…'} />
+    </View>;
+  }
   if (accountState && accountState !== 'authenticated_complete' && !registrationOwnsTransition && !(accountState === 'provisioning_incomplete' && recoveryRegistrationOpen)) return <ProvisioningRecoveryScreen state={accountState} />;
   return (
     <Stack
@@ -55,11 +67,11 @@ function RootLayoutNav() {
 
 function NotificationNavigation() {
   const router = useRouter();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, sessionReady } = useAuth();
   const handled = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if (!isAuthenticated || Platform.OS === "web") return;
+    if (!sessionReady || !isAuthenticated || Platform.OS === "web") return;
     Notifications.setNotificationHandler({
       handleNotification: async () => ({
         shouldShowBanner: true,
@@ -85,29 +97,35 @@ function NotificationNavigation() {
       subscription.remove();
       removePushRefresh();
     };
-  }, [isAuthenticated, router]);
+  }, [isAuthenticated, router, sessionReady]);
   return null;
 }
 
 export default function RootLayout() {
+  const [showLaunchMotion, setShowLaunchMotion] = useState(claimHeavyarLaunchMotion);
+  const finishLaunchMotion = useCallback(() => setShowLaunchMotion(false), []);
+
   useEffect(() => {
     void SplashScreen.hideAsync();
   }, []);
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <LanguageProvider>
-          <AuthProvider>
-            <StatusBar style="light" />
-            <NotificationNavigation />
-            <EmailVerificationBanner />
-            <DiscoveryProvider>
-              <RootLayoutNav />
-            </DiscoveryProvider>
-          </AuthProvider>
-        </LanguageProvider>
-      </GestureHandlerRootView>
-    </QueryClientProvider>
+    <TamaguiProvider config={tamaguiConfig} defaultTheme="dark">
+      <QueryClientProvider client={queryClient}>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+          <LanguageProvider>
+            <AuthProvider>
+              <StatusBar style="light" />
+              <NotificationNavigation />
+              <EmailVerificationBanner />
+              <DiscoveryProvider>
+                <RootLayoutNav />
+              </DiscoveryProvider>
+            </AuthProvider>
+          </LanguageProvider>
+          {showLaunchMotion ? <HeavyarLaunchMotion onFinished={finishLaunchMotion} /> : null}
+        </GestureHandlerRootView>
+      </QueryClientProvider>
+    </TamaguiProvider>
   );
 }

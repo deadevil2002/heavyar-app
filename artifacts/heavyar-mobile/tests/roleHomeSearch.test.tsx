@@ -12,13 +12,27 @@ vi.mock('react-native', () => ({
   Pressable: ({ children, onPress, accessibilityLabel, testID }: any) => <button aria-label={accessibilityLabel} data-testid={testID} onClick={onPress}>{children}</button>,
   ActivityIndicator: () => null, FlatList: () => <div>Marketplace list</div>, RefreshControl: () => null, TextInput: () => null,
   StyleSheet: { create: (value: unknown) => value },
+  Platform: { OS: 'web' },
+  I18nManager: { isRTL: false },
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: ({ children }: any) => <div>{children}</div> }));
 vi.mock('expo-image', () => ({ Image: () => null }));
 vi.mock('lucide-react-native', () => ({
   Search: () => null, Bell: () => null, Globe: () => null, Grid2X2: () => null, List: () => null,
-  Package: () => null, PlusCircle: () => null, Inbox: () => null, Activity: () => null, SlidersHorizontal: () => null, X: () => null,
+  Package: () => null, PlusCircle: () => null, Inbox: () => null, Activity: () => null, SlidersHorizontal: () => null,
+  HardHat: () => null, ArrowLeft: () => null, ArrowRight: () => null, X: () => null,
 }));
+vi.mock('react-native-reanimated', () => ({
+  default: { View: ({ children }: any) => <div>{children}</div> },
+  FadeInDown: { duration: () => ({}) },
+}));
+vi.mock('tamagui', () => {
+  const Frame = ({ children, onPress, accessibilityLabel, testID }: any) => <button aria-label={accessibilityLabel} data-testid={testID} onClick={onPress}>{children}</button>;
+  Frame.Text = ({ children }: any) => <span>{children}</span>;
+  const Stack = ({ children }: any) => <div>{children}</div>;
+  const TamaguiText = ({ children }: any) => <span>{children}</span>;
+  return { Button: Frame, Card: Stack, Input: () => null, Text: TamaguiText, XStack: Stack, YStack: Stack, styled: (Component: any) => Component };
+});
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: state.push }), useLocalSearchParams: () => ({ mode: 'equipment' }) }));
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ isLoading: false, isAuthenticated: true, user: { uid: 'fixture', role: state.role, nameEn: 'Fixture', accountPurpose: state.accountPurpose } }) }));
 vi.mock('../contexts/LanguageContext', () => ({ useLanguage: () => ({ isRTL: false, t: (key: string) => key, localizedText: (_ar: string, en: string) => en }) }));

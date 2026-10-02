@@ -12,6 +12,13 @@ export default defineConfig({
       }
     },
   }],
-  resolve: { alias: { '@': fileURLToPath(new URL('../', import.meta.url)) } },
-  test: { environment: 'jsdom', include: ['tests/discoveryInteraction.test.tsx', 'tests/equipmentCardRendering.test.tsx', 'tests/roleAwareDiscovery.test.tsx', 'tests/roleHomeSearch.test.tsx', 'tests/requestSubscription.test.tsx'] },
+  resolve: { alias: {
+    '@': fileURLToPath(new URL('../', import.meta.url)),
+    'expo-linear-gradient': fileURLToPath(new URL('./mocks/expoLinearGradient.tsx', import.meta.url)),
+  } },
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['tests/discovery.setup.ts'],
+    include: ['tests/authTransitionIntegration.test.tsx', 'tests/discoveryInteraction.test.tsx', 'tests/equipmentCardRendering.test.tsx', 'tests/roleAwareDiscovery.test.tsx', 'tests/roleHomeSearch.test.tsx', 'tests/requestSubscription.test.tsx'],
+  },
 });

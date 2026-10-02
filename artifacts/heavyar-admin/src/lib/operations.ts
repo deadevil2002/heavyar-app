@@ -246,6 +246,10 @@ export type Gateway = {
   environment: string;
   methods?: string[];
   supportedMethods?: string[];
+  testConfigured?: boolean;
+  liveConfigured?: boolean;
+  merchantConfigured?: boolean;
+  capabilities?: { refunds?: boolean; savedCards?: boolean; split?: boolean };
 };
 
 export function useGateways() {
@@ -270,6 +274,25 @@ export function useUpdateGateway() {
         targetId: data.gatewayId,
         reason: 'Updated payment gateway availability',
         payload: { enabled: data.enabled },
+      }),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gateways'] });
+    },
+  });
+}
+
+export function useUpdateGatewayEnvironment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { gatewayId: 'tap'; environment: 'TEST' | 'LIVE'; confirmLive?: boolean }) => fetchApi('/action', {
+      method: 'POST',
+      body: JSON.stringify({
+        action: 'update_gateway_environment',
+        targetType: 'paymentGateway',
+        targetId: data.gatewayId,
+        reason: `Updated payment gateway environment to ${data.environment}`,
+        payload: { environment: data.environment, confirmLive: data.confirmLive === true },
       }),
     }),
     onSuccess: () => {

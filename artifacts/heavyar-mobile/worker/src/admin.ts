@@ -22,6 +22,7 @@ import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-ac
 import { processEarlyAccessCampaigns } from './early-access-campaign-delivery';
 import { driverEligibility, driverDiscoveryMarket } from './driver-eligibility';
 import { effectiveDocumentStatus, regulatoryReviewStatuses } from './regulatory';
+import { normalizeTapEnvironment } from './payment';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
@@ -1709,7 +1710,7 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
    // toggles. The provider page supplies the canonical Firebase UID.
    const providerLifecycleActions = ['approve_provider', 'reject_provider', 'suspend_provider', 'restore_provider', 'reactivate_provider'];
    if ((rawTargetType === 'provider' || rawTargetType === 'providerConfig' || rawTargetType === 'provider-config' || rawTargetType === 'provider-configs') && providerLifecycleActions.includes(actionName)) collection = 'users';
-  const normalizedType = collection === 'users' ? 'user' : collection === 'payments' ? 'payment' : collection === 'complaints' ? 'complaint' : collection === 'equipmentRequests' ? 'request' : collection === 'providerConfigs' ? 'providerConfig' : collection === 'heavyarConfig' ? 'config' : collection === 'verificationCases' ? 'verification' : collection;
+  const normalizedType = collection === 'users' ? 'user' : collection === 'payments' ? 'payment' : collection === 'complaints' ? 'complaint' : collection === 'equipmentRequests' ? 'request' : collection === 'providerConfigs' ? 'providerConfig' : collection === 'heavyarConfig' ? 'config' : collection === 'verificationCases' ? 'verification' : collection === 'paymentGateways' ? 'paymentGateway' : collection === 'identityIntegrations' ? 'identityIntegration' : collection;
   const reason = String(payload.reason || payload.note || '').trim();
   const correlationId = String(req.headers.get('X-Correlation-ID') || crypto.randomUUID());
    if (!validCorrelationId(correlationId)) return { error: 'Invalid correlation ID', status: 400 };
@@ -1724,7 +1725,7 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
   let auditTarget = normalizedType;
    const raw = await rawDoc(env, collection, targetId);
   const isDefaultVerificationPolicy = targetCollection === 'verificationPolicies' && targetId === 'default' && actionName === 'update_verification_policy';
-  if ((!raw?.data || !raw.updateTime) && !isDefaultVerificationPolicy && !(normalizedType === 'paymentGateway' && targetId === String(targetId)) && !(normalizedType === 'identityIntegrations' && targetId === 'nafath_rabet') && !(normalizedType === 'config' && (can(u, 'staff.manage') || can(u, 'config.manage')))) return { error: 'Target not found', status: 404 };
+  if ((!raw?.data || !raw.updateTime) && !isDefaultVerificationPolicy && !(normalizedType === 'paymentGateway' && targetId === String(targetId)) && !(normalizedType === 'identityIntegration' && targetId === 'nafath_rabet') && !(normalizedType === 'config' && (can(u, 'staff.manage') || can(u, 'config.manage')))) return { error: 'Target not found', status: 404 };
   const current = raw?.data || {};
   let fields: Record<string, any> = {};
    if (normalizedType === 'user' && providerLifecycleActions.includes(actionName)) {
@@ -1756,14 +1757,28 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
      if ((actionName === 'approve_driver' || actionName === 'restore_driver' || actionName === 'reactivate_driver') && await emailVerificationRequiredForSensitiveAction(env, String(current.uid || targetId), await rawDoc(env, 'users', String(current.uid || targetId)).then(item => item?.data), u, 'driver')) return { error: 'EMAIL_VERIFICATION_REQUIRED', errorCode: 'EMAIL_VERIFICATION_REQUIRED', status: 403 };
      const driverActive = ['approve_driver', 'restore_driver', 'reactivate_driver'].includes(actionName);
      fields = { active: jsonValue(driverActive), moderationStatus: jsonValue(driverActive ? 'approved' : actionName === 'reject_driver' ? 'rejected' : 'suspended'), moderationReason: jsonValue(reason), moderatedBy: jsonValue(u.uid), moderatedAt: { timestampValue: new Date().toISOString() } };
-  } else if (normalizedType === 'paymentGateway' && actionName === 'update_gateway') {
-    if (!can(u, 'config.manage')) return { error: 'Configuration permission required', status: 403 };
-    const registry = gatewayRegistry(env), gateway = String(targetId) as keyof typeof registry;
-    if (!registry[gateway] || payload.enabled !== true && payload.enabled !== false) return { error: 'Invalid gateway', status: 400 };
-    if (payload.enabled && (!registry[gateway].configured || !registry[gateway].adapterAvailable)) return { error: 'Gateway unavailable', status: 409 };
-    fields = { enabled: jsonValue(payload.enabled), updatedBy: jsonValue(u.uid), updatedAt: { timestampValue: new Date().toISOString() } };
+  } else if (normalizedType === 'paymentGateway' && ['update_gateway', 'update_gateway_environment'].includes(actionName)) {
+    const authority = normalizeStaffRole(u.permissionRole || u.role);
+    if (!['owner', 'super_admin'].includes(String(authority))) return { error: 'Owner or super-admin required', status: 403 };
+    const environmentInput = payload.environment;
+    if (actionName === 'update_gateway_environment') {
+      if (targetId !== 'tap' || typeof environmentInput !== 'string' || !['TEST', 'LIVE'].includes(environmentInput.toUpperCase())) return { error: 'Invalid gateway environment', status: 400 };
+      if (!raw?.data) return { error: 'Payment gateway is not configured', status: 409 };
+      const previousEnvironment = normalizeTapEnvironment(current.environment), nextEnvironment = normalizeTapEnvironment(environmentInput);
+      if (previousEnvironment !== 'LIVE' && nextEnvironment === 'LIVE' && payload.confirmLive !== true) return { error: 'Live environment confirmation required', status: 409 };
+      const gateway = gatewayRegistry(env, nextEnvironment).tap;
+      if (!gateway.configured || !gateway.adapterAvailable) return { error: 'Gateway environment unavailable', status: 409 };
+      fields = { environment: jsonValue(nextEnvironment), updatedBy: jsonValue(u.uid), updatedAt: { timestampValue: new Date().toISOString() } };
+    } else {
+      if (payload.enabled !== true && payload.enabled !== false) return { error: 'Invalid gateway', status: 400 };
+      const selectedEnvironment = targetId === 'tap' ? normalizeTapEnvironment(current.environment) : 'TEST';
+      const registry = gatewayRegistry(env, selectedEnvironment), gateway = String(targetId) as keyof typeof registry;
+      if (!registry[gateway]) return { error: 'Invalid gateway', status: 400 };
+      if (payload.enabled && (!registry[gateway].configured || !registry[gateway].adapterAvailable)) return { error: 'Gateway unavailable', status: 409 };
+      fields = { enabled: jsonValue(payload.enabled), updatedBy: jsonValue(u.uid), updatedAt: { timestampValue: new Date().toISOString() } };
+    }
     targetCollection = 'paymentGateways';
-  } else if (normalizedType === 'identityIntegrations' && actionName === 'update_identity_integration') {
+  } else if (normalizedType === 'identityIntegration' && actionName === 'update_identity_integration') {
     if (!can(u, 'config.manage')) return { error: 'Configuration permission required', status: 403 };
     const registry = identityIntegrationRegistry(env as any), integration = registry.nafath_rabet;
     if (targetId !== 'nafath_rabet' || payload.enabled !== true && payload.enabled !== false) return { error: 'Invalid identity integration', status: 400 };
@@ -1815,7 +1830,7 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     targetCollection = 'refunds';
     targetId = `refund:${requestId}`;
     auditTarget = 'refund';
-    const refundFields = { requestId: jsonValue(requestId), paymentId: jsonValue(String(payment.data.paymentId || current.paymentId || '')), originalPaidAmount: { doubleValue: paidAmount }, amount: { doubleValue: Number(payload.amount) }, currency: jsonValue('SAR'), state: jsonValue('refund_requested'), execution: jsonValue('disabled'), requestedBy: jsonValue(u.uid), reason: jsonValue(reason), requestedAt: { timestampValue: new Date().toISOString() } };
+    const refundFields = { requestId: jsonValue(requestId), paymentId: jsonValue(String(payment.data.paymentId || current.paymentId || '')), environment: jsonValue(normalizeTapEnvironment(payment.data.environment)), originalPaidAmount: { doubleValue: paidAmount }, amount: { doubleValue: Number(payload.amount) }, currency: jsonValue('SAR'), state: jsonValue('refund_requested'), execution: jsonValue('disabled'), requestedBy: jsonValue(u.uid), reason: jsonValue(reason), requestedAt: { timestampValue: new Date().toISOString() } };
     const writes = [
       { update: { name: fullName(env, `refundReservations/${encodeURIComponent(requestId)}`), fields: { refundId: jsonValue(targetId), createdAt: { timestampValue: new Date().toISOString() } } }, currentDocument: { exists: false } },
       { update: { name: fullName(env, `${targetCollection}/${encodeURIComponent(targetId)}`), fields: refundFields }, currentDocument: { exists: false } },
@@ -2690,17 +2705,20 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   if (url.pathname === '/api/admin/overview' && !can(user, 'audit.read')) return { error: 'Operational read permission required', status: 403 };
   if (url.pathname === '/api/admin/payment-gateways' && req.method === 'GET') {
     if (!can(user, 'finance.read') && !can(user, 'payouts.read')) return { error: 'Finance or payouts permission required', status: 403 };
-    const registry = gatewayRegistry(env);
     // Configuration is deliberately capability-only. Secrets and raw provider
     // configuration never cross the admin API boundary.
     const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'paymentGateways' }], limit: 20 } }) }) as any[] || [];
     const configured = Object.fromEntries(rows.filter((row) => row.document).map((row) => [String(row.document.name).split('/').pop(), decode(row.document)]));
-    const gateways = Object.entries(registry).map(([provider, value]) => {
+    const baseRegistry = gatewayRegistry(env);
+    const gateways = Object.keys(baseRegistry).map((provider) => {
       const stored: any = configured[provider] || {};
+      const registry = gatewayRegistry(env, provider === 'tap' ? normalizeTapEnvironment(stored.environment) : 'TEST');
+      const value: any = registry[provider as keyof typeof registry];
       return { provider, configured: value.configured, enabled: stored.enabled === true, adapterAvailable: value.adapterAvailable,
         environment: value.environment, health: value.configured && value.adapterAvailable ? 'available' : value.configured ? 'unavailable' : 'unconfigured',
-        priority: Number(stored.priority || 0), methods: ['card'], supportsSplit: value.supportsSplit,
-        capabilities: { refunds: false, savedCards: false, split: value.supportsSplit } };
+        priority: Number(stored.priority || 0), methods: value.methods, supportsSplit: value.supportsSplit,
+        capabilities: { refunds: false, savedCards: false, split: value.supportsSplit },
+        ...(provider === 'tap' ? { testConfigured: value.testConfigured, liveConfigured: value.liveConfigured, merchantConfigured: value.merchantConfigured } : {}) };
     });
     return { success: true, gateways, items: gateways };
   }

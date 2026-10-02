@@ -1,0 +1,8 @@
+name = "heavyar-web-tls-test"
+main = "src/index.ts"
+compatibility_date = "2026-09-30"
+account_id = "e43da79a0ea995c11c90e7819fb0c6e6"
+
+routes = [
+  { pattern = "tls-test.heavyar.com", custom_domain = true }
+]

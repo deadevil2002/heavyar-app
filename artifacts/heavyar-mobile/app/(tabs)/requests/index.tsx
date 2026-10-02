@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Lock } from 'lucide-react-native';
+import { Lock, ShieldAlert } from 'lucide-react-native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -19,6 +19,7 @@ import { mobilePerformance } from '@/utils/mobilePerformance';
 import DriverRequestsSection from '@/components/DriverRequestsSection';
 import { driverRequestsAllowed, requestSections, resolveRequestSection } from '@/services/requestSections';
 import { safeErrorMessage } from '@/services/errorMessages';
+import { HeavyarSegment, HeavyarSegmentedControl, HeavyarSegmentText } from '@/components/ui/heavyar';
 
 export default function RequestsScreen() {
   const { user } = useAuth();
@@ -36,18 +37,21 @@ export default function RequestsScreen() {
   return <View style={styles.container}>
     <SafeAreaView edges={['top']} style={styles.safeArea}>
       <View style={styles.headerRow}><Text style={styles.title}>{t('my_requests')}</Text></View>
-      <View style={{ flexDirection: isRTL ? 'row-reverse' : 'row', flexWrap: 'wrap' }}>
-        {requestSections(user.role, user.accountPurpose).map(value => <Pressable key={value} accessibilityRole="tab"
+      <HeavyarSegmentedControl mx="$md" mb="$md" flexDirection={isRTL ? 'row-reverse' : 'row'}>
+        {requestSections(user.role, user.accountPurpose).map(value => <HeavyarSegment key={value} accessibilityRole="tab"
           accessibilityState={{ selected: selected === value }}
-          style={[styles.driverRequestsLink, selected === value && { borderColor: Colors.gold }]}
+          selected={selected === value}
           onPress={() => router.setParams({ section: value, status: '' })}>
-          <Text style={styles.driverRequestsText}>{value === 'drivers' ? t(user.role === 'driver' ? 'driver_job_requests' : 'driver_requests')
-            : value === 'active' ? (isRTL ? 'الإيجارات النشطة' : 'Active rentals') : (isRTL ? 'طلبات المعدات' : 'Equipment requests')}</Text>
-        </Pressable>)}
-      </View>
-      {restrictedDriverDeepLink ? <Text accessibilityRole="alert" style={styles.restrictedMessage}>
-        {isRTL ? 'طلبات السائقين غير متاحة لحساب مراجعة المتجر.' : 'Driver requests are unavailable for this Store Review account.'}
-      </Text> : null}
+          <HeavyarSegmentText selected={selected === value} fontSize={11}>{value === 'drivers' ? t(user.role === 'driver' ? 'driver_job_requests' : 'driver_requests')
+            : value === 'active' ? (isRTL ? 'الإيجارات النشطة' : 'Active rentals') : (isRTL ? 'طلبات المعدات' : 'Equipment requests')}</HeavyarSegmentText>
+        </HeavyarSegment>)}
+      </HeavyarSegmentedControl>
+      {restrictedDriverDeepLink ? <View accessibilityRole="alert" style={[styles.restrictedMessage, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+        <View style={styles.restrictedIcon}><ShieldAlert size={18} color={Colors.gold} strokeWidth={2} /></View>
+        <Text style={[styles.restrictedText, { textAlign: isRTL ? 'right' : 'left' }]}>
+          {isRTL ? 'طلبات السائقين غير متاحة لحساب مراجعة المتجر.' : 'Driver requests are unavailable for this Store Review account.'}
+        </Text>
+      </View> : null}
       {focused ? selected === 'drivers'
         ? <DriverRequestsSection key={`${user.uid}:${user.role}`} />
         : <EquipmentRequestsSection key={`${user.uid}:${user.role}`} activeOnly={selected === 'active'} /> : null}
@@ -192,17 +196,21 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
     return (
       <View style={styles.container}>
         <SafeAreaView edges={['top']} style={styles.safeArea}>
-          <View style={styles.guestContainer}>
-            <Lock size={48} color={Colors.textMuted} />
-            <Text style={[styles.guestTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{t('login_required')}</Text>
-            <Text style={[styles.guestDesc, { textAlign: isRTL ? 'right' : 'left' }]}>{t('login_required_message')}</Text>
-            <View style={[styles.guestActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Pressable style={styles.guestPrimary} onPress={() => router.push('/login')}>
-                <Text style={styles.guestPrimaryText}>{t('go_to_login')}</Text>
-              </Pressable>
-              <Pressable style={styles.guestSecondary} onPress={() => router.push('/register')}>
-                <Text style={styles.guestSecondaryText}>{t('register')}</Text>
-              </Pressable>
+          <View style={styles.guestViewport}>
+            <View style={styles.guestContainer}>
+              <View style={styles.guestIconSurface}>
+                <Lock size={28} color={Colors.gold} strokeWidth={2} />
+              </View>
+              <Text style={styles.guestTitle}>{t('login_required')}</Text>
+              <Text style={styles.guestDesc}>{t('login_required_message')}</Text>
+              <View style={[styles.guestActions, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <Pressable style={styles.guestPrimary} onPress={() => router.push('/login')}>
+                  <Text style={styles.guestPrimaryText}>{t('go_to_login')}</Text>
+                </Pressable>
+                <Pressable style={styles.guestSecondary} onPress={() => router.push('/register')}>
+                  <Text style={styles.guestSecondaryText}>{t('register')}</Text>
+                </Pressable>
+              </View>
             </View>
           </View>
         </SafeAreaView>
@@ -225,7 +233,7 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
           data={visibleRequests}
           renderItem={renderItem}
           keyExtractor={item => item.id}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, visibleRequests.length === 0 && styles.emptyListContent]}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={<EmptyState title={t('no_requests')} />}
           ListFooterComponent={requests.length || hasMore ? (
@@ -261,20 +269,48 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   restrictedMessage: {
-    color: Colors.textSecondary,
-    paddingHorizontal: 20,
+    marginHorizontal: 20,
+    marginBottom: 12,
+    paddingHorizontal: 14,
     paddingVertical: 12,
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 16,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  restrictedIcon: { width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.card },
+  restrictedText: { flex: 1, color: Colors.textSecondary, fontSize: 13, lineHeight: 20 },
+  guestViewport: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 20,
   },
   guestContainer: {
-    marginHorizontal: 20,
-    marginTop: 20,
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
     backgroundColor: Colors.card,
-    borderRadius: 16,
-    padding: 20,
+    borderRadius: 20,
+    paddingHorizontal: 20,
+    paddingVertical: 22,
     alignItems: 'center',
     gap: 10,
     borderWidth: 1,
     borderColor: Colors.border,
+  },
+  guestIconSurface: {
+    width: 50,
+    height: 50,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: 2,
   },
   guestTitle: {
     fontSize: 18,
@@ -282,9 +318,11 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
   },
   guestDesc: {
-    fontSize: 14,
+    fontSize: 13,
     color: Colors.textSecondary,
-    lineHeight: 20,
+    lineHeight: 19,
+    textAlign: 'center',
+    maxWidth: 300,
   },
   guestActions: {
     width: '100%',
@@ -325,13 +363,14 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   driverRequestsLink: {
-    marginHorizontal: 20, marginBottom: 12, padding: 12, borderRadius: 12,
+    flex: 1, marginHorizontal: 4, marginBottom: 14, paddingVertical: 10, paddingHorizontal: 8, borderRadius: 12,
     borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surface, alignItems: 'center',
   },
   driverRequestsText: { color: Colors.gold, fontSize: 14, fontWeight: '700' },
   title: {
-    fontSize: 24,
-    fontWeight: '700' as const,
+    fontSize: 26,
+    lineHeight: 34,
+    fontWeight: '800' as const,
     color: Colors.textPrimary,
   },
   tabBar: {
@@ -362,6 +401,10 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 20,
+  },
+  emptyListContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
   },
   paginationFooter: { alignItems: 'center', gap: 10, paddingVertical: 8 },
   staleText: { color: Colors.textMuted, fontSize: 12, textDecorationLine: 'underline' },

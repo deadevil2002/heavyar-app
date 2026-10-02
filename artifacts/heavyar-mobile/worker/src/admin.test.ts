@@ -974,6 +974,39 @@ describe('admin authorization and operational boundary', () => {
     expect(response.status).toBe(400);
   });
 
+  test('only owner or super-admin can change Tap environment and LIVE is validated server-side', async () => {
+    __adminTest.setFirestore((collection, id) => collection === 'paymentGateways' && id === 'tap' ? { enabled: true, environment: 'TEST' } : null);
+    const ordinaryAdmin = { uid: 'admin-1', admin: true, role: 'admin' as const, permissionRole: 'admin', testInjected: true as const };
+    const denied = await handleAdmin(request('/api/admin/action', { action: 'update_gateway_environment', targetType: 'paymentGateway', targetId: 'tap', reason: 'test', payload: { environment: 'LIVE', confirmLive: true } }), env, ordinaryAdmin) as any;
+    expect(denied.status).toBe(403);
+
+    const owner = { uid: 'owner-1', admin: true, role: 'super_admin' as const, permissionRole: 'owner', testInjected: true as const };
+    const unconfirmed = await handleAdmin(request('/api/admin/action', { action: 'update_gateway_environment', targetType: 'paymentGateway', targetId: 'tap', reason: 'test', payload: { environment: 'LIVE' } }), { ...env, TAP_SECRET_KEY_LIVE: 'live-credential', TAP_MERCHANT_ID: 'merchant-id' }, owner) as any;
+    expect(unconfirmed.status).toBe(409);
+    const unavailable = await handleAdmin(request('/api/admin/action', { action: 'update_gateway_environment', targetType: 'paymentGateway', targetId: 'tap', reason: 'test', payload: { environment: 'LIVE', confirmLive: true } }), { ...env, TAP_MERCHANT_ID: 'merchant-id' }, owner) as any;
+    expect(unavailable.status).toBe(409);
+    __adminTest.setFirestore(() => null);
+    const notConfigured = await handleAdmin(request('/api/admin/action', { action: 'update_gateway_environment', targetType: 'paymentGateway', targetId: 'tap', reason: 'test', payload: { environment: 'LIVE', confirmLive: true } }), { ...env, TAP_SECRET_KEY_LIVE: 'live-credential', TAP_MERCHANT_ID: 'merchant-id' }, owner) as any;
+    expect(notConfigured.status).toBe(409);
+  });
+
+  test('owner environment change persists and audits mode without exposing credentials', async () => {
+    __adminTest.setFirestore((collection, id) => collection === 'paymentGateways' && id === 'tap' ? { enabled: true, environment: 'TEST' } : null);
+    const commits: unknown[][] = []; __adminTest.captureCommits(commits);
+    const owner = { uid: 'owner-1', admin: true, role: 'super_admin' as const, permissionRole: 'owner', testInjected: true as const };
+    const result = await handleAdmin(request('/api/admin/action', { action: 'update_gateway_environment', targetType: 'paymentGateway', targetId: 'tap', reason: 'approved switch', payload: { environment: 'LIVE', confirmLive: true } }), { ...env, TAP_SECRET_KEY_LIVE: 'live-credential', TAP_MERCHANT_ID: 'merchant-id' }, owner) as any;
+    expect(result.success).toBe(true);
+    expect(JSON.stringify(result).includes('live-credential')).toBe(false);
+    const writes = commits.flat() as any[];
+    const configWrite = writes.find(write => String(write.update?.name).includes('/paymentGateways/tap'));
+    expect(configWrite.update.fields.environment.stringValue).toBe('LIVE');
+    const auditWrite = writes.find(write => String(write.update?.name).includes('/adminAudit/'));
+    expect(auditWrite.update.fields.actorUid.stringValue).toBe('owner-1');
+    expect(JSON.stringify(auditWrite).includes('TEST')).toBe(true);
+    expect(JSON.stringify(auditWrite).includes('LIVE')).toBe(true);
+    expect(JSON.stringify(auditWrite).includes('live-credential')).toBe(false);
+  });
+
   test('regulatory document review is authorized, audited, scoped, and rejects invalid transitions', async () => {
     __test.setAuth({ uid: 'super-1', admin: true, role: 'super_admin' });
     __adminTest.setFirestore((collection) => collection === 'regulatoryDocuments' ? {

@@ -57,11 +57,11 @@ export default function PrivacyScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
-  content: { padding: 20, gap: 12, paddingBottom: 40 },
+  content: { padding: 20, gap: 12, paddingBottom: 40, marginHorizontal: 16, marginBottom: 20, backgroundColor: Colors.card, borderRadius: 20, borderWidth: 1, borderColor: Colors.border },
   rtlText: { textAlign: 'right' as const, writingDirection: 'rtl' as const },
-  title: { color: Colors.textPrimary, fontSize: 20, fontWeight: '800' as const },
+  title: { color: Colors.textPrimary, fontSize: 22, lineHeight: 30, fontWeight: '800' as const },
   sectionTitle: { color: Colors.textPrimary, fontSize: 16, fontWeight: '700' as const, marginTop: 6 },
-  paragraph: { color: Colors.textSecondary, fontSize: 14, lineHeight: 22 },
-  listItem: { color: Colors.textSecondary, fontSize: 14, lineHeight: 22 },
+  paragraph: { color: Colors.textSecondary, fontSize: 15, lineHeight: 25 },
+  listItem: { color: Colors.textSecondary, fontSize: 15, lineHeight: 25 },
   link: { color: Colors.gold, fontSize: 13, lineHeight: 20, textDecorationLine: 'underline' as const },
 });
