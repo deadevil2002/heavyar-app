@@ -67,6 +67,10 @@ npx wrangler deployments list
 
 The active profile must be `heavyar`, `whoami` must expose account `e43da79a0ea995c11c90e7819fb0c6e6`, and the read-only deployment list must resolve `heavyar-api`. The Worker config also pins the same `account_id`; this second guard intentionally makes a wrong-account profile fail closed. `CLOUDFLARE_API_TOKEN` overrides profiles, so its presence requires separate identity verification before any mutation.
 
+Before every Worker upload, inventory the active version's bindings by **name and type only** and confirm `TAP_MERCHANT_ID` is present as `plain_text` while `TAP_SECRET_KEY_TEST` and `TAP_SECRET_KEY_LIVE` are present as `secret_text`. Never print their values. Run a Wrangler dry-run and stop if it proposes removing or changing an existing dashboard-managed binding. Immediately after deployment, repeat the same read-only inventory and compare the complete pre/post name-and-type sets.
+
+`wrangler.toml` deliberately sets `keep_vars = true` because this Worker has dashboard-managed runtime variables, including `TAP_MERCHANT_ID`, that must survive code deployments. It also declares both Tap secret **names** under `[secrets].required`; the secret values remain exclusively in Cloudflare and must never be added to source control.
+
 Worker configuration names referenced by code/configuration (names only):
 
 - Cloudinary: `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`, `CLOUDINARY_FOLDER`.

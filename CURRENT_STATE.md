@@ -47,6 +47,7 @@ Source: `artifacts/heavyar-mobile/app.json`.
 - Current Production deployment parity for the mobile build, Worker, Admin, website proxy, and payment gateway enablement was not changed or fully re-verified in this local final audit.
 - The misleading Profile-tab notification badge was removed in the final audit and is guarded by a focused source-policy regression test. The Home bell remains the shared unread indicator; the Notifications row in Profile may still show its count.
 - Cloudflare identity blocker: **RESOLVED LOCALLY**. Wrangler profile `heavyar` is bound only to this repository, resolves account `e43da79a0ea995c11c90e7819fb0c6e6`, and can read deployments for `heavyar-api`. The Worker config pins the same account ID. No deployment occurred during the identity-repair phase.
+- Worker configuration drift recovery: deployment `e8e8f0bd-57cc-4e22-96fe-b93239efca5f` removed the dashboard-managed `TAP_MERCHANT_ID`; the owner restored it manually in the following Cloudflare version. A permanent local guard now uses `keep_vars = true` plus required Tap secret names. Safe redeployment and pre/post binding comparison are pending in the current recovery phase.
 
 ## Tap payment readiness
 
