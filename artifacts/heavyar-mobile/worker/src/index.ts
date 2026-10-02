@@ -1,4 +1,4 @@
-import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, normalizeTapEnvironment, tapCredentials, type PaymentQuote, type PaymentState, type TapEnvironment } from './payment';
+import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, normalizeTapEnvironment, tapCredentials, tapCustomerFromAccount, type PaymentQuote, type PaymentState, type TapEnvironment } from './payment';
 import { calculateCommercial, majorToMinor, minorToMajor, resolveRule, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
 import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
@@ -55,7 +55,7 @@ let capturedDriverQueries: any[] | undefined;
 let publicEquipmentLimiterOverride: ((ipHash: string) => Promise<boolean | null>) | undefined;
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
-  export const __test = { setAuth(user?: User) { authOverride = user; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationWindows.clear(); }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource };
+  export const __test = { setAuth(user?: User) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationWindows.clear(); }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -158,7 +158,7 @@ async function authenticatedUser(req: Request, env: Env, allowAccountManagement 
   if (authOverride && !firestoreOverride) return user;
   const profileRaw = await getRawDoc(env, 'users', user.uid);
   const profile = profileRaw?.data || null;
-  user.accountProfile = profile;
+  user.accountProfile = profile || user.accountProfile;
   if (!user.testInjected) {
     if (!profile) err('ACCOUNT_PROVISIONING_INCOMPLETE');
     const roleProfileRaw = profile.role === 'driver' ? await getRawDoc(env, 'driverProfiles', user.uid) : null;
@@ -2314,13 +2314,27 @@ async function tapPaymentForCharge(env: Env, chargeId: string, requestIdHint?: s
   return matches.length === 1 && matches[0]?.provider === 'tap' ? matches[0] : null;
 }
 
+function tapRedirectBridge(req: Request): Response {
+  const url = new URL(req.url);
+  const requestId = url.searchParams.get('requestId') || '';
+  const chargeId = url.searchParams.get('tap_id') || '';
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId) || !/^chg_[A-Za-z0-9_-]{6,196}$/.test(chargeId)) {
+    return new Response('Invalid payment return', { status: 400, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' } });
+  }
+  const deepLink = `heavyar://payment/${encodeURIComponent(requestId)}?paymentId=${encodeURIComponent(chargeId)}`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Return to HEAVYAR</title><style>body{margin:0;background:#071a31;color:#fff;font-family:system-ui,sans-serif;display:grid;min-height:100vh;place-items:center;text-align:center}.card{max-width:28rem;padding:2rem}a{display:inline-block;margin-top:1rem;padding:.8rem 1.2rem;border-radius:.75rem;background:#e8b43b;color:#071a31;text-decoration:none;font-weight:700}</style></head><body><main class="card"><h1>Return to HEAVYAR</h1><p>Your payment status will be verified securely in the app.</p><a href="${deepLink}">Open HEAVYAR</a></main><script>window.location.href=${JSON.stringify(deepLink)};</script></body></html>`;
+  return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } });
+}
+
 async function create(req: Request, env: Env, u: User) {
   const body = await req.json() as { requestId?: string; amount?: number; purpose?: string };
   if (!body.requestId || Object.keys(body).some(key => !['requestId', 'purpose'].includes(key)) || (body.purpose && body.purpose !== 'equipment_request')) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', body.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
+  let customerProfile: any = null;
   try {
     await enforceOperationalAccess(env, u, e);
     const customer = r?.customerUid ? await getDoc(env, 'users', String(r.customerUid)) : null;
+    customerProfile = customer || u.accountProfile;
     const providerUid = String(r?.providerUid || e?.ownerUid || '');
     const provider = providerUid ? await getDoc(env, 'users', providerUid) : null;
     if (isStoreReviewAccount(customer) || isStoreReviewAccount(provider)) err('STORE_REVIEW_FINANCIAL_DISABLED');
@@ -2363,6 +2377,9 @@ async function create(req: Request, env: Env, u: User) {
   if (terminalRetry && Date.parse(quote.expiresAt) <= Date.now()) return out(env, req, { success: false, error: 'Payment quote expired' }, 409);
   if (!isReserved && (String(r.status).toLowerCase() !== 'completed' || !['unpaid', ''].includes(String(r.paymentStatus || '').toLowerCase()))) return out(env, req, { success: false, error: 'Invalid payment state' }, 409);
   if (!raw?.updateTime) return out(env, req, { success: false, error: 'Payment unavailable' }, 503);
+  let tapCustomer;
+  try { tapCustomer = tapCustomerFromAccount(customerProfile, { email: u.email }); }
+  catch { return out(env, req, { success: false, error: 'Payment profile incomplete', code: 'PAYMENT_PROFILE_INCOMPLETE' }, 409); }
   if (!isReserved) {
     try {
       if (reservationConflict) throw new Error('precondition failed');
@@ -2392,7 +2409,7 @@ async function create(req: Request, env: Env, u: User) {
   }
   const provider = new TapPaymentProvider(tapRuntime.secret, tapRuntime.merchantId);
   const tapMetadata = { requestId: body.requestId, customerUid: u.uid, amount: String(expected), currency: 'SAR', quoteId: quote.quoteId, paymentId: paymentIdForRequest(body.requestId), idempotencyKey, paymentEnvironment };
-  let data; try { data = await provider.create({ amount: expected, currency: 'SAR', idempotencyKey, metadata: tapMetadata }); } catch {
+  let data; try { data = await provider.create({ amount: expected, currency: 'SAR', idempotencyKey, metadata: tapMetadata, requestId: body.requestId, customerUid: u.uid, customer: tapCustomer }); } catch {
     const reservedRaw = capturedCommits ? { data: { ...r, paymentId: reservation, paymentState: 'pending' }, updateTime: 'test-reserved' } : await getRawDoc(env, 'equipmentRequests', body.requestId);
     if (reservedRaw?.updateTime && reservedRaw.data.paymentId === reservation && reservedRaw.data.paymentState !== 'processing') {
       const now = new Date().toISOString();
@@ -2410,6 +2427,7 @@ async function create(req: Request, env: Env, u: User) {
   }
   const state = stateForProvider(data.status);
   if (!canTransition('created', state)) return out(env, req, { success: false, error: 'Invalid payment transition' }, 409);
+  if (['pending', 'requires_action', 'processing'].includes(state) && !data.checkoutUrl) return out(env, req, { success: false, error: 'Invalid provider response' }, 502);
   const reservedRaw = capturedCommits ? { data: { ...r, paymentId: reservation }, updateTime: 'test-reserved' } : await getRawDoc(env, 'equipmentRequests', body.requestId);
   if (!reservedRaw?.updateTime || reservedRaw.data.paymentId !== reservation) return out(env, req, { success: false, error: 'Payment reservation changed' }, 409);
   if (state === 'paid') {
@@ -3637,6 +3655,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
   const path = new URL(req.url).pathname;
   try {
     if (path === '/health') return out(env, req, { success: true, service: 'heavyar-api' });
+    if (path === '/api/payment/tap-redirect' && req.method === 'GET') return tapRedirectBridge(req);
     if (path.startsWith('/api/early-access/')) {
       const result = await handlePublicEarlyAccess(req, env);
       if (result instanceof Response) return result;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { TapPaymentProvider, quoteForRequest, quoteFromCommercial, canTransition, stateForProvider, tapConfig, tapCredentials, tapEnvironmentStatus, normalizeTapEnvironment, invoiceNumberForPayment } from './payment';
+import { TapPaymentProvider, quoteForRequest, quoteFromCommercial, canTransition, stateForProvider, tapConfig, tapCredentials, tapEnvironmentStatus, normalizeTapEnvironment, invoiceNumberForPayment, tapCustomerFromAccount, tapProviderReferences, TAP_REDIRECT_URL, TAP_WEBHOOK_URL } from './payment';
 
 describe('payment trust core', () => {
   test('quote is rounded and exposes fee, payout, tax and expiry', () => {
@@ -48,25 +48,49 @@ describe('payment trust core', () => {
     expect(quote.providerAmount).toBe(95);
     expect(quote.commercialSnapshot).toBe(snapshot);
   });
-  test('Tap adapter sends idempotency and normalizes response', async () => {
+  test('Tap adapter sends canonical customer, callbacks, references and uses transaction URL only', async () => {
     const calls: RequestInit[] = [];
     const provider = new TapPaymentProvider('test-credential', 'merchant-test-id', (async (_url, init) => {
       calls.push(init || {});
-      return new Response(JSON.stringify({ id: 'ch_1', status: 'INITIATED', amount: 11.51, currency: 'SAR', redirect: { url: 'https://checkout' } }));
+      return new Response(JSON.stringify({ id: 'chg_1', status: 'INITIATED', amount: 11.51, currency: 'SAR', transaction: { url: 'https://checkout.payments.tap.company/session' }, redirect: { url: 'https://merchant.invalid/not-checkout' } }));
     }) as typeof fetch);
-    const p = await provider.create({ amount: 11.51, currency: 'SAR', idempotencyKey: 'k', metadata: { requestId: 'r' } });
-    expect(p.id).toBe('ch_1');
-    expect(p.checkoutUrl).toBe('https://checkout');
+    const customer = { first_name: 'Test', last_name: 'Customer', email: 'customer@example.test' };
+    const input = { amount: 11.51, currency: 'SAR', idempotencyKey: 'k', requestId: 'request_1', customerUid: 'customer_1', customer, metadata: { requestId: 'request_1' } };
+    const p = await provider.create(input);
+    expect(p.id).toBe('chg_1');
+    expect(p.checkoutUrl).toBe('https://checkout.payments.tap.company/session');
+    expect(p.checkoutUrl).not.toBe('https://merchant.invalid/not-checkout');
     expect(new Headers(calls[0].headers).get('Idempotency-Key')).toBe('k');
-    expect(JSON.parse(String(calls[0].body)).metadata.requestId).toBe('r');
+    expect(JSON.parse(String(calls[0].body)).metadata.requestId).toBe('request_1');
     const payload = JSON.parse(String(calls[0].body));
     expect(payload.merchant).toEqual({ id: 'merchant-test-id' });
+    expect(payload.customer).toEqual(customer);
+    expect(payload.post).toEqual({ url: TAP_WEBHOOK_URL });
+    expect(payload.redirect).toEqual({ url: `${TAP_REDIRECT_URL}?requestId=request_1` });
+    expect(payload.reference).toEqual(await tapProviderReferences('customer_1', 'request_1'));
+    expect(payload.reference.idempotent).toBe((await tapProviderReferences('customer_1', 'request_1')).idempotent);
     expect(payload.threeDSecure).toBe(true);
     expect(payload.customer_initiated).toBe(true);
     expect(payload.save_card).toBe(false);
     expect(payload.amount).toBe(11.51);
     expect(payload.currency).toBe('SAR');
     expect(tapConfig(true).environment).toBe('TEST');
+  });
+  test('Tap provider references are stable for retries and account customer data is validated', async () => {
+    expect(await tapProviderReferences('customer_1', 'request_1')).toEqual(await tapProviderReferences('customer_1', 'request_1'));
+    expect((await tapProviderReferences('customer_1', 'request_1')).order).not.toBe((await tapProviderReferences('customer_1', 'request_2')).order);
+    expect(tapCustomerFromAccount({ nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' })).toEqual({ first_name: 'Test', last_name: 'Customer', email: 'customer@example.test' });
+    expect(tapCustomerFromAccount({ nameAr: 'عميل اختبار', phone: '+966551234567', countryCode: 'SA' })).toEqual({ first_name: 'عميل', last_name: 'اختبار', phone: { country_code: '966', number: '551234567' } });
+    expect(() => tapCustomerFromAccount({ nameEn: 'Single', email: 'customer@example.test' })).toThrow('PAYMENT_PROFILE_INCOMPLETE');
+    expect(() => tapCustomerFromAccount({ nameEn: 'Test Customer' })).toThrow('PAYMENT_PROFILE_INCOMPLETE');
+  });
+  test('Tap retrieval also uses transaction.url and rejects redirect.url as checkout', async () => {
+    const provider = new TapPaymentProvider('test-credential', 'merchant-test-id', (async () => new Response(JSON.stringify({
+      id: 'chg_TS123456', status: 'INITIATED', amount: 11.51, currency: 'SAR',
+      transaction: { url: 'https://checkout.payments.tap.company/retrieved' },
+      redirect: { url: 'https://merchant.invalid/return' },
+    }))) as typeof fetch);
+    expect((await provider.retrieve('chg_TS123456')).checkoutUrl).toBe('https://checkout.payments.tap.company/retrieved');
   });
   test('Tap environment selection is explicit and incomplete configuration fails closed', () => {
     const env = { TAP_SECRET_KEY_TEST: 'test-credential', TAP_SECRET_KEY_LIVE: 'live-credential', TAP_MERCHANT_ID: 'merchant-id' };

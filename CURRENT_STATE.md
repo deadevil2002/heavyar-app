@@ -47,7 +47,7 @@ Source: `artifacts/heavyar-mobile/app.json`.
 - Current Production deployment parity for the mobile build, Worker, Admin, website proxy, and payment gateway enablement was not changed or fully re-verified in this local final audit.
 - The misleading Profile-tab notification badge was removed in the final audit and is guarded by a focused source-policy regression test. The Home bell remains the shared unread indicator; the Notifications row in Profile may still show its count.
 - Cloudflare identity blocker: **RESOLVED LOCALLY**. Wrangler profile `heavyar` is bound only to this repository, resolves account `e43da79a0ea995c11c90e7819fb0c6e6`, and can read deployments for `heavyar-api`. The Worker config pins the same account ID. No deployment occurred during the identity-repair phase.
-- Worker configuration drift recovery: deployment `e8e8f0bd-57cc-4e22-96fe-b93239efca5f` removed the dashboard-managed `TAP_MERCHANT_ID`; the owner restored it manually in the following Cloudflare version. A permanent local guard now uses `keep_vars = true` plus required Tap secret names. Safe redeployment and pre/post binding comparison are pending in the current recovery phase.
+- Worker configuration drift recovery: **RESOLVED**. Deployment `e8e8f0bd-57cc-4e22-96fe-b93239efca5f` removed the dashboard-managed `TAP_MERCHANT_ID`; the owner restored it manually. Repair commit `26dfb03c1d37a3006d02dd6ea1e7ee221d6ef615` added `keep_vars = true` and required-secret guards for the two Tap credential names. The guarded Worker redeploy produced version `cbe7be54-8473-4559-b321-117c005058e3`; the complete 16-binding name/type inventory was identical before and after deployment, including the merchant variable and both Tap secrets.
 
 ## Tap payment readiness
 
@@ -56,7 +56,8 @@ Source: `artifacts/heavyar-mobile/app.json`.
 - Test and Live credential names plus the merchant ID are configured server-side; values were not read, printed, logged, or documented.
 - Every new Tap payment persists its environment. Verification, webhook reconciliation, retry, and refund-request records retain/use the original payment environment instead of the current Admin mode. Legacy payment records without an environment are treated as TEST because the prior implementation was TEST-only.
 - Tap Marketplace/Split settlement: **NOT VERIFIED / NOT ENABLED**. Provider payout execution remains unchanged.
-- These changes are local only: no Worker/Admin deployment and no real or test charge was initiated during this phase.
+- The guarded Worker and the already-audited Admin were deployed successfully on 2026-10-02. Tap remains in **TEST**; no real or test charge, refund, LIVE activation, or Production business-data mutation was performed.
+- Tap Charges conformance is now validated locally: hosted checkout uses `transaction.url`; Charge creation sends the canonical Worker `post.url` and return bridge; provider references are deterministic; customer identity is derived from the canonical authenticated profile; and malformed redirect identifiers cannot change payment state. Worker TypeScript and the full 486-test Worker suite pass. Deployment and the first controlled TEST transaction remain pending at this checkpoint.
 
 ## Commercial and payment audit
 
@@ -90,6 +91,10 @@ Final pre-deploy audit checks from 2026-10-02:
 | Full Worker tests | PASS — 481/481 |
 | Admin tests | PASS — 95/95 (26 Vitest + 69 Node) |
 | Admin TypeScript / production build | PASS / PASS (existing source-map and chunk-size warnings only) |
+| Cloudflare binding preservation | PASS — all 16 binding names/types matched before and after Worker version `cbe7be54-8473-4559-b321-117c005058e3` |
+| Worker public health after release | PASS — HTTP 200 |
+| Admin Hosting release | PASS — `heavyar-app.web.app` serves the audited build with HTTP 200 |
+| Production financial read-only smoke | PASS — Tap TEST; effective commission 10%; 20% provider-paid rule remains an unpersisted draft; Payments and Gateways pages load |
 | Full mobile unit suite | PASS — 390/390 (339 base Vitest + 37 jsdom/discovery Vitest + 14 Node); the DOM-based auth-transition integration test is now routed only through the existing jsdom configuration and the Add Equipment account-switch fixture waits for its intended create-in-flight boundary; no production auth behavior was changed |
 | Focused auth-transition tests | PASS — Customer/Provider/Driver success, wrong credentials, resolution failure, logout/login, cold restore, and invalid-session cases are covered |
 | Relevant discovery/UI suite | PASS — 37/37 |

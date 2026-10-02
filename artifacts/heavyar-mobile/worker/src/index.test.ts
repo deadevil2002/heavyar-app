@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { createVerify, generateKeyPairSync } from 'node:crypto';
 import worker, { __test, GCC_COUNTRIES, heavyarEmailVerificationTemplate, heavyarPasswordResetTemplate, normalizeGccPhone, type Env } from './index';
 import { buildLegacyCatalog, calculateCommercial } from './commercial';
-import { quoteFromCommercial } from './payment';
+import { quoteFromCommercial, tapProviderReferences, TAP_REDIRECT_URL, TAP_WEBHOOK_URL } from './payment';
 import { buildFinalPaymentHandoff } from './rental-v2';
 
 const env = { CORS_ORIGINS: 'http://localhost', TAP_MERCHANT_ID: 'merchant-test-id' } as Env;
@@ -398,7 +398,7 @@ describe('worker security boundary', () => {
     __test.captureCommits(commits);
     const old = globalThis.fetch; let tapHeaders: Headers | undefined; let tapBody: any;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).includes('tap.company')) { tapHeaders = new Headers(init?.headers); tapBody = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ id: 'charge-1', status: 'INITIATED', amount: 115, currency: 'SAR', redirect: { url: 'https://tap.test' } })); }
+      if (String(input).includes('tap.company')) { tapHeaders = new Headers(init?.headers); tapBody = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ id: 'charge-1', status: 'INITIATED', amount: 115, currency: 'SAR', transaction: { url: 'https://checkout.payments.tap.company/test-1' }, redirect: { url: 'https://merchant.invalid/return' } })); }
       return new Response('{}');
     }) as typeof fetch;
     try {
@@ -406,6 +406,10 @@ describe('worker security boundary', () => {
       expect(response.status).toBe(200);
       expect(tapBody.amount).toBe(115);
       expect(tapBody.merchant).toEqual({ id: 'merchant-test-id' });
+      expect(tapBody.customer).toEqual({ first_name: 'Test', last_name: 'Customer', email: 'customer@example.test' });
+      expect(tapBody.post).toEqual({ url: TAP_WEBHOOK_URL });
+      expect(tapBody.redirect).toEqual({ url: `${TAP_REDIRECT_URL}?requestId=r` });
+      expect(tapBody.reference).toEqual(await tapProviderReferences('customer-1', 'r'));
       expect(tapHeaders?.get('Idempotency-Key')).toBe('heavyar-payment:customer-1:r');
       expect(commits.length).toBe(2);
       expect((commits[0][0] as any).update.fields.paymentId.stringValue).toBe('reservation:heavyar-payment:customer-1:r');
@@ -417,9 +421,64 @@ describe('worker security boundary', () => {
       const result = await response.json();
       expect(result.paymentId).toBe('charge-1');
       expect(result.status).toBe('pending');
-      expect(result.checkoutUrl).toBe('https://tap.test');
+      expect(result.checkoutUrl).toBe('https://checkout.payments.tap.company/test-1');
       expect(result.quote.total).toBe(115);
     } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
+  });
+
+  test('client cannot override Tap customer identity, provider references, or callback URLs', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false });
+    let tapCalled = false;
+    const old = globalThis.fetch;
+    globalThis.fetch = (async input => { tapCalled = String(input).includes('tap.company'); return new Response('{}'); }) as typeof fetch;
+    try {
+      for (const injected of [
+        { customer: { first_name: 'Attacker' } },
+        { redirect: { url: 'https://attacker.example' } },
+        { post: { url: 'https://attacker.example' } },
+        { reference: { idempotent: 'attacker' } },
+      ]) {
+        const response = await worker.fetch(request('/api/create-payment', { requestId: 'r', ...injected }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
+        expect(response.status).toBe(400);
+      }
+      expect(tapCalled).toBe(false);
+    } finally { globalThis.fetch = old; }
+  });
+
+  test('payment fails before reservation or Tap when the canonical customer profile is incomplete', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false, email: undefined, accountProfile: undefined });
+    __test.setFirestore((collection) => collection === 'equipmentRequests'
+      ? { id: 'r', customerUid: 'customer-1', status: 'completed', amount: 100, paymentStatus: 'unpaid', equipmentId: 'e' }
+      : collection === 'users' ? { nameEn: 'Single' }
+      : null);
+    const commits: unknown[][] = []; __test.captureCommits(commits);
+    let tapCalled = false;
+    const old = globalThis.fetch;
+    globalThis.fetch = (async input => { tapCalled = String(input).includes('tap.company'); return new Response('{}'); }) as typeof fetch;
+    try {
+      const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'PAYMENT_PROFILE_INCOMPLETE' });
+      expect(commits.length).toBe(0);
+      expect(tapCalled).toBe(false);
+    } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
+  });
+
+  test('Tap redirect bridge validates identifiers and never settles from tap_id alone', async () => {
+    const commits: unknown[][] = []; __test.captureCommits(commits);
+    const valid = await worker.fetch(new Request('https://worker.test/api/payment/tap-redirect?requestId=request_1&tap_id=chg_TS123456'), env);
+    expect(valid.status).toBe(200);
+    expect(valid.headers.get('Cache-Control')).toBe('no-store');
+    expect(valid.headers.get('X-Robots-Tag')).toBe('noindex, nofollow');
+    expect(await valid.text()).toContain('heavyar://payment/request_1?paymentId=chg_TS123456');
+    expect(commits.length).toBe(0);
+    for (const url of [
+      'https://worker.test/api/payment/tap-redirect?requestId=../bad&tap_id=chg_TS123456',
+      'https://worker.test/api/payment/tap-redirect?requestId=request_1&tap_id=javascript:bad',
+      'https://worker.test/api/payment/tap-redirect?requestId=request_1&tap_id=charge-1',
+      'https://worker.test/api/payment/tap-redirect?requestId=request_1',
+    ]) expect((await worker.fetch(new Request(url), env)).status).toBe(400);
+    expect(commits.length).toBe(0);
   });
 
   test('new LIVE payment uses only the LIVE credential, includes merchant, and persists its environment', async () => {
@@ -433,7 +492,7 @@ describe('worker security boundary', () => {
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       authorization = new Headers(init?.headers).get('Authorization') || '';
       tapBody = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ id: 'charge-live', status: 'INITIATED', amount: 115, currency: 'SAR', redirect: { url: 'https://tap.test/live' } }));
+      return new Response(JSON.stringify({ id: 'charge-live', status: 'INITIATED', amount: 115, currency: 'SAR', transaction: { url: 'https://checkout.payments.tap.company/live' } }));
     }) as typeof fetch;
     try {
       const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test-credential', TAP_SECRET_KEY_LIVE: 'live-credential' });
@@ -466,7 +525,7 @@ describe('worker security boundary', () => {
         paymentReads++;
         return paymentReads === 1 ? null : { ...paymentFixture, state: 'created', providerReference: undefined };
       }
-      if (collection === 'users') return { nameEn: 'Participant' };
+      if (collection === 'users') return { nameEn: 'Test Participant', email: 'customer@example.test', countryCode: 'SA' };
       return null;
     });
     const commits: unknown[][] = []; __test.captureCommits(commits);
@@ -494,6 +553,7 @@ describe('worker security boundary', () => {
     __test.setAuth({ uid: 'customer-1', admin: false });
     let first = true;
     __test.setFirestore((collection) => {
+      if (collection === 'users') return { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' };
       if (collection !== 'equipmentRequests') return {};
       if (first) { first = false; return { customerUid: 'customer-1', status: 'completed', amount: 100, paymentStatus: 'unpaid', equipmentId: 'e' }; }
       return { customerUid: 'customer-1', status: 'completed', amount: 100, paymentStatus: 'pending_payment', paymentId: 'charge-existing', equipmentId: 'e' };
@@ -793,7 +853,7 @@ describe('worker security boundary', () => {
     const old = globalThis.fetch; let key = '';
     globalThis.fetch = (async (_input, init) => {
       key = new Headers(init?.headers).get('Idempotency-Key') || '';
-      return new Response(JSON.stringify({ id: 'charge-1', status: 'INITIATED', amount: 115, currency: 'SAR', redirect: { url: 'https://tap.test' } }));
+      return new Response(JSON.stringify({ id: 'charge-1', status: 'INITIATED', amount: 115, currency: 'SAR', transaction: { url: 'https://checkout.payments.tap.company/test-1' } }));
     }) as typeof fetch;
     try {
       const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
@@ -814,7 +874,7 @@ describe('worker security boundary', () => {
     const old = globalThis.fetch; let key = '';
     globalThis.fetch = (async (_input, init) => {
       key = new Headers(init?.headers).get('Idempotency-Key') || '';
-      return new Response(JSON.stringify({ id: 'charge-2', status: 'INITIATED', amount: 115, currency: 'SAR', redirect: { url: 'https://tap.test/2' } }));
+      return new Response(JSON.stringify({ id: 'charge-2', status: 'INITIATED', amount: 115, currency: 'SAR', transaction: { url: 'https://checkout.payments.tap.company/test-2' } }));
     }) as typeof fetch;
     try {
       const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
@@ -947,14 +1007,14 @@ describe('worker security boundary', () => {
         const rental = finalizedV2Request(row.baseMinor);
         __test.setFirestore((collection, id) => collection === 'equipmentRequests' ? rental
           : collection === 'equipment' ? { ownerUid: 'provider-1', nativeCurrency: 'SAR', countryCode: 'SA' }
-          : collection === 'users' ? { uid: id, role: id === 'customer-1' ? 'customer' : 'provider', nameEn: id === 'customer-1' ? 'Customer' : 'Provider', accountStatus: 'active' }
+          : collection === 'users' ? { uid: id, role: id === 'customer-1' ? 'customer' : 'provider', nameEn: id === 'customer-1' ? 'Test Customer' : 'Test Provider', email: `${id}@example.test`, countryCode: 'SA', accountStatus: 'active' }
           : collection === 'paymentGateways' ? { enabled: true, environment: 'TEST' }
           : null);
         const commits: unknown[][] = []; __test.captureCommits(commits);
         let sent: any;
         globalThis.fetch = (async (_input, init) => {
           sent = JSON.parse(String(init?.body));
-          return new Response(JSON.stringify({ id: `charge-v2-${row.baseMinor}`, status: 'INITIATED', amount: row.total, currency: 'SAR', metadata: sent.metadata, redirect: { url: 'https://checkout.test' } }));
+          return new Response(JSON.stringify({ id: `charge-v2-${row.baseMinor}`, status: 'INITIATED', amount: row.total, currency: 'SAR', metadata: sent.metadata, transaction: { url: 'https://checkout.payments.tap.company/v2-test' } }));
         }) as typeof fetch;
         const response = await worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' });
         const result: any = await response.json();
@@ -980,7 +1040,7 @@ describe('worker security boundary', () => {
     const rental = finalizedV2Request();
     __test.setFirestore((collection, id) => collection === 'equipmentRequests' ? rental
       : collection === 'equipment' ? { ownerUid: 'provider-1', nativeCurrency: 'SAR' }
-      : collection === 'users' ? { uid: id, role: id === 'customer-1' ? 'customer' : 'provider', nameEn: 'Participant', accountStatus: 'active' }
+      : collection === 'users' ? { uid: id, role: id === 'customer-1' ? 'customer' : 'provider', nameEn: 'Test Participant', email: `${id}@example.test`, countryCode: 'SA', accountStatus: 'active' }
       : collection === 'paymentGateways' ? { enabled: true, environment: 'TEST' }
       : null);
     const commits: unknown[][] = []; __test.captureCommits(commits);
@@ -1001,7 +1061,7 @@ describe('worker security boundary', () => {
     const rental = { ...finalizedV2Request(), paymentStatus: 'pending_payment', paymentState: 'pending', paymentId: 'charge-v2' };
     __test.setFirestore((collection, id) => collection === 'equipmentRequests' ? rental
       : collection === 'equipment' ? { ownerUid: 'provider-1', nativeCurrency: 'SAR' }
-      : collection === 'users' ? { uid: id, role: id === 'customer-1' ? 'customer' : 'provider', nameEn: 'Participant', accountStatus: 'active' }
+      : collection === 'users' ? { uid: id, role: id === 'customer-1' ? 'customer' : 'provider', nameEn: 'Test Participant', email: `${id}@example.test`, countryCode: 'SA', accountStatus: 'active' }
       : collection === 'paymentGateways' ? { enabled: true, environment: 'LIVE' }
       : collection === 'paymentQuotes' ? quote
       : collection === 'payments' ? { requestId: 'r', provider: 'tap', providerReference: 'charge-v2', state: 'pending', amount: 115, currency: 'SAR', customerUid: 'customer-1', quoteId: quote.quoteId, environment: 'TEST', checkoutUrl: 'https://checkout.test', commercialSnapshot: rental.finalCommercialSnapshot }

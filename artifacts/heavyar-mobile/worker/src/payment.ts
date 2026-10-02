@@ -17,9 +17,15 @@ export type ProviderPayment = {
   id: string; status: string; amount: number; currency: string;
   checkoutUrl?: string; metadata?: Record<string, string>;
 };
+export type TapCustomer = {
+  first_name: string;
+  last_name: string;
+  email?: string;
+  phone?: { country_code: string; number: string };
+};
 export interface PaymentProvider {
   readonly name: string;
-  create(input: { amount: number; currency: string; metadata: Record<string, string>; idempotencyKey: string }): Promise<ProviderPayment>;
+  create(input: { amount: number; currency: string; metadata: Record<string, string>; idempotencyKey: string; requestId: string; customerUid: string; customer: TapCustomer }): Promise<ProviderPayment>;
   retrieve(providerReference: string): Promise<ProviderPayment>;
 }
 export type TapEnvironment = 'TEST' | 'LIVE';
@@ -61,6 +67,41 @@ export function pricingConfig(platformFeeRate = 0.10, vatRate = 0.15): PaymentPr
 }
 
 const TAP = 'https://api.tap.company/v2';
+export const TAP_WEBHOOK_URL = 'https://heavyar-api.heavyar-official.workers.dev/api/webhooks/tap';
+export const TAP_REDIRECT_URL = 'https://heavyar-api.heavyar-official.workers.dev/api/payment/tap-redirect';
+const GCC_DIAL_CODES: Record<string, string> = { SA: '966', AE: '971', KW: '965', QA: '974', BH: '973', OM: '968' };
+
+function tapCheckoutUrl(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && (url.hostname === 'tap.company' || url.hostname.endsWith('.tap.company')) ? url.toString() : '';
+  } catch { return ''; }
+}
+
+export function tapCustomerFromAccount(profile: any, identity: { email?: string } = {}): TapCustomer {
+  const fullName = String(profile?.nameEn || profile?.nameAr || '').trim().replace(/\s+/g, ' ');
+  const parts = fullName.split(' ').filter(Boolean);
+  if (parts.length < 2) throw new Error('PAYMENT_PROFILE_INCOMPLETE');
+  const firstName = parts.shift()!;
+  const lastName = parts.join(' ');
+  if (firstName.length > 149 || lastName.length > 149) throw new Error('PAYMENT_PROFILE_INCOMPLETE');
+  const emailCandidate = String(identity.email || profile?.email || '').trim().toLowerCase();
+  const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailCandidate) ? emailCandidate : undefined;
+  const dialCode = GCC_DIAL_CODES[String(profile?.countryCode || '').toUpperCase()];
+  const phoneValue = String(profile?.phone || '').replace(/[\s()-]/g, '');
+  const phoneNumber = dialCode && phoneValue.startsWith(`+${dialCode}`) ? phoneValue.slice(dialCode.length + 1) : '';
+  const phone = dialCode && /^\d{6,12}$/.test(phoneNumber) ? { country_code: dialCode, number: phoneNumber } : undefined;
+  if (!email && !phone) throw new Error('PAYMENT_PROFILE_INCOMPLETE');
+  return { first_name: firstName, last_name: lastName, ...(email ? { email } : {}), ...(phone ? { phone } : {}) };
+}
+
+export async function tapProviderReferences(customerUid: string, requestId: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`heavyar:${customerUid}:${requestId}`));
+  const stable = Array.from(new Uint8Array(digest)).map(value => value.toString(16).padStart(2, '0')).join('').slice(0, 48);
+  return { idempotent: `hvy_${stable}`, order: `ord_${stable}`, transaction: `txn_${stable}` };
+}
+
 export class TapPaymentProvider implements PaymentProvider {
   readonly name = 'tap';
   constructor(private readonly secret: string, private readonly merchantId: string, private readonly http: typeof fetch = fetch) {}
@@ -70,13 +111,15 @@ export class TapPaymentProvider implements PaymentProvider {
     if (!r.ok) throw new Error('Payment provider unavailable');
     return data;
   }
-  async create(input: { amount: number; currency: string; metadata: Record<string, string>; idempotencyKey: string }) {
-    const d = await this.call('/charges', { method: 'POST', headers: { 'Idempotency-Key': input.idempotencyKey }, body: JSON.stringify({ amount: input.amount, currency: input.currency, customer_initiated: true, threeDSecure: true, save_card: false, description: 'Heavyar rental payment', metadata: input.metadata, source: { id: 'src_all' }, merchant: { id: this.merchantId }, redirect: { url: 'https://heavyar.app/payment/callback' } }) });
-    return { id: String(d.id), status: String(d.status || ''), amount: Number(d.amount), currency: String(d.currency), checkoutUrl: d.redirect?.url || '', metadata: d.metadata || input.metadata };
+  async create(input: { amount: number; currency: string; metadata: Record<string, string>; idempotencyKey: string; requestId: string; customerUid: string; customer: TapCustomer }) {
+    const reference = await tapProviderReferences(input.customerUid, input.requestId);
+    const redirectUrl = `${TAP_REDIRECT_URL}?requestId=${encodeURIComponent(input.requestId)}`;
+    const d = await this.call('/charges', { method: 'POST', headers: { 'Idempotency-Key': input.idempotencyKey }, body: JSON.stringify({ amount: input.amount, currency: input.currency, customer_initiated: true, threeDSecure: true, save_card: false, description: 'Heavyar rental payment', metadata: input.metadata, reference, customer: input.customer, source: { id: 'src_all' }, merchant: { id: this.merchantId }, post: { url: TAP_WEBHOOK_URL }, redirect: { url: redirectUrl } }) });
+    return { id: String(d.id), status: String(d.status || ''), amount: Number(d.amount), currency: String(d.currency), checkoutUrl: tapCheckoutUrl(d.transaction?.url), metadata: d.metadata || input.metadata };
   }
   async retrieve(id: string) {
     const d = await this.call(`/charges/${encodeURIComponent(id)}`);
-    return { id: String(d.id), status: String(d.status || ''), amount: Number(d.amount), currency: String(d.currency), checkoutUrl: d.redirect?.url || '', metadata: d.metadata || {} };
+    return { id: String(d.id), status: String(d.status || ''), amount: Number(d.amount), currency: String(d.currency), checkoutUrl: tapCheckoutUrl(d.transaction?.url), metadata: d.metadata || {} };
   }
 }
 
