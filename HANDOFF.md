@@ -39,7 +39,7 @@ Code and configuration are authoritative. Never infer deployment status from a G
 - Prepared the current iOS App Store release boundary: identity/Nafath verification UI is disabled release-wide on iOS, Profile performs no verification fetch when disabled, and stale verification links return to Profile.
 - Audited the enabled iOS data flow: no government ID/passport input, no bank-account/IBAN/payout-bank input, and no Heavyar storage of raw card number/CVV; Tap remains hosted for physical/off-app services.
 - Prepared `APPLE_PRIVACY_DECLARATION.md` and `APPLE_REVIEW_NOTES.md`; App Store Connect entry, signing, build, and submission remain human release actions.
-- Updated the separate `heavyar-website` privacy source for consistency; it is uncommitted and was not deployed.
+- The separate `heavyar-website` privacy policy and permanent App Store support routes are committed and deployed: privacy `90fba5348b77a1631f93cbeb42334cafa24406d9`, support `65fb49deefe977834d95838d73f6b72033a86390`. Public `/privacy`, `/support`, and `/en/support` return HTTP 200.
 - Removed Push registration and secondary work from the canonical login critical path.
 - Added auth-policy deduplication, bounded operations, cancellation, and stale-account guards.
 - Removed Rental V2 listing hydration/N+1 reads while retaining isolated legacy compatibility.
@@ -54,11 +54,11 @@ Code and configuration are authoritative. Never infer deployment status from a G
 Latest local gate on 2026-10-03:
 
 - Mobile TypeScript: PASS
-- Mobile tests: PASS — 414/414
+- Mobile tests: PASS — 415/415
 - Worker TypeScript: PASS
 - Worker tests: PASS — 487/487
 - Store Review contract: PASS — 6/6
-- Separate website privacy tests/build: PASS — 38/38 and build complete
+- Separate website privacy/support tests/build: PASS — 40/40 and build complete
 - `git diff --check`: PASS (line-ending warnings only)
 
 ## Current Known Issues
@@ -81,7 +81,7 @@ Latest local gate on 2026-10-03:
 
 ## Production Deployment Status
 
-The iOS privacy/verification release-safety work is local and uncommitted pending owner review. No EAS build, App Store Connect change, Apple submission, Worker/Admin deployment, website deployment, or Production-data mutation was performed.
+The iOS privacy/verification release-safety work is committed at `4f2d9b6e43ff17b30e347b354d0ecf8171f2cb5f`. The separate website privacy/support work is deployed at the commits recorded above. No EAS build, App Store Connect change, Apple submission, Worker/Admin deployment, or Production-data mutation was performed by that release-safety phase.
 
 The auth/data-flow/performance batch documented here is committed to the Heavyar Git repository when this file appears in GitHub history. It is **not yet deployed** as a new Worker release, Admin/Firebase Hosting release, or mobile EAS/APK/AAB build.
 

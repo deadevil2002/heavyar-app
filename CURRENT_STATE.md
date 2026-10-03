@@ -24,7 +24,7 @@ The committed GitHub baseline includes the approved authentication recovery/perf
 | Mobile | Auth/data-flow/performance batch is in the handoff baseline | No EAS build, APK, AAB, or store submission was produced from this batch |
 | Worker/API | Source and tests include controlled driver concurrency and supporting data-flow changes | This batch was not deployed. The last separately verified Worker deployment before it was version `8e09fc26-4dd6-4dad-8fcc-8a3ef6ee8c71` from commit `dfb2aaa91cdbce75e33a07701d1dcf305d074020` |
 | Admin | Existing source remains in the repository; no Admin source change was required by this batch | No Admin/Firebase Hosting deployment was performed for this batch |
-| Website | Canonical content remains in separate repository `deadevil2002/heavyar-website` | No website, Pages, DNS, TLS, or routing deployment was performed |
+| Website | Canonical content remains in separate repository `deadevil2002/heavyar-website` | Privacy commit `90fba5348b77a1631f93cbeb42334cafa24406d9` and support-route commit `65fb49deefe977834d95838d73f6b72033a86390` are deployed; public `/privacy`, `/support`, and `/en/support` return HTTP 200 |
 | Production data | No business-data mutation in this freeze/sync phase | Unchanged |
 
 ## Current mobile version
@@ -109,7 +109,7 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 4. Refund execution and Marketplace/Split settlement are not ready.
 5. The 20% commission rule is draft only and must not be activated without explicit owner approval.
 6. Google and Apple sign-in remain intentionally hidden/not implemented.
-7. Before App Store submission, the owner must enter the privacy declaration/review credentials, inspect the signed archive/SDK privacy manifests and required-reason APIs, complete real-device QA, and confirm the final public privacy deployment.
+7. Before App Store submission, the owner must enter the privacy declaration/review credentials, inspect the signed archive/SDK privacy manifests and required-reason APIs, and complete real-device QA. The final public privacy/support deployment is verified separately above.
 
 ## Validation status
 
@@ -118,12 +118,12 @@ Final repository-sync gate on 2026-10-03:
 | Check | Result |
 |---|---|
 | Mobile TypeScript | PASS |
-| Full mobile tests | PASS — 414/414 (361 base Vitest + 39 jsdom/discovery Vitest + 14 Node) |
+| Full mobile tests | PASS — 415/415 (362 base Vitest + 39 jsdom/discovery Vitest + 14 Node) |
 | Worker TypeScript | PASS |
 | Full Worker tests | PASS — 487/487 |
-| Focused iOS privacy/verification tests | PASS — 5/5 |
+| Focused iOS privacy/verification tests | PASS — 6/6 |
 | Store Review contract tests | PASS — 6/6 |
-| Separate website privacy tests/build | PASS — 38/38; build complete |
+| Separate website privacy/support tests/build | PASS — 40/40; build complete |
 | `git diff --check` | PASS (line-ending warnings only) |
 | Refetch storm | NONE |
 | Listener leak | NONE |

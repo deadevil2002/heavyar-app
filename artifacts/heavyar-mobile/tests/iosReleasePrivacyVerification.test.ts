@@ -92,4 +92,29 @@ describe('current iOS release identity-verification boundary', () => {
     });
     expect(matches).toEqual([]);
   });
+
+  it('ships only the image-library permission used by the current iOS image flow', () => {
+    const appConfig = JSON.parse(source('app.json'));
+    const imagePickerPlugin = appConfig.expo.plugins.find((plugin: unknown) =>
+      Array.isArray(plugin) && plugin[0] === 'expo-image-picker',
+    );
+    expect(imagePickerPlugin?.[1]).toMatchObject({
+      photosPermission: 'Heavyar uses your photo library when you choose an image for equipment or your profile.',
+      cameraPermission: false,
+      microphonePermission: false,
+    });
+    expect(appConfig.expo.ios.infoPlist.NSPhotoLibraryUsageDescription).toBeTruthy();
+    expect(appConfig.expo.ios.infoPlist).not.toHaveProperty('NSCameraUsageDescription');
+    expect(appConfig.expo.ios.infoPlist).not.toHaveProperty('NSMicrophoneUsageDescription');
+
+    const enabledSources = [
+      ...sourceFiles('app'),
+      ...sourceFiles('components'),
+      ...sourceFiles('contexts'),
+      ...sourceFiles('services'),
+    ];
+    for (const path of enabledSources) {
+      expect(readFileSync(path, 'utf8')).not.toMatch(/launchCameraAsync|requestCameraPermissionsAsync/);
+    }
+  });
 });

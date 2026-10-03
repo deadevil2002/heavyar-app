@@ -14,7 +14,8 @@ contains no credentials or private signing material.
 | Expo owner / project / UUID | `isaudi.ai` / `heavyar` / `57eb8d63-5541-479e-b81b-89733b8068e5` |
 | Firebase project | `heavyar-app` |
 | Worker | `https://heavyar-api.heavyar-official.workers.dev` |
-| Admin / public policy host | `https://heavyar-app.web.app` |
+| Admin host | `https://heavyar-app.web.app` |
+| Public policy/support host | `https://heavyar.com` |
 | Payment mode | Tap TEST only |
 | Nafath | Current iOS identity-verification UI disabled release-wide; official integration not enabled |
 
@@ -63,9 +64,10 @@ The Worker is the authoritative boundary for:
 - Notification outbox delivery and device-token ownership
 - Account-deletion request locking, token revocation, and retry state
 
-Firebase Hosting serves the admin dashboard and public `/privacy`, `/terms`, `/support`,
-and `/account-deletion` routes. Admin actions require the admin role; normal users receive
-authorization failures.
+Firebase Hosting serves the admin dashboard. The separate `heavyar-website` production
+site serves the public policy and support routes on `https://heavyar.com`, including
+`/privacy`, `/support`, and `/en/support`. Admin actions require the admin role; normal
+users receive authorization failures.
 
 Payment redirects never prove payment. The Worker retrieves authoritative Tap state.
 The current safe return architecture opens checkout, resumes through the allowlisted
@@ -278,9 +280,11 @@ Current iOS release facts:
 - Identity/Nafath verification UI and its Profile network fetch are disabled for every iOS user through the central release capability.
 - Stale `/verification` and notification links resolve to Profile. Email-ownership verification remains a separate active account-security function.
 - Source audit found no government ID/passport input or request payload and no bank-account/IBAN/payout-bank input or request payload in the enabled iOS path.
+- Resolved iOS permissions keep the user-selected photo-library flow and remove unused camera and microphone usage descriptions; no location, contacts, tracking, Bluetooth, Health, or local-network usage description is configured.
 - Provider commercial-registration data remains normal marketplace information and uses neutral release wording rather than a governmental-verification claim.
 - Tap handles card entry in its hosted flow for physical/off-app services. Heavyar stores transaction/payment status records, not raw card numbers/CVV.
 - Human store artifacts: `docs/APPLE_PRIVACY_DECLARATION.md` and `docs/APPLE_REVIEW_NOTES.md`. Neither has been entered in App Store Connect yet.
+- Public privacy commit `90fba5348b77a1631f93cbeb42334cafa24406d9` and support-route commit `65fb49deefe977834d95838d73f6b72033a86390` are deployed from the separate website repository. `/privacy`, `/support`, and `/en/support` return HTTP 200.
 - Apple may show seller name `Salem Alnaimi` from the individual developer account. No code or branding change is required for that account metadata.
 
 1. In Apple Developer, create/use bundle ID `com.heavyar.app`.
