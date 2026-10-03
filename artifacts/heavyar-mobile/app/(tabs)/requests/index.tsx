@@ -1,27 +1,26 @@
-import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator } from 'react-native';
+import React, { Suspense, useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import { InteractionManager, View, Text, StyleSheet, FlatList, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Lock, ShieldAlert } from 'lucide-react-native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import {
-  fetchEquipmentByIds,
-  fetchUserRequests,
-  FirestoreCursor,
-  subscribeToUserRequests,
-} from '@/services/firestoreService';
+import type { RequestFirestoreCursor } from '@/services/requestRealtimeService';
 import RequestCard from '@/components/RequestCard';
 import EmptyState from '@/components/EmptyState';
-import { Equipment, EquipmentRequest } from '@/types';
+import type { Equipment, EquipmentRequest } from '@/types';
 import { mobilePerformance } from '@/utils/mobilePerformance';
-import DriverRequestsSection from '@/components/DriverRequestsSection';
 import { driverRequestsAllowed, requestSections, resolveRequestSection } from '@/services/requestSections';
 import { safeErrorMessage } from '@/services/errorMessages';
 import { HeavyarSegment, HeavyarSegmentedControl, HeavyarSegmentText } from '@/components/ui/heavyar';
+import { markRouteStage, startRouteModuleEvaluation } from '@/utils/routePerformance';
+
+const requestsModuleEvaluation = startRouteModuleEvaluation('requests');
+const DriverRequestsSection = React.lazy(() => import('@/components/DriverRequestsSection'));
 
 export default function RequestsScreen() {
+  markRouteStage('requests', 'component_first_execute');
   const { user } = useAuth();
   const { isRTL, t } = useLanguage();
   const router = useRouter();
@@ -33,6 +32,13 @@ export default function RequestsScreen() {
     setFocused(true);
     return () => setFocused(false);
   }, []));
+  useLayoutEffect(() => {
+    markRouteStage('requests', 'react_commit');
+  });
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => markRouteStage('requests', 'visible_shell'));
+    return () => cancelAnimationFrame(frame);
+  });
   if (!user) return <EquipmentRequestsSection />;
   return <View style={styles.container}>
     <SafeAreaView edges={['top']} style={styles.safeArea}>
@@ -53,7 +59,9 @@ export default function RequestsScreen() {
         </Text>
       </View> : null}
       {focused ? selected === 'drivers'
-        ? <DriverRequestsSection key={`${user.uid}:${user.role}`} />
+        ? <Suspense fallback={<View style={styles.sectionLoading}><ActivityIndicator color={Colors.gold} /></View>}>
+          <DriverRequestsSection key={`${user.uid}:${user.role}`} />
+        </Suspense>
         : <EquipmentRequestsSection key={`${user.uid}:${user.role}`} activeOnly={selected === 'active'} /> : null}
     </SafeAreaView>
   </View>;
@@ -66,17 +74,18 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
   const router = useRouter();
   const [requests, setRequests] = useState<EquipmentRequest[]>([]);
   const [equipmentById, setEquipmentById] = useState<Map<string, Equipment>>(new Map());
-  const [cursor, setCursor] = useState<FirestoreCursor | null>(null);
+  const [cursor, setCursor] = useState<RequestFirestoreCursor | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasOlderPages, setHasOlderPages] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [initialDataPending, setInitialDataPending] = useState(true);
   const [subscriptionAttempt, setSubscriptionAttempt] = useState(0);
   const subscriptionIdentity = useRef('');
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const firstPageCursorRef = useRef<FirestoreCursor | null>(null);
+  const firstPageCursorRef = useRef<RequestFirestoreCursor | null>(null);
   const firstPageHasMoreRef = useRef(false);
   const hasOlderPagesRef = useRef(false);
   const visibleRequests = useMemo(() => activeOnly
@@ -105,35 +114,71 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
       hasOlderPagesRef.current = false;
       firstPageCursorRef.current = null;
       firstPageHasMoreRef.current = false;
+      setInitialDataPending(true);
     }
     setLoadError('');
     if (!currentUid) {
       setRequests([]);
       return;
     }
-    const unsub = subscribeToUserRequests(currentUid, requestPerspective, (page) => {
+    let unsubscribe: () => void = () => {};
+    let firstFrame = 0;
+    let secondFrame = 0;
+    let dataTimer: ReturnType<typeof setTimeout> | undefined;
+    let dataInteraction: { cancel(): void } | undefined;
+    const startData = () => void import('@/services/requestRealtimeService').then(service => {
       if (!active || identityRef.current !== identity) return;
-      setLoadError('');
-      mobilePerformance.markRefetch('Requests:bounded-live-page');
-      setRequests((previous) => {
-        const older = previous.slice(20);
-        const liveIds = new Set(page.items.map(item => item.id));
-        return [...page.items, ...older.filter(item => !liveIds.has(item.id))];
-      });
-      firstPageCursorRef.current = page.cursor;
-      firstPageHasMoreRef.current = page.hasMore;
-      if (!hasOlderPagesRef.current) {
-        setCursor(page.cursor);
-        setHasMore(page.hasMore);
-      }
-      void fetchEquipmentByIds(page.items.map(item => item.equipmentId)).then((equipment) => {
+      unsubscribe = service.subscribeToRequestPage(currentUid, requestPerspective, (page) => {
         if (!active || identityRef.current !== identity) return;
-        setEquipmentById(previous => new Map([...previous, ...equipment]));
-      }).catch(error => { if (active && identityRef.current === identity) setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en')); });
-    }, error => {
-      if (active && identityRef.current === identity) setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en'));
+        setLoadError('');
+        setInitialDataPending(false);
+        markRouteStage('requests', 'data_available');
+        markRouteStage('requests', 'fresh_data_complete');
+        mobilePerformance.markRefetch('Requests:bounded-live-page');
+        setRequests((previous) => {
+          const older = previous.slice(20);
+          const liveIds = new Set(page.items.map(item => item.id));
+          return [...page.items, ...older.filter(item => !liveIds.has(item.id))];
+        });
+        firstPageCursorRef.current = page.cursor;
+        firstPageHasMoreRef.current = page.hasMore;
+        if (!hasOlderPagesRef.current) {
+          setCursor(page.cursor);
+          setHasMore(page.hasMore);
+        }
+        void service.fetchRequestEquipmentByIds(service.requestEquipmentIdsNeedingHydration(page.items)).then((equipment) => {
+          if (!active || identityRef.current !== identity) return;
+          setEquipmentById(previous => new Map([...previous, ...equipment]));
+        }).catch(error => { if (active && identityRef.current === identity) setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en')); });
+      }, error => {
+        if (active && identityRef.current === identity) {
+          setInitialDataPending(false);
+          setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en'));
+          markRouteStage('requests', 'fresh_data_complete');
+        }
+      });
+    }).catch(error => {
+      if (active && identityRef.current === identity) {
+        setInitialDataPending(false);
+        setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en'));
+        markRouteStage('requests', 'fresh_data_complete');
+      }
     });
-    return () => { active = false; unsub(); };
+    firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        dataInteraction = InteractionManager.runAfterInteractions(() => {
+          dataTimer = setTimeout(startData, 100);
+        });
+      });
+    });
+    return () => {
+      active = false;
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+      dataInteraction?.cancel();
+      if (dataTimer) clearTimeout(dataTimer);
+      unsubscribe();
+    };
   }, [currentUid, requestPerspective, identity, subscriptionAttempt]);
 
   const renderItem = useCallback(({ item }: { item: EquipmentRequest }) => (
@@ -144,8 +189,9 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
     if (!cursor || !hasMore || loadingMore) return;
     setLoadingMore(true);
     try {
-      const page = await fetchUserRequests(currentUid, requestPerspective, cursor);
-      const equipment = await fetchEquipmentByIds(page.items.map(item => item.equipmentId));
+      const service = await import('@/services/requestRealtimeService');
+      const page = await service.fetchRequestPage(currentUid, requestPerspective, cursor);
+      const equipment = await service.fetchRequestEquipmentByIds(service.requestEquipmentIdsNeedingHydration(page.items));
       if (!mounted.current || identityRef.current !== identity) return;
       setEquipmentById(previous => new Map([...previous, ...equipment]));
       setRequests(previous => {
@@ -176,8 +222,9 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
     setRefreshing(true);
     setLoadError('');
     try {
-      const page = await fetchUserRequests(currentUid, requestPerspective);
-      const equipment = await fetchEquipmentByIds(page.items.map(item => item.equipmentId));
+      const service = await import('@/services/requestRealtimeService');
+      const page = await service.fetchRequestPage(currentUid, requestPerspective);
+      const equipment = await service.fetchRequestEquipmentByIds(service.requestEquipmentIdsNeedingHydration(page.items));
       if (!mounted.current) return;
       setRequests(page.items);
       setEquipmentById(equipment);
@@ -235,7 +282,9 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
           keyExtractor={item => item.id}
           contentContainerStyle={[styles.listContent, visibleRequests.length === 0 && styles.emptyListContent]}
           showsVerticalScrollIndicator={false}
-          ListEmptyComponent={<EmptyState title={t('no_requests')} />}
+          ListEmptyComponent={initialDataPending
+            ? <View style={styles.sectionLoading}><ActivityIndicator color={Colors.gold} /></View>
+            : <EmptyState title={t('no_requests')} />}
           ListFooterComponent={requests.length || hasMore ? (
             <View style={styles.paginationFooter}>
               {hasOlderPages ? (
@@ -410,4 +459,7 @@ const styles = StyleSheet.create({
   staleText: { color: Colors.textMuted, fontSize: 12, textDecorationLine: 'underline' },
   loadMoreButton: { backgroundColor: Colors.gold, borderRadius: 12, paddingHorizontal: 22, paddingVertical: 11 },
   loadMoreText: { color: Colors.primary, fontSize: 14, fontWeight: '700' },
+  sectionLoading: { flex: 1, minHeight: 180, alignItems: 'center', justifyContent: 'center' },
 });
+
+requestsModuleEvaluation.complete();

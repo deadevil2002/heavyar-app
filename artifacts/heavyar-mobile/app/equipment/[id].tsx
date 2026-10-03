@@ -21,10 +21,12 @@ import { loadRoleEquipmentDetail, ownerEquipmentFallbackUid } from '@/services/e
 import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
 import ListingPriceDisplay from '@/components/ListingPriceDisplay';
 import { HeavyarButton, HeavyarButtonText, HeavyarIconButton } from '@/components/ui/heavyar';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function EquipmentDetailScreen() {
+  mobilePerformance.countRender('EquipmentDetail');
   const { id } = useLocalSearchParams<{ id: string }>();
   const { isRTL, t, localizedText } = useLanguage();
   const auth = useAuth();

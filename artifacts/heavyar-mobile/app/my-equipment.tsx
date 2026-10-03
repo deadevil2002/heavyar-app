@@ -15,8 +15,10 @@ import { Equipment } from '@/types';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 import { setListingControls, archiveListing, deleteListing, WorkerError } from '@/services/workerClient';
 import ListingPriceDisplay from '@/components/ListingPriceDisplay';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 export default function MyEquipmentScreen() {
+  mobilePerformance.countRender('MyEquipment');
   const { isRTL, t, localizedText } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();

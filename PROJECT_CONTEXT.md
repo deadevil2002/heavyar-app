@@ -60,6 +60,17 @@ Source: `artifacts/heavyar-mobile/app.json` and `services/firebaseConfigResolver
 - The Vite Admin is in `artifacts/heavyar-admin`; it is a separate UI over the Heavyar Worker/Firebase architecture.
 - Website serving is a separate boundary. This worktree contains the `heavyar-web` proxy Worker source, whose upstream is `heavyar-website.pages.dev`; it is not the canonical website content repository.
 
+### Mobile data ownership
+
+- Mutations and security-sensitive reads remain Worker-authoritative. The mobile client must not direct-write payment state or bypass Worker validation.
+- Equipment-request lists and details reconcile through bounded Firestore realtime listeners after Worker mutations commit canonical documents.
+- Public discovery is a UID/filter/country-scoped React Query flow over the Worker projection, with explicit stale windows, cancellation, and targeted invalidation.
+- Rental V2 request rendering consumes immutable request/equipment/commercial snapshots. It never falls back to current listing pricing or hydrates current listings for normal V2 rows.
+- Account-bound asynchronous work captures the UID and is cancelled or ignored after logout/account switch. Cached request-detail snapshots are UI acceleration only, never authorization, mutation, payment, or settlement authority.
+- Requests code may be prewarmed after authenticated Home becomes usable. Prewarming imports code only and must not mount screens, read data, or create listeners.
+
+The complete domain contract is in `docs/mobile-data-flow.md`.
+
 ## Authentication and language
 
 Authentication is a two-stage process:
@@ -142,3 +153,6 @@ Payment creation/verification is Worker-authoritative and uses canonical request
 - React Query stale times, pagination, deduplication, cancellation, and bounded discovery timeouts.
 - Reduced Motion handling in cold-launch animation.
 - Avoid unnecessary dependencies and do not refresh/fetch public inventory for unresolved or disallowed roles.
+- Push registration and other secondary startup work do not block canonical authentication readiness.
+- Requests prewarms only its route/data-service code after Home settles; Driver-only UI and request-detail rental enrichment remain deferred until needed.
+- Request Detail renders a UID/request-scoped ephemeral snapshot first when available, then replaces it with canonical realtime state.

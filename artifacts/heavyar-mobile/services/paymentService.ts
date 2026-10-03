@@ -1,6 +1,4 @@
-import { getFirebaseAuth } from './firebaseConfig';
-import { WORKER_BASE_URL } from '@/constants/worker';
-import { createAccountDeletionRequest } from './accountDeletionContract';
+import { request } from './workerClient';
 import type { CommercialSnapshot } from '@/types';
 
 export { createAccountDeletionRequest } from './accountDeletionContract';
@@ -58,15 +56,10 @@ export interface VerifyPaymentResponse {
 
 export async function createPayment(params: CreatePaymentParams): Promise<CreatePaymentResponse> {
   try {
-    const token = await getFirebaseAuth().currentUser?.getIdToken();
-    if (!token) return { success: false, error: 'Please sign in before paying' };
-    const response = await fetch(`${WORKER_BASE_URL}/api/create-payment`, {
+    const result = await request<CreatePaymentResponse>('/api/create-payment', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ requestId: params.requestId, purpose: params.purpose }),
     });
-
-    const result = await response.json() as CreatePaymentResponse;
     result.status = result.canonicalStatus ?? result.paymentState ?? result.status;
     return result;
   } catch {
@@ -76,15 +69,10 @@ export async function createPayment(params: CreatePaymentParams): Promise<Create
 
 export async function verifyPayment(paymentId: string): Promise<VerifyPaymentResponse> {
   try {
-    const token = await getFirebaseAuth().currentUser?.getIdToken();
-    if (!token) return { success: false, error: 'Please sign in before verifying payment' };
-    const response = await fetch(`${WORKER_BASE_URL}/api/verify-payment`, {
+    const result = await request<VerifyPaymentResponse>('/api/verify-payment', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ paymentId }),
     });
-
-    const result = await response.json() as VerifyPaymentResponse;
     result.status = result.canonicalStatus ?? result.paymentState ?? result.status;
     return result;
   } catch {
@@ -93,10 +81,8 @@ export async function verifyPayment(paymentId: string): Promise<VerifyPaymentRes
 }
 
 export async function requestAccountDeletion(): Promise<void> {
-  const token = await getFirebaseAuth().currentUser?.getIdToken();
-  if (!token) throw new Error('AUTH_REQUIRED');
-  const response = await fetch(`${WORKER_BASE_URL}/api/account/deletion-request`, {
-    ...createAccountDeletionRequest(token),
+  await request('/api/account/deletion-request', {
+    method: 'POST',
+    body: JSON.stringify({ confirmation: 'DELETE_MY_ACCOUNT' }),
   });
-  if (!response.ok) throw new Error('DELETION_REQUEST_FAILED');
 }

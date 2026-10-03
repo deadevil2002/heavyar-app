@@ -21,8 +21,10 @@ import {
   type NotificationItem,
   type NotificationPreferences,
 } from '@/services/notificationService';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 export default function NotificationsScreen() {
+  mobilePerformance.countRender('Notifications');
   const { t, isRTL, localizedText } = useLanguage();
   const { isAuthenticated, user } = useAuth();
   const uid = isAuthenticated ? user?.uid || '' : '';

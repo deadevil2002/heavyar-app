@@ -31,6 +31,8 @@ it('actual createListing returns committed success despite a failing observer', 
     '../constants/worker': { WORKER_BASE_URL: 'https://worker.test' },
     './listingPayload': { sanitizeCreateListingPayload: (value: unknown) => value },
     './discoveryInvalidation': { invalidatePublicEquipment },
+    './mutationError': { safeSupportCode },
+    '@/utils/mobilePerformance': { mobilePerformance: { trackNetwork: (_label: string, run: () => unknown) => run(), markTimeout: () => {}, markCancellation: () => {} } },
   };
   new Function('require', 'exports', code)((name: string) => modules[name] || {}, exports);
   const result = { success: true, id: 'committed-listing' };
@@ -53,6 +55,7 @@ it.each(['before', 'token', 'response'])('pins Worker request identity across %s
     './firebaseConfig': { getFirebaseAuth: () => auth },
     '../constants/worker': { WORKER_BASE_URL: 'https://worker.test' },
     './mutationError': { safeSupportCode },
+    '@/utils/mobilePerformance': { mobilePerformance: { trackNetwork: (_label: string, run: () => unknown) => run(), markTimeout: () => {}, markCancellation: () => {} } },
   };
   new Function('require', 'exports', code)((name: string) => modules[name] || {}, exports);
   const mock = vi.fn(async () => { auth.currentUser = other; return Response.json({ success: true }); });

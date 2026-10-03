@@ -1,12 +1,15 @@
 import { Tabs } from "expo-router";
 import { House, Search, Plus, ClipboardList, CircleUserRound } from "lucide-react-native";
-import React from "react";
-import { View, StyleSheet } from "react-native";
+import React, { useEffect } from "react";
+import { InteractionManager, View, StyleSheet } from "react-native";
 import Colors from "@/constants/colors";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { mobilePerformance } from "@/utils/mobilePerformance";
 import { HeavyarLoadingState } from "@/components/ui/heavyar";
+import { markFirstAuthenticatedScreenVisible } from "@/utils/authPerformance";
+import { prewarmRequestsRouteCode } from '@/services/routePrewarm';
+import { markRouteStage, startRoutePress } from '@/utils/routePerformance';
 
 export default function TabLayout() {
   const { t } = useLanguage();
@@ -17,6 +20,28 @@ export default function TabLayout() {
     && user?.role === 'provider';
   mobilePerformance.countRender('Tabs');
 
+  useEffect(() => {
+    if (!isResolvingSession && isAuthenticated && accountState === 'authenticated_complete') {
+      markFirstAuthenticatedScreenVisible();
+    }
+  }, [accountState, isAuthenticated, isResolvingSession]);
+
+  useEffect(() => {
+    if (isResolvingSession || !isAuthenticated || accountState !== 'authenticated_complete' || !user?.uid) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const interaction = InteractionManager.runAfterInteractions(() => {
+      timer = setTimeout(() => {
+        if (!cancelled) void prewarmRequestsRouteCode().catch(() => undefined);
+      }, 250);
+    });
+    return () => {
+      cancelled = true;
+      interaction.cancel();
+      if (timer) clearTimeout(timer);
+    };
+  }, [accountState, isAuthenticated, isResolvingSession, user?.uid]);
+
   if (isResolvingSession) {
     return <View style={styles.sessionLoading}>
       <HeavyarLoadingState />
@@ -25,14 +50,18 @@ export default function TabLayout() {
 
   return (
     <Tabs
-      screenListeners={{
+      screenListeners={({ route }) => ({
         tabPress: () => {
           if (!mobilePerformance.isEnabled()) return;
+          if (route.name === 'requests') startRoutePress('requests');
           const press = mobilePerformance.startPress('Tabs:next-js-frame');
           // Frame scheduling is only a JS-visible proxy, not native paint latency.
           requestAnimationFrame(() => press.visible());
         },
-      }}
+        focus: () => {
+          if (route.name === 'requests') markRouteStage('requests', 'router_received');
+        },
+      })}
       screenOptions={{
         lazy: true,
         headerShown: false,

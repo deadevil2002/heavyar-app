@@ -90,14 +90,32 @@ async function request<T>(path: string, init?: RequestInit, expectedUid?: string
   const token = await user?.getIdToken();
   assertCurrent();
   if (!token) throw new Error('AUTH_REQUIRED');
-  const send = (authToken: string) => mobilePerformance.trackNetwork('notifications', () => fetch(`${WORKER_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${authToken}`,
-      ...(init?.headers || {}),
-    },
-  }));
+  const label = path.startsWith('/api/notifications/unread-count') ? 'notifications.unread'
+    : path === '/api/notifications' || path.startsWith('/api/notifications?') ? 'notifications.list'
+      : path.includes('/preferences') ? 'notifications.preferences'
+        : path.includes('/devices') ? 'notifications.devices' : 'notifications.mutation';
+  const send = async (authToken: string) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        mobilePerformance.trackNetwork(label, () => fetch(`${WORKER_BASE_URL}${path}`, {
+          ...init,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+            ...(init?.headers || {}),
+          },
+        })),
+        new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('NOTIFICATIONS_TIMEOUT')), 15_000); }),
+      ]);
+    } catch (error) {
+      if (init?.signal?.aborted) mobilePerformance.markCancellation(label);
+      else if (error instanceof Error && error.message === 'NOTIFICATIONS_TIMEOUT') mobilePerformance.markTimeout(label);
+      throw error;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  };
   let response = await send(token);
   assertCurrent();
   if (response.status === 401 && user) {
@@ -124,28 +142,45 @@ export type DeviceRegistrationResult =
   | { status: 'registered'; token: string }
   | { status: 'web' | 'permission-denied' | 'missing-project-id' | 'invalid-token' };
 
-export async function registerCurrentDevice(): Promise<DeviceRegistrationResult> {
+export async function registerCurrentDevice(expectedUid?: string): Promise<DeviceRegistrationResult> {
   if (Platform.OS === 'web') return { status: 'web' };
+  const auth = getFirebaseAuth();
+  const uid = expectedUid ?? auth.currentUser?.uid ?? '';
+  const initialUser = auth.currentUser;
+  const assertCurrent = () => {
+    assertNotificationIdentity(uid, auth.currentUser?.uid);
+    if (auth.currentUser !== initialUser) throw new Error('SESSION_EXPIRED');
+  };
+  assertCurrent();
   const Notifications = await import('expo-notifications');
   const Constants = await import('expo-constants');
+  assertCurrent();
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('default', {
       name: 'Heavyar',
       importance: Notifications.AndroidImportance.DEFAULT,
     });
+    assertCurrent();
   }
   const permissions = await Notifications.getPermissionsAsync();
+  assertCurrent();
   const granted = permissions.granted || (await Notifications.requestPermissionsAsync()).granted;
+  assertCurrent();
   if (!granted) return { status: 'permission-denied' };
   const projectId = Constants.default.expoConfig?.extra?.eas?.projectId;
   if (!projectId) return { status: 'missing-project-id' };
   const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+  assertCurrent();
   if (!/^ExpoPushToken\[[A-Za-z0-9_-]+\]$/.test(token)) return { status: 'invalid-token' };
+  const currentInstallationId = await installationId();
+  assertCurrent();
   await request('/api/notifications/devices', {
     method: 'POST',
-    body: JSON.stringify({ token, installationId: await installationId(), platform: Platform.OS }),
-  });
+    body: JSON.stringify({ token, installationId: currentInstallationId, platform: Platform.OS }),
+  }, uid);
+  assertCurrent();
   await AsyncStorage.setItem(INSTALLATION_TOKEN_KEY, token);
+  assertCurrent();
   return { status: 'registered', token };
 }
 

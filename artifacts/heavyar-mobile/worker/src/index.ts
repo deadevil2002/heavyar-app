@@ -3407,9 +3407,26 @@ async function emailEligible(env: Env, verified: unknown, action: 'rental' | 'dr
 async function eligibleDriver(env: Env, uid: string, profile: any): Promise<boolean> {
   if (!profile || profile.active !== true || profile.moderationStatus !== 'approved') return false;
   const account = await getDoc(env, 'users', uid);
-  if (!eligibleAccount(account, 'driver') || !await emailEligible(env, account.emailVerified, 'driver')) return false;
-  const country = await countrySettings(env, String(profile.countryCode || account.countryCode || ''));
+  if (!eligibleAccount(account, 'driver')) return false;
+  const [emailAllowed, country] = await Promise.all([
+    emailEligible(env, account.emailVerified, 'driver'),
+    countrySettings(env, String(profile.countryCode || account.countryCode || '')),
+  ]);
+  if (!emailAllowed) return false;
   return country.enabled === true && country.marketplaceAvailable === true && country.code === String(profile.countryCode || '').toUpperCase();
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await mapper(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, worker));
+  return results;
 }
 
 async function ownerDriverProfile(env: Env, uid: string, profile: any) {
@@ -3579,13 +3596,16 @@ async function driverRequestList(req: Request, env: Env, u: User) {
     cursor = { id: cursorId, createdAt: String(raw.data.createdAt || '') };
   }
   const rows = await driverRequestRows(env, asDriver ? 'driverUid' : 'requesterUid', u.uid, limit + 1, cursor);
-  const requests = [];
-  for (const row of rows.slice(0, limit)) {
-    const driverRaw = await getDoc(env, 'driverProfiles', String(row.data.driverUid || ''));
+  const requests = await mapWithConcurrency(rows.slice(0, limit), 5, async (row) => {
+    const driverUid = String(row.data.driverUid || '');
+    const requesterPromise = getDoc(env, 'users', String(row.data.requesterUid || ''));
+    const driverRaw = await getDoc(env, 'driverProfiles', driverUid);
     const driverIsPublic = driverRaw && await eligibleDriver(env, String(row.data.driverUid), driverRaw);
-    const driverId = driverIsPublic ? await ensureDriverPublicId(env, String(row.data.driverUid), driverRaw) : null;
-    const requester = await getDoc(env, 'users', String(row.data.requesterUid || ''));
-    requests.push({
+    const [driverId, requester] = await Promise.all([
+      driverIsPublic ? ensureDriverPublicId(env, driverUid, driverRaw) : Promise.resolve(null),
+      requesterPromise,
+    ]);
+    return {
       id: row.id,
       status: String(row.data.status || ''),
       notes: String(row.data.notes || ''),
@@ -3594,8 +3614,8 @@ async function driverRequestList(req: Request, env: Env, u: User) {
       driver: driverIsPublic ? publicDriverProfile({ ...driverRaw, id: driverId }) : null,
       requesterName: String(requester?.nameEn || requester?.nameAr || requester?.displayName || ''),
       isRequester: row.data.requesterUid === u.uid,
-    });
-  }
+    };
+  });
   return out(env, req, { success: true, requests, nextCursor: rows.length > limit ? rows[limit - 1].id : undefined });
 }
 

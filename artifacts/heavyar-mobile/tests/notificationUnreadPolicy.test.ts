@@ -48,6 +48,9 @@ describe('authoritative unread cache policy', () => {
     const hook = readFileSync('hooks/useNotificationUnread.ts', 'utf8');
     expect(hook).not.toMatch(/setInterval|refetchInterval/);
     expect(hook).toContain('staleTime: NOTIFICATION_UNREAD_STALE_MS');
+    expect(hook).toContain("const focusedIdentity = useRef('')");
+    expect(hook).toContain("state?.fetchStatus === 'fetching'");
+    expect(hook).toContain('Date.now() - state.dataUpdatedAt < NOTIFICATION_UNREAD_STALE_MS');
   });
 
   it('does not scan or backfill provider inventory merely by viewing Profile', () => {
@@ -57,7 +60,7 @@ describe('authoritative unread cache policy', () => {
     // Focus may activate the selected lazy section, but must not directly
     // issue an unconditional network refresh.
     expect(requests).not.toMatch(/useFocusEffect\(useCallback\(\(\) => \{[^}]*fetchUserRequests/);
-    expect(requests).toContain('subscribeToUserRequests');
+    expect(requests).toContain('subscribeToRequestPage');
   });
 
   it('deduplicates mount/focus and performs zero extra calls for fresh tab switches', async () => {

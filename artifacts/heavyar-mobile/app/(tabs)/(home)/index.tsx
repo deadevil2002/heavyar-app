@@ -24,6 +24,7 @@ import { mobilePerformance } from '@/utils/mobilePerformance';
 import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
 import { useNotificationUnread } from '@/hooks/useNotificationUnread';
 import { driverRequestsAllowed } from '@/services/requestSections';
+import { startRoutePress } from '@/utils/routePerformance';
 
 const HomeIconButton = styled(Button, {
   animateOnly: ['opacity', 'transform'],
@@ -94,6 +95,10 @@ function OperationsHome() {
   const router = useRouter();
   const provider = user?.role === 'provider';
   const canUseDriverRequests = driverRequestsAllowed(user);
+  const openRequests = useCallback((section: 'equipment' | 'active' | 'drivers') => {
+    startRoutePress('requests');
+    router.push({ pathname: '/(tabs)/requests', params: { section } });
+  }, [router]);
   const rowDirection = Platform.OS === 'web'
     ? (isRTL ? 'row-reverse' : 'row')
     : (isRTL === I18nManager.isRTL ? 'row' : 'row-reverse');
@@ -135,14 +140,14 @@ function OperationsHome() {
             <HomeIconButton chromeless theme="dark" homeTone="default" style={styles.providerAction} onPress={() => router.push('/(tabs)/add')}>
               {actionIcon(PlusCircle)}<Text style={styles.providerActionText}>{isRTL ? 'إضافة معدة' : 'Add Equipment'}</Text>
             </HomeIconButton>
-            <HomeIconButton chromeless theme="dark" homeTone="default" style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'equipment' } })}>
+            <HomeIconButton chromeless theme="dark" homeTone="default" style={styles.providerAction} onPress={() => openRequests('equipment')}>
               {actionIcon(Inbox)}<Text style={styles.providerActionText}>{isRTL ? 'الطلبات الواردة' : 'Incoming Requests'}</Text>
             </HomeIconButton>
-            <HomeIconButton chromeless theme="dark" homeTone="default" style={styles.providerAction} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'active' } })}>
+            <HomeIconButton chromeless theme="dark" homeTone="default" style={styles.providerAction} onPress={() => openRequests('active')}>
               {actionIcon(Activity)}<Text style={styles.providerActionText}>{isRTL ? 'الإيجارات النشطة' : 'Active Rentals'}</Text>
             </HomeIconButton>
           </>}
-          {!provider && <HomeIconButton chromeless theme="dark" homeTone="default" style={[styles.providerAction, styles.driverActionWide]} onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}>
+          {!provider && <HomeIconButton chromeless theme="dark" homeTone="default" style={[styles.providerAction, styles.driverActionWide]} onPress={() => openRequests('drivers')}>
             {actionIcon(Inbox)}<Text style={styles.providerActionText}>{t('my_requests')}</Text>
           </HomeIconButton>}
         </View>
@@ -164,7 +169,7 @@ function OperationsHome() {
         </Button>
         <HomeChip chromeless theme="dark" selected={false} bg="$surface" borderColor="$borderColor"
           style={[styles.homeChip, styles.operationsRequestsLink]} pressStyle={styles.homeChipPressed} transition="200ms"
-          onPress={() => router.push({ pathname: '/(tabs)/requests', params: { section: 'drivers' } })}>
+          onPress={() => openRequests('drivers')}>
           <Text style={styles.homeChipText}>{t('my_requests')}</Text>
         </HomeChip>
       </View>}

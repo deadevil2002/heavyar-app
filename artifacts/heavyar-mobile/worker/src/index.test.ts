@@ -993,6 +993,37 @@ describe('worker security boundary', () => {
     }
   });
 
+  test('an incomplete legacy provider resumes under the same Firebase identity', async () => {
+    const uid = 'legacy-provider';
+    const email = 'legacy-provider@example.test';
+    __test.setAuth({ uid, email, emailVerified: true, admin: false });
+    const commits: unknown[] = [];
+    __test.captureCommits(commits);
+    __test.setFirestore((collection, id) => {
+      if (collection === 'users' && id === uid) return {
+        uid, email, role: 'provider', nameEn: 'Legacy Provider', region: 'Riyadh', city: 'Riyadh',
+      };
+      if (collection === 'countryConfigs' && id === 'SA') return {
+        enabled: true, marketplaceAvailable: true, providerOnboardingAvailable: true, currency: 'SAR',
+      };
+      return null;
+    });
+
+    const response = await worker.fetch(request('/api/register-profile', {
+      role: 'provider', providerType: 'individual', termsAccepted: true,
+      nameEn: 'Legacy Provider', nameAr: 'مزود قديم', countryCode: 'SA',
+      region: 'Riyadh', city: 'Riyadh',
+    }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+
+    expect(response.status).toBe(200);
+    const writes = commits.find((item: any) => Array.isArray(item)
+      && item.some((write: any) => String(write.update?.name).includes(`/users/${uid}`))) as any[];
+    const userWrite = writes.find((write: any) => String(write.update?.name).includes(`/users/${uid}`));
+    expect(userWrite.currentDocument.updateTime).toBe('test-update-time');
+    expect(userWrite.update.fields.role.stringValue).toBe('provider');
+    expect(userWrite.update.fields.providerOnboardingCompleted.booleanValue).toBe(true);
+  });
+
   test('finalized Rental V2 creates Tap payments from the locked 20 percent matrix only', async () => {
     __test.setAuth({ uid: 'customer-1', admin: false });
     const old = globalThis.fetch;

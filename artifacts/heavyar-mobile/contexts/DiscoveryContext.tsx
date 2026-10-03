@@ -54,7 +54,10 @@ function useDiscoveryState() {
   }, [inventoryEnabled, queryClient]);
   const marketQuery = useQuery({
     queryKey: ['markets', 'public'],
-    queryFn: ({ signal }) => mobilePerformance.trackNetwork('discovery.markets', () => withDiscoveryDeadline(fetchMarketConfig, signal)),
+    queryFn: ({ signal }) => {
+      mobilePerformance.markReactQuery('query.markets');
+      return mobilePerformance.trackNetwork('discovery.markets', () => withDiscoveryDeadline(fetchMarketConfig, signal));
+    },
     staleTime: MARKET_STALE_MS,
     refetchOnWindowFocus: false,
     retry: retryDiscovery,
@@ -77,6 +80,7 @@ function useDiscoveryState() {
     enabled: inventoryEnabled,
     queryFn: ({ pageParam, signal }) => {
       if (!allowed.current) throw new Error('PUBLIC_MARKETPLACE_ROLE_DISABLED');
+      mobilePerformance.markReactQuery('query.equipment');
       return mobilePerformance.trackNetwork('discovery.equipment', () =>
         withDiscoveryDeadline(boundedSignal => searchPublicEquipment(queryFilters, pageParam, 20, boundedSignal), signal));
     },

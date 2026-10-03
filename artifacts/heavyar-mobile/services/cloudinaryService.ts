@@ -6,6 +6,16 @@ import { MutationError } from './mutationError';
 const UPLOAD_FOLDER = 'heavyar';
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
+async function boundedFetch(input: string, init?: RequestInit, timeoutMs = 30_000): Promise<Response> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      init ? fetch(input, init) : fetch(input),
+      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('NETWORK_TIMEOUT')), timeoutMs); }),
+    ]);
+  } finally { if (timeout) clearTimeout(timeout); }
+}
+
 export interface CloudinaryImage {
   url: string;
   publicId: string;
@@ -34,7 +44,7 @@ export async function uploadImageToCloudinary(
   };
   let blob: Blob | undefined;
   try {
-    const localResponse = await fetch(localUri);
+    const localResponse = await boundedFetch(localUri, undefined, 15_000);
     blob = await localResponse.blob();
   } catch { throw new MutationError('IMAGE_READ_FAILED'); }
   const contentType = String(blob.type || '').toLowerCase().split(';')[0].trim();
@@ -70,11 +80,11 @@ export async function uploadImageToCloudinary(
   if (!token) throw new MutationError('AUTH_REQUIRED', 401);
   const send = (authToken: string) => {
     assertSession();
-    return fetch(`${WORKER_BASE_URL}/cloudinary/upload`, {
+    return boundedFetch(`${WORKER_BASE_URL}/cloudinary/upload`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${authToken}` },
     body: formData,
-    });
+    }, 45_000);
   };
   let response: Response;
   try {
@@ -171,7 +181,7 @@ export async function deleteCloudinaryImage(publicId: string, expectedUid?: stri
     // Token acquisition can yield to sign-out/account switching. Never send a
     // rollback authorized by the next session, even if cleanup already started.
     if (!token || auth.currentUser?.uid !== user.uid) return false;
-    const response = await fetch(`${WORKER_BASE_URL}/cloudinary/delete`, {
+    const response = await boundedFetch(`${WORKER_BASE_URL}/cloudinary/delete`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

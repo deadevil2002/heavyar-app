@@ -37,10 +37,14 @@ import {
   type SessionResolution,
   type SessionResolutionWaiter,
 } from '@/services/authSessionTransition';
+import { mobilePerformance } from '@/utils/mobilePerformance';
+import { enableAuthPerformanceTracing } from '@/utils/authPerformance';
+import { clearRequestNavigationSnapshots, synchronizeRequestSnapshotOwner } from '@/services/requestNavigationSnapshot';
 
 const AUTH_PROFILE_KEY = 'heavyar_user_profile';
 
 export const [AuthProvider, useAuth] = createContextHook(() => {
+  enableAuthPerformanceTracing();
   const { language } = useLanguage();
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -55,6 +59,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const [authTransition, setAuthTransition] = useState<AuthTransition>('initializing');
   const registrationTransactionRef = useRef<RegistrationTransaction>('idle');
   const registrationGenerationRef = useRef(0);
+  const authResolutionGenerationRef = useRef(0);
   const authTransitionRef = useRef<AuthTransition>('initializing');
   const pendingLoginResolutionRef = useRef<SessionResolutionWaiter | null>(null);
   const setAuthTransitionPhase = useCallback((phase: AuthTransition) => {
@@ -89,17 +94,30 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     void loadCachedProfile();
 
     const unsubscribe = subscribeToAuthState(async (firebaseUser) => {
+      synchronizeRequestSnapshotOwner(firebaseUser?.uid || null);
+      const callbackMeasurement = mobilePerformance.startOperation('auth.auth_state_callback');
+      const stopSessionLagMonitor = mobilePerformance.startEventLoopLagMonitor({
+        label: 'auth.session.js_event_loop',
+        intervalMs: 100,
+        thresholdMs: 20,
+      });
+      const abandonMeasurement = () => {
+        stopSessionLagMonitor();
+        callbackMeasurement.cancel();
+      };
+      const authResolutionGeneration = ++authResolutionGenerationRef.current;
       const listenerGeneration = registrationGenerationRef.current;
-      const isStale = () => !registrationListenerMayPublish(
-        registrationTransactionRef.current,
-        listenerGeneration,
-        registrationGenerationRef.current,
-      );
+      const isStale = () => authResolutionGeneration !== authResolutionGenerationRef.current || !registrationListenerMayPublish(
+          registrationTransactionRef.current,
+          listenerGeneration,
+          registrationGenerationRef.current,
+        );
       if (registrationTransactionRef.current !== 'idle') {
         if (firebaseUser) {
           setIdentityEmail(firebaseUser.email || null);
           setEmailVerified(firebaseUser.emailVerified);
         }
+        abandonMeasurement();
         return;
       }
       setIsLoading(true);
@@ -107,28 +125,28 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         setAuthTransitionPhase('resolving_session');
       }
       let resolution: SessionResolution = { status: 'ready' };
+      let pushRegistrationUid: string | null = null;
       if (firebaseUser) {
         setIdentityEmail(firebaseUser.email || null);
         setEmailVerified(firebaseUser.emailVerified);
-        const verificationStatus = await fetchEmailVerificationStatus();
-        if (isStale()) return;
-        if (verificationStatus?.policy) {
-          setAuthPolicy(previous => previous ? {
-            ...previous,
-            emailVerificationEnabled: verificationStatus.policy?.enabled !== false,
-            requireEmailVerificationBeforeRental: verificationStatus.policy?.requireBeforeRentalRequest === true,
-            requireEmailVerificationBeforeListing: verificationStatus.policy?.requireBeforeListingSubmission === true,
-            requireEmailVerificationBeforeDriver: verificationStatus.policy?.requireBeforeDriverActivation === true,
-            allowEmailVerificationReminders: verificationStatus.policy?.allowReminders === true,
-            emailVerificationCooldownSeconds: Number(verificationStatus.policy?.reminderCooldownSeconds || previous.emailVerificationCooldownSeconds),
-          } : previous);
-        }
         try {
-          const [profile, canonicalStatus] = await Promise.all([
-            fetchUserProfile(firebaseUser.uid),
-            fetchAccountProfileStatus(),
+          const [verificationStatus, profile, canonicalStatus] = await Promise.all([
+            mobilePerformance.trackOperation('auth.email_verification', fetchEmailVerificationStatus),
+            mobilePerformance.trackOperation('auth.user_profile', () => fetchUserProfile(firebaseUser.uid)),
+            mobilePerformance.trackOperation('auth.account_profile_status', fetchAccountProfileStatus),
           ]);
-          if (isStale()) return;
+          if (isStale()) { abandonMeasurement(); return; }
+          if (verificationStatus?.policy) {
+            setAuthPolicy(previous => previous ? {
+              ...previous,
+              emailVerificationEnabled: verificationStatus.policy?.enabled !== false,
+              requireEmailVerificationBeforeRental: verificationStatus.policy?.requireBeforeRentalRequest === true,
+              requireEmailVerificationBeforeListing: verificationStatus.policy?.requireBeforeListingSubmission === true,
+              requireEmailVerificationBeforeDriver: verificationStatus.policy?.requireBeforeDriverActivation === true,
+              allowEmailVerificationReminders: verificationStatus.policy?.allowReminders === true,
+              emailVerificationCooldownSeconds: Number(verificationStatus.policy?.reminderCooldownSeconds || previous.emailVerificationCooldownSeconds),
+            } : previous);
+          }
           if (profile && canonicalStatus.state === 'authenticated_complete') {
             const authorizedProfile: User = {
               ...profile,
@@ -143,13 +161,9 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
               accountStatus: status,
               suspensionStatus: profile.suspensionStatus,
             }));
-            await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(authorizedProfile));
-            try {
-              await registerCurrentDevice();
-            } catch {
-              // Notifications are optional; authentication must still complete.
-            }
-            if (isStale()) return;
+            await mobilePerformance.trackOperation('auth.profile_persistence', () => AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(authorizedProfile)));
+            if (isStale()) { abandonMeasurement(); return; }
+            pushRegistrationUid = firebaseUser.uid;
           } else {
             setUser(null);
             setIsAuthenticated(true);
@@ -157,11 +171,11 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
             await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
           }
         } catch (e) {
-          if (isStale()) return;
+          if (isStale()) { abandonMeasurement(); return; }
           setUser(null);
           setIsAuthenticated(false);
           await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
-          if (isStale()) return;
+          if (isStale()) { abandonMeasurement(); return; }
           setAuthError('SESSION_EXPIRED');
           setAccountState(null);
           resolution = { status: 'failed', errorCode: 'SESSION_EXPIRED' };
@@ -180,6 +194,14 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       setIsLoading(false);
       setAuthTransitionPhase('idle');
       settlePendingLogin(resolution);
+      stopSessionLagMonitor();
+      callbackMeasurement.complete(resolution.status === 'failed');
+      if (pushRegistrationUid) {
+        void mobilePerformance.trackOperation(
+          'auth.push_registration',
+          () => registerCurrentDevice(pushRegistrationUid!),
+        ).catch(() => undefined);
+      }
     });
 
     return () => unsubscribe();
@@ -234,13 +256,20 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         throw Object.assign(new Error(resolution.errorCode), { errorCode: resolution.errorCode });
       }
     } catch (e: unknown) {
+      const caught = e as { code?: string; message?: string; errorCode?: string };
+      const caughtCode = caught.errorCode || caught.code || caught.message;
       if (pendingLoginResolutionRef.current === canonicalResolution) {
         pendingLoginResolutionRef.current = null;
       }
       canonicalResolution.resolve({ status: 'failed', errorCode: 'AUTH_CANCELLED' });
+      if (caughtCode === 'SESSION_RESOLUTION_TIMEOUT' || caughtCode === 'AUTH_SIGN_IN_TIMEOUT') {
+        // A bounded failure must end in a stable guest state. A later auth
+        // callback is invalidated by the sign-out callback generation.
+        await logoutUser().catch(() => undefined);
+      }
       setIsLoading(false);
       setAuthTransitionPhase('idle');
-      const error = e as { code?: string; message?: string; errorCode?: string };
+      const error = caught;
       const errorMsg = safeErrorMessage({ errorCode: error.errorCode || error.code || error.message }, language);
       setAuthError(errorMsg);
       throw Object.assign(new Error(errorMsg), { errorCode: error.errorCode || error.code });
@@ -333,6 +362,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   }, [authPolicy, emailVerified]);
 
   const logout = useCallback(async (options?: { clearLocalStorage?: boolean }) => {
+    clearRequestNavigationSnapshots();
     setAuthError(null);
     setIsLoading(true);
     setAuthTransitionPhase('signing_out');
@@ -410,6 +440,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   }, [user]);
 
   const deleteIncompleteAccount = useCallback(async () => {
+    clearRequestNavigationSnapshots();
     await deleteIncompleteIdentity();
     await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
     setUser(null); setIsAuthenticated(false); setAccountState(null); setIdentityEmail(null);

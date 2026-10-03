@@ -22,11 +22,17 @@ export function canLeaveLoginAfterResolution(input: {
 }
 
 /** Bridges credential completion to the existing canonical auth-state listener. */
-export function createSessionResolutionWaiter(): SessionResolutionWaiter {
+export function createSessionResolutionWaiter(timeoutMs = 60_000): SessionResolutionWaiter {
   let settled = false;
   let settlePromise: (resolution: SessionResolution) => void = () => undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const promise = new Promise<SessionResolution>((resolve) => {
     settlePromise = resolve;
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ status: 'failed', errorCode: 'SESSION_RESOLUTION_TIMEOUT' });
+    }, Math.max(1, timeoutMs));
   });
 
   return {
@@ -34,6 +40,7 @@ export function createSessionResolutionWaiter(): SessionResolutionWaiter {
     resolve: (resolution) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       settlePromise(resolution);
     },
   };

@@ -11,6 +11,7 @@ import { getRequestStatusLabel } from '@/services/driverUtils';
 import { safeErrorMessage } from '@/services/errorMessages';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 /** Mounted only for the visible, focused section; no background polling. */
 export default function DriverRequestsSection() {
@@ -26,7 +27,10 @@ export default function DriverRequestsSection() {
   const query = useInfiniteQuery({
     queryKey: key,
     initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam, signal }) => getDriverRequests({ cursor: pageParam, limit: 20 }, signal),
+    queryFn: ({ pageParam, signal }) => {
+      mobilePerformance.markReactQuery('query.driver-requests');
+      return getDriverRequests({ cursor: pageParam, limit: 20 }, signal);
+    },
     getNextPageParam: page => page.nextCursor,
     enabled: allowed,
     staleTime: DRIVER_REQUEST_STALE_MS,

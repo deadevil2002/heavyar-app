@@ -17,7 +17,12 @@ export type MobilePerformanceKind =
   | 'context_commit'
   | 'press_to_visible'
   | 'event_loop_lag'
-  | 'operation';
+  | 'operation'
+  | 'firestore_read'
+  | 'listener'
+  | 'timeout'
+  | 'cancellation'
+  | 'react_query';
 
 export type MobilePerformancePhase = 'record' | 'start' | 'complete';
 
@@ -37,6 +42,8 @@ export interface MobilePerformanceMetric {
   failures: number;
   totalDurationMs: number;
   maxDurationMs: number;
+  p50DurationMs?: number;
+  p95DurationMs?: number;
 }
 
 export interface MobilePerformanceSnapshot {
@@ -85,6 +92,7 @@ interface PerformanceState {
   startedAtMs: number;
   metrics: Map<string, MutableMetric>;
   events: MobilePerformanceEvent[];
+  durations: Map<string, number[]>;
 }
 
 const runtimeGlobal = globalThis as typeof globalThis & {
@@ -109,6 +117,7 @@ const state: PerformanceState = {
   startedAtMs: 0,
   metrics: new Map(),
   events: [],
+  durations: new Map(),
 };
 
 const NOOP_PRESS: PressToVisibleMeasurement = Object.freeze({
@@ -187,6 +196,11 @@ function record(
   if (durationMs !== undefined) {
     metric.totalDurationMs += durationMs;
     metric.maxDurationMs = Math.max(metric.maxDurationMs, durationMs);
+    const key = `${kind}:${normalizedLabel}`;
+    const samples = state.durations.get(key) || [];
+    samples.push(durationMs);
+    if (samples.length > 200) samples.shift();
+    state.durations.set(key, samples);
   }
   emit({
     kind,
@@ -229,6 +243,32 @@ export function markRefetch(label: string): void {
 
 export function markContextCommit(label: string): void {
   record('context_commit', label);
+}
+
+export function markReactQuery(label: string): void { record('react_query', label); }
+
+export function markTimeout(label: string): void { record('timeout', label); }
+export function markCancellation(label: string): void { record('cancellation', label); }
+
+export function trackFirestoreRead<T>(label: string, operation: () => Promise<T>): Promise<T> {
+  if (!state.enabled) return operation();
+  const startedAt = clock();
+  return Promise.resolve().then(operation).then(
+    value => { record('firestore_read', label, { durationMs: clock() - startedAt }); return value; },
+    error => { record('firestore_read', label, { durationMs: clock() - startedAt, failed: true }); throw error; },
+  );
+}
+
+/** Records one bounded listener lifecycle. Cleanup is idempotent. */
+export function startListener(label: string): () => void {
+  if (!state.enabled) return () => undefined;
+  record('listener', label, { phase: 'start' });
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    record('listener', label, { phase: 'complete', increment: false });
+  };
 }
 
 export function trackNetwork<T>(
@@ -384,7 +424,13 @@ export function snapshotMobilePerformance(): MobilePerformanceSnapshot {
   return {
     startedAtMs: state.startedAtMs,
     capturedAtMs,
-    metrics: Array.from(state.metrics.values(), (metric) => ({ ...metric })),
+    metrics: Array.from(state.metrics.entries(), ([key, metric]) => {
+      const samples = [...(state.durations.get(key) || [])].sort((a, b) => a - b);
+      const percentile = (fraction: number) => samples.length
+        ? samples[Math.min(samples.length - 1, Math.ceil(samples.length * fraction) - 1)]
+        : undefined;
+      return { ...metric, p50DurationMs: percentile(0.5), p95DurationMs: percentile(0.95) };
+    }),
     events: state.events.map((event) => ({ ...event })),
   };
 }
@@ -393,6 +439,7 @@ export function resetMobilePerformance(): void {
   if (!DEVELOPMENT_BUILD) return;
   state.metrics.clear();
   state.events.length = 0;
+  state.durations.clear();
   state.startedAtMs = state.enabled ? clock() : 0;
 }
 
@@ -406,6 +453,11 @@ export const mobilePerformance = Object.freeze({
   recordOperationDuration,
   markRefetch,
   markContextCommit,
+  markReactQuery,
+  markTimeout,
+  markCancellation,
+  trackFirestoreRead,
+  startListener,
   startPress: startPressToVisible,
   startEventLoopLagMonitor,
   snapshot: snapshotMobilePerformance,

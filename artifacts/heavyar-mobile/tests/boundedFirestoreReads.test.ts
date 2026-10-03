@@ -4,6 +4,7 @@ import { URL } from 'node:url';
 
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const service = source('../services/firestoreService.ts');
+const requestService = source('../services/requestRealtimeService.ts');
 
 const implementation = (name: string, nextName: string) =>
   service.split(`export ${name}(`)[1].split(`export ${nextName}(`)[0];
@@ -33,13 +34,14 @@ describe('bounded Firestore read paths', () => {
   });
 
   it('isolates request equipment hydration and keeps unavailable listings private', () => {
-    const batch = implementation('async function fetchEquipmentByIds', 'async function createEquipment');
+    const batch = requestService.split('export async function fetchRequestEquipmentByIds(')[1]
+      .split('export async function fetchRequestById(')[0];
     expect(batch).toContain('Promise.allSettled');
-    expect(batch).toContain('fetchEquipmentById(id)');
+    expect(batch).toContain('fetchRequestEquipmentById(id)');
     expect(batch).toContain('result.status === \'fulfilled\'');
     expect(service).toContain('equipmentSnapshot: parseEquipmentRequestSnapshot');
     expect(source('../components/RequestCard.tsx')).not.toContain('fetchEquipmentById');
-    expect(source('../app/(tabs)/requests/index.tsx')).toContain('fetchEquipmentByIds');
+    expect(source('../app/(tabs)/requests/index.tsx')).toContain('fetchRequestEquipmentByIds');
     expect(source('../components/RequestCard.tsx')).toContain("t('equipment_no_longer_available')");
     expect(source('../app/request/[id].tsx')).toContain("t('equipment_no_longer_available')");
   });
@@ -73,7 +75,7 @@ describe('bounded Firestore read paths', () => {
   });
 
   it('routes Active Rentals to an actual requests status filter', () => {
-    expect(source('../app/(tabs)/(home)/index.tsx')).toContain("pathname: '/(tabs)/requests', params: { section: 'active' }");
+    expect(source('../app/(tabs)/(home)/index.tsx')).toContain("openRequests('active')");
     expect(source('../app/(tabs)/requests/index.tsx')).toContain("activeOnly={selected === 'active'}");
   });
 

@@ -8,8 +8,10 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import SettingsHeader from '@/components/SettingsHeader';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 export default function SettingsScreen() {
+  mobilePerformance.countRender('Settings');
   const { isRTL, t, language, setLanguage } = useLanguage();
   const router = useRouter();
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(true);

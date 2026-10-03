@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput } from 'react-native';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { InteractionManager, View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { ArrowLeft, ArrowRight, MessageCircle, CreditCard, Star, Calendar, Receipt } from 'lucide-react-native';
@@ -7,51 +7,90 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { subscribeToRequest, fetchEquipmentById, tryBackfillRequestPublicSnapshots } from '@/services/firestoreService';
-import { Equipment, EquipmentRequest, PublicUserSnapshot, RentalSummary } from '@/types';
+import type { Equipment, EquipmentRequest, PublicUserSnapshot, RentalSummary } from '@/types';
 import StatusBadge from '@/components/StatusBadge';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
-import { getRentalSummary, transitionRentalRequest } from '@/services/workerClient';
 import { formatMinorAmount, liveRentalEstimateMinor, rentalRequestPricingState } from '@/services/rentalV2';
 import { safeErrorMessage } from '@/services/errorMessages';
+import { mobilePerformance } from '@/utils/mobilePerformance';
+import { getRequestNavigationSnapshot } from '@/services/requestNavigationSnapshot';
+import { markRouteStage, startRouteModuleEvaluation } from '@/utils/routePerformance';
+
+const requestDetailModuleEvaluation = startRouteModuleEvaluation('request_detail');
 
 export default function RequestDetailScreen() {
+  markRouteStage('request_detail', 'router_received');
+  markRouteStage('request_detail', 'component_first_execute');
+  mobilePerformance.countRender('RequestDetail');
   const { id } = useLocalSearchParams<{ id: string }>();
   const { isRTL, t, localizedText } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
-
-  const [request, setRequest] = useState<EquipmentRequest | null>(null);
+  const currentUid = user?.uid || '';
+  const initialSnapshotRef = useRef<EquipmentRequest | null | undefined>(undefined);
+  if (initialSnapshotRef.current === undefined) {
+    initialSnapshotRef.current = getRequestNavigationSnapshot(currentUid, id || '');
+  }
+  const initialSnapshot = initialSnapshotRef.current;
+  const [request, setRequest] = useState<EquipmentRequest | null>(initialSnapshot);
   const [equipment, setEquipment] = useState<Equipment | null>(null);
-  const [otherUserPublic, setOtherUserPublic] = useState<PublicUserSnapshot | null>(null);
+  const [otherUserPublic, setOtherUserPublic] = useState<PublicUserSnapshot | null>(() => {
+    if (!initialSnapshot) return null;
+    return initialSnapshot.providerUid === currentUid
+      ? initialSnapshot.customerPublic || null
+      : initialSnapshot.providerPublic || null;
+  });
   const [rentalSummary, setRentalSummary] = useState<RentalSummary | null>(null);
   const [displayNow, setDisplayNow] = useState(0);
   const [cancelReason, setCancelReason] = useState('');
-  const [_loading, setLoading] = useState<boolean>(true);
+  const [_loading, setLoading] = useState<boolean>(!initialSnapshot);
+  const [loadFailed, setLoadFailed] = useState(false);
   const equipmentRef = useRef<Equipment | null>(null);
   const serverClockRef = useRef<{ serverNowMs: number; monotonicAtSync: number } | null>(null);
   const fetchedEquipmentIdRef = useRef<string | null>(null);
-  const currentUid = user?.uid || '';
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
+  useLayoutEffect(() => {
+    markRouteStage('request_detail', 'react_commit');
+  }, []);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => markRouteStage('request_detail', 'visible_shell'));
+    if (initialSnapshot) markRouteStage('request_detail', 'data_available');
+    return () => cancelAnimationFrame(frame);
+  }, [initialSnapshot]);
+
   useEffect(() => {
     if (!id) return;
-    const unsub = subscribeToRequest(id, async (req) => {
-      setRequest(req);
-      if (req) {
-        try {
-          let eq = equipmentRef.current;
-          if (fetchedEquipmentIdRef.current !== req.equipmentId) {
-            fetchedEquipmentIdRef.current = req.equipmentId;
-            eq = await fetchEquipmentById(req.equipmentId);
-            equipmentRef.current = eq;
-            setEquipment(eq);
-          }
-          const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
+    let active = true;
+    equipmentRef.current = null;
+    fetchedEquipmentIdRef.current = null;
+    let unsubscribe: () => void = () => {};
+    let firstFrame = 0;
+    let secondFrame = 0;
+    let dataTimer: ReturnType<typeof setTimeout> | undefined;
+    const startData = () => void import('@/services/requestRealtimeService').then(service => {
+      if (!active) return;
+      unsubscribe = service.subscribeToRequestDetail(id, async (req) => {
+        if (!active) return;
+        setRequest(req);
+        setLoadFailed(false);
+        if (req) {
+          markRouteStage('request_detail', 'data_available');
+          markRouteStage('request_detail', 'fresh_data_complete');
+          try {
+            let eq = equipmentRef.current;
+            if (fetchedEquipmentIdRef.current !== req.equipmentId) {
+              fetchedEquipmentIdRef.current = req.equipmentId;
+              eq = await service.fetchRequestEquipmentById(req.equipmentId);
+              if (!active) return;
+              equipmentRef.current = eq;
+              setEquipment(eq);
+            }
+            const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
 
           if (user && currentUid === req.customerUid && !req.customerPublic) {
             updates.customerPublic = {
@@ -75,35 +114,54 @@ export default function RequestDetailScreen() {
             updates.providerPublic = eq.ownerPublic;
           }
 
-          if ((updates.customerPublic || updates.providerPublic) && req.id) {
-            void tryBackfillRequestPublicSnapshots(req.id, updates);
+            const effectiveCustomer = req.customerPublic || updates.customerPublic || null;
+            const effectiveProvider = req.providerPublic || updates.providerPublic || null;
+            const other = req.providerUid === currentUid ? effectiveCustomer : effectiveProvider;
+            setOtherUserPublic(other);
+          } catch (e) {
           }
-          const effectiveCustomer = req.customerPublic || updates.customerPublic || null;
-          const effectiveProvider = req.providerPublic || updates.providerPublic || null;
-          const other = req.providerUid === currentUid ? effectiveCustomer : effectiveProvider;
-          setOtherUserPublic(other);
-        } catch (e) {
         }
-      }
+        if (active) setLoading(false);
+      });
+    }).catch(() => {
+      if (!active) return;
+      setLoadFailed(true);
       setLoading(false);
+      markRouteStage('request_detail', 'fresh_data_complete');
     });
-    return () => unsub();
+    firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        dataTimer = setTimeout(startData, 100);
+      });
+    });
+    return () => {
+      active = false;
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+      if (dataTimer) clearTimeout(dataTimer);
+      unsubscribe();
+    };
   }, [id, currentUid, user]);
 
   useEffect(() => {
     if (!id || request?.pricingModelVersion !== 2) return;
     let mounted = true;
-    getRentalSummary(id).then(summary => {
-      if (mounted) {
-        setRentalSummary(summary);
-        serverClockRef.current = {
-          serverNowMs: Date.parse(summary.serverNow || summary.currentEstimate?.asOf || ''),
-          monotonicAtSync: typeof performance !== 'undefined' ? performance.now() : 0,
-        };
-        setDisplayNow(value => value + 1);
-      }
-    }).catch(() => {});
-    return () => { mounted = false; };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const interaction = InteractionManager.runAfterInteractions(() => {
+      timer = setTimeout(() => {
+        import('@/services/rentalWorkerService').then(({ getRentalSummary }) => getRentalSummary(id)).then(summary => {
+          if (mounted) {
+            setRentalSummary(summary);
+            serverClockRef.current = {
+              serverNowMs: Date.parse(summary.serverNow || summary.currentEstimate?.asOf || ''),
+              monotonicAtSync: typeof performance !== 'undefined' ? performance.now() : 0,
+            };
+            setDisplayNow(value => value + 1);
+          }
+        }).catch(() => {});
+      }, 750);
+    });
+    return () => { mounted = false; interaction.cancel(); if (timer) clearTimeout(timer); };
   }, [id, request?.pricingModelVersion, request?.status, request?.updatedAt]);
 
   useEffect(() => {
@@ -112,11 +170,22 @@ export default function RequestDetailScreen() {
     return () => clearInterval(timer);
   }, [rentalSummary?.actualEndAt, rentalSummary?.actualStartAt, request?.status]);
 
-  if (_loading || !request) {
+  if (!request) {
     return (
       <View style={styles.container}>
-        <SafeAreaView edges={['top']} style={styles.centered}>
-          <Text style={styles.errorText}>{t('error_occurred')}</Text>
+        <SafeAreaView edges={['top']} style={{ flex: 1 }}>
+          <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <Pressable style={styles.backBtn} onPress={() => router.back()}>
+              <BackIcon size={22} color={Colors.textPrimary} />
+            </Pressable>
+            <Text style={styles.headerTitle}>{t('request_detail')}</Text>
+            <View style={styles.backBtn} />
+          </View>
+          <View style={styles.centered}>
+            {_loading
+              ? <ActivityIndicator color={Colors.gold} />
+              : <Text style={styles.errorText}>{loadFailed ? t('error_occurred') : t('error_occurred')}</Text>}
+          </View>
         </SafeAreaView>
       </View>
     );
@@ -173,6 +242,7 @@ export default function RequestDetailScreen() {
         style: 'default',
         onPress: async () => {
           try {
+            const { transitionRentalRequest } = await import('@/services/workerClient');
             await transitionRentalRequest(request.id, action, action === 'cancel' ? cancelReason : undefined);
           } catch (error) {
             showDialog(t('error_title'), safeErrorMessage(error, isRTL ? 'ar' : 'en'), [{ text: t('ok'), style: 'default' }]);
@@ -472,3 +542,5 @@ const styles = StyleSheet.create({
   reasonInput: { minHeight: 48, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.inputBg, color: Colors.textPrimary, paddingHorizontal: 12 },
   disabledButton: { opacity: 0.5 },
 });
+
+requestDetailModuleEvaluation.complete();

@@ -1,8 +1,8 @@
 import {
   collection,
   doc,
-  getDoc,
-  getDocs,
+  getDoc as firebaseGetDoc,
+  getDocs as firebaseGetDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -31,8 +31,15 @@ import {
   decodeRentalPricingSnapshot,
   reportInvalidRentalMoney,
 } from './rentalV2';
+import { request as boundedWorkerRequest } from './workerClient';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 const loggedIndexFallbacks = new Set<string>();
+
+const getDoc: typeof firebaseGetDoc = ((reference: Parameters<typeof firebaseGetDoc>[0]) =>
+  mobilePerformance.trackFirestoreRead('firestore.get-doc', () => firebaseGetDoc(reference))) as typeof firebaseGetDoc;
+const getDocs: typeof firebaseGetDocs = ((reference: Parameters<typeof firebaseGetDocs>[0]) =>
+  mobilePerformance.trackFirestoreRead('firestore.get-docs', () => firebaseGetDocs(reference))) as typeof firebaseGetDocs;
 
 export const OWNER_EQUIPMENT_PAGE_SIZE = 20;
 export const REQUESTS_PAGE_SIZE = 20;
@@ -356,8 +363,16 @@ export async function fetchEquipmentByIds(ids: string[]): Promise<Map<string, Eq
   return equipment;
 }
 
+/** V2 snapshots are immutable display data; only legacy requests need listing hydration. */
+export function equipmentIdsNeedingRequestHydration(requests: EquipmentRequest[]): string[] {
+  return [...new Set(requests.filter(request => {
+    const snapshot = request.equipmentSnapshot;
+    return !snapshot || typeof snapshot.titleAr !== 'string' || typeof snapshot.titleEn !== 'string' || !Array.isArray(snapshot.images);
+  }).map(request => request.equipmentId).filter(Boolean))];
+}
+
 export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
-  const response = await workerRequest<{ id?: string }>('/api/listings', {
+  const response = await boundedWorkerRequest<{ id?: string }>('/api/listings', {
     method: 'POST',
     body: JSON.stringify({
       titleAr: data.titleAr,
@@ -381,7 +396,7 @@ export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' |
 }
 
 export async function updateEquipment(id: string, updates: Partial<Equipment>): Promise<void> {
-  await workerRequest(`/api/listings/${encodeURIComponent(id)}`, {
+  await boundedWorkerRequest(`/api/listings/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify({
       ...(updates.titleAr !== undefined ? { titleAr: updates.titleAr } : {}),
@@ -451,12 +466,12 @@ export async function deleteEquipmentWithCleanup(id: string): Promise<void> {
     publicIds = extractPublicIds(images);
   }
 
-  await workerRequest(`/api/listings/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await boundedWorkerRequest(`/api/listings/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (publicIds.length > 0) await deleteMultipleCloudinaryImages(publicIds);
 }
 
 export async function deleteEquipment(id: string): Promise<void> {
-  await workerRequest(`/api/listings/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await boundedWorkerRequest(`/api/listings/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export async function fetchUserRequests(
@@ -504,7 +519,7 @@ export async function createRequest(data: Pick<EquipmentRequest, 'equipmentId' |
     }
     data.numberOfDays = Math.trunc(data.numberOfDays);
   }
-  const response = await workerRequest<{ request?: { id?: string } }>('/api/requests', {
+  const response = await boundedWorkerRequest<{ request?: { id?: string } }>('/api/requests', {
     method: 'POST',
     body: JSON.stringify({
       equipmentId: data.equipmentId,
@@ -534,7 +549,7 @@ export async function updateRequestStatus(
   };
   const nextAction = action[status];
   if (!nextAction) throw new Error('Invalid request transition');
-  await workerRequest(`/api/requests/${encodeURIComponent(requestId)}/transition`, {
+  await boundedWorkerRequest(`/api/requests/${encodeURIComponent(requestId)}/transition`, {
     method: 'POST',
     body: JSON.stringify({ action: nextAction }),
   });
@@ -545,26 +560,10 @@ export async function transitionRequest(
   action: 'accept' | 'reject' | 'start' | 'request_completion' | 'complete' | 'cancel',
   reason?: string,
 ): Promise<void> {
-  await workerRequest(`/api/requests/${encodeURIComponent(requestId)}/transition`, {
+  await boundedWorkerRequest(`/api/requests/${encodeURIComponent(requestId)}/transition`, {
     method: 'POST',
     body: JSON.stringify({ action, ...(reason?.trim() ? { reason: reason.trim() } : {}) }),
   });
-}
-
-async function workerRequest<T>(path: string, init: RequestInit): Promise<T> {
-  const auth = getFirebaseAuth();
-  const current = auth.currentUser;
-  const token = await current?.getIdToken();
-  if (!token) throw new Error('AUTH_REQUIRED');
-  const send = (authToken: string) => fetch(`${WORKER_BASE_URL}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}`, ...(init.headers || {}) },
-  });
-  let response = await send(token);
-  if (response.status === 401 && auth.currentUser) response = await send(await auth.currentUser.getIdToken(true));
-  const body = await response.json().catch(() => ({})) as { success?: boolean; error?: string; request?: unknown };
-  if (!response.ok || body.success === false) throw new Error(body.error || 'REQUEST_UNAVAILABLE');
-  return body as T;
 }
 
 export async function updatePaymentStatus(
@@ -578,13 +577,15 @@ export async function updatePaymentStatus(
 
 export function subscribeToRequest(requestId: string, callback: (req: EquipmentRequest | null) => void): Unsubscribe {
   const db = getFirebaseDb();
-  return onSnapshot(doc(db, 'equipmentRequests', requestId), (snap) => {
+  const stopMetric = mobilePerformance.startListener('firestore.request-detail');
+  const unsubscribe = onSnapshot(doc(db, 'equipmentRequests', requestId), (snap) => {
     if (snap.exists()) {
       callback(parseRequest(snap.id, snap.data() as Record<string, unknown>));
     } else {
       callback(null);
     }
   });
+  return () => { unsubscribe(); stopMetric(); };
 }
 
 export function subscribeToUserRequests(
@@ -602,11 +603,13 @@ export function subscribeToUserRequests(
     orderBy(documentId(), 'desc'),
     limit(REQUESTS_PAGE_SIZE)
   );
-  return onSnapshot(indexedQ, (snap) => callback({
+  const stopMetric = mobilePerformance.startListener('firestore.requests-page');
+  const unsubscribe = onSnapshot(indexedQ, (snap) => callback({
     items: snap.docs.map(d => parseRequest(d.id, d.data() as Record<string, unknown>)),
     cursor: snap.docs.at(-1) || null,
     hasMore: snap.size === REQUESTS_PAGE_SIZE,
   }), onError);
+  return () => { unsubscribe(); stopMetric(); };
 }
 
 export function subscribeToMessages(
@@ -620,13 +623,15 @@ export function subscribeToMessages(
     orderBy(documentId(), 'desc'),
     limit(CHAT_PAGE_SIZE)
   );
-  return onSnapshot(q, (snap) => {
+  const stopMetric = mobilePerformance.startListener('firestore.chat-page');
+  const unsubscribe = onSnapshot(q, (snap) => {
     callback({
       items: snap.docs.map(d => parseMessage(d.id, d.data() as Record<string, unknown>)).reverse(),
       cursor: snap.docs.at(-1) || null,
       hasMore: snap.size === CHAT_PAGE_SIZE,
     });
   });
+  return () => { unsubscribe(); stopMetric(); };
 }
 
 export async function fetchOlderMessages(
@@ -853,17 +858,29 @@ export async function fetchInvoiceByRequestId(requestId: string): Promise<Invoic
 export async function downloadInvoicePdf(invoiceId: string): Promise<{ data: ArrayBuffer; filename: string; contentType: string }> {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(invoiceId)) throw new Error('Invalid invoice');
   const auth = getFirebaseAuth();
-  const token = await auth.currentUser?.getIdToken();
+  const user = auth.currentUser;
+  const uid = user?.uid;
+  const token = await user?.getIdToken();
   if (!token) throw new Error('AUTH_REQUIRED');
-  const response = await fetch(`${WORKER_BASE_URL}/api/invoices/${encodeURIComponent(invoiceId)}.pdf`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/pdf' },
-  });
+  if (!uid || auth.currentUser?.uid !== uid) throw new Error('AUTH_SESSION_CHANGED');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let response: Response;
+  try {
+    response = await fetch(`${WORKER_BASE_URL}/api/invoices/${encodeURIComponent(invoiceId)}.pdf`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/pdf' },
+      signal: controller.signal,
+    });
+  } finally { clearTimeout(timeout); }
+  if (auth.currentUser?.uid !== uid) throw new Error('AUTH_SESSION_CHANGED');
   if (!response.ok || !response.headers.get('Content-Type')?.toLowerCase().includes('application/pdf')) {
     throw new Error('INVOICE_DOWNLOAD_UNAVAILABLE');
   }
   const disposition = response.headers.get('Content-Disposition') || '';
   const filename = disposition.match(/filename="([^"]+)"/i)?.[1] || `heavyar-invoice-${invoiceId}.pdf`;
-  return { data: await response.arrayBuffer(), filename, contentType: 'application/pdf' };
+  const data = await response.arrayBuffer();
+  if (auth.currentUser?.uid !== uid) throw new Error('AUTH_SESSION_CHANGED');
+  return { data, filename, contentType: 'application/pdf' };
 }
 
 export async function updateRequestInvoiceId(requestId: string, invoiceId: string): Promise<void> {

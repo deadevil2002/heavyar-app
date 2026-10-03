@@ -12,6 +12,10 @@ import {
   startOperation,
   trackOperation,
   trackNetwork,
+  trackFirestoreRead,
+  startListener,
+  markTimeout,
+  markCancellation,
 } from '../utils/mobilePerformance';
 
 describe('mobilePerformance', () => {
@@ -63,6 +67,26 @@ describe('mobilePerformance', () => {
     expect(JSON.stringify(snapshotMobilePerformance())).not.toContain(
       'private server detail',
     );
+  });
+
+  it('captures privacy-safe data-boundary percentiles and lifecycle counters', async () => {
+    vi.useFakeTimers();
+    const first = trackFirestoreRead('requests.page', async () => { await new Promise(resolve => setTimeout(resolve, 10)); return 1; });
+    await vi.advanceTimersByTimeAsync(10);
+    await first;
+    const second = trackFirestoreRead('requests.page', async () => { await new Promise(resolve => setTimeout(resolve, 30)); return 2; });
+    await vi.advanceTimersByTimeAsync(30);
+    await second;
+    const stop = startListener('requests.live');
+    stop(); stop();
+    markTimeout('worker.requests');
+    markCancellation('worker.search');
+
+    const metrics = snapshotMobilePerformance().metrics;
+    expect(metrics.find(item => item.kind === 'firestore_read')).toMatchObject({ count: 2, p50DurationMs: 10, p95DurationMs: 30 });
+    expect(metrics.find(item => item.kind === 'listener')).toMatchObject({ count: 1 });
+    expect(metrics.find(item => item.kind === 'timeout')).toMatchObject({ count: 1 });
+    expect(metrics.find(item => item.kind === 'cancellation')).toMatchObject({ count: 1 });
   });
 
   it('measures bounded safe publish operations without metadata', async () => {

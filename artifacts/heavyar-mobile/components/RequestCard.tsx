@@ -9,6 +9,9 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 import StatusBadge from './StatusBadge';
 import { formatMinorAmount, rentalRequestPricingState } from '@/services/rentalV2';
+import { useAuth } from '@/contexts/AuthContext';
+import { cacheRequestNavigationSnapshot } from '@/services/requestNavigationSnapshot';
+import { startRoutePress } from '@/utils/routePerformance';
 
 interface RequestCardProps {
   request: EquipmentRequest;
@@ -17,10 +20,13 @@ interface RequestCardProps {
 
 export default React.memo(function RequestCard({ request, equipment = null }: RequestCardProps) {
   const { isRTL, t, localizedText } = useLanguage();
+  const { user } = useAuth();
   const router = useRouter();
   const handlePress = useCallback(() => {
+    if (user?.uid) cacheRequestNavigationSnapshot(user.uid, request);
+    startRoutePress('request_detail');
     router.push(`/request/${request.id}`);
-  }, [request.id, router]);
+  }, [request, router, user?.uid]);
 
   const title = equipment
     ? localizedText(equipment.titleAr, equipment.titleEn)

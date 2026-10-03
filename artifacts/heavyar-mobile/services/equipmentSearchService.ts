@@ -1,4 +1,5 @@
 import { WORKER_BASE_URL } from '../constants/worker';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 import type { Equipment } from '../types';
 import type { DiscoveryFilters } from './publicDiscovery';
 import { subscribePublicEquipmentInvalidation } from './discoveryInvalidation';
@@ -8,6 +9,32 @@ const MAX_EQUIPMENT_DETAIL_CACHE_ENTRIES = 50;
 const detailCache = new Map<string, { equipment: Equipment | null; expiresAt: number }>();
 const detailInflight = new Map<string, Promise<Equipment | null>>();
 let detailCacheGeneration = 0;
+
+async function publicRequest<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await mobilePerformance.trackNetwork('worker.api.equipment.search', () =>
+      fetch(`${WORKER_BASE_URL}${path}`, { signal: controller.signal }),
+    );
+    const body = await response.json().catch(() => null) as (T & { success?: boolean; errorCode?: string }) | null;
+    if (!response.ok || body?.success !== true) {
+      const error = new Error(body?.errorCode || 'EQUIPMENT_SEARCH_UNAVAILABLE') as Error & { status?: number };
+      error.status = response.status;
+      throw error;
+    }
+    return body;
+  } catch (error) {
+    if (signal?.aborted) mobilePerformance.markCancellation('worker.api.equipment.search');
+    else if (controller.signal.aborted) mobilePerformance.markTimeout('worker.api.equipment.search');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
+  }
+}
 
 subscribePublicEquipmentInvalidation(() => {
   detailCacheGeneration += 1;
@@ -32,13 +59,7 @@ export async function searchPublicEquipment(
   if (filters.category) query.set('category', filters.category);
   if (filters.text.trim()) query.set('text', filters.text.trim());
   if (cursor) query.set('cursor', cursor);
-  const response = await fetch(`${WORKER_BASE_URL}/api/equipment/search?${query}`, { signal });
-  const body = await response.json().catch(() => null) as {
-    success?: boolean; equipment?: Equipment[]; nextCursor?: string | null; errorCode?: string;
-  } | null;
-  if (!response.ok || body?.success !== true || !Array.isArray(body.equipment)) {
-    throw new Error(body?.errorCode || 'EQUIPMENT_SEARCH_UNAVAILABLE');
-  }
+  const body = await publicRequest<{ success: true; equipment: Equipment[]; nextCursor?: string | null }>(`/api/equipment/search?${query}`, signal);
   return {
     equipment: body.equipment,
     nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : undefined,
@@ -46,18 +67,13 @@ export async function searchPublicEquipment(
 }
 
 async function requestPublicEquipmentById(id: string, signal?: AbortSignal): Promise<Equipment | null> {
-  const response = await fetch(
-    `${WORKER_BASE_URL}/api/equipment/search?id=${encodeURIComponent(id)}`,
-    { signal },
-  );
-  const body = await response.json().catch(() => null) as {
-    success?: boolean; equipment?: Equipment[]; errorCode?: string;
-  } | null;
-  if (response.status === 404 && body?.errorCode === 'EQUIPMENT_NOT_FOUND') return null;
-  if (!response.ok || body?.success !== true || !Array.isArray(body.equipment)) {
-    throw new Error(body?.errorCode || 'EQUIPMENT_DETAIL_UNAVAILABLE');
+  try {
+    const body = await publicRequest<{ success: true; equipment: Equipment[] }>(`/api/equipment/search?id=${encodeURIComponent(id)}`, signal);
+    return body.equipment[0] || null;
+  } catch (error) {
+    if (error && typeof error === 'object' && (error as { status?: number }).status === 404) return null;
+    throw error;
   }
-  return body.equipment[0] || null;
 }
 
 export function fetchPublicEquipmentById(id: string, signal?: AbortSignal): Promise<Equipment | null> {

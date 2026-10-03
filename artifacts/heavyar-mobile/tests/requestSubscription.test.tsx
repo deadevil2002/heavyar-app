@@ -22,11 +22,21 @@ vi.mock('../services/firestoreService', async importOriginal => ({
   ...await importOriginal<typeof import('../services/firestoreService')>(),
   fetchEquipmentByIds: async () => new Map(),
 }));
+vi.mock('@/services/requestRealtimeService', () => ({
+  subscribeToRequestPage: (_uid: string, _role: string, next: (page: any) => void, error: (error: Error) => void) => {
+    const stop = vi.fn();
+    state.listeners.push({ next, error, stop });
+    return stop;
+  },
+  fetchRequestEquipmentByIds: async () => new Map(),
+  requestEquipmentIdsNeedingHydration: () => [],
+}));
 vi.mock('react-native', () => ({
   View: ({ children }: any) => <div>{children}</div>,
   Text: ({ children, accessibilityRole }: any) => <span role={accessibilityRole}>{children}</span>,
   Pressable: ({ children, onPress }: any) => <button onClick={onPress}>{children}</button>,
   ActivityIndicator: () => null,
+  InteractionManager: { runAfterInteractions: (callback: () => void) => { callback(); return { cancel: vi.fn() }; } },
   FlatList: ({ data, renderItem, ListHeaderComponent, ListEmptyComponent }: any) => <div>
     {ListHeaderComponent}{data.length ? data.map((item: any) => <div key={item.id}>{renderItem({ item })}</div>) : ListEmptyComponent}
   </div>,
@@ -49,10 +59,19 @@ vi.mock('../components/ui/heavyar', () => ({
   HeavyarSegment: ({ children, onPress }: any) => <button onClick={onPress}>{children}</button>,
   HeavyarSegmentText: ({ children }: any) => <span>{children}</span>,
 }));
-vi.mock('../utils/mobilePerformance', () => ({ mobilePerformance: { countRender: vi.fn(), markContextCommit: vi.fn(), markRefetch: vi.fn() } }));
+vi.mock('../utils/mobilePerformance', () => ({ mobilePerformance: {
+  countRender: vi.fn(),
+  markContextCommit: vi.fn(),
+  markRefetch: vi.fn(),
+  startListener: () => vi.fn(),
+  startOperation: () => ({ complete: vi.fn(), cancel: vi.fn() }),
+} }));
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(async () => { if (root) await act(async () => root!.unmount()); root = undefined; });
+const settleDeferredSubscription = () => act(async () => {
+  await new Promise(resolve => setTimeout(resolve, 160));
+});
 
 it('surfaces a real Firestore listener error, retries subscription preserving rows, ignores old UID/unmounted callbacks', async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -60,16 +79,17 @@ it('surfaces a real Firestore listener error, retries subscription preserving ro
   const host = document.createElement('div');
   root = createRoot(host);
   await act(async () => root!.render(<Requests />));
+  await settleDeferredSubscription();
   expect(state.listeners).toHaveLength(1);
   const first = state.listeners[0];
-  // Actual subscribeToUserRequests transforms this SDK snapshot.
-  await act(async () => first.next({ docs: [{ id: 'existing-request', data: () => ({}) }], size: 1 }));
+  await act(async () => first.next({ items: [{ id: 'existing-request' }], cursor: null, hasMore: false }));
   expect(host.textContent).toContain('existing-request');
   await act(async () => first.error(new Error('SERVICE_UNAVAILABLE')));
   expect(host.querySelector('[role="alert"]')?.textContent).toBeTruthy();
   expect(host.textContent).toContain('existing-request');
   const retry = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Retry')!;
   await act(async () => retry.click());
+  await settleDeferredSubscription();
   expect(first.stop).toHaveBeenCalledTimes(1);
   expect(state.listeners).toHaveLength(2);
   expect(host.textContent).toContain('existing-request');
@@ -78,6 +98,7 @@ it('surfaces a real Firestore listener error, retries subscription preserving ro
   expect(host.querySelector('[role="alert"]')).toBeNull();
   state.uid = 'provider-b';
   await act(async () => root!.render(<Requests />));
+  await settleDeferredSubscription();
   expect(state.listeners[1].stop).toHaveBeenCalledTimes(1);
   expect(host.textContent).not.toContain('existing-request');
   await act(async () => state.listeners[1].error(new Error('old identity error')));

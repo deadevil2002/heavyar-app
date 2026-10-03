@@ -49,7 +49,10 @@ export default function ChatScreen() {
 
   useEffect(() => {
     if (!requestId) return;
+    let active = true;
+    enrichedEquipmentIdRef.current = null;
     const unsub = subscribeToRequest(requestId, async (req) => {
+      if (!active) return;
       setRequest(req);
       if (req && user) {
         const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
@@ -73,17 +76,19 @@ export default function ChatScreen() {
           enrichedEquipmentIdRef.current = req.equipmentId;
           try {
             const eq = await fetchEquipmentById(req.equipmentId);
+            if (!active) return;
             if (eq?.ownerPublic && eq.ownerUid === req.providerUid) {
               updates.providerPublic = eq.ownerPublic;
             }
           } catch {}
         }
         if ((updates.customerPublic || updates.providerPublic) && req.id) {
+          if (!active) return;
           void tryBackfillRequestPublicSnapshots(req.id, updates);
         }
       }
     });
-    return () => unsub();
+    return () => { active = false; unsub(); };
   }, [requestId, currentUid, user]);
 
   useEffect(() => {

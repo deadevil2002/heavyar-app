@@ -14,6 +14,7 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 import { fetchAuthPolicy, requestPasswordReset } from '@/services/authService';
 import { isGccPhone } from '@/constants/gcc';
 import { canLeaveLoginAfterResolution } from '@/services/authSessionTransition';
+import { beginAuthLoginTrace, markAuthSessionReady } from '@/utils/authPerformance';
 
 export default function LoginScreen() {
   const { isRTL, t, language } = useLanguage();
@@ -44,11 +45,14 @@ export default function LoginScreen() {
 
   const handleLogin = useCallback(async () => {
     if (!email || !password) return;
+    beginAuthLoginTrace();
     setLoading(true);
     try {
       await login(email, password);
+      markAuthSessionReady();
       setLoginAccepted(true);
     } catch (e) {
+      markAuthSessionReady(true);
       const errorMsg = safeErrorMessage(e, language);
       showDialog(t('error_title'), errorMsg, [{ text: t('ok'), style: 'default' }]);
       setLoading(false);

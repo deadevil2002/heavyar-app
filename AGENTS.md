@@ -42,6 +42,13 @@ Never place passwords, private keys, service-account keys, access/OAuth tokens, 
 - Regulated, financial, privacy, monetization, advertising, and permission work: `COMPLIANCE.md`
 - Product, UX, and growth planning: `PRODUCT_ROADMAP.md`
 
+## Project handoff / required reading
+
+For a new human or AI contributor, read `HANDOFF.md`, `CURRENT_STATE.md`, and
+`docs/mobile-data-flow.md` after this file. `HANDOFF.md` is the practical entry
+point; `CURRENT_STATE.md` records volatile verified status; the data-flow
+document defines client/backend ownership and reconciliation rules.
+
 Code and configuration are authoritative. If documentation conflicts with them, report the mismatch and update documentation only after verification.
 
 ## HEAVYAR Permanent Product Rules

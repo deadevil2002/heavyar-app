@@ -14,6 +14,10 @@ import { WORKER_BASE_URL } from '@/constants/worker';
 import { GCC_COUNTRIES, GccCountryCode, normalizeGccPhone, normalizePhoneForCountry } from '@/constants/gcc';
 import { buildRegistrationProfilePayload } from '@/services/registrationPayload';
 import { registrationRollbackDisposition } from '@/services/registrationState';
+import { mobilePerformance } from '@/utils/mobilePerformance';
+import { fetchWithTimeout, withTimeout } from '@/utils/boundedAsync';
+import { createShortLivedRequestCache } from '@/services/shortLivedRequestCache';
+import { existingRegistrationDecision } from '@/services/registrationRecovery';
 export { buildRegistrationProfilePayload } from '@/services/registrationPayload';
 
 export interface AuthPolicy {
@@ -49,30 +53,40 @@ const defaultAuthPolicy: AuthPolicy = {
   phoneVerification: { enabled: false, provider: null },
 };
 
+const AUTH_POLICY_CACHE_MS = 30_000;
+const AUTH_HTTP_TIMEOUT_MS = 15_000;
+const FIRESTORE_PROFILE_TIMEOUT_MS = 40_000;
+const FIREBASE_SIGN_IN_TIMEOUT_MS = 20_000;
+const authPolicyCache = createShortLivedRequestCache<AuthPolicy>(AUTH_POLICY_CACHE_MS);
+
 export async function fetchAuthPolicy(): Promise<AuthPolicy> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}/api/auth/config`);
-    if (!response.ok) return defaultAuthPolicy;
-    const data = await response.json() as any;
-    const config = data.effective || data.config?.effective || data.config || data;
-    const requested = data.requested || data.config?.requested || {};
-    const status = data.status || data.config?.status || {};
-    return {
-      allowPhoneLogin: config.allowPhoneLogin === true,
-      allowEmailLogin: config.allowEmailLogin !== false,
-      phoneRequired: config.requirePhoneOnSignup !== undefined
-        ? config.requirePhoneOnSignup === true
-        : requested.requirePhoneOnSignup === true,
-      phoneRecoveryReady: status.phoneRecovery === 'configured' || status.phoneRecoveryReady === true ||
-        status.phoneIndexReady === true || config.phoneIndexReady === true || config.phoneRecoveryReady === true,
-      emailVerificationEnabled: config.emailVerificationEnabled === true || status.emailVerification === 'configured',
-      requireEmailVerificationBeforeRental: config.requireEmailVerificationBeforeRental === true,
-      requireEmailVerificationBeforeListing: config.requireEmailVerificationBeforeListing === true,
-      requireEmailVerificationBeforeDriver: config.requireEmailVerificationBeforeDriver === true,
-      allowEmailVerificationReminders: config.allowEmailVerificationReminders === true,
-      emailVerificationCooldownSeconds: Math.max(30, Number(config.emailVerificationCooldownSeconds || 60)),
-      phoneVerification: { enabled: false, provider: null },
-    };
+    return await authPolicyCache.get(async () => {
+      const response = await mobilePerformance.trackNetwork('auth.policy', () => fetchWithTimeout(
+        `${WORKER_BASE_URL}/api/auth/config`, undefined, AUTH_HTTP_TIMEOUT_MS, 'AUTH_POLICY_TIMEOUT',
+      ));
+      if (!response.ok) throw new Error('AUTH_POLICY_UNAVAILABLE');
+      const data = await response.json() as any;
+      const config = data.effective || data.config?.effective || data.config || data;
+      const requested = data.requested || data.config?.requested || {};
+      const status = data.status || data.config?.status || {};
+      return {
+        allowPhoneLogin: config.allowPhoneLogin === true,
+        allowEmailLogin: config.allowEmailLogin !== false,
+        phoneRequired: config.requirePhoneOnSignup !== undefined
+          ? config.requirePhoneOnSignup === true
+          : requested.requirePhoneOnSignup === true,
+        phoneRecoveryReady: status.phoneRecovery === 'configured' || status.phoneRecoveryReady === true ||
+          status.phoneIndexReady === true || config.phoneIndexReady === true || config.phoneRecoveryReady === true,
+        emailVerificationEnabled: config.emailVerificationEnabled === true || status.emailVerification === 'configured',
+        requireEmailVerificationBeforeRental: config.requireEmailVerificationBeforeRental === true,
+        requireEmailVerificationBeforeListing: config.requireEmailVerificationBeforeListing === true,
+        requireEmailVerificationBeforeDriver: config.requireEmailVerificationBeforeDriver === true,
+        allowEmailVerificationReminders: config.allowEmailVerificationReminders === true,
+        emailVerificationCooldownSeconds: Math.max(30, Number(config.emailVerificationCooldownSeconds || 60)),
+        phoneVerification: { enabled: false, provider: null },
+      };
+    });
   } catch {
     return defaultAuthPolicy;
   }
@@ -102,7 +116,20 @@ export function subscribeToAuthState(callback: (user: FirebaseUser | null) => vo
 
 export async function loginWithEmail(email: string, password: string): Promise<FirebaseUser> {
   const auth = getFirebaseAuth();
-  const credential = await signInWithEmailAndPassword(auth, email, password);
+  const pending = signInWithEmailAndPassword(auth, email, password);
+  let credential;
+  try {
+    credential = await mobilePerformance.trackNetwork('auth.firebase_sign_in', () => withTimeout(
+      pending, FIREBASE_SIGN_IN_TIMEOUT_MS, 'AUTH_SIGN_IN_TIMEOUT',
+    ));
+  } catch (error) {
+    if ((error as { errorCode?: string }).errorCode === 'AUTH_SIGN_IN_TIMEOUT') {
+      // Firebase Auth cannot be aborted. If it completes after our UX bound,
+      // immediately undo that late identity so it cannot surface unexpectedly.
+      void pending.then(() => signOut(auth)).catch(() => undefined);
+    }
+    throw error;
+  }
   return credential.user;
 }
 
@@ -143,9 +170,12 @@ export async function fetchEmailVerificationStatus(): Promise<{ emailVerified: b
   if (!firebaseUser) return null;
   try {
     const token = await firebaseUser.getIdToken();
-    const response = await fetch(`${WORKER_BASE_URL}/api/auth/email-verification`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await mobilePerformance.trackNetwork('auth.email_verification_request', () => fetchWithTimeout(
+      `${WORKER_BASE_URL}/api/auth/email-verification`,
+      { headers: { Authorization: `Bearer ${token}` } },
+      AUTH_HTTP_TIMEOUT_MS,
+      'EMAIL_VERIFICATION_TIMEOUT',
+    ));
     if (!response.ok) return null;
     const data = await response.json() as any;
     return { emailVerified: data.emailVerified === true, policy: data.policy };
@@ -160,11 +190,11 @@ export async function loginWithPhone(phone: string, password: string): Promise<F
   if (!normalizedPhone) throw new Error('PHONE_LOGIN_INVALID');
   let response: Response;
   try {
-    response = await fetch(`${WORKER_BASE_URL}/api/auth/alias-login`, {
+    response = await fetchWithTimeout(`${WORKER_BASE_URL}/api/auth/alias-login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone: normalizedPhone, password }),
-    });
+    }, AUTH_HTTP_TIMEOUT_MS, 'PHONE_LOGIN_TIMEOUT');
   } catch {
     throw new Error('PHONE_LOGIN_UNAVAILABLE');
   }
@@ -175,7 +205,14 @@ export async function loginWithPhone(phone: string, password: string): Promise<F
     throw new Error('PHONE_LOGIN_INVALID');
   }
   try {
-    const credential = await signInWithCustomToken(getFirebaseAuth(), body.customToken);
+    const auth = getFirebaseAuth();
+    const pending = signInWithCustomToken(auth, body.customToken);
+    const credential = await withTimeout(pending, FIREBASE_SIGN_IN_TIMEOUT_MS, 'AUTH_SIGN_IN_TIMEOUT').catch((error) => {
+      if ((error as { errorCode?: string }).errorCode === 'AUTH_SIGN_IN_TIMEOUT') {
+        void pending.then(() => signOut(auth)).catch(() => undefined);
+      }
+      throw error;
+    });
     return credential.user;
   } catch {
     throw new Error('PHONE_LOGIN_INVALID');
@@ -227,19 +264,26 @@ export async function registerWithEmail(
   let failureCode: string | undefined;
   let preserveIdentityForRecovery = true;
   try {
-    if (!createdIdentity && await fetchUserProfile(credential.user.uid)) {
-      const duplicate = Object.assign(new Error('DUPLICATE_COMPLETE_EMAIL'), { errorCode: 'DUPLICATE_COMPLETE_EMAIL' });
-      preserveIdentityForRecovery = false;
-      throw duplicate;
+    if (!createdIdentity) {
+      const canonicalStatus = await fetchAccountProfileStatus();
+      const decision = existingRegistrationDecision(canonicalStatus, profileData.role);
+      if (decision === 'role_mismatch') {
+        preserveIdentityForRecovery = false;
+        throw Object.assign(new Error('ROLE_MISMATCH'), { errorCode: 'ROLE_MISMATCH' });
+      }
+      if (decision === 'duplicate_complete') {
+        preserveIdentityForRecovery = false;
+        throw Object.assign(new Error('DUPLICATE_COMPLETE_EMAIL'), { errorCode: 'DUPLICATE_COMPLETE_EMAIL' });
+      }
     }
     const token = await credential.user.getIdToken();
     let response: Response;
     try {
-      response = await fetch(`${WORKER_BASE_URL}/api/register-profile`, {
+      response = await fetchWithTimeout(`${WORKER_BASE_URL}/api/register-profile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(buildRegistrationProfilePayload(profileData)),
-      });
+      }, AUTH_HTTP_TIMEOUT_MS, 'REGISTRATION_TIMEOUT');
     } catch {
       const networkError = new Error('NETWORK_UNAVAILABLE');
       (networkError as Error & { errorCode?: string }).errorCode = 'NETWORK_UNAVAILABLE';
@@ -261,6 +305,9 @@ export async function registerWithEmail(
       (error as Error & { errorCode?: string }).errorCode = code;
       preserveIdentityForRecovery = !shouldDelete;
       throw error;
+    }
+    if (auth.currentUser?.uid !== credential.user.uid) {
+      throw Object.assign(new Error('AUTH_SESSION_CHANGED'), { errorCode: 'AUTH_SESSION_CHANGED' });
     }
     return credential.user;
   } catch (error) {
@@ -308,10 +355,12 @@ export async function provisionCurrentIdentity(profileData: Parameters<typeof bu
   const firebaseUser = getFirebaseAuth().currentUser;
   if (!firebaseUser) throw Object.assign(new Error('AUTH_REQUIRED'), { errorCode: 'AUTH_REQUIRED' });
   const token = await firebaseUser.getIdToken();
-  const response = await fetch(`${WORKER_BASE_URL}/api/register-profile`, {
+  const uid = firebaseUser.uid;
+  const response = await fetchWithTimeout(`${WORKER_BASE_URL}/api/register-profile`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(buildRegistrationProfilePayload(profileData)),
-  });
+  }, AUTH_HTTP_TIMEOUT_MS, 'REGISTRATION_TIMEOUT');
+  if (getFirebaseAuth().currentUser?.uid !== uid) throw Object.assign(new Error('AUTH_SESSION_CHANGED'), { errorCode: 'AUTH_SESSION_CHANGED' });
   if (!response.ok) {
     const failure = await response.json().catch(() => ({})) as { errorCode?: string };
     throw Object.assign(new Error(failure.errorCode || 'REGISTRATION_RETRY_REQUIRED'), { errorCode: failure.errorCode || 'REGISTRATION_RETRY_REQUIRED' });
@@ -332,9 +381,12 @@ export async function fetchAccountProfileStatus(): Promise<AccountProfileStatus>
   const firebaseUser = getFirebaseAuth().currentUser;
   if (!firebaseUser) throw Object.assign(new Error('AUTH_REQUIRED'), { errorCode: 'AUTH_REQUIRED' });
   const token = await firebaseUser.getIdToken();
-  const response = await fetch(`${WORKER_BASE_URL}/api/account/profile-status`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const response = await mobilePerformance.trackNetwork('auth.account_profile_status_request', () => fetchWithTimeout(
+    `${WORKER_BASE_URL}/api/account/profile-status`,
+    { headers: { Authorization: `Bearer ${token}` } },
+    AUTH_HTTP_TIMEOUT_MS,
+    'PROFILE_STATUS_TIMEOUT',
+  ));
   if (!response.ok) throw Object.assign(new Error('PROFILE_STATUS_UNAVAILABLE'), { errorCode: 'PROFILE_STATUS_UNAVAILABLE' });
   return response.json() as Promise<AccountProfileStatus>;
 }
@@ -343,11 +395,13 @@ export async function deleteIncompleteIdentity(): Promise<void> {
   const firebaseUser = getFirebaseAuth().currentUser;
   if (!firebaseUser) throw Object.assign(new Error('AUTH_REQUIRED'), { errorCode: 'AUTH_REQUIRED' });
   const token = await firebaseUser.getIdToken();
-  const response = await fetch(`${WORKER_BASE_URL}/api/account/identity-delete`, {
+  const uid = firebaseUser.uid;
+  const response = await fetchWithTimeout(`${WORKER_BASE_URL}/api/account/identity-delete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ confirmation: 'DELETE_INCOMPLETE_ACCOUNT' }),
-  });
+  }, AUTH_HTTP_TIMEOUT_MS, 'IDENTITY_DELETE_TIMEOUT');
+  if (getFirebaseAuth().currentUser?.uid !== uid) throw Object.assign(new Error('AUTH_SESSION_CHANGED'), { errorCode: 'AUTH_SESSION_CHANGED' });
   if (!response.ok) {
     const failure = await response.json().catch(() => ({})) as { errorCode?: string };
     throw Object.assign(new Error(failure.errorCode || 'AUTH_IDENTITY_DELETE_UNAVAILABLE'), {
@@ -373,11 +427,11 @@ export async function requestPasswordReset(identifier: string, locale: 'ar' | 'e
   const isPhone = normalizeGccPhone(compactPhone) !== null;
   if (!isEmail && !isPhone) return 'invalid';
   try {
-    const response = await fetch(`${WORKER_BASE_URL}/api/auth/password-reset`, {
+    const response = await fetchWithTimeout(`${WORKER_BASE_URL}/api/auth/password-reset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ identifier: normalized, ...(isEmail ? { email: normalized } : {}), locale }),
-    });
+    }, AUTH_HTTP_TIMEOUT_MS, 'PASSWORD_RESET_TIMEOUT');
     return response.ok ? 'sent' : 'unavailable';
   } catch {
     return 'unavailable';
@@ -386,7 +440,9 @@ export async function requestPasswordReset(identifier: string, locale: 'ar' | 'e
 
 export async function fetchUserProfile(uid: string): Promise<User | null> {
   const db = getFirebaseDb();
-  const snap = await getDoc(doc(db, 'users', uid));
+  const snap = await mobilePerformance.trackNetwork('auth.user_profile_request', () => withTimeout(
+    mobilePerformance.trackFirestoreRead('firestore.auth-profile', () => getDoc(doc(db, 'users', uid))), FIRESTORE_PROFILE_TIMEOUT_MS, 'PROFILE_READ_TIMEOUT',
+  ));
   if (snap.exists()) {
     const data = snap.data();
     if (data.role !== 'customer' && data.role !== 'provider' && data.role !== 'driver') return null;
@@ -438,7 +494,7 @@ export async function updateUserProfile(uid: string, updates: Partial<User>): Pr
   let readSucceeded = false;
   let docExists = false;
   try {
-    const snap = await getDoc(userRef);
+    const snap = await mobilePerformance.trackFirestoreRead('firestore.auth-profile', () => getDoc(userRef));
     readSucceeded = true;
     docExists = snap.exists();
     existingData = docExists ? snap.data() as Record<string, unknown> : {};

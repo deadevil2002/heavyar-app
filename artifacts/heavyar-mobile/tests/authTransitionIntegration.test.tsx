@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   loginWithEmail: vi.fn(),
   fetchUserProfile: vi.fn(),
   fetchAccountProfileStatus: vi.fn(),
+  fetchEmailVerificationStatus: vi.fn(() => Promise.resolve(null)),
+  registerCurrentDevice: vi.fn(() => Promise.resolve()),
   logoutUser: vi.fn(),
   storage: new Map<string, string>(),
 }));
@@ -34,10 +36,10 @@ vi.mock('../services/authService', () => ({
   updateUserProfile: vi.fn(),
   refreshFirebaseEmailVerification: vi.fn(),
   sendVerificationEmail: vi.fn(),
-  fetchEmailVerificationStatus: vi.fn(() => Promise.resolve(null)),
+  fetchEmailVerificationStatus: mocks.fetchEmailVerificationStatus,
 }));
 vi.mock('../services/notificationService', () => ({
-  registerCurrentDevice: vi.fn(() => Promise.resolve()),
+  registerCurrentDevice: mocks.registerCurrentDevice,
   revokeCurrentDevice: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('../services/authLocalStorage', () => ({ clearAccountLocalStorage: vi.fn(() => Promise.resolve()) }));
@@ -94,6 +96,52 @@ describe('AuthContext canonical session transitions', () => {
     await act(async () => { await loginPromise; });
     expect(auth.sessionReady).toBe(true);
     expect(auth.user?.role).toBe(role);
+  });
+
+  it('does not make sessionReady wait for slow push registration', async () => {
+    let finishPush!: () => void;
+    mocks.registerCurrentDevice.mockImplementationOnce(() => new Promise<void>((resolve) => { finishPush = resolve; }));
+    mocks.fetchUserProfile.mockResolvedValue({ uid: 'fixture', role: 'customer' });
+    await mountAuth();
+    await act(async () => { await mocks.listener?.(null); });
+
+    let loginPromise!: Promise<void>;
+    await act(async () => {
+      loginPromise = auth.login('fixture@example.test', 'secret');
+      await Promise.resolve();
+    });
+    await act(async () => { await publishFirebaseUser(); });
+    await act(async () => { await loginPromise; });
+
+    expect(auth.sessionReady).toBe(true);
+    expect(auth.user?.role).toBe('customer');
+    expect(mocks.registerCurrentDevice).toHaveBeenCalledWith('fixture');
+    finishPush();
+  });
+
+  it('starts all three canonical session reads in parallel', async () => {
+    let finishEmail!: (value: null) => void;
+    let finishProfile!: (value: any) => void;
+    let finishStatus!: (value: any) => void;
+    mocks.fetchEmailVerificationStatus.mockImplementationOnce(() => new Promise((resolve) => { finishEmail = resolve; }));
+    mocks.fetchUserProfile.mockImplementationOnce(() => new Promise((resolve) => { finishProfile = resolve; }));
+    mocks.fetchAccountProfileStatus.mockImplementationOnce(() => new Promise((resolve) => { finishStatus = resolve; }));
+    await mountAuth();
+
+    let callback!: Promise<void>;
+    await act(async () => {
+      callback = mocks.listener!({ uid: 'fixture', email: 'fixture@example.test', emailVerified: true });
+      await Promise.resolve();
+    });
+    expect(mocks.fetchEmailVerificationStatus).toHaveBeenCalledTimes(1);
+    expect(mocks.fetchUserProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.fetchAccountProfileStatus).toHaveBeenCalledTimes(1);
+
+    finishEmail(null);
+    finishProfile({ uid: 'fixture', role: 'customer' });
+    finishStatus({ state: 'authenticated_complete', accountStatus: 'active' });
+    await act(async () => { await callback; });
+    expect(auth.sessionReady).toBe(true);
   });
 
   it('returns to a stable guest session after wrong credentials', async () => {
