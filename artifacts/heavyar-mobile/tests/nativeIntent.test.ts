@@ -1,4 +1,7 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
+
+vi.mock('react-native', () => ({ Platform: { OS: 'web' } }));
+
 import { redirectSystemPath } from '../app/+native-intent';
 
 describe('Heavyar native deep links', () => {

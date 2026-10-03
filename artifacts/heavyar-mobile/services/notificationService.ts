@@ -6,6 +6,7 @@ import { WORKER_BASE_URL } from '@/constants/worker';
 import { publishNotificationRead } from './notificationUnreadPolicy';
 import { assertNotificationIdentity } from './notificationOperationGuard';
 import { mobilePerformance } from '@/utils/mobilePerformance';
+import { verificationDestination } from '@/constants/releaseCapabilities';
 
 const INSTALLATION_KEY = 'heavyar_installation_id';
 const PAGE_SIZE = 20;
@@ -348,7 +349,7 @@ export function notificationActionRoute(action?: NotificationAction): string | n
     case 'payment':
       return typeof action.subjectId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(action.subjectId)
         ? `/payment/${encodeURIComponent(action.subjectId)}` : null;
-    case 'verification': return '/verification';
+    case 'verification': return verificationDestination();
     // There is no standalone complaint route yet; profile is the safe authenticated destination.
     case 'complaint': return '/(tabs)/profile';
     case 'profile': return '/(tabs)/profile';
@@ -362,7 +363,7 @@ export function notificationRouteFromPayload(data: Record<string, unknown> | nul
   switch (data.action) {
     case 'request': return subjectId ? notificationActionRoute({ type: 'request', subjectId }) : null;
     case 'payment': return subjectId ? notificationActionRoute({ type: 'payment', subjectId }) : null;
-    case 'verification': return '/verification';
+    case 'verification': return verificationDestination();
     case 'complaint': return subjectId ? notificationActionRoute({ type: 'complaint', subjectId }) : null;
     case 'profile': return '/(tabs)/profile';
     case 'inbox': return '/notifications';

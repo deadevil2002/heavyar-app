@@ -6,6 +6,7 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { getVerificationProfile, startVerification, type TrustStatus, type VerificationProfile } from '@/services/verificationService';
+import { IDENTITY_VERIFICATION_UI_ENABLED } from '@/constants/releaseCapabilities';
 
 const labels: Record<TrustStatus, [string, string]> = {
   unverified: ['غير موثق', 'Unverified'],
@@ -22,6 +23,30 @@ const statusColors: Record<TrustStatus, string> = {
 };
 
 export default function VerificationScreen() {
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!IDENTITY_VERIFICATION_UI_ENABLED) {
+      router.replace('/(tabs)/profile');
+    }
+  }, [router]);
+
+  if (!IDENTITY_VERIFICATION_UI_ENABLED) {
+    return (
+      <View style={styles.container} testID="verification-release-disabled">
+        <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+          <View style={styles.loading}>
+            <ActivityIndicator color={Colors.gold} />
+          </View>
+        </SafeAreaView>
+      </View>
+    );
+  }
+
+  return <EnabledVerificationScreen />;
+}
+
+function EnabledVerificationScreen() {
   const { isRTL } = useLanguage();
   const router = useRouter();
   const tx = useCallback((ar: string, en: string) => isRTL ? ar : en, [isRTL]);

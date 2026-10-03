@@ -16,6 +16,7 @@ import { requestAccountDeletion } from '@/services/paymentService';
 import { getVerificationProfile, type VerificationProfile } from '@/services/verificationService';
 import { hasCapability, roleLabel } from '@/services/roleCapabilities';
 import { mobilePerformance } from '@/utils/mobilePerformance';
+import { IDENTITY_VERIFICATION_UI_ENABLED, shouldLoadIdentityVerification } from '@/constants/releaseCapabilities';
 
 export default function ProfileScreen() {
   mobilePerformance.countRender('Profile');
@@ -44,7 +45,7 @@ export default function ProfileScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!isAuthenticated || !userId) {
+    if (!shouldLoadIdentityVerification(IDENTITY_VERIFICATION_UI_ENABLED, isAuthenticated, userId)) {
       setTrustedVerification(null);
       setTrustLoading(false);
       return () => { cancelled = true; };
@@ -258,7 +259,9 @@ export default function ProfileScreen() {
     ...(hasCapability(user?.role, 'manageDriverProfile') ? [{ icon: Briefcase, label: t('driver_profile'), route: '/driver-profile' as const }] : []),
     ...(hasCapability(user?.role, 'findDriver') ? [{ icon: Search, label: t('find_driver'), route: '/drivers' as const }] : []),
     ...(hasCapability(user?.role, 'manageEquipment') ? [{ icon: Package, label: t('my_equipment'), route: '/my-equipment' as const }] : []),
-    { icon: Shield, label: isRTL ? 'التحقق والموثوقية' : 'Verification & trust', route: '/verification' as const },
+    ...(IDENTITY_VERIFICATION_UI_ENABLED
+      ? [{ icon: Shield, label: isRTL ? 'التحقق والموثوقية' : 'Verification & trust', route: '/verification' as const }]
+      : []),
     { icon: Bell, label: t('notifications'), route: '/notifications' as const },
     { icon: Receipt, label: t('invoices'), route: '/invoices' as const },
     { icon: Settings, label: t('settings'), route: '/settings' as const },
@@ -290,7 +293,7 @@ export default function ProfileScreen() {
   }
 
   const userName = localizedText(user.nameAr, user.nameEn);
-  const identityVerified = trustedVerification?.identity.status === 'verified';
+  const identityVerified = IDENTITY_VERIFICATION_UI_ENABLED && trustedVerification?.identity.status === 'verified';
   const providerVerificationStatus = user.role === 'provider'
     ? (trustedVerification?.providerComponents?.commercialRegistration ?? trustedVerification?.business.status)
     : null;
@@ -365,12 +368,20 @@ export default function ProfileScreen() {
               <View style={[styles.crRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <FileText size={18} color={Colors.gold} />
                 <View style={[styles.crInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
-                  <Text style={styles.crLabel}>{t('provider_verification_status')}</Text>
+                  <Text style={styles.crLabel}>
+                    {IDENTITY_VERIFICATION_UI_ENABLED
+                      ? t('provider_verification_status')
+                      : (isRTL ? 'بيانات مقدم الخدمة' : 'Provider information')}
+                  </Text>
                   <Text style={styles.crValue}>{user.crNumber ? `${t('cr_number')}: ${user.crNumber}` : t('cr_required')}</Text>
                 </View>
                 <View style={[styles.crStatusBadge, { backgroundColor: providerVerificationStatus === 'verified' ? 'rgba(46, 204, 113, 0.15)' : 'rgba(243, 156, 18, 0.15)' }]}>
                   <Text style={[styles.crStatusText, { color: providerVerificationStatus === 'verified' ? Colors.success : Colors.warning }]}>
-                    {trustLoading
+                    {!IDENTITY_VERIFICATION_UI_ENABLED
+                      ? (user.crNumber
+                        ? (isRTL ? 'البيانات مقدمة' : 'Information provided')
+                        : (isRTL ? 'البيانات غير مكتملة' : 'Information incomplete'))
+                      : trustLoading
                       ? (isRTL ? 'جاري التحقق' : 'Checking')
                       : providerVerificationStatus === 'verified'
                         ? t('provider_verified')
@@ -414,7 +425,9 @@ export default function ProfileScreen() {
                   placeholderTextColor={Colors.textMuted}
                 />
                  <Text style={[styles.editLabel, { color: Colors.textMuted, textAlign: isRTL ? 'right' : 'left' }]}>
-                   {isRTL ? 'تغيير رقم الجوال سيتاح بعد تفعيل التحقق الآمن.' : 'Phone changes will be available after secure verification is enabled.'}
+                   {IDENTITY_VERIFICATION_UI_ENABLED
+                     ? (isRTL ? 'تغيير رقم الجوال سيتاح بعد تفعيل التحقق الآمن.' : 'Phone changes will be available after secure verification is enabled.')
+                     : (isRTL ? 'تغيير رقم الجوال غير متاح في هذا الإصدار.' : 'Phone number changes are not available in this release.')}
                  </Text>
               </View>
 

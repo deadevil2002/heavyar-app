@@ -29,7 +29,7 @@ legal advice and does not invent retention or business claims.
 | Requirement | Status | Owner / next action |
 | --- | --- | --- |
 | Bundle ID | Implemented: `com.heavyar.app` | Verify archive |
-| Privacy nutrition labels | Not completed | Store owner must declare actual final data collection |
+| Privacy nutrition labels | Source-audited worksheet prepared in `APPLE_PRIVACY_DECLARATION.md`; App Store Connect not updated | Store owner must enter/verify the declaration against the signed binary |
 | Account deletion | In-app request and public process implemented | Verify fulfillment and final policy wording |
 | Privacy policy | Public `/privacy` URL live | Add to App Store Connect and review |
 | Export compliance | `ITSAppUsesNonExemptEncryption=false` configured | Verify archive metadata |
@@ -38,7 +38,11 @@ legal advice and does not invent retention or business claims.
 | Push entitlement | Not verified; iOS build blocked by Apple credentials | Enable APNs and inspect `aps-environment` |
 | ATS | App endpoints use HTTPS; no exception was added | Verify final Info.plist has no unjustified exception |
 | Support URL | Public `/support` URL live | Add and verify in App Store Connect |
-| Review notes | Not prepared | Store owner should document Tap TEST-only behavior, account access, and review credentials |
+| Review notes | Prepared in `APPLE_REVIEW_NOTES.md`; passwords intentionally omitted | Store owner must enter passwords only in App Store Connect and verify the submitted build |
+| Identity/Nafath release surface | Disabled release-wide for the current iOS release | Verify Profile has no identity-verification UI/call and stale links return to Profile |
+| Government ID / bank data | Source audit: neither government ID nor bank account/IBAN is collected by the current iOS path | Reconfirm final binary introduces no new KYC/banking path |
+| Physical-service payment | Tap hosted checkout for physical/off-app equipment/services; Heavyar stores transaction records but not card number/CVV | Verify hosted checkout and server verification on the submitted binary |
+| Seller name | Expected Apple account metadata: `Salem Alnaimi` | Confirm in App Store Connect; no app branding/legal-entity code change required |
 
 ## Dependency and security release gate
 
@@ -65,6 +69,17 @@ Do not submit until the store owner has:
    payment/financial declarations where applicable.
 5. Reviewed the final public privacy, terms, support, and deletion content.
 6. Confirmed Tap Live and unofficial Nafath remain disabled unless separately authorized.
+
+## Current iOS release privacy/verification decision — 2026-10-03
+
+- `IDENTITY_VERIFICATION_UI_ENABLED` is false for iOS for all users, not only Store Review accounts.
+- Profile does not fetch identity-verification status when the capability is off; the menu and identity badge are hidden.
+- `/verification` and verification notification/deep links return safely to Profile without calling verification APIs.
+- Government-issued identity number/document collection: **NO** in the enabled iOS path.
+- Bank account/IBAN/payout-bank collection: **NO** in the enabled iOS path.
+- Provider commercial-registration data remains ordinary marketplace/business information with neutral wording.
+- Tap is a hosted payment flow for physical/off-app services. Heavyar does not receive/store raw card number or CVV; transaction records remain Purchase History for privacy declaration purposes.
+- App Privacy and Review Notes are prepared only. No App Store Connect entry, build, submission, or approval occurred.
 
 ## Product completion update — 2026-09-17
 

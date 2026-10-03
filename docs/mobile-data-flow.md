@@ -20,7 +20,7 @@ This document records the production ownership and client reconciliation rules. 
 | Payments | Worker | Worker/Tap server authority | no optimistic payment cache | 15-second timeout, UID guard, canonical response | A |
 | Notifications/unread | Worker inbox endpoints | Worker read/read-all/preferences | UID React Query key, 120-second stale policy, shared retention | push registration background; cancellation on last consumer | A/D/F |
 | Profile | canonical AuthContext profile | existing profile/auth services | context/local bootstrap reconciled to canonical profile | old UID work must not commit | A/C/E |
-| Verification | Worker verification/regulatory endpoints | Worker | no independent durable cache | central timeout and session guard | A |
+| Verification | Worker verification/regulatory endpoints; current iOS release capability disables the UI/read path | Worker | no independent durable cache | iOS stale routes/actions fall back to Profile with zero verification request; Android/web retain the prior path | A |
 | Driver discovery/profile/requests | Worker projections/endpoints | Worker | stable UID/filter query keys, abort and targeted invalidation | request-row enrichment is ordered, concurrency 5 | A/D |
 | Invoices | bounded Firestore list; Worker PDF | server generated | cursor pagination | PDF is user initiated and must surface failure | A/C |
 | Startup/resume/tabs | Auth, Discovery, UID-scoped queries | none | stale-time/focus policies; focused request section owns listener | no optional task may delay session readiness | D/E/F/G |
@@ -43,6 +43,7 @@ This document records the production ownership and client reconciliation rules. 
 - Each mutation chooses one reconciliation strategy: canonical response, targeted invalidation, or realtime—not all three without a documented reason.
 - Independent safe reads may run concurrently; fan-out must be bounded (default 2 for uploads and 5 for Worker row enrichment).
 - Optional push registration, cleanup, telemetry, and prefetch never block the visible critical path.
+- Release-disabled features must perform no background read merely to decorate shared UI. The current iOS identity-verification capability is release-wide (not reviewer-specific); Profile performs no verification request and stale links return to Profile.
 - Performance labels are static and development/test-only. Never include UID, route IDs, names, email, phone, notes, tokens, URLs, or payloads.
 - Auth policy resolution is deduplicated and bounded. Push registration, token cleanup, and other optional work run outside the login/session-ready critical path.
 - Requests code prewarming may import the Requests route and focused read service only after authenticated Home is usable and interactions settle. It must perform zero network requests, zero Firestore reads, and create zero listeners.

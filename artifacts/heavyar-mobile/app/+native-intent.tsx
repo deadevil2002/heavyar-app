@@ -1,3 +1,5 @@
+import { verificationDestination } from '@/constants/releaseCapabilities';
+
 export function redirectSystemPath({
   path,
   initial,
@@ -15,7 +17,8 @@ export function redirectSystemPath({
     const match = normalized.match(/^\/(notifications|request|payment|verification|complaints|profile)(?:\/([^/?#]+))?(?:\?([^#]*))?$/);
     if (!match) return '/';
     const [, route, rawId, query] = match;
-    if (['notifications', 'verification', 'profile', 'complaints'].includes(route)) return `/${route}`;
+    if (route === 'verification') return verificationDestination();
+    if (['notifications', 'profile', 'complaints'].includes(route)) return `/${route}`;
     if (!rawId || !/^[A-Za-z0-9_-]{1,160}$/.test(decodeURIComponent(rawId))) return '/';
     const suffix = route === 'payment' && query
       ? (() => {

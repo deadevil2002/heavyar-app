@@ -36,6 +36,10 @@ Code and configuration are authoritative. Never infer deployment status from a G
 
 ## Recently Completed Work
 
+- Prepared the current iOS App Store release boundary: identity/Nafath verification UI is disabled release-wide on iOS, Profile performs no verification fetch when disabled, and stale verification links return to Profile.
+- Audited the enabled iOS data flow: no government ID/passport input, no bank-account/IBAN/payout-bank input, and no Heavyar storage of raw card number/CVV; Tap remains hosted for physical/off-app services.
+- Prepared `APPLE_PRIVACY_DECLARATION.md` and `APPLE_REVIEW_NOTES.md`; App Store Connect entry, signing, build, and submission remain human release actions.
+- Updated the separate `heavyar-website` privacy source for consistency; it is uncommitted and was not deployed.
 - Removed Push registration and secondary work from the canonical login critical path.
 - Added auth-policy deduplication, bounded operations, cancellation, and stale-account guards.
 - Removed Rental V2 listing hydration/N+1 reads while retaining isolated legacy compatibility.
@@ -50,9 +54,11 @@ Code and configuration are authoritative. Never infer deployment status from a G
 Latest local gate on 2026-10-03:
 
 - Mobile TypeScript: PASS
-- Mobile tests: PASS — 409/409
+- Mobile tests: PASS — 414/414
 - Worker TypeScript: PASS
 - Worker tests: PASS — 487/487
+- Store Review contract: PASS — 6/6
+- Separate website privacy tests/build: PASS — 38/38 and build complete
 - `git diff --check`: PASS (line-ending warnings only)
 
 ## Current Known Issues
@@ -74,6 +80,8 @@ Latest local gate on 2026-10-03:
 - Payment and settlement authority is the validated immutable server snapshot, never client state or current listing data.
 
 ## Production Deployment Status
+
+The iOS privacy/verification release-safety work is local and uncommitted pending owner review. No EAS build, App Store Connect change, Apple submission, Worker/Admin deployment, website deployment, or Production-data mutation was performed.
 
 The auth/data-flow/performance batch documented here is committed to the Heavyar Git repository when this file appears in GitHub history. It is **not yet deployed** as a new Worker release, Admin/Firebase Hosting release, or mobile EAS/APK/AAB build.
 

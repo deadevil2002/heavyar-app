@@ -16,7 +16,7 @@ contains no credentials or private signing material.
 | Worker | `https://heavyar-api.heavyar-official.workers.dev` |
 | Admin / public policy host | `https://heavyar-app.web.app` |
 | Payment mode | Tap TEST only |
-| Nafath | Unofficial/production integration disabled |
+| Nafath | Current iOS identity-verification UI disabled release-wide; official integration not enabled |
 
 The Firebase JavaScript SDK intentionally uses the Firebase **Web app registration** and
 its public SDK configuration from React Native. This is the expected Firebase JS SDK
@@ -273,6 +273,16 @@ and Tap TEST payment verification.
 
 ## iOS handoff
 
+Current iOS release facts:
+
+- Identity/Nafath verification UI and its Profile network fetch are disabled for every iOS user through the central release capability.
+- Stale `/verification` and notification links resolve to Profile. Email-ownership verification remains a separate active account-security function.
+- Source audit found no government ID/passport input or request payload and no bank-account/IBAN/payout-bank input or request payload in the enabled iOS path.
+- Provider commercial-registration data remains normal marketplace information and uses neutral release wording rather than a governmental-verification claim.
+- Tap handles card entry in its hosted flow for physical/off-app services. Heavyar stores transaction/payment status records, not raw card numbers/CVV.
+- Human store artifacts: `docs/APPLE_PRIVACY_DECLARATION.md` and `docs/APPLE_REVIEW_NOTES.md`. Neither has been entered in App Store Connect yet.
+- Apple may show seller name `Salem Alnaimi` from the individual developer account. No code or branding change is required for that account metadata.
+
 1. In Apple Developer, create/use bundle ID `com.heavyar.app`.
 2. Enable Push Notifications and create the required APNs capability/entitlement.
 3. Create the distribution certificate and provisioning profile for the exact bundle ID.
@@ -331,11 +341,11 @@ Do not commit Apple passwords, certificates, provisioning profiles, or private k
 
 ### Verification and trust
 
-- Unverified state
-- Pending state
-- Verified test state
-- Restriction behavior
-- Suspended/deletion-requested account behavior
+- Current iOS release: confirm the Profile menu/badge and start-verification control are absent for all users.
+- Confirm direct/stale `/verification` and notification actions return safely to Profile with no verification request.
+- Confirm email verification still functions; it is email ownership, not identity/Nafath verification.
+- Future Android/web verification states remain a separately authorized QA scope; do not infer iOS exposure.
+- Preserve account restriction and suspended/deletion-requested behavior independently of the hidden identity UI.
 
 ### Admin
 

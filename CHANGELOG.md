@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-10-03 — iOS App Store privacy and verification release boundary
+
+### Changed
+
+- Added a central platform release capability that disables identity/Nafath verification UI for every user of the current iOS release while preserving the existing Android/web capability.
+- Removed iOS Profile verification menu/badge/network work and routed stale direct/notification verification links safely to Profile.
+- Kept provider commercial-registration information with neutral marketplace wording rather than a governmental-verification claim.
+- Expanded the bilingual in-app privacy copy and aligned the separate website privacy source with the audited current data flow.
+
+### Store preparation
+
+- Added Apple App Privacy and App Review Notes worksheets; App Store Connect has not been changed.
+- Documented Tap as hosted payment for physical/off-app services, with transaction records retained but no Heavyar storage of raw card number/CVV.
+- Recorded that the enabled iOS path collects neither government identity/passport data nor bank-account/IBAN/payout-bank details.
+
+### Safety
+
+- Preserved future Worker verification architecture and email-ownership verification.
+- Preserved Store Review financial exclusion and avoided reviewer-only feature hiding.
+- No commit, push, EAS build, deployment, Production-data mutation, or App Store submission was performed.
+
+### Validation
+
+- Mobile TypeScript PASS; full mobile tests 414/414 PASS.
+- Worker TypeScript PASS; full Worker tests 487/487 PASS; Store Review contract 6/6 PASS.
+- Separate website privacy tests 38/38 PASS and production build completed.
+- `git diff --check` PASS (line-ending warnings only).
+
 ## 2026-10-03 — Mobile data-flow and responsiveness stabilization
 
 ### Changed

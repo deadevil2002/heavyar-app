@@ -81,6 +81,10 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 
 ## UI and runtime status
 
+- Current iOS release capability: identity/Nafath verification UI is **DISABLED for all iOS users**. The Profile menu/badge and verification fetch are gated; direct and notification verification links return to Profile. Android/web retain the prior capability behavior.
+- Government ID/passport collection in the enabled iOS path: **NO**. Bank account/IBAN/payout-bank collection: **NO**. Provider CR remains neutral marketplace/business information.
+- Tap payment remains a hosted flow for physical/off-app services. Heavyar retains transaction records but does not receive/store raw card numbers or CVV.
+- Apple privacy declaration and review-note worksheets are prepared in mobile docs. App Store Connect still requires human entry; no iOS build or submission has occurred.
 - Home and the branded cold-launch animation remain the approved visual direction.
 - Tamagui/Reanimated integration and shared HEAVYAR primitives remain intact.
 - Provider targeted routes were visually reviewed on Android Emulator; Guest, Customer, and Driver full real-session visual matrices still need final Development Build verification.
@@ -105,6 +109,7 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 4. Refund execution and Marketplace/Split settlement are not ready.
 5. The 20% commission rule is draft only and must not be activated without explicit owner approval.
 6. Google and Apple sign-in remain intentionally hidden/not implemented.
+7. Before App Store submission, the owner must enter the privacy declaration/review credentials, inspect the signed archive/SDK privacy manifests and required-reason APIs, complete real-device QA, and confirm the final public privacy deployment.
 
 ## Validation status
 
@@ -113,10 +118,12 @@ Final repository-sync gate on 2026-10-03:
 | Check | Result |
 |---|---|
 | Mobile TypeScript | PASS |
-| Full mobile tests | PASS — 409/409 (356 base Vitest + 39 jsdom/discovery Vitest + 14 Node) |
+| Full mobile tests | PASS — 414/414 (361 base Vitest + 39 jsdom/discovery Vitest + 14 Node) |
 | Worker TypeScript | PASS |
 | Full Worker tests | PASS — 487/487 |
-| Focused cold-route/data-flow tests | PASS |
+| Focused iOS privacy/verification tests | PASS — 5/5 |
+| Store Review contract tests | PASS — 6/6 |
+| Separate website privacy tests/build | PASS — 38/38; build complete |
 | `git diff --check` | PASS (line-ending warnings only) |
 | Refetch storm | NONE |
 | Listener leak | NONE |
