@@ -277,6 +277,7 @@ and Tap TEST payment verification.
 
 Current iOS release facts:
 
+- GitHub contains the handoff-ready source. Bundle ID: `com.heavyar.app`. Expo project: `@isaudi.ai/heavyar`. EAS project ID: `57eb8d63-5541-479e-b81b-89733b8068e5`.
 - Identity/Nafath verification UI and its Profile network fetch are disabled for every iOS user through the central release capability.
 - Stale `/verification` and notification links resolve to Profile. Email-ownership verification remains a separate active account-security function.
 - Source audit found no government ID/passport input or request payload and no bank-account/IBAN/payout-bank input or request payload in the enabled iOS path.
@@ -286,6 +287,8 @@ Current iOS release facts:
 - Human store artifacts: `docs/APPLE_PRIVACY_DECLARATION.md` and `docs/APPLE_REVIEW_NOTES.md`. Neither has been entered in App Store Connect yet.
 - Public privacy commit `90fba5348b77a1631f93cbeb42334cafa24406d9` and support-route commit `65fb49deefe977834d95838d73f6b72033a86390` are deployed from the separate website repository. `/privacy`, `/support`, and `/en/support` return HTTP 200.
 - Apple may show seller name `Salem Alnaimi` from the individual developer account. No code or branding change is required for that account metadata.
+
+The external developer is responsible for Apple Developer authentication, Distribution Certificate and Provisioning Profile creation, APNs/Push capability, the EAS iOS production build, signed IPA/archive inspection, TestFlight upload, App Store Connect metadata, App Privacy answers, Review Notes, Store Review credentials, and final App Store submission. The interrupted preparation session did not complete Apple authentication, create signing credentials, create an EAS build, or upload a binary.
 
 1. In Apple Developer, create/use bundle ID `com.heavyar.app`.
 2. Enable Push Notifications and create the required APNs capability/entitlement.

@@ -38,7 +38,7 @@ Code and configuration are authoritative. Never infer deployment status from a G
 
 - Prepared the current iOS App Store release boundary: identity/Nafath verification UI is disabled release-wide on iOS, Profile performs no verification fetch when disabled, and stale verification links return to Profile.
 - Audited the enabled iOS data flow: no government ID/passport input, no bank-account/IBAN/payout-bank input, and no Heavyar storage of raw card number/CVV; Tap remains hosted for physical/off-app services.
-- Prepared `APPLE_PRIVACY_DECLARATION.md` and `APPLE_REVIEW_NOTES.md`; App Store Connect entry, signing, build, and submission remain human release actions.
+- Prepared `APPLE_PRIVACY_DECLARATION.md` and `APPLE_REVIEW_NOTES.md`; the source is ready in GitHub, while the external developer owns Apple Developer authentication, Distribution Certificate and Provisioning Profile creation, APNs/Push capability, the EAS iOS production build, signed IPA/archive inspection, TestFlight upload, App Store Connect metadata and App Privacy answers, Review Notes and Store Review credentials, and final App Store submission.
 - The separate `heavyar-website` privacy policy and permanent App Store support routes are committed and deployed: privacy `90fba5348b77a1631f93cbeb42334cafa24406d9`, support `65fb49deefe977834d95838d73f6b72033a86390`. Public `/privacy`, `/support`, and `/en/support` return HTTP 200.
 - Removed Push registration and secondary work from the canonical login critical path.
 - Added auth-policy deduplication, bounded operations, cancellation, and stale-account guards.
@@ -81,7 +81,9 @@ Latest local gate on 2026-10-03:
 
 ## Production Deployment Status
 
-The iOS privacy/verification release-safety work is committed at `4f2d9b6e43ff17b30e347b354d0ecf8171f2cb5f`. The separate website privacy/support work is deployed at the commits recorded above. No EAS build, App Store Connect change, Apple submission, Worker/Admin deployment, or Production-data mutation was performed by that release-safety phase.
+The iOS privacy/verification release-safety work is committed at `4f2d9b6e43ff17b30e347b354d0ecf8171f2cb5f`. The separate website privacy/support work is deployed at the commits recorded above. The later iOS release-preparation pass did not complete Apple authentication, create Apple signing credentials, create an EAS build, or upload to TestFlight/App Store. No Worker/Admin deployment or Production-data mutation was performed.
+
+The iOS handoff identity is bundle ID `com.heavyar.app`, Expo project `@isaudi.ai/heavyar`, and EAS project ID `57eb8d63-5541-479e-b81b-89733b8068e5`. The external developer must perform all Apple signing, build, store-connect, and submission work without committing credentials or private signing material.
 
 The auth/data-flow/performance batch documented here is committed to the Heavyar Git repository when this file appears in GitHub history. It is **not yet deployed** as a new Worker release, Admin/Firebase Hosting release, or mobile EAS/APK/AAB build.
 

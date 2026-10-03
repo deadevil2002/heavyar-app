@@ -84,7 +84,7 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 - Current iOS release capability: identity/Nafath verification UI is **DISABLED for all iOS users**. The Profile menu/badge and verification fetch are gated; direct and notification verification links return to Profile. Android/web retain the prior capability behavior.
 - Government ID/passport collection in the enabled iOS path: **NO**. Bank account/IBAN/payout-bank collection: **NO**. Provider CR remains neutral marketplace/business information.
 - Tap payment remains a hosted flow for physical/off-app services. Heavyar retains transaction records but does not receive/store raw card numbers or CVV.
-- Apple privacy declaration and review-note worksheets are prepared in mobile docs. App Store Connect still requires human entry; no iOS build or submission has occurred.
+- Apple privacy declaration and review-note worksheets are prepared in mobile docs. The source is ready in GitHub for the external developer. Apple authentication, signing credentials, APNs/Push capability, the production EAS build, signed archive inspection, TestFlight/App Store Connect work, App Privacy answers, Review Notes, Store Review credentials, and final submission remain the external developer's responsibility. No iOS build or submission has occurred.
 - Home and the branded cold-launch animation remain the approved visual direction.
 - Tamagui/Reanimated integration and shared HEAVYAR primitives remain intact.
 - Provider targeted routes were visually reviewed on Android Emulator; Guest, Customer, and Driver full real-session visual matrices still need final Development Build verification.
@@ -109,7 +109,7 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 4. Refund execution and Marketplace/Split settlement are not ready.
 5. The 20% commission rule is draft only and must not be activated without explicit owner approval.
 6. Google and Apple sign-in remain intentionally hidden/not implemented.
-7. Before App Store submission, the owner must enter the privacy declaration/review credentials, inspect the signed archive/SDK privacy manifests and required-reason APIs, and complete real-device QA. The final public privacy/support deployment is verified separately above.
+7. Before App Store submission, the external developer must complete Apple authentication/signing and APNs setup, build and inspect the signed archive/SDK privacy manifests and required-reason APIs, enter App Store Connect metadata, App Privacy answers, Review Notes, and Store Review credentials, complete real-device QA, upload to TestFlight, and perform the final submission. The final public privacy/support deployment is verified separately above.
 
 ## Validation status
 
