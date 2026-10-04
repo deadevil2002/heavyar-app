@@ -10,6 +10,15 @@ When a policy or rule may have changed, re-check the current official source bef
 
 Read only the sections relevant to the task.
 
+## Policy-acceptance compatibility transition
+
+- `LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED` is intentionally `true`. It preserves the immediately previous mobile registration contract, which sent only `termsAccepted: true`.
+- That legacy signal is recorded only as `legacy_unversioned`: the server timestamp and the fact that terms were affirmed are known; current policy versions, legal capacity, provider business authority, and role-specific terms are **not** inferred or fabricated.
+- Legacy accounts remain operational during the compatibility window. Current-policy acceptance is not a blanket authorization gate for ordinary authenticated APIs, because the previous production client has no re-acceptance capability.
+- The current mobile client interprets missing/versionless evidence as legacy at runtime and requires an explicit, role-aware re-acceptance flow. A successful Worker write appends current evidence and preserves the legacy record.
+- There is no Production backfill and no invented historical `acceptedAt` value. Firestore clients cannot directly write acceptance evidence or profile acceptance state.
+- Disabling legacy compatibility requires explicit owner approval, verified updated-store adoption, release notes, re-acceptance/migration readiness, and a dedicated release gate. It must never be disabled by a date-based switch or incidental refactor.
+
 ## Change intake
 
 Before implementation, record:

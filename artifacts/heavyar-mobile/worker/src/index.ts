@@ -18,7 +18,7 @@ import { activeInterval, buildFinalPaymentHandoff, calculateRental, estimateRent
 import { mutationDiagnosticEvent, mutationRoute, responseErrorCode, type MutationDiagnostics, type MutationStage } from './observability';
 import { reserveCloudinaryUploadQuota as reserveCloudinaryUploadQuotaAttempt, type CloudinaryQuotaRecord } from './cloudinary-upload-quota';
 import { evaluateCapabilities, isSaudiTruckRentalWithoutDriver, validateRegulatoryDocumentSubmission, type RegulatoryDocument } from './regulatory';
-import { INCIDENT_TYPES, PRIVACY_REQUEST_TYPES, complaintServiceTargets, regulatoryDecision, requiredPolicyVersions, safeUserExport, validatePolicyAcceptance } from './compliance';
+import { CURRENT_POLICY_ACCEPTANCE_MODE, INCIDENT_TYPES, LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED, LEGACY_POLICY_ACCEPTANCE_MODE, PRIVACY_REQUEST_TYPES, acceptanceIsCurrent, complaintServiceTargets, policyAcceptanceState, regulatoryDecision, requiredPolicyVersions, safeUserExport, validatePolicyAcceptance } from './compliance';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -573,6 +573,9 @@ async function accountProfileStatus(req: Request, env: Env, u: User) {
   const profile = await getDoc(env, 'users', u.uid);
   const roleProfile = profile?.role === 'driver' ? await getDoc(env, 'driverProfiles', u.uid) : null;
   const result = evaluateCanonicalCompleteness(u, profile, roleProfile);
+  const role = ['customer', 'provider', 'driver'].includes(String(profile?.role || ''))
+    ? String(profile?.role) as 'customer' | 'provider' | 'driver'
+    : null;
   const accountStatus = profile?.accountStatus || null;
   const deletionRequest = await getDoc(env, 'deletionRequests', u.uid);
   const deletionPending = profile?.deletionRequested === true
@@ -590,6 +593,8 @@ async function accountProfileStatus(req: Request, env: Env, u: User) {
     accountStatus,
     accountPurpose: isStoreReviewAccount(profile) ? 'store_review' : null,
     reviewAccess,
+    policyAcceptanceState: role ? policyAcceptanceState(profile, role) : null,
+    policyAcceptanceCompatEnabled: LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED,
   });
 }
 async function identityOnlyDeletion(req: Request, env: Env, u: User) {
@@ -2988,8 +2993,17 @@ async function policyAcceptanceApi(req: Request, env: Env, u: User) {
   const required = requiredPolicyVersions(role);
   if (req.method === 'GET') {
     const rows = await queryOwnedDocuments(env, 'policyAcceptances', u.uid, ['uid']);
-    const current = rows.find(row => Object.entries(required).every(([key, version]) => row.data[key] === version));
-    return out(env, req, { success: true, current: !!current, requiredVersions: required, latestAcceptance: current ? { id: current.id, acceptedAt: current.data.acceptedAt, appVersion: current.data.appVersion, platform: current.data.platform, locale: current.data.locale } : null });
+    const current = rows.find(row => row.data.acceptanceMode !== LEGACY_POLICY_ACCEPTANCE_MODE
+      && row.data.currentPolicyAcceptance !== false
+      && acceptanceIsCurrent(row.data, role));
+    return out(env, req, {
+      success: true,
+      current: !!current,
+      state: current ? 'current' : LEGACY_POLICY_ACCEPTANCE_MODE,
+      legacyCompatibilityEnabled: LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED,
+      requiredVersions: required,
+      latestAcceptance: current ? { id: current.id, acceptedAt: current.data.acceptedAt, appVersion: current.data.appVersion, platform: current.data.platform, locale: current.data.locale } : null,
+    });
   }
   const body = await req.json().catch(() => null) as any;
   const allowed = new Set(['accepted', 'legalCapacityConfirmed', 'businessAuthorityConfirmed', 'termsVersion', 'privacyVersion', 'acceptableUseVersion', 'refundPolicyVersion', 'providerTermsVersion', 'driverTermsVersion', 'appVersion', 'platform', 'locale']);
@@ -2999,13 +3013,29 @@ async function policyAcceptanceApi(req: Request, env: Env, u: User) {
   const versionKey = Object.values(required).join(':');
   const id = `${u.uid}:${role}:${versionKey}`;
   const existing = await getRawDoc(env, 'policyAcceptances', id);
-  if (existing) return out(env, req, { success: true, alreadyAccepted: true, acceptanceId: id });
   const now = new Date().toISOString();
+  if (existing && !acceptanceIsCurrent(existing.data, role)) {
+    return out(env, req, { success: false, errorCode: 'POLICY_ACCEPTANCE_RECORD_CONFLICT' }, 409);
+  }
+  const acceptedAt = existing && typeof existing.data.acceptedAt === 'string' && Number.isFinite(Date.parse(existing.data.acceptedAt))
+    ? existing.data.acceptedAt
+    : now;
+  const profileFields = {
+    currentPolicyVersions: firestoreValue(required),
+    policyAcceptedAt: { timestampValue: acceptedAt },
+    policyAcceptanceState: { stringValue: 'current' },
+    legalCapacityConfirmed: { booleanValue: true },
+    ...(role === 'provider' ? { businessAuthorityConfirmed: { booleanValue: true } } : {}),
+  };
+  if (existing) {
+    await commitWrites(env, [{ update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields: profileFields }, updateMask: { fieldPaths: Object.keys(profileFields) } }]);
+    return out(env, req, { success: true, alreadyAccepted: true, acceptanceId: id, state: 'current' });
+  }
   await commitWrites(env, [
-    { update: { name: fullName(env, `policyAcceptances/${encodeURIComponent(id)}`), fields: complianceFields({ uid: u.uid, role, ...acceptance, acceptedAt: now }) }, currentDocument: { exists: false } },
-    { update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields: { currentPolicyVersions: firestoreValue(required), policyAcceptedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['currentPolicyVersions', 'policyAcceptedAt'] } },
+    { update: { name: fullName(env, `policyAcceptances/${encodeURIComponent(id)}`), fields: complianceFields({ uid: u.uid, role, acceptanceMode: CURRENT_POLICY_ACCEPTANCE_MODE, policyVersionStatus: 'current', currentPolicyAcceptance: true, source: 'current_mobile_reacceptance', ...acceptance, acceptedAt: now }) }, currentDocument: { exists: false } },
+    { update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields: profileFields }, updateMask: { fieldPaths: Object.keys(profileFields) } },
   ]);
-  return out(env, req, { success: true, acceptanceId: id });
+  return out(env, req, { success: true, acceptanceId: id, state: 'current' });
 }
 
 async function ownedComplianceList(req: Request, env: Env, u: User, collection: string, ownershipFields: string[]) {
@@ -3109,8 +3139,12 @@ async function registerProfile(req: Request, env: Env, u: User) {
    }
   const config = effectiveAuthConfig(await getDoc(env, 'heavyarConfig', 'auth'));
   if (!['customer', 'provider', 'driver'].includes(role) || body.termsAccepted !== true && body.acceptedTerms !== true) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
+  const legacyAcceptance = LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED
+    && body.termsAccepted === true
+    && body.legalCapacityConfirmed === undefined
+    && body.policyAcceptance === undefined;
   const policyAcceptance = validatePolicyAcceptance(body.policyAcceptance, role as 'customer' | 'provider' | 'driver');
-  if (!policyAcceptance || body.legalCapacityConfirmed !== true) return out(env, req, { success: false, error: 'Current policy acceptance is required', errorCode: 'POLICY_ACCEPTANCE_REQUIRED', safeToDeleteIdentity: true }, 400);
+  if (!legacyAcceptance && (!policyAcceptance || body.legalCapacityConfirmed !== true)) return out(env, req, { success: false, error: 'Current policy acceptance is required', errorCode: 'POLICY_ACCEPTANCE_REQUIRED', safeToDeleteIdentity: true }, 400);
   const allowed = new Set(['role', 'requestedRole', 'termsAccepted', 'acceptedTerms', 'legalCapacityConfirmed', 'policyAcceptance', 'nameAr', 'nameEn', 'phone', 'countryCode', 'region', 'city', 'customCity', 'crNumber', 'providerType']);
   if (Object.keys(body).some(key => !allowed.has(key))) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
   const nameAr = String(body.nameAr || '').trim(), nameEn = String(body.nameEn || '').trim(), country = await countrySettings(env, String(body.countryCode || 'SA')), normalizedPhone = normalizeGccPhone(body.phone, country.code), phone = normalizedPhone && normalizedPhone.countryCode === country.code ? normalizedPhone.phone : null, region = String(body.region || '').trim(), city = String(body.city || '').trim(), customCity = String(body.customCity || '').trim();
@@ -3127,11 +3161,14 @@ async function registerProfile(req: Request, env: Env, u: User) {
   const registrationPattern = country.code === 'SA' ? /^\d{10}$/ : /^[A-Za-z0-9-]{3,32}$/;
    if (role === 'provider' && providerType === 'company' && country.code === 'SA' && !registrationPattern.test(crNumber) || crNumber && !registrationPattern.test(crNumber)) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
    const providerOnboardingCompleted = role === 'provider' && Boolean(nameAr || nameEn) && Boolean(region) && Boolean(city || customCity) && Boolean(country.enabled && country.providerOnboardingAvailable);
-   const now = new Date().toISOString(), idToken = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, ''), fields: Record<string, any> = { uid: { stringValue: u.uid }, email: { stringValue: email }, emailLower: { stringValue: email }, emailVerified: { booleanValue: u.emailVerified === true }, emailVerificationVersion: { integerValue: '1' }, nameAr: { stringValue: nameAr }, nameEn: { stringValue: nameEn }, ...(phone ? { phone: { stringValue: phone } } : {}), countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, region: { stringValue: region }, city: { stringValue: city }, customCity: { stringValue: customCity }, ...(crNumber ? { crNumber: { stringValue: crNumber } } : {}), ...(role === 'provider' ? { providerType: { stringValue: providerType! }, providerOnboardingCompleted: { booleanValue: providerOnboardingCompleted } } : {}), role: { stringValue: role }, requestedRole: { stringValue: role }, termsAccepted: { booleanValue: true }, termsAcceptedAt: { timestampValue: now }, legalCapacityConfirmed: { booleanValue: true }, currentPolicyVersions: { mapValue: { fields: Object.fromEntries(Object.entries(requiredPolicyVersions(role as 'customer' | 'provider' | 'driver')).map(([key, value]) => [key, { stringValue: value }])) } }, createdAt: { timestampValue: now } };
+   const now = new Date().toISOString(), idToken = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, ''), fields: Record<string, any> = { uid: { stringValue: u.uid }, email: { stringValue: email }, emailLower: { stringValue: email }, emailVerified: { booleanValue: u.emailVerified === true }, emailVerificationVersion: { integerValue: '1' }, nameAr: { stringValue: nameAr }, nameEn: { stringValue: nameEn }, ...(phone ? { phone: { stringValue: phone } } : {}), countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, region: { stringValue: region }, city: { stringValue: city }, customCity: { stringValue: customCity }, ...(crNumber ? { crNumber: { stringValue: crNumber } } : {}), ...(role === 'provider' ? { providerType: { stringValue: providerType! }, providerOnboardingCompleted: { booleanValue: providerOnboardingCompleted } } : {}), role: { stringValue: role }, requestedRole: { stringValue: role }, termsAccepted: { booleanValue: true }, termsAcceptedAt: { timestampValue: now }, policyAcceptanceState: { stringValue: legacyAcceptance ? LEGACY_POLICY_ACCEPTANCE_MODE : 'current' }, ...(!legacyAcceptance ? { legalCapacityConfirmed: { booleanValue: true }, ...(role === 'provider' ? { businessAuthorityConfirmed: { booleanValue: true } } : {}), currentPolicyVersions: { mapValue: { fields: Object.fromEntries(Object.entries(requiredPolicyVersions(role as 'customer' | 'provider' | 'driver')).map(([key, value]) => [key, { stringValue: value }])) } } } : {}), createdAt: { timestampValue: now } };
   const writes: any[] = [{ update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields }, currentDocument: existingRaw?.updateTime ? { updateTime: existingRaw.updateTime } : { exists: false } }];
-  const acceptanceVersionKey = Object.values(requiredPolicyVersions(role as 'customer' | 'provider' | 'driver')).join(':');
+  const acceptanceVersionKey = legacyAcceptance ? LEGACY_POLICY_ACCEPTANCE_MODE : Object.values(requiredPolicyVersions(role as 'customer' | 'provider' | 'driver')).join(':');
   const acceptanceId = `${u.uid}:${role}:${acceptanceVersionKey}`;
-  writes.push({ update: { name: fullName(env, `policyAcceptances/${encodeURIComponent(acceptanceId)}`), fields: { uid: { stringValue: u.uid }, role: { stringValue: role }, ...Object.fromEntries(Object.entries(policyAcceptance).filter(([key]) => key !== 'accepted').map(([key, value]) => [key, typeof value === 'boolean' ? { booleanValue: value } : { stringValue: String(value) }])), acceptedAt: { timestampValue: now } } }, currentDocument: { exists: false } });
+  const acceptanceFields = legacyAcceptance
+    ? complianceFields({ uid: u.uid, role, acceptanceMode: LEGACY_POLICY_ACCEPTANCE_MODE, termsAccepted: true, acceptedAt: now, source: 'legacy_mobile_registration', policyVersionStatus: 'unversioned', legalCapacityStatus: 'unknown', businessAuthorityStatus: 'unknown', currentPolicyAcceptance: false })
+    : complianceFields({ uid: u.uid, role, acceptanceMode: CURRENT_POLICY_ACCEPTANCE_MODE, policyVersionStatus: 'current', currentPolicyAcceptance: true, source: 'current_mobile_registration', ...policyAcceptance!, acceptedAt: now });
+  writes.push({ update: { name: fullName(env, `policyAcceptances/${encodeURIComponent(acceptanceId)}`), fields: acceptanceFields }, currentDocument: { exists: false } });
   if (phone) {
     const ownerId = await hashedId(`phone:${phone}`), owner = await getRawDoc(env, 'phoneOwners', ownerId);
     if (owner && owner.data.uid !== u.uid) return out(env, req, { success: false, error: 'Registration unavailable', errorCode: 'PHONE_ALREADY_IN_USE', safeToDeleteIdentity: true }, 409);

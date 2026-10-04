@@ -410,5 +410,8 @@ describe('Firestore authorization baseline', () => {
       await assertFails(getDoc(doc(db, path)));
       await assertFails(setDoc(doc(db, path), { uid: 'customer-1', status: 'forged' }));
     }
+    await assertFails(updateDoc(doc(db, 'users/customer-1'), { policyAcceptanceState: 'current' }));
+    await assertFails(updateDoc(doc(db, 'users/customer-1'), { currentPolicyVersions: { termsVersion: 'forged' } }));
+    await assertFails(updateDoc(doc(db, 'users/customer-1'), { legalCapacityConfirmed: true }));
   });
 });

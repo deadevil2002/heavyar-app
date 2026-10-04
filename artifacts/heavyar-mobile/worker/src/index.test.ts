@@ -5,6 +5,7 @@ import { buildLegacyCatalog, calculateCommercial } from './commercial';
 import { quoteFromCommercial, tapProviderReferences, TAP_REDIRECT_URL, TAP_WEBHOOK_URL } from './payment';
 import { buildFinalPaymentHandoff } from './rental-v2';
 import { CURRENT_POLICY_VERSIONS } from './compliance';
+import { buildRegistrationProfilePayload } from '../../services/registrationPayload';
 
 const env = { CORS_ORIGINS: 'http://localhost', TAP_MERCHANT_ID: 'merchant-test-id' } as Env;
 const request = (path: string, body: unknown, headers: Record<string, string> = {}) =>
@@ -428,6 +429,25 @@ describe('worker security boundary', () => {
     } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
   });
 
+  test('legacy acceptance is reported without making a complete account non-operational', async () => {
+    const uid = 'legacy-operational';
+    const profile = {
+      uid, email: 'legacy-operational@example.test', emailVerified: true, role: 'customer',
+      nameEn: 'Legacy Customer', countryCode: 'SA', region: 'Riyadh', city: 'Riyadh',
+      accountStatus: 'active', policyAcceptanceState: 'legacy_unversioned',
+    };
+    __test.setAuth({ uid, email: profile.email, emailVerified: true, admin: false });
+    __test.setFirestore((collection) => collection === 'users' ? profile : null);
+    const status = await worker.fetch(new Request('https://worker.test/api/account/profile-status', { headers: { Authorization: 'Bearer test' } }), env);
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({ state: 'authenticated_complete', policyAcceptanceState: 'legacy_unversioned', policyAcceptanceCompatEnabled: true });
+
+    const notifications = await worker.fetch(new Request('https://worker.test/api/notifications/preferences', { headers: { Authorization: 'Bearer test' } }), env);
+    expect(notifications.status).toBe(200);
+    const deletion = await worker.fetch(new Request('https://worker.test/api/account/deletion-request', { headers: { Authorization: 'Bearer test' } }), env);
+    expect(deletion.status).toBe(200);
+  });
+
   test('compliance evidence is UID-bound, append-only, and safe to export', async () => {
     const uid = 'customer-compliance';
     __test.setAuth({ uid, email: 'customer@example.test', admin: false, accountProfile: { uid, role: 'customer', accountStatus: 'active', nameEn: 'Customer' } });
@@ -439,12 +459,41 @@ describe('worker security boundary', () => {
     const valid = await worker.fetch(request('/api/compliance/policy-acceptance', { accepted: true, legalCapacityConfirmed: true, ...CURRENT_POLICY_VERSIONS, appVersion: '1.1.1', platform: 'android', locale: 'ar' }, { Authorization: 'Bearer test' }), env);
     expect(valid.status).toBe(200);
     expect((commits[0] as any[])[0].currentDocument).toEqual({ exists: false });
+    expect((commits[0] as any[])[0].update.fields.acceptanceMode.stringValue).toBe('current_versioned');
+    expect((commits[0] as any[])[0].update.fields.currentPolicyAcceptance.booleanValue).toBe(true);
+    expect((commits[0] as any[])[1].update.fields.policyAcceptanceState.stringValue).toBe('current');
+    expect((commits[0] as any[]).some(write => write.delete)).toBe(false);
     const exported = await worker.fetch(new Request('https://worker.test/api/compliance/data-export', { headers: { Authorization: 'Bearer test' } }), env);
     expect(exported.headers.get('Cache-Control')).toBe('private, no-store');
     const body: any = await exported.json();
     expect(body.export.profile.email).toBe('customer@example.test');
     expect(JSON.stringify(body)).not.toContain('never-export');
     expect((await worker.fetch(request('/api/compliance/privacy-requests', { requestType: 'access' }), env)).status).toBe(401);
+  });
+
+  test('current policy acceptance retries preserve the immutable evidence timestamp', async () => {
+    const uid = 'acceptance-retry';
+    const acceptedAt = '2026-10-04T01:02:03.000Z';
+    __test.setAuth({ uid, email: 'retry@example.test', emailVerified: true, admin: false, accountProfile: {
+      uid, role: 'customer', accountStatus: 'active', nameEn: 'Retry Customer', countryCode: 'SA', region: 'Riyadh', city: 'Riyadh',
+    } });
+    __test.setFirestore((collection) => collection === 'policyAcceptances' ? {
+      uid, role: 'customer', acceptanceMode: 'current_versioned', currentPolicyAcceptance: true,
+      acceptedAt, accepted: true, legalCapacityConfirmed: true, ...CURRENT_POLICY_VERSIONS,
+      appVersion: '1.1.1', platform: 'android', locale: 'ar',
+    } : null);
+    const commits: unknown[] = []; __test.captureCommits(commits);
+    const response = await worker.fetch(request('/api/compliance/policy-acceptance', {
+      accepted: true, legalCapacityConfirmed: true, ...CURRENT_POLICY_VERSIONS,
+      appVersion: '1.1.1', platform: 'android', locale: 'ar',
+    }, { Authorization: 'Bearer test' }), env);
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).alreadyAccepted).toBe(true);
+    expect(commits).toHaveLength(1);
+    const writes = commits[0] as any[];
+    expect(writes).toHaveLength(1);
+    expect(String(writes[0].update.name)).toContain(`/users/${uid}`);
+    expect(writes[0].update.fields.policyAcceptedAt.timestampValue).toBe(acceptedAt);
   });
 
   test('privacy, complaint, refund, and incident intake bind ownership and server lifecycle fields', async () => {
@@ -1050,6 +1099,90 @@ describe('worker security boundary', () => {
         expect(names.some(name => name.includes('invoice_created'))).toBe(true);
       } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
     }
+  });
+
+  test('exact previous mobile registration payload remains compatible without fabricated current consent', async () => {
+    const profileEnv = { ...env, FIREBASE_PROJECT_ID: 'test-project' } as Env;
+    for (const role of ['customer', 'provider', 'driver'] as const) {
+      const uid = `legacy-${role}`;
+      __test.setAuth({ uid, email: `${uid}@example.test`, emailVerified: true, admin: false });
+      __test.setFirestore(() => null);
+      const commits: unknown[] = [];
+      __test.captureCommits(commits);
+      const previousPayload = {
+        nameAr: 'مستخدم سابق', nameEn: 'Legacy User', phone: '', countryCode: 'SA',
+        region: 'Riyadh', city: 'Riyadh', customCity: '', role, requestedRole: role,
+        ...(role === 'provider' ? { providerType: 'individual' as const } : {}),
+        termsAccepted: true,
+      };
+      const response = await worker.fetch(request('/api/register-profile', previousPayload, { Authorization: 'Bearer test' }), profileEnv);
+      expect(response.status).toBe(200);
+      const writes = commits[0] as any[];
+      const userWrite = writes.find(write => String(write.update?.name).includes(`/users/${uid}`));
+      const acceptanceWrite = writes.find(write => String(write.update?.name).includes('/policyAcceptances/'));
+      expect(userWrite.update.fields.policyAcceptanceState.stringValue).toBe('legacy_unversioned');
+      expect(userWrite.update.fields.legalCapacityConfirmed).toBeUndefined();
+      expect(userWrite.update.fields.businessAuthorityConfirmed).toBeUndefined();
+      expect(userWrite.update.fields.currentPolicyVersions).toBeUndefined();
+      expect(acceptanceWrite.update.fields).toMatchObject({
+        acceptanceMode: { stringValue: 'legacy_unversioned' },
+        termsAccepted: { booleanValue: true },
+        policyVersionStatus: { stringValue: 'unversioned' },
+        legalCapacityStatus: { stringValue: 'unknown' },
+        businessAuthorityStatus: { stringValue: 'unknown' },
+        currentPolicyAcceptance: { booleanValue: false },
+        source: { stringValue: 'legacy_mobile_registration' },
+      });
+      for (const key of Object.keys(CURRENT_POLICY_VERSIONS)) expect(acceptanceWrite.update.fields[key]).toBeUndefined();
+      expect(acceptanceWrite.update.fields.legalCapacityConfirmed).toBeUndefined();
+      expect(acceptanceWrite.update.fields.businessAuthorityConfirmed).toBeUndefined();
+    }
+  });
+
+  test('current registration remains strict and stores explicit versioned evidence', async () => {
+    __test.setAuth({ uid: 'current-provider', email: 'current-provider@example.test', emailVerified: true, admin: false });
+    __test.setFirestore(() => null);
+    const commits: unknown[] = []; __test.captureCommits(commits);
+    const profileEnv = { ...env, FIREBASE_PROJECT_ID: 'test-project' } as Env;
+    const valid = await worker.fetch(request('/api/register-profile', buildRegistrationProfilePayload({
+      nameEn: 'Current Provider', countryCode: 'SA', region: 'Riyadh', city: 'Riyadh',
+      nameAr: '', phone: '', customCity: '', role: 'provider', providerType: 'individual',
+      appVersion: '1.1.1', platform: 'android', locale: 'ar',
+    }), { Authorization: 'Bearer test' }), profileEnv);
+    expect(valid.status).toBe(200);
+    const acceptance = (commits[0] as any[]).find(write => String(write.update?.name).includes('/policyAcceptances/'));
+    expect(acceptance.update.fields.acceptanceMode.stringValue).toBe('current_versioned');
+    expect(acceptance.update.fields.currentPolicyAcceptance.booleanValue).toBe(true);
+    expect(acceptance.update.fields.businessAuthorityConfirmed.booleanValue).toBe(true);
+    expect(acceptance.update.fields.termsVersion.stringValue).toBe(CURRENT_POLICY_VERSIONS.termsVersion);
+
+    for (const body of [
+      { nameEn: 'No Terms', countryCode: 'SA', region: 'R', city: 'C', role: 'customer' },
+      { nameEn: 'False Terms', countryCode: 'SA', region: 'R', city: 'C', role: 'customer', termsAccepted: false },
+      { nameEn: 'Mixed', countryCode: 'SA', region: 'R', city: 'C', role: 'customer', termsAccepted: true, legalCapacityConfirmed: true },
+      { nameEn: 'Malformed', countryCode: 'SA', region: 'R', city: 'C', role: 'customer', termsAccepted: true, legalCapacityConfirmed: true, policyAcceptance: { accepted: true } },
+      { nameEn: 'Provider Missing Authority', countryCode: 'SA', region: 'R', city: 'C', role: 'provider', providerType: 'individual', termsAccepted: true, legalCapacityConfirmed: true, policyAcceptance: { accepted: true, legalCapacityConfirmed: true, ...CURRENT_POLICY_VERSIONS, appVersion: '1.1.1', platform: 'android', locale: 'ar' } },
+    ]) {
+      __test.setAuth({ uid: `rejected-${body.nameEn}`, email: 'reject@example.test', emailVerified: true, admin: false });
+      expect((await worker.fetch(request('/api/register-profile', body, { Authorization: 'Bearer test' }), profileEnv)).status).toBe(400);
+    }
+  });
+
+  test('complete legacy registration retry is idempotent and creates no contradictory acceptance', async () => {
+    const uid = 'legacy-existing';
+    __test.setAuth({ uid, email: 'legacy-existing@example.test', emailVerified: true, admin: false });
+    __test.setFirestore((collection) => collection === 'users' ? {
+      uid, email: 'legacy-existing@example.test', role: 'customer', nameEn: 'Legacy Existing',
+      countryCode: 'SA', region: 'Riyadh', city: 'Riyadh', policyAcceptanceState: 'legacy_unversioned',
+    } : null);
+    const commits: unknown[] = []; __test.captureCommits(commits);
+    const response = await worker.fetch(request('/api/register-profile', {
+      nameAr: '', nameEn: 'Legacy Existing', phone: '', countryCode: 'SA', region: 'Riyadh', city: 'Riyadh', customCity: '',
+      role: 'customer', requestedRole: 'customer', termsAccepted: true,
+    }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'test-project' } as Env);
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).alreadyProvisioned).toBe(true);
+    expect(commits).toHaveLength(0);
   });
 
   test('an incomplete legacy provider resumes under the same Firebase identity', async () => {

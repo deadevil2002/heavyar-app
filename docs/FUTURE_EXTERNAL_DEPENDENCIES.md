@@ -12,3 +12,4 @@ These capabilities are not part of the current shipping release and are not curr
 | Future regulated-category integrations | unknown activities fail closed | official source evidence, capability implementation and catalogue version |
 | FATOORA/e-invoice integration | no integration or clearance claim | applicability/product decision, ZATCA-compatible implementation and validation |
 | Bank payout onboarding | absent | approved payout provider, data minimization and explicit store/privacy update |
+| Legacy policy-acceptance compatibility retirement | enabled; terms-only prior clients and versionless existing accounts remain operational, while the current client requests explicit re-acceptance | explicit owner approval, updated-store adoption evidence, release note, verified re-acceptance/migration readiness, complete compatibility test gate, and separately authorized deployment/data plan if needed |

@@ -8,6 +8,7 @@ export const PUBLIC_LINKS = {
   refundPolicy: `${PUBLIC_WEB_BASE}/refund-policy`,
   disputes: `${PUBLIC_WEB_BASE}/disputes`,
   providerTerms: `${PUBLIC_WEB_BASE}/provider-terms`,
+  driverTerms: `${PUBLIC_WEB_BASE}/driver-terms`,
   verification: `${PUBLIC_WEB_BASE}/verification`,
   restrictedActivities: `${PUBLIC_WEB_BASE}/restricted-activities`,
 } as const;

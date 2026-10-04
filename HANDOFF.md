@@ -43,6 +43,7 @@ Code and configuration are authoritative. Never infer deployment status from a G
 
 ## Recently Completed Work
 
+- Added a backward-compatible policy-acceptance transition: the exact previous terms-only registration payload provisions successfully as `legacy_unversioned`, stores only defensible immutable evidence, and remains operational. The current client presents a role-aware re-acceptance gate and appends current versioned evidence only after explicit confirmation and a successful Worker write.
 - Closed the current-release compliance source gap set: immutable policy acceptance, legal-capacity representation, retention/temporary cleanup, PDPL rights/export, complaint/refund/incident lifecycles, regulatory fail-closed catalogue, explicit moderation reasons, and an RBAC Compliance Admin area. No part of this source batch was deployed.
 - Prepared the current iOS App Store release boundary: identity/Nafath verification UI is disabled release-wide on iOS, Profile performs no verification fetch when disabled, and stale verification links return to Profile.
 - Audited the enabled iOS data flow: no government ID/passport input, no bank-account/IBAN/payout-bank input, and no Heavyar storage of raw card number/CVV; Tap remains hosted for physical/off-app services.
@@ -62,11 +63,11 @@ Code and configuration are authoritative. Never infer deployment status from a G
 Latest local gate on 2026-10-04:
 
 - Mobile TypeScript: PASS
-- Mobile tests: PASS — 421/421
+- Mobile tests: PASS — 426/426
 - Worker TypeScript: PASS
-- Worker tests: PASS — 499/499
+- Worker tests: PASS — 505/505
 - Store Review contract: PASS — 6/6
-- Admin tests/build: PASS — 95/95 and build complete
+- Admin tests/build: PASS — 96/96 and build complete
 - Firestore Rules tests: PASS — 15/15
 - Separate website legal-policy tests/build: PASS — 57/57 and build complete
 - `git diff --check`: PASS (line-ending warnings only)
@@ -109,6 +110,7 @@ Earlier Production deployments described in `CURRENT_STATE.md` remain separate h
 - Never use cached/snapshot detail as mutation, authorization, payment, or settlement authority.
 - Never let old-account asynchronous responses populate a new-account UI.
 - Never change the effective 10% commission to 20% without explicit owner approval and the required compliance/release checks.
+- Never reinterpret `legacy_unversioned` as current consent, backfill current policy versions, or disable `LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED` without explicit owner approval, updated-client adoption evidence, release notes, and migration/re-acceptance readiness.
 - Read `COMPLIANCE.md` before financial, privacy, identity, notification, permission, advertising, or regulated changes.
 
 ## Recommended Next Step

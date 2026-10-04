@@ -4,7 +4,7 @@ Status date: 2026-10-04. Scope: current mobile app, Worker, Admin and public leg
 
 | Control | Current-release evidence | Status |
 |---|---|---|
-| Versioned policy acceptance | registration payload + Worker exact-version validation + append-only `policyAcceptances` + Admin inspection + direct Firestore denial | CLOSED |
+| Policy acceptance and compatibility | current clients use exact-version validation and append-only `policyAcceptances`; previous terms-only clients are classified `legacy_unversioned` without fabricated versions/capacity/authority; Admin distinguishes both; direct Firestore writes are denied | CLOSED WITH TRANSITION |
 | Legal capacity | explicit registration representation; business authority representation; no DOB | CLOSED |
 | Retention and temporary cleanup | `DATA_RETENTION_SCHEDULE.md`; allowlisted scheduled `expiresAt` cleanup; protected records excluded | CLOSED |
 | Account deletion | durable request/lock, operational restriction, token/device cleanup, profile/media treatment, retained financial/audit records, completion/retry | CLOSED |
@@ -20,3 +20,5 @@ Status date: 2026-10-04. Scope: current mobile app, Worker, Admin and public leg
 | SDAIA register evidence | minimum internal metadata only: National Register for Personal Data Protection registration evidence, issued 2026-10-04 | RECORDED |
 
 Privacy boundary remains: government ID **NO**, IBAN/bank account **NO**, raw card/CVV **NO**, Nafath **OFF**. Current iOS introduces no new credential collection. Store Review accounts remain financially excluded. No production data mutation is required for this closure.
+
+Not every existing user has current versioned acceptance. Missing/versionless evidence is interpreted as `legacy_unversioned` at runtime with no backfill or invented historical timestamp. The current app requires explicit role-aware re-acceptance and appends a new current record; the immediately previous client remains operational while the named compatibility constant is enabled. Retirement requires explicit owner approval, updated-store adoption evidence, release notes, and migration readiness.

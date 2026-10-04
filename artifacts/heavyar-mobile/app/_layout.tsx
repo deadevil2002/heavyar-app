@@ -19,13 +19,14 @@ import ProvisioningRecoveryScreen from "@/components/ProvisioningRecoveryScreen"
 import HeavyarLaunchMotion, { claimHeavyarLaunchMotion } from "@/components/HeavyarLaunchMotion";
 import { HeavyarLoadingState } from "@/components/ui/heavyar";
 import { useLanguage } from "@/contexts/LanguageContext";
+import PolicyReacceptanceScreen from "@/components/PolicyReacceptanceScreen";
 
 void SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient();
 
 function RootLayoutNav() {
-  const { accountState, recoveryRegistrationOpen, registrationTransaction, isResolvingSession } = useAuth();
+  const { accountState, user, policyAcceptanceState, acceptCurrentPolicies, recoveryRegistrationOpen, registrationTransaction, isResolvingSession } = useAuth();
   const { isRTL } = useLanguage();
   const segments = useSegments();
   const onRegistrationRoute = segments.some(segment => segment === 'register');
@@ -37,6 +38,9 @@ function RootLayoutNav() {
     </View>;
   }
   if (accountState && accountState !== 'authenticated_complete' && !registrationOwnsTransition && !(accountState === 'provisioning_incomplete' && recoveryRegistrationOpen)) return <ProvisioningRecoveryScreen state={accountState} />;
+  if (accountState === 'authenticated_complete' && user && policyAcceptanceState === 'legacy_unversioned' && !registrationOwnsTransition) {
+    return <PolicyReacceptanceScreen role={user.role} onAccept={acceptCurrentPolicies} />;
+  }
   return (
     <Stack
       screenOptions={{

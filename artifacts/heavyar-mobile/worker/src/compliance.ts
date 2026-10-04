@@ -8,6 +8,10 @@ export const CURRENT_POLICY_VERSIONS = Object.freeze({
 });
 
 export type MarketplaceRole = 'customer' | 'provider' | 'driver';
+export type PolicyAcceptanceState = 'current' | 'legacy_unversioned';
+export const LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED = true;
+export const LEGACY_POLICY_ACCEPTANCE_MODE = 'legacy_unversioned' as const;
+export const CURRENT_POLICY_ACCEPTANCE_MODE = 'current_versioned' as const;
 export type PolicyAcceptanceInput = {
   termsVersion?: unknown;
   privacyVersion?: unknown;
@@ -47,7 +51,22 @@ export function validatePolicyAcceptance(input: PolicyAcceptanceInput | null | u
 
 export function acceptanceIsCurrent(record: Record<string, unknown> | null | undefined, role: MarketplaceRole) {
   if (!record) return false;
-  return Object.entries(requiredPolicyVersions(role)).every(([key, version]) => record[key] === version);
+  return record.legalCapacityConfirmed === true
+    && (role !== 'provider' || record.businessAuthorityConfirmed === true)
+    && Object.entries(requiredPolicyVersions(role)).every(([key, version]) => record[key] === version);
+}
+
+export function policyAcceptanceState(profile: Record<string, unknown> | null | undefined, role: MarketplaceRole): PolicyAcceptanceState {
+  if (!profile) return LEGACY_POLICY_ACCEPTANCE_MODE;
+  const versions = profile.currentPolicyVersions;
+  if (profile.policyAcceptanceState === 'current'
+    && profile.legalCapacityConfirmed === true
+    && (role !== 'provider' || profile.businessAuthorityConfirmed === true)
+    && versions && typeof versions === 'object' && !Array.isArray(versions)
+    && Object.entries(requiredPolicyVersions(role)).every(([key, version]) => (versions as Record<string, unknown>)[key] === version)) {
+    return 'current';
+  }
+  return LEGACY_POLICY_ACCEPTANCE_MODE;
 }
 
 export const PRIVACY_REQUEST_TYPES = ['access', 'correction', 'deletion', 'privacy_inquiry', 'objection_withdrawal'] as const;
@@ -124,7 +143,7 @@ export function safeUserExport(input: { user: Record<string, unknown>; requests?
     profile: pick(input.user, ['uid', 'nameAr', 'nameEn', 'email', 'phone', 'role', 'countryCode', 'region', 'city', 'customCity', 'createdAt', 'accountStatus']),
     requests: (input.requests || []).map(row => pick(row, ['id', 'publicRequestNumber', 'status', 'equipmentSnapshot', 'requestedStartAt', 'requestedEndAt', 'createdAt'])),
     complaints: (input.complaints || []).map(row => pick(row, ['id', 'status', 'category', 'createdAt', 'updatedAt', 'resolvedAt'])),
-    policyAcceptances: (input.policyAcceptances || []).map(row => pick(row, ['id', 'termsVersion', 'privacyVersion', 'acceptableUseVersion', 'refundPolicyVersion', 'providerTermsVersion', 'driverTermsVersion', 'acceptedAt', 'appVersion', 'platform', 'locale'])),
+    policyAcceptances: (input.policyAcceptances || []).map(row => pick(row, ['id', 'acceptanceMode', 'policyVersionStatus', 'currentPolicyAcceptance', 'termsAccepted', 'legalCapacityStatus', 'businessAuthorityStatus', 'termsVersion', 'privacyVersion', 'acceptableUseVersion', 'refundPolicyVersion', 'providerTermsVersion', 'driverTermsVersion', 'acceptedAt', 'source', 'appVersion', 'platform', 'locale'])),
   };
 }
 

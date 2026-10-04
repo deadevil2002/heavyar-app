@@ -378,6 +378,8 @@ export type AccountProfileStatus = {
   accountStatus?: string | null;
   accountPurpose?: 'store_review' | null;
   reviewAccess?: boolean;
+  policyAcceptanceState?: 'current' | 'legacy_unversioned' | null;
+  policyAcceptanceCompatEnabled?: boolean;
 };
 
 export async function fetchAccountProfileStatus(): Promise<AccountProfileStatus> {

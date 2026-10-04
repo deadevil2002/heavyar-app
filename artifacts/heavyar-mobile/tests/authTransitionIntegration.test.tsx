@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   fetchEmailVerificationStatus: vi.fn(() => Promise.resolve(null)),
   registerCurrentDevice: vi.fn(() => Promise.resolve()),
   logoutUser: vi.fn(),
+  acceptCurrentPolicyVersions: vi.fn(),
   storage: new Map<string, string>(),
 }));
 
@@ -45,6 +46,7 @@ vi.mock('../services/notificationService', () => ({
   revokeCurrentDevice: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('../services/authLocalStorage', () => ({ clearAccountLocalStorage: vi.fn(() => Promise.resolve()) }));
+vi.mock('../services/workerClient', () => ({ acceptCurrentPolicyVersions: mocks.acceptCurrentPolicyVersions }));
 
 let root: Root;
 let host: HTMLDivElement;
@@ -73,7 +75,8 @@ describe('AuthContext canonical session transitions', () => {
     mocks.storage.clear();
     mocks.listener = undefined;
     mocks.loginWithEmail.mockResolvedValue({ uid: 'fixture' });
-    mocks.fetchAccountProfileStatus.mockResolvedValue({ state: 'authenticated_complete', accountStatus: 'active' });
+    mocks.fetchAccountProfileStatus.mockResolvedValue({ state: 'authenticated_complete', accountStatus: 'active', policyAcceptanceState: 'current' });
+    mocks.acceptCurrentPolicyVersions.mockResolvedValue({ success: true, state: 'current' });
   });
 
   afterEach(async () => {
@@ -194,5 +197,34 @@ describe('AuthContext canonical session transitions', () => {
     expect(auth.sessionReady).toBe(true);
     expect(auth.isAuthenticated).toBe(false);
     expect(auth.user).toBeNull();
+  });
+
+  it('keeps legacy state until the authoritative acceptance write and status refresh both succeed', async () => {
+    mocks.fetchUserProfile.mockResolvedValue({ uid: 'legacy', role: 'provider' });
+    mocks.fetchAccountProfileStatus.mockResolvedValueOnce({ state: 'authenticated_complete', accountStatus: 'active', policyAcceptanceState: 'legacy_unversioned' });
+    await mountAuth();
+    await act(async () => { await publishFirebaseUser('legacy'); });
+    expect(auth.policyAcceptanceState).toBe('legacy_unversioned');
+
+    mocks.acceptCurrentPolicyVersions.mockRejectedValueOnce(new Error('network'));
+    await act(async () => { await expect(auth.acceptCurrentPolicies()).rejects.toThrow('network'); });
+    expect(auth.policyAcceptanceState).toBe('legacy_unversioned');
+
+    mocks.fetchAccountProfileStatus.mockResolvedValueOnce({ state: 'authenticated_complete', accountStatus: 'active', policyAcceptanceState: 'current' });
+    await act(async () => { await auth.acceptCurrentPolicies(); });
+    expect(auth.policyAcceptanceState).toBe('current');
+  });
+
+  it('does not leak policy acceptance state across account switches', async () => {
+    mocks.fetchUserProfile.mockResolvedValueOnce({ uid: 'current-user', role: 'customer' });
+    await mountAuth();
+    await act(async () => { await publishFirebaseUser('current-user'); });
+    expect(auth.policyAcceptanceState).toBe('current');
+
+    mocks.fetchUserProfile.mockResolvedValueOnce({ uid: 'legacy-user', role: 'driver' });
+    mocks.fetchAccountProfileStatus.mockResolvedValueOnce({ state: 'authenticated_complete', accountStatus: 'active', policyAcceptanceState: 'legacy_unversioned' });
+    await act(async () => { await publishFirebaseUser('legacy-user'); });
+    expect(auth.user?.uid).toBe('legacy-user');
+    expect(auth.policyAcceptanceState).toBe('legacy_unversioned');
   });
 });

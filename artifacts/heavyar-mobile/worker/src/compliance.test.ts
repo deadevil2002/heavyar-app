@@ -4,7 +4,7 @@ import {
   acceptanceIsCurrent, canTransitionComplaint, canTransitionIncident, canTransitionPrivacyRequest,
   canTransitionRefundCase, complaintServiceTargets, normalizeModerationReason, regulatoryDecision,
   refundMayBeMarkedExecuted, requiredPolicyVersions, safeUserExport, temporaryRecordExpired,
-  validatePolicyAcceptance,
+  validatePolicyAcceptance, LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED, policyAcceptanceState,
 } from './compliance';
 
 const metadata = { accepted: true, legalCapacityConfirmed: true, appVersion: '1.1.1', platform: 'ios', locale: 'ar', ...CURRENT_POLICY_VERSIONS };
@@ -21,9 +21,18 @@ describe('current-release compliance contracts', () => {
 
   test('detects missing and old acceptance without overwriting history', () => {
     expect(acceptanceIsCurrent(null, 'customer')).toBe(false);
-    expect(acceptanceIsCurrent({ ...requiredPolicyVersions('customer') }, 'customer')).toBe(true);
-    expect(acceptanceIsCurrent({ ...requiredPolicyVersions('customer'), privacyVersion: 'old' }, 'customer')).toBe(false);
+    expect(acceptanceIsCurrent({ ...requiredPolicyVersions('customer'), legalCapacityConfirmed: true }, 'customer')).toBe(true);
+    expect(acceptanceIsCurrent({ ...requiredPolicyVersions('customer'), legalCapacityConfirmed: true, privacyVersion: 'old' }, 'customer')).toBe(false);
     expect(Object.isFrozen(CURRENT_POLICY_VERSIONS)).toBe(true);
+  });
+
+  test('classifies missing evidence as legacy without inventing current consent', () => {
+    expect(LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED).toBe(true);
+    expect(policyAcceptanceState({}, 'customer')).toBe('legacy_unversioned');
+    expect(policyAcceptanceState({ policyAcceptanceState: 'current', currentPolicyVersions: requiredPolicyVersions('customer') }, 'customer')).toBe('legacy_unversioned');
+    expect(policyAcceptanceState({ policyAcceptanceState: 'current', legalCapacityConfirmed: true, currentPolicyVersions: requiredPolicyVersions('customer') }, 'customer')).toBe('current');
+    expect(policyAcceptanceState({ policyAcceptanceState: 'current', legalCapacityConfirmed: true, currentPolicyVersions: requiredPolicyVersions('provider') }, 'provider')).toBe('legacy_unversioned');
+    expect(policyAcceptanceState({ policyAcceptanceState: 'current', legalCapacityConfirmed: true, businessAuthorityConfirmed: true, currentPolicyVersions: requiredPolicyVersions('provider') }, 'provider')).toBe('current');
   });
 
   test('enforces complaint lifecycle and computes internal business-day targets', () => {

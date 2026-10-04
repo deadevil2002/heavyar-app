@@ -2,7 +2,7 @@
 
 ## Current date
 
-2026-10-03 (Asia/Riyadh).
+2026-10-04 (Asia/Riyadh).
 
 ## Source baseline
 
@@ -100,7 +100,8 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 
 ## Payments and commercial status
 
-- The current-release compliance closure is complete in local source: append-only policy evidence, PDPL rights/export, retention cleanup, complaint/refund/incident workflows, regulatory catalogue, moderation reasons, and Admin controls. These changes are not deployed or committed yet.
+- The current-release compliance closure baseline is committed in GitHub. Source now also preserves the previous terms-only registration contract as explicit `legacy_unversioned` evidence while keeping current-client registration strict and adding role-aware current-policy re-acceptance. None of this compliance source is deployed yet.
+- Legacy acceptance never fabricates current versions, legal capacity, provider business authority, or role-specific terms. Existing versionless users are interpreted at runtime without a Production backfill; previous clients remain operational while `LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED` is true.
 - Tap environment: **TEST**. LIVE is not active.
 - Current effective commercial rule: **10% provider-paid** (`1000` basis points).
 - Intended future rule: **20% provider-paid — DRAFT ONLY / NOT ACTIVE**.
@@ -119,6 +120,7 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 5. The 20% commission rule is draft only and must not be activated without explicit owner approval.
 6. Google and Apple sign-in remain intentionally hidden/not implemented.
 7. Before App Store submission, the external developer must complete Apple authentication/signing and APNs setup, build and inspect the signed archive/SDK privacy manifests and required-reason APIs, enter App Store Connect metadata, App Privacy answers, Review Notes, and Store Review credentials, complete real-device QA, upload to TestFlight, and perform the final submission. The final public privacy/support deployment is verified separately above.
+8. Legacy policy-acceptance compatibility cannot be retired until the owner explicitly approves retirement after updated-store adoption and migration/re-acceptance readiness are verified.
 
 ## Validation status
 
@@ -127,12 +129,12 @@ Current-release compliance source gate on 2026-10-04:
 | Check | Result |
 |---|---|
 | Mobile TypeScript | PASS |
-| Full mobile tests | PASS — 421/421 (368 base Vitest + 39 jsdom/discovery Vitest + 14 Node) |
+| Full mobile tests | PASS — 426/426 (371 base Vitest + 41 jsdom/discovery Vitest + 14 Node) |
 | Worker TypeScript | PASS |
-| Full Worker tests | PASS — 499/499 |
+| Full Worker tests | PASS — 505/505 |
 | Focused iOS privacy/verification tests | PASS — 6/6 |
 | Store Review contract tests | PASS — 6/6 |
-| Admin tests/build | PASS — 95/95; build complete |
+| Admin tests/build | PASS — 96/96; build complete |
 | Firestore Rules tests | PASS — 15/15 |
 | Separate website legal-policy tests/build | PASS — 57/57; build complete |
 | `git diff --check` | PASS (line-ending warnings only) |

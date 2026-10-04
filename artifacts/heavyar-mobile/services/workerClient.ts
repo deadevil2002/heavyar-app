@@ -152,6 +152,23 @@ export async function request<T>(path: string, init: RequestInit = {}, authentic
 }
 
 export type PrivacyRequestType = 'access' | 'correction' | 'deletion' | 'privacy_inquiry' | 'objection_withdrawal';
+export type PolicyAcceptanceStatus = {
+  success: true;
+  current: boolean;
+  state: 'current' | 'legacy_unversioned';
+  legacyCompatibilityEnabled: boolean;
+  requiredVersions: Record<string, string>;
+  latestAcceptance: { id: string; acceptedAt?: string; appVersion?: string; platform?: string; locale?: string } | null;
+};
+export function fetchPolicyAcceptanceStatus() {
+  return request<PolicyAcceptanceStatus>('/api/compliance/policy-acceptance');
+}
+export function acceptCurrentPolicyVersions(payload: Record<string, unknown>) {
+  return request<{ success: true; acceptanceId: string; alreadyAccepted?: boolean; state: 'current' }>(
+    '/api/compliance/policy-acceptance',
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
 export function submitPrivacyRequest(requestType: PrivacyRequestType, details: string) {
   return request<{ success: true; requestId: string; status: 'submitted' }>('/api/compliance/privacy-requests', { method: 'POST', body: JSON.stringify({ requestType, details }) });
 }

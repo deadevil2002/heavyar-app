@@ -265,7 +265,7 @@ const FILTERS: Record<string, string[]> = {
   staffInvitations: ['status', 'email'],
   paymentGateways: ['enabled'],
   identityIntegrations: ['enabled'],
-  policyAcceptances: ['uid', 'role', 'termsVersion', 'privacyVersion'],
+  policyAcceptances: ['uid', 'role', 'acceptanceMode', 'policyVersionStatus', 'currentPolicyAcceptance', 'termsVersion', 'privacyVersion'],
   privacyRequests: ['uid', 'requestType', 'status'],
   incidents: ['reporterUid', 'requestId', 'incidentType', 'status'],
   moderationCases: ['targetType', 'targetId', 'reasonCode', 'status'],

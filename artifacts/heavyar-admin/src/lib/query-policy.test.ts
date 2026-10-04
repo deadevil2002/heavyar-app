@@ -89,4 +89,13 @@ describe('Admin read budgets', () => {
     assert.match(outage, /disabled=\{isFetching \|\| cooldown > 0\}/);
     assert.doesNotMatch(outage, /await logout|logout\(\)/);
   });
+  it('distinguishes immutable current and legacy policy acceptance evidence', () => {
+    const compliance = source('pages/compliance.tsx');
+    assert.match(compliance, /CURRENT/);
+    assert.match(compliance, /LEGACY_UNVERSIONED/);
+    assert.match(compliance, /acceptanceMode/);
+    assert.match(compliance, /acceptedAt/);
+    assert.match(compliance, /item\.role/);
+    assert.doesNotMatch(compliance, /NON.?COMPLIANT|SUSPEND/i);
+  });
 });

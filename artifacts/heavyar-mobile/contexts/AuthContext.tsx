@@ -42,6 +42,8 @@ import {
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import { enableAuthPerformanceTracing } from '@/utils/authPerformance';
 import { clearRequestNavigationSnapshots, synchronizeRequestSnapshotOwner } from '@/services/requestNavigationSnapshot';
+import { acceptCurrentPolicyVersions } from '@/services/workerClient';
+import { registrationPolicyAcceptance } from '@/constants/policyVersions';
 
 const AUTH_PROFILE_KEY = 'heavyar_user_profile';
 
@@ -55,6 +57,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const [emailVerified, setEmailVerified] = useState<boolean>(false);
   const [authPolicy, setAuthPolicy] = useState<AuthPolicy | null>(null);
   const [accountState, setAccountState] = useState<AccountState | null>(null);
+  const [policyAcceptanceState, setPolicyAcceptanceState] = useState<'current' | 'legacy_unversioned' | null>(null);
   const [identityEmail, setIdentityEmail] = useState<string | null>(null);
   const [recoveryRegistrationOpen, setRecoveryRegistrationOpen] = useState(false);
   const [registrationTransaction, setRegistrationTransaction] = useState<RegistrationTransaction>('idle');
@@ -163,6 +166,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
               accountStatus: status,
               suspensionStatus: profile.suspensionStatus,
             }));
+            setPolicyAcceptanceState(canonicalStatus.policyAcceptanceState === 'current' ? 'current' : 'legacy_unversioned');
             await mobilePerformance.trackOperation('auth.profile_persistence', () => AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(authorizedProfile)));
             if (isStale()) { abandonMeasurement(); return; }
             pushRegistrationUid = firebaseUser.uid;
@@ -170,6 +174,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
             setUser(null);
             setIsAuthenticated(true);
             setAccountState('provisioning_incomplete');
+            setPolicyAcceptanceState(null);
             await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
           }
         } catch (e) {
@@ -180,6 +185,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
           if (isStale()) { abandonMeasurement(); return; }
           setAuthError('SESSION_EXPIRED');
           setAccountState(null);
+          setPolicyAcceptanceState(null);
           resolution = { status: 'failed', errorCode: 'SESSION_EXPIRED' };
         }
       } else {
@@ -187,6 +193,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         setUser(null);
         setIsAuthenticated(false);
         setAccountState(null);
+        setPolicyAcceptanceState(null);
         setIdentityEmail(null);
         await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
         if (pendingLoginResolutionRef.current) {
@@ -223,6 +230,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     setUser(profile);
     setIsAuthenticated(true);
     setAccountState('authenticated_complete');
+    setPolicyAcceptanceState(canonicalStatus.policyAcceptanceState === 'current' ? 'current' : 'legacy_unversioned');
     setRecoveryRegistrationOpen(false);
     await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
     setRegistrationPhase('success');
@@ -319,6 +327,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         setUser(profile);
         setIsAuthenticated(true);
         setAccountState('authenticated_complete');
+        setPolicyAcceptanceState(canonicalStatus.policyAcceptanceState === 'current' ? 'current' : 'legacy_unversioned');
         await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
         setRegistrationPhase('success');
         setTimeout(() => setRegistrationPhase('idle'), 0);
@@ -329,12 +338,14 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       const ambiguous = registrationFailureDisposition(code) === 'preserve_recovery_identity';
       if (ambiguous) {
         setAccountState('provisioning_incomplete');
+        setPolicyAcceptanceState(null);
         setIsAuthenticated(true);
         setRecoveryRegistrationOpen(true);
         setRegistrationPhase('ambiguous_failure_recovery');
       } else {
         setRegistrationPhase('known_failure_rollback');
         setAccountState(null);
+        setPolicyAcceptanceState(null);
         setIsAuthenticated(false);
         setRegistrationPhase('idle');
       }
@@ -379,6 +390,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       setUser(null);
       setIsAuthenticated(false);
       setAccountState(null);
+      setPolicyAcceptanceState(null);
       setIdentityEmail(null);
       setRecoveryRegistrationOpen(false);
     } catch {
@@ -387,6 +399,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       setUser(null);
       setIsAuthenticated(false);
       setAccountState(null);
+      setPolicyAcceptanceState(null);
       setIdentityEmail(null);
       setRecoveryRegistrationOpen(false);
     } finally {
@@ -407,6 +420,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     } catch {
       setUser(null);
       setIsAuthenticated(false);
+      setPolicyAcceptanceState(null);
       await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
     }
   }, [user?.uid]);
@@ -444,16 +458,29 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     }
   }, [user]);
 
+  const acceptCurrentPolicies = useCallback(async () => {
+    if (!user || !['customer', 'provider', 'driver'].includes(user.role)) throw new Error('PROFILE_REQUIRED');
+    await acceptCurrentPolicyVersions(registrationPolicyAcceptance(user.role, {
+      appVersion: Constants.expoConfig?.version || '1.1.1',
+      platform: (Platform.OS === 'ios' || Platform.OS === 'web' ? Platform.OS : 'android') as 'ios' | 'android' | 'web',
+      locale: language,
+    }));
+    const canonicalStatus = await fetchAccountProfileStatus();
+    if (canonicalStatus.policyAcceptanceState !== 'current') throw new Error('POLICY_ACCEPTANCE_NOT_CURRENT');
+    setPolicyAcceptanceState('current');
+  }, [language, user]);
+
   const deleteIncompleteAccount = useCallback(async () => {
     clearRequestNavigationSnapshots();
     await deleteIncompleteIdentity();
     await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
-    setUser(null); setIsAuthenticated(false); setAccountState(null); setIdentityEmail(null);
+    setUser(null); setIsAuthenticated(false); setAccountState(null); setPolicyAcceptanceState(null); setIdentityEmail(null);
   }, []);
 
   return useMemo(() => ({
     user,
     accountState,
+    policyAcceptanceState,
     identityEmail,
     recoveryRegistrationOpen,
     isLoading,
@@ -467,6 +494,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     logout,
     refreshProfile,
     updateProfile,
+    acceptCurrentPolicies,
     emailVerified,
     authPolicy,
     refreshEmailVerification,
@@ -476,5 +504,5 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     authTransition,
     isResolvingSession: isAuthSessionTransitioning(isLoading, authTransition),
     sessionReady: !isAuthSessionTransitioning(isLoading, authTransition),
-  }), [user, accountState, identityEmail, recoveryRegistrationOpen, registrationTransaction, authTransition, isLoading, isAuthenticated, authError, login, register, resumeRegistration, beginRecoveryRegistration, deleteIncompleteAccount, logout, refreshProfile, updateProfile, emailVerified, authPolicy, refreshEmailVerification, sendEmailVerification, requiresEmailVerification]);
+  }), [user, accountState, policyAcceptanceState, identityEmail, recoveryRegistrationOpen, registrationTransaction, authTransition, isLoading, isAuthenticated, authError, login, register, resumeRegistration, beginRecoveryRegistration, deleteIncompleteAccount, logout, refreshProfile, updateProfile, acceptCurrentPolicies, emailVerified, authPolicy, refreshEmailVerification, sendEmailVerification, requiresEmailVerification]);
 });

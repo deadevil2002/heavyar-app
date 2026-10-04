@@ -25,6 +25,16 @@ const transitionActions: Record<string, { action: string; statuses: string[] }> 
   incidents: { action: 'transition_incident', statuses: ['acknowledged', 'under_review', 'awaiting_evidence', 'referred_to_authority', 'resolved', 'closed'] },
 };
 
+function isCurrentPolicyAcceptance(item: Record<string, unknown>) {
+  if (item.acceptanceMode === 'legacy_unversioned' || item.currentPolicyAcceptance === false) return false;
+  if (item.acceptanceMode === 'current_versioned' && item.currentPolicyAcceptance === true) return true;
+  const baseVersionsPresent = ['termsVersion', 'privacyVersion', 'acceptableUseVersion', 'refundPolicyVersion'].every(key => typeof item[key] === 'string' && item[key] !== '');
+  const roleVersionPresent = item.role === 'provider' ? typeof item.providerTermsVersion === 'string'
+    : item.role === 'driver' ? typeof item.driverTermsVersion === 'string'
+    : true;
+  return baseVersionsPresent && roleVersionPresent && item.legalCapacityConfirmed === true && (item.role !== 'provider' || item.businessAuthorityConfirmed === true);
+}
+
 export default function Compliance() {
   const { language } = useAppState();
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
@@ -49,7 +59,7 @@ export default function Compliance() {
     <Card><CardHeader><CardTitle className="text-base">{t('دليل التسجيل الوطني', 'National register evidence')}</CardTitle></CardHeader><CardContent>{summary.data?.evidence.map(item => <div key={item.evidenceType} className="text-sm"><div className="font-medium">{item.evidenceType}</div><div className="text-muted-foreground">{item.issuedAt} · {item.classification}</div></div>) || <span>—</span>}</CardContent></Card>
     <Card><CardHeader><CardTitle className="text-base">{t('السجلات', 'Records')}</CardTitle></CardHeader><CardContent className="space-y-4">
       <div className="flex flex-wrap gap-2">{Object.keys(endpoints).map(key => <Button key={key} size="sm" variant={resource === key ? 'default' : 'outline'} onClick={() => setResource(key)}>{key}</Button>)}</div>
-      {records.isLoading ? <p>{t('جاري التحميل…', 'Loading…')}</p> : records.error ? <p role="alert" className="text-destructive">{t('تعذر تحميل السجلات.', 'Could not load records.')}</p> : <div className="space-y-2">{(records.data?.items || []).length === 0 ? <p className="text-muted-foreground">{t('لا توجد سجلات.', 'No records.')}</p> : (records.data?.items || []).map((item, index) => <details key={String(item.id || index)} className="rounded-md border p-3"><summary className="cursor-pointer font-mono text-sm">{String(item.id || `${resource}-${index + 1}`)}</summary><pre className="mt-3 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{JSON.stringify(item, null, 2)}</pre>{transitionActions[resource] && <div className="mt-3 flex flex-wrap gap-2">{transitionActions[resource].statuses.map(status => <Button key={status} size="sm" variant="outline" disabled={transition.isPending} onClick={() => transition.mutate({ item, status })}>{status}</Button>)}</div>}</details>)}</div>}
+      {records.isLoading ? <p>{t('جاري التحميل…', 'Loading…')}</p> : records.error ? <p role="alert" className="text-destructive">{t('تعذر تحميل السجلات.', 'Could not load records.')}</p> : <div className="space-y-2">{(records.data?.items || []).length === 0 ? <p className="text-muted-foreground">{t('لا توجد سجلات.', 'No records.')}</p> : (records.data?.items || []).map((item, index) => <details key={String(item.id || index)} className="rounded-md border p-3"><summary className="cursor-pointer font-mono text-sm">{String(item.id || `${resource}-${index + 1}`)}</summary>{resource === 'policyAcceptances' && <div className="mt-3 flex flex-wrap items-center gap-2 text-sm"><Badge variant={isCurrentPolicyAcceptance(item) ? 'default' : 'outline'}>{isCurrentPolicyAcceptance(item) ? 'CURRENT' : 'LEGACY_UNVERSIONED'}</Badge><span>{t('الدور', 'Role')}: {String(item.role || '—')}</span><span>{t('وقت القبول', 'Accepted')}: {String(item.acceptedAt || '—')}</span><span>{t('النمط', 'Mode')}: {String(item.acceptanceMode || (isCurrentPolicyAcceptance(item) ? 'current_versioned' : 'legacy_unversioned'))}</span></div>}<pre className="mt-3 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{JSON.stringify(item, null, 2)}</pre>{transitionActions[resource] && <div className="mt-3 flex flex-wrap gap-2">{transitionActions[resource].statuses.map(status => <Button key={status} size="sm" variant="outline" disabled={transition.isPending} onClick={() => transition.mutate({ item, status })}>{status}</Button>)}</div>}</details>)}</div>}
     </CardContent></Card>
   </div>;
 }
