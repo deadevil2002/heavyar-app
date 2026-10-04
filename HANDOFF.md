@@ -43,6 +43,7 @@ Code and configuration are authoritative. Never infer deployment status from a G
 
 ## Recently Completed Work
 
+- Closed the current-release compliance source gap set: immutable policy acceptance, legal-capacity representation, retention/temporary cleanup, PDPL rights/export, complaint/refund/incident lifecycles, regulatory fail-closed catalogue, explicit moderation reasons, and an RBAC Compliance Admin area. No part of this source batch was deployed.
 - Prepared the current iOS App Store release boundary: identity/Nafath verification UI is disabled release-wide on iOS, Profile performs no verification fetch when disabled, and stale verification links return to Profile.
 - Audited the enabled iOS data flow: no government ID/passport input, no bank-account/IBAN/payout-bank input, and no Heavyar storage of raw card number/CVV; Tap remains hosted for physical/off-app services.
 - Prepared `APPLE_PRIVACY_DECLARATION.md` and `APPLE_REVIEW_NOTES.md`; the source is ready in GitHub, while the external developer owns Apple Developer authentication, Distribution Certificate and Provisioning Profile creation, APNs/Push capability, the EAS iOS production build, signed IPA/archive inspection, TestFlight upload, App Store Connect metadata and App Privacy answers, Review Notes and Store Review credentials, and final App Store submission.
@@ -63,9 +64,11 @@ Latest local gate on 2026-10-04:
 - Mobile TypeScript: PASS
 - Mobile tests: PASS — 421/421
 - Worker TypeScript: PASS
-- Worker tests: PASS — 487/487
+- Worker tests: PASS — 499/499
 - Store Review contract: PASS — 6/6
-- Separate website privacy/support tests/build: PASS — 40/40 and build complete
+- Admin tests/build: PASS — 95/95 and build complete
+- Firestore Rules tests: PASS — 15/15
+- Separate website legal-policy tests/build: PASS — 57/57 and build complete
 - `git diff --check`: PASS (line-ending warnings only)
 
 ## Current Known Issues
@@ -73,8 +76,8 @@ Latest local gate on 2026-10-04:
 1. A legacy Provider phone-ownership conflict remains intentionally unresolved; do not repair it without a separately approved identity/data-migration plan.
 2. Real production-device performance has not been profiled. Expo Go showed intermittent development-runtime event-loop stalls.
 3. Android remote push cannot be validated in Expo Go; it requires an authorized Development Build.
-4. Refund execution is not ready.
-5. Tap Marketplace/Split capability and payout behavior are not verified or enabled.
+4. Automated refund provider execution is disabled; use the audited manual refund-case workflow and never mark executed without provider evidence.
+5. Tap Marketplace/Split capability and payout behavior are future disabled dependencies and are not enabled.
 6. The future 20% provider-paid commission rule remains a draft and is not active.
 
 ## Payments

@@ -37,6 +37,8 @@ function v2Request(overrides: Json = {}) {
     equipmentId: 'eq_1',
     providerUid: 'provider',
     customerUid: 'customer',
+    categoryId: 'excavators',
+    countryCode: 'SA',
     status: 'pending',
     rentalMode: 'hourly',
     rateUnit: 'hourly',

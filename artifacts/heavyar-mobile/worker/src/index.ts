@@ -18,6 +18,7 @@ import { activeInterval, buildFinalPaymentHandoff, calculateRental, estimateRent
 import { mutationDiagnosticEvent, mutationRoute, responseErrorCode, type MutationDiagnostics, type MutationStage } from './observability';
 import { reserveCloudinaryUploadQuota as reserveCloudinaryUploadQuotaAttempt, type CloudinaryQuotaRecord } from './cloudinary-upload-quota';
 import { evaluateCapabilities, isSaudiTruckRentalWithoutDriver, validateRegulatoryDocumentSubmission, type RegulatoryDocument } from './regulatory';
+import { INCIDENT_TYPES, PRIVACY_REQUEST_TYPES, complaintServiceTargets, regulatoryDecision, requiredPolicyVersions, safeUserExport, validatePolicyAcceptance } from './compliance';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -819,6 +820,7 @@ async function registerDevice(req: Request, env: Env, u: User, revoke = false) {
   const installationId = String(body?.installationId || '');
   if (!token || token.length > 4096 || (!revoke && !/^Expo(nent)?PushToken\[[^\]]{8,4000}\]$/.test(token)) || (!revoke && !platform) || !/^[A-Za-z0-9._:-]{8,200}$/.test(installationId)) return out(env, req, { success: false, error: 'Invalid device token' }, 400);
   const tokenId = await hashedId(token), installationKey = await hashedId(installationId), now = new Date().toISOString(), path = `deviceTokens/${tokenId}`;
+  const expiresAt = new Date(Date.now() + (revoke ? 30 : 180) * 86400000).toISOString();
   const ownershipWrites: any[] = [];
   const canonicalInstallation = await getRawDoc(env, 'notificationInstallations', installationKey);
   const canonicalOwner = await getRawDoc(env, 'notificationTokenOwners', tokenId);
@@ -833,13 +835,13 @@ async function registerDevice(req: Request, env: Env, u: User, revoke = false) {
     }
   }
   const current = await getRawDoc(env, 'deviceTokens', tokenId);
-  const fields: Record<string, any> = { uid: { stringValue: u.uid }, token: { stringValue: token }, installationId: { stringValue: installationId }, platform: { stringValue: platform }, active: { booleanValue: !revoke }, updatedAt: { timestampValue: now }, lastSeenAt: { timestampValue: now } };
+  const fields: Record<string, any> = { uid: { stringValue: u.uid }, token: { stringValue: token }, installationId: { stringValue: installationId }, platform: { stringValue: platform }, active: { booleanValue: !revoke }, updatedAt: { timestampValue: now }, lastSeenAt: { timestampValue: now }, expiresAt: { timestampValue: expiresAt } };
   if (revoke) fields.revokedAt = { timestampValue: now };
   ownershipWrites.push(current
     ? { update: { name: fullName(env, path), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { exists: true } }
     : { update: { name: fullName(env, path), fields: { ...fields, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } });
-  const installationFields = { installationId: { stringValue: installationId }, uid: { stringValue: u.uid }, tokenId: { stringValue: tokenId }, updatedAt: { timestampValue: now } };
-  const ownerFields = { tokenHash: { stringValue: tokenId }, uid: { stringValue: u.uid }, installationId: { stringValue: installationId }, active: { booleanValue: !revoke }, updatedAt: { timestampValue: now } };
+  const installationFields = { installationId: { stringValue: installationId }, uid: { stringValue: u.uid }, tokenId: { stringValue: tokenId }, active: { booleanValue: !revoke }, updatedAt: { timestampValue: now }, expiresAt: { timestampValue: expiresAt } };
+  const ownerFields = { tokenHash: { stringValue: tokenId }, uid: { stringValue: u.uid }, installationId: { stringValue: installationId }, active: { booleanValue: !revoke }, updatedAt: { timestampValue: now }, expiresAt: { timestampValue: expiresAt } };
   ownershipWrites.push({ update: { name: fullName(env, `notificationInstallations/${installationKey}`), fields: installationFields }, ...(canonicalInstallation?.updateTime ? { currentDocument: { updateTime: canonicalInstallation.updateTime } } : { currentDocument: { exists: false } }) });
   ownershipWrites.push({ update: { name: fullName(env, `notificationTokenOwners/${tokenId}`), fields: ownerFields }, ...(canonicalOwner?.updateTime ? { currentDocument: { updateTime: canonicalOwner.updateTime } } : { currentDocument: { exists: false } }) });
   if (firestoreWrites) {
@@ -894,7 +896,7 @@ async function deliverNotificationPush(env: Env, uid: string, notificationId: st
           uid: { stringValue: uid }, notificationId: { stringValue: notificationId }, status: { stringValue: status },
           tokenHash: { stringValue: await hashedId(batch[i].token) },
           ticketId: { stringValue: String(ticket.id || '').slice(0, 160) }, receiptPending: { booleanValue: ticket.status === 'ok' },
-          attempts: { integerValue: '1' }, nextAttemptAt: { timestampValue: new Date(Date.now() + 60000).toISOString() }, errorCode: { stringValue: String(ticket.details?.error || '').slice(0, 80) }, createdAt: { timestampValue: new Date().toISOString() },
+          attempts: { integerValue: '1' }, nextAttemptAt: { timestampValue: new Date(Date.now() + 60000).toISOString() }, errorCode: { stringValue: String(ticket.details?.error || '').slice(0, 80) }, createdAt: { timestampValue: new Date().toISOString() }, expiresAt: { timestampValue: new Date(Date.now() + 30 * 86400000).toISOString() },
         });
       }
     }
@@ -959,7 +961,7 @@ async function pollNotificationReceipts(env: Env) {
       await patchDoc(env, String(row.document?.name || '').split('/documents/')[1], {
         status: { stringValue: status }, ticketId: { stringValue: status === 'success' ? '' : value.ticketId }, receiptPending: { booleanValue: false }, errorCode: { stringValue: error.slice(0, 80) }, receiptAt: { timestampValue: new Date().toISOString() },
       });
-      if (error === 'DeviceNotRegistered' && value.tokenHash) await patchDoc(env, `deviceTokens/${value.tokenHash}`, { active: { booleanValue: false }, revokedAt: { timestampValue: new Date().toISOString() } });
+      if (error === 'DeviceNotRegistered' && value.tokenHash) await patchDoc(env, `deviceTokens/${value.tokenHash}`, { active: { booleanValue: false }, revokedAt: { timestampValue: new Date().toISOString() }, expiresAt: { timestampValue: new Date(Date.now() + 30 * 86400000).toISOString() } });
     }
   } catch { /* maintenance is retried by the next scheduled invocation */ }
 }
@@ -1685,6 +1687,11 @@ async function transitionV2Request(req: Request, env: Env, u: User, requestId: s
   if (Object.keys(body).some(key => !['action', 'reason'].includes(key))) return out(env, req, { success: false, error: 'Unsupported transition field' }, 400);
   const reason = body.reason === undefined ? '' : String(body.reason).trim();
   if (action === 'cancel' && (!reason || reason.length > 500 || /[\u0000-\u001f\u007f]/.test(reason))) return out(env, req, { success: false, error: 'A valid cancellation reason is required' }, 400);
+  if (action === 'accept') {
+    const transactionType = isSaudiTruckRentalWithoutDriver({ countryCode: r.countryCode, categoryId: r.categoryId, transactionType: 'rental', includesDriver: r.includesDriver }) ? 'rental_without_driver' : 'equipment_rental';
+    const catalogue = regulatoryDecision(r.categoryId, transactionType);
+    if (catalogue.action === 'fail_closed' && catalogue.classification === 'unknown') return out(env, req, { success: false, error: 'Regulatory category is not enabled for the current release.', errorCode: 'REGULATORY_CATEGORY_UNAVAILABLE', catalogueVersion: '2026-10-04' }, 403);
+  }
   if (action === 'accept' && isSaudiTruckRentalWithoutDriver({ countryCode: r.countryCode, categoryId: r.categoryId, transactionType: 'rental', includesDriver: r.includesDriver })) {
     const [provider, documents] = await Promise.all([getDoc(env, 'users', String(r.providerUid)), regulatoryDocumentsForOwner(env, String(r.providerUid))]);
     const decision = evaluateCapabilities({
@@ -2961,6 +2968,128 @@ async function passwordReset(req: Request, env: Env) {
   }
   return recoveryResponse(req, env, auditId, auditType, deliveryOutcome, deliveryProvider, providerMessageId);
 }
+function complianceFields(value: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined).map(([key, item]) => [
+    key,
+    key.endsWith('At') && typeof item === 'string' && Number.isFinite(Date.parse(item))
+      ? { timestampValue: item }
+      : firestoreValue(item),
+  ]));
+}
+
+function participantOwns(record: Record<string, unknown> | null, uid: string) {
+  return !!record && ['customerUid', 'providerUid', 'driverUid', 'uid', 'ownerUid'].some(key => record[key] === uid);
+}
+
+async function policyAcceptanceApi(req: Request, env: Env, u: User) {
+  const profile = u.accountProfile || await getDoc(env, 'users', u.uid);
+  const role = String(profile?.role || '') as 'customer' | 'provider' | 'driver';
+  if (!['customer', 'provider', 'driver'].includes(role)) return out(env, req, { success: false, errorCode: 'PROFILE_REQUIRED' }, 409);
+  const required = requiredPolicyVersions(role);
+  if (req.method === 'GET') {
+    const rows = await queryOwnedDocuments(env, 'policyAcceptances', u.uid, ['uid']);
+    const current = rows.find(row => Object.entries(required).every(([key, version]) => row.data[key] === version));
+    return out(env, req, { success: true, current: !!current, requiredVersions: required, latestAcceptance: current ? { id: current.id, acceptedAt: current.data.acceptedAt, appVersion: current.data.appVersion, platform: current.data.platform, locale: current.data.locale } : null });
+  }
+  const body = await req.json().catch(() => null) as any;
+  const allowed = new Set(['accepted', 'legalCapacityConfirmed', 'businessAuthorityConfirmed', 'termsVersion', 'privacyVersion', 'acceptableUseVersion', 'refundPolicyVersion', 'providerTermsVersion', 'driverTermsVersion', 'appVersion', 'platform', 'locale']);
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !allowed.has(key))) return out(env, req, { success: false, errorCode: 'INVALID_POLICY_ACCEPTANCE' }, 400);
+  const acceptance = validatePolicyAcceptance(body, role);
+  if (!acceptance) return out(env, req, { success: false, error: 'Current policy acceptance is required', errorCode: 'POLICY_ACCEPTANCE_REQUIRED' }, 400);
+  const versionKey = Object.values(required).join(':');
+  const id = `${u.uid}:${role}:${versionKey}`;
+  const existing = await getRawDoc(env, 'policyAcceptances', id);
+  if (existing) return out(env, req, { success: true, alreadyAccepted: true, acceptanceId: id });
+  const now = new Date().toISOString();
+  await commitWrites(env, [
+    { update: { name: fullName(env, `policyAcceptances/${encodeURIComponent(id)}`), fields: complianceFields({ uid: u.uid, role, ...acceptance, acceptedAt: now }) }, currentDocument: { exists: false } },
+    { update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields: { currentPolicyVersions: firestoreValue(required), policyAcceptedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['currentPolicyVersions', 'policyAcceptedAt'] } },
+  ]);
+  return out(env, req, { success: true, acceptanceId: id });
+}
+
+async function ownedComplianceList(req: Request, env: Env, u: User, collection: string, ownershipFields: string[]) {
+  const rows = await queryOwnedDocuments(env, collection, u.uid, ownershipFields);
+  return out(env, req, { success: true, items: rows.map(row => ({ id: row.id, ...row.data })) });
+}
+
+async function privacyRequestApi(req: Request, env: Env, u: User) {
+  if (req.method === 'GET') return ownedComplianceList(req, env, u, 'privacyRequests', ['uid']);
+  const body = await req.json().catch(() => null) as any;
+  const requestType = String(body?.requestType || '');
+  const details = String(body?.details || '').trim();
+  if (!(PRIVACY_REQUEST_TYPES as readonly string[]).includes(requestType) || details.length > 2000) return out(env, req, { success: false, errorCode: 'INVALID_PRIVACY_REQUEST' }, 400);
+  const id = crypto.randomUUID(), now = new Date().toISOString();
+  await createDoc(env, `privacyRequests/${id}`, complianceFields({ uid: u.uid, requestType, details, status: 'submitted', receivedAt: now, createdAt: now, updatedAt: now, identityVerification: 'authenticated_session' }));
+  return out(env, req, { success: true, requestId: id, status: 'submitted' }, 201);
+}
+
+async function complaintApi(req: Request, env: Env, u: User) {
+  if (req.method === 'GET') return ownedComplianceList(req, env, u, 'complaints', ['customerUid', 'providerUid', 'driverUid', 'requesterUid']);
+  const body = await req.json().catch(() => null) as any;
+  const requestId = String(body?.requestId || '');
+  const category = String(body?.category || 'other').slice(0, 80);
+  const narrative = String(body?.narrative || '').trim();
+  const rental = requestId ? await getDoc(env, 'equipmentRequests', requestId) : null;
+  if (!requestId || !participantOwns(rental, u.uid) || narrative.length < 5 || narrative.length > 4000) return out(env, req, { success: false, errorCode: 'INVALID_COMPLAINT' }, 400);
+  const id = crypto.randomUUID(), now = new Date().toISOString(), targets = complaintServiceTargets(now);
+  await createDoc(env, `complaints/${id}`, complianceFields({ requesterUid: u.uid, customerUid: rental?.customerUid || null, providerUid: rental?.providerUid || null, driverUid: rental?.driverUid || null, requestId, category, narrative, description: narrative, status: 'submitted', receivedAt: now, createdAt: now, updatedAt: now, ...targets }));
+  return out(env, req, { success: true, complaintId: id, status: 'submitted', ...targets }, 201);
+}
+
+async function refundCaseApi(req: Request, env: Env, u: User) {
+  if (req.method === 'GET') return ownedComplianceList(req, env, u, 'refunds', ['requesterUid', 'customerUid', 'providerUid']);
+  const body = await req.json().catch(() => null) as any;
+  const paymentId = String(body?.paymentId || ''), inputRequestId = String(body?.requestId || ''), reason = String(body?.reason || '').trim(), evidenceReferences = Array.isArray(body?.evidenceReferences) ? body.evidenceReferences.filter((item: unknown) => typeof item === 'string' && item.length <= 500).slice(0, 10) : [];
+  const payment = inputRequestId || paymentId ? await getDoc(env, 'payments', inputRequestId || paymentId) : null;
+  if (!payment || !participantOwns(payment, u.uid) || payment.state !== 'paid' || reason.length < 5 || reason.length > 2000) return out(env, req, { success: false, errorCode: 'INVALID_REFUND_CASE' }, 400);
+  const requestedAmount = Number(body?.requestedAmount);
+  const paidAmount = Number(payment.amount);
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0 || !Number.isFinite(paidAmount) || requestedAmount > paidAmount) return out(env, req, { success: false, errorCode: 'INVALID_REFUND_AMOUNT' }, 400);
+  const requestId = String(payment.requestId || inputRequestId || ''), canonicalPaymentId = String(payment.paymentId || paymentId || ''), id = `refund:${requestId || canonicalPaymentId}`, now = new Date().toISOString();
+  if (await getDoc(env, 'refunds', id)) return out(env, req, { success: false, errorCode: 'REFUND_CASE_EXISTS' }, 409);
+  await commitWrites(env, [
+    { update: { name: fullName(env, `refundReservations/${encodeURIComponent(requestId || canonicalPaymentId)}`), fields: complianceFields({ refundId: id, createdAt: now }) }, currentDocument: { exists: false } },
+    { update: { name: fullName(env, `refunds/${encodeURIComponent(id)}`), fields: complianceFields({ requestId, paymentId: canonicalPaymentId, requesterUid: u.uid, customerUid: payment.customerUid || null, providerUid: payment.providerUid || null, reason, evidenceReferences, requestedAmount, originalPaidAmount: paidAmount, currency: payment.currency || 'SAR', eligibleAmount: null, decisionReason: null, state: 'requested', execution: 'manual_only', paymentEnvironment: normalizeTapEnvironment(payment.environment), requestedAt: now, createdAt: now, updatedAt: now }) }, currentDocument: { exists: false } },
+  ]);
+  return out(env, req, { success: true, refundCaseId: id, state: 'requested' }, 201);
+}
+
+async function incidentApi(req: Request, env: Env, u: User) {
+  if (req.method === 'GET') return ownedComplianceList(req, env, u, 'incidents', ['reporterUid']);
+  const body = await req.json().catch(() => null) as any;
+  const requestId = String(body?.requestId || ''), incidentType = String(body?.incidentType || ''), narrative = String(body?.narrative || '').trim(), incidentAt = String(body?.incidentAt || '');
+  const rental = requestId ? await getDoc(env, 'equipmentRequests', requestId) : null;
+  if (!participantOwns(rental, u.uid) || !(INCIDENT_TYPES as readonly string[]).includes(incidentType) || narrative.length < 5 || narrative.length > 4000 || !Number.isFinite(Date.parse(incidentAt))) return out(env, req, { success: false, errorCode: 'INVALID_INCIDENT' }, 400);
+  const id = crypto.randomUUID(), now = new Date().toISOString();
+  const references = (key: string) => Array.isArray(body?.[key]) ? body[key].filter((item: unknown) => typeof item === 'string' && item.length <= 500).slice(0, 10) : [];
+  await createDoc(env, `incidents/${id}`, complianceFields({ requestId, reporterUid: u.uid, incidentType, narrative, incidentAt, evidenceReferences: references('evidenceReferences'), involvedPartyUids: references('involvedPartyUids'), policeAuthorityReference: typeof body?.policeAuthorityReference === 'string' ? body.policeAuthorityReference.slice(0, 300) : null, insurerReference: typeof body?.insurerReference === 'string' ? body.insurerReference.slice(0, 300) : null, status: 'reported', createdAt: now, updatedAt: now }));
+  return out(env, req, { success: true, incidentId: id, status: 'reported' }, 201);
+}
+
+async function userDataExportApi(req: Request, env: Env, u: User) {
+  const user = u.accountProfile || await getDoc(env, 'users', u.uid);
+  if (!user) return out(env, req, { success: false, errorCode: 'PROFILE_REQUIRED' }, 409);
+  const [requests, complaints, policyAcceptances] = await Promise.all([
+    queryOwnedDocuments(env, 'equipmentRequests', u.uid, ['customerUid', 'providerUid', 'driverUid']),
+    queryOwnedDocuments(env, 'complaints', u.uid, ['customerUid', 'providerUid', 'driverUid', 'requesterUid']),
+    queryOwnedDocuments(env, 'policyAcceptances', u.uid, ['uid']),
+  ]);
+  const response = out(env, req, { success: true, export: safeUserExport({ user: { uid: u.uid, ...user }, requests: requests.map(row => ({ id: row.id, ...row.data })), complaints: complaints.map(row => ({ id: row.id, ...row.data })), policyAcceptances: policyAcceptances.map(row => ({ id: row.id, ...row.data })) }) });
+  response.headers.set('Cache-Control', 'private, no-store');
+  return response;
+}
+
+export async function processTemporaryComplianceCleanup(env: Env) {
+  const now = new Date().toISOString();
+  const temporaryCollections = ['temporaryRecovery', 'verificationRateLimits', 'authRecoveryRateLimits', 'emailVerificationRateLimits', 'phoneLoginRateLimits', 'uploadReservations', 'deviceTokens', 'notificationTokenOwners', 'notificationInstallations', 'notificationDeliveries', 'notificationOutbox', 'notifications'];
+  for (const collection of temporaryCollections) {
+    const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where: { fieldFilter: { field: { fieldPath: 'expiresAt' }, op: 'LESS_THAN_OR_EQUAL', value: { timestampValue: now } } }, limit: 50 } }) }) as any[] || [];
+    const writes = rows.filter(row => row.document?.name && row.document?.updateTime).map(row => ({ delete: row.document.name, currentDocument: { updateTime: row.document.updateTime } }));
+    if (writes.length) await commitWrites(env, writes);
+  }
+}
+
 async function registerProfile(req: Request, env: Env, u: User) {
   if (!env.FIREBASE_PROJECT_ID || !u.email) return out(env, req, { success: false, error: 'Registration unavailable' }, 503);
    const email = u.email.trim().toLowerCase(), body = await req.json().catch(() => null) as any;
@@ -2980,7 +3109,9 @@ async function registerProfile(req: Request, env: Env, u: User) {
    }
   const config = effectiveAuthConfig(await getDoc(env, 'heavyarConfig', 'auth'));
   if (!['customer', 'provider', 'driver'].includes(role) || body.termsAccepted !== true && body.acceptedTerms !== true) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
-  const allowed = new Set(['role', 'requestedRole', 'termsAccepted', 'acceptedTerms', 'nameAr', 'nameEn', 'phone', 'countryCode', 'region', 'city', 'customCity', 'crNumber', 'providerType']);
+  const policyAcceptance = validatePolicyAcceptance(body.policyAcceptance, role as 'customer' | 'provider' | 'driver');
+  if (!policyAcceptance || body.legalCapacityConfirmed !== true) return out(env, req, { success: false, error: 'Current policy acceptance is required', errorCode: 'POLICY_ACCEPTANCE_REQUIRED', safeToDeleteIdentity: true }, 400);
+  const allowed = new Set(['role', 'requestedRole', 'termsAccepted', 'acceptedTerms', 'legalCapacityConfirmed', 'policyAcceptance', 'nameAr', 'nameEn', 'phone', 'countryCode', 'region', 'city', 'customCity', 'crNumber', 'providerType']);
   if (Object.keys(body).some(key => !allowed.has(key))) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
   const nameAr = String(body.nameAr || '').trim(), nameEn = String(body.nameEn || '').trim(), country = await countrySettings(env, String(body.countryCode || 'SA')), normalizedPhone = normalizeGccPhone(body.phone, country.code), phone = normalizedPhone && normalizedPhone.countryCode === country.code ? normalizedPhone.phone : null, region = String(body.region || '').trim(), city = String(body.city || '').trim(), customCity = String(body.customCity || '').trim();
   if ((!nameAr && !nameEn) || nameAr.length > 120 || nameEn.length > 120 || (nameAr && nameAr.length < 2) || (nameEn && nameEn.length < 2) || !region || region.length > 120 || (!city && !customCity) || city.length > 120 || customCity.length > 120) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
@@ -2996,8 +3127,11 @@ async function registerProfile(req: Request, env: Env, u: User) {
   const registrationPattern = country.code === 'SA' ? /^\d{10}$/ : /^[A-Za-z0-9-]{3,32}$/;
    if (role === 'provider' && providerType === 'company' && country.code === 'SA' && !registrationPattern.test(crNumber) || crNumber && !registrationPattern.test(crNumber)) return out(env, req, { success: false, error: 'Invalid registration details', errorCode: 'INVALID_REGISTRATION_DETAILS', safeToDeleteIdentity: true }, 400);
    const providerOnboardingCompleted = role === 'provider' && Boolean(nameAr || nameEn) && Boolean(region) && Boolean(city || customCity) && Boolean(country.enabled && country.providerOnboardingAvailable);
-   const now = new Date().toISOString(), idToken = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, ''), fields: Record<string, any> = { uid: { stringValue: u.uid }, email: { stringValue: email }, emailLower: { stringValue: email }, emailVerified: { booleanValue: u.emailVerified === true }, emailVerificationVersion: { integerValue: '1' }, nameAr: { stringValue: nameAr }, nameEn: { stringValue: nameEn }, ...(phone ? { phone: { stringValue: phone } } : {}), countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, region: { stringValue: region }, city: { stringValue: city }, customCity: { stringValue: customCity }, ...(crNumber ? { crNumber: { stringValue: crNumber } } : {}), ...(role === 'provider' ? { providerType: { stringValue: providerType! }, providerOnboardingCompleted: { booleanValue: providerOnboardingCompleted } } : {}), role: { stringValue: role }, requestedRole: { stringValue: role }, termsAccepted: { booleanValue: true }, termsAcceptedAt: { timestampValue: now }, createdAt: { timestampValue: now } };
+   const now = new Date().toISOString(), idToken = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, ''), fields: Record<string, any> = { uid: { stringValue: u.uid }, email: { stringValue: email }, emailLower: { stringValue: email }, emailVerified: { booleanValue: u.emailVerified === true }, emailVerificationVersion: { integerValue: '1' }, nameAr: { stringValue: nameAr }, nameEn: { stringValue: nameEn }, ...(phone ? { phone: { stringValue: phone } } : {}), countryCode: { stringValue: country.code }, currency: { stringValue: country.currency }, region: { stringValue: region }, city: { stringValue: city }, customCity: { stringValue: customCity }, ...(crNumber ? { crNumber: { stringValue: crNumber } } : {}), ...(role === 'provider' ? { providerType: { stringValue: providerType! }, providerOnboardingCompleted: { booleanValue: providerOnboardingCompleted } } : {}), role: { stringValue: role }, requestedRole: { stringValue: role }, termsAccepted: { booleanValue: true }, termsAcceptedAt: { timestampValue: now }, legalCapacityConfirmed: { booleanValue: true }, currentPolicyVersions: { mapValue: { fields: Object.fromEntries(Object.entries(requiredPolicyVersions(role as 'customer' | 'provider' | 'driver')).map(([key, value]) => [key, { stringValue: value }])) } }, createdAt: { timestampValue: now } };
   const writes: any[] = [{ update: { name: fullName(env, `users/${encodeURIComponent(u.uid)}`), fields }, currentDocument: existingRaw?.updateTime ? { updateTime: existingRaw.updateTime } : { exists: false } }];
+  const acceptanceVersionKey = Object.values(requiredPolicyVersions(role as 'customer' | 'provider' | 'driver')).join(':');
+  const acceptanceId = `${u.uid}:${role}:${acceptanceVersionKey}`;
+  writes.push({ update: { name: fullName(env, `policyAcceptances/${encodeURIComponent(acceptanceId)}`), fields: { uid: { stringValue: u.uid }, role: { stringValue: role }, ...Object.fromEntries(Object.entries(policyAcceptance).filter(([key]) => key !== 'accepted').map(([key, value]) => [key, typeof value === 'boolean' ? { booleanValue: value } : { stringValue: String(value) }])), acceptedAt: { timestampValue: now } } }, currentDocument: { exists: false } });
   if (phone) {
     const ownerId = await hashedId(`phone:${phone}`), owner = await getRawDoc(env, 'phoneOwners', ownerId);
     if (owner && owner.data.uid !== u.uid) return out(env, req, { success: false, error: 'Registration unavailable', errorCode: 'PHONE_ALREADY_IN_USE', safeToDeleteIdentity: true }, 409);
@@ -3702,6 +3836,12 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       if ((path === '/api/auth/phone-login' || path === '/api/auth/login-phone' || path === '/api/auth/alias-login') && req.method === 'POST') return await phonePasswordLogin(req, env);
      if (path === '/api/auth/password-reset' && req.method === 'POST') return await passwordReset(req, env);
      if (path === '/api/register-profile' && req.method === 'POST') return await registerProfile(req, env, await auth(req, env));
+     if (path === '/api/compliance/policy-acceptance' && (req.method === 'GET' || req.method === 'POST')) return await policyAcceptanceApi(req, env, await authenticatedUser(req, env));
+     if (path === '/api/compliance/privacy-requests' && (req.method === 'GET' || req.method === 'POST')) return await privacyRequestApi(req, env, await authenticatedUser(req, env));
+     if (path === '/api/compliance/complaints' && (req.method === 'GET' || req.method === 'POST')) return await complaintApi(req, env, await authenticatedUser(req, env));
+     if (path === '/api/compliance/refund-cases' && (req.method === 'GET' || req.method === 'POST')) return await refundCaseApi(req, env, await authenticatedUser(req, env));
+     if (path === '/api/compliance/incidents' && (req.method === 'GET' || req.method === 'POST')) return await incidentApi(req, env, await authenticatedUser(req, env));
+     if (path === '/api/compliance/data-export' && req.method === 'GET') return await userDataExportApi(req, env, await authenticatedUser(req, env));
      if (path === '/api/account/profile-status' && req.method === 'GET') return await accountProfileStatus(req, env, await auth(req, env));
      if (path === '/api/account/identity-delete' && req.method === 'POST') return await identityOnlyDeletion(req, env, await auth(req, env));
      if (path === '/api/account/deletion-request' && req.method === 'GET') return await accountDeletionStatus(req, env, await authenticatedUser(req, env, true));
@@ -3853,7 +3993,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     // Sequence processors so exhaustion in one prevents the next scan. Existing
     // per-record leases/idempotency remain unchanged; future ticks can recover.
     for (const processor of [processPendingNotificationOutbox, processScheduledCampaigns, processScheduledEarlyAccessCampaigns,
-      processStaffClaimSync, processDeletionJobs, processRegulatoryExpiry, retryDueNotificationDeliveries, pollNotificationReceipts, processEarlyAccessRetention]) {
+      processStaffClaimSync, processDeletionJobs, processRegulatoryExpiry, retryDueNotificationDeliveries, pollNotificationReceipts, processEarlyAccessRetention, processTemporaryComplianceCleanup]) {
       if (quotaBlocked()) break;
       try { await processor(requestEnv); }
       catch (error) { if (isQuotaError(error)) break; processorFailed = true; }

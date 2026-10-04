@@ -411,6 +411,46 @@ describe('admin authorization and operational boundary', () => {
     expect(writes[1].update.fields.amount.doubleValue).toBe(25);
   });
 
+  test('compliance case transitions enforce RBAC, state machines, evidence, and immutable audit writes', async () => {
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    const support = { uid: 'support-1', admin: true, role: 'admin' as const, permissionRole: 'support', testInjected: true as const };
+    const finance = { uid: 'finance-1', admin: true, role: 'admin' as const, permissionRole: 'finance', testInjected: true as const };
+    const marketing = { uid: 'marketing-1', admin: true, role: 'admin' as const, permissionRole: 'marketing', testInjected: true as const };
+
+    __adminTest.setFirestore((collection) => collection === 'complaints' ? { status: 'submitted' } : null);
+    const complaint = await handleAdmin(request('/api/admin/action', { action: 'transition_complaint', targetType: 'complaint', targetId: 'complaint-1', status: 'acknowledged', reason: 'Intake complete' }), env, support) as any;
+    expect(complaint.success).toBe(true);
+    expect((commits.at(-1) as any[]).some(write => String(write.update?.name).includes('/adminAudit/'))).toBe(true);
+
+    __adminTest.setFirestore((collection) => collection === 'privacyRequests' ? { status: 'submitted' } : null);
+    const privacy = await handleAdmin(request('/api/admin/action', { action: 'transition_privacy_request', targetType: 'privacyRequest', targetId: 'privacy-1', status: 'under_review', reason: 'Identity session verified' }), env, support) as any;
+    expect(privacy.success).toBe(true);
+    expect((commits.at(-1) as any[]).some(write => String(write.update?.name).includes('/adminAudit/'))).toBe(true);
+
+    __adminTest.setFirestore((collection) => collection === 'refunds' ? { state: 'requested', originalPaidAmount: 100 } : null);
+    const falseExecution = await handleAdmin(request('/api/admin/action', { action: 'transition_refund_case', targetType: 'refund', targetId: 'refund-1', status: 'executed', reason: 'No evidence' }), env, finance) as any;
+    expect(falseExecution.status).toBe(409);
+    __adminTest.setFirestore((collection) => collection === 'refunds' ? { state: 'manual_execution_required', originalPaidAmount: 100, eligibleAmount: 25 } : null);
+    const executed = await handleAdmin(request('/api/admin/action', { action: 'transition_refund_case', targetType: 'refund', targetId: 'refund-1', status: 'executed', reason: 'Provider confirmed', providerEvidenceReference: 'tap-proof-123' }), env, finance) as any;
+    expect(executed.success).toBe(true);
+    expect((commits.at(-1) as any[])[0].update.fields.providerEvidenceReference.stringValue).toBe('tap-proof-123');
+    expect((commits.at(-1) as any[]).some(write => String(write.update?.name).includes('/adminAudit/'))).toBe(true);
+
+    __adminTest.setFirestore((collection) => collection === 'incidents' ? { status: 'reported' } : null);
+    const incident = await handleAdmin(request('/api/admin/action', { action: 'transition_incident', targetType: 'incident', targetId: 'incident-1', status: 'acknowledged', reason: 'Safety review opened' }), env, support) as any;
+    expect(incident.success).toBe(true);
+
+    __adminTest.setFirestore((collection) => collection === 'users' ? { role: 'customer' } : null);
+    const missingReason = await handleAdmin(request('/api/admin/action', { action: 'record_moderation_action', targetType: 'user', targetId: 'user-1', status: 'restricted', reason: 'Evidence reviewed', moderationReason: 'not_a_reason' }), env, support) as any;
+    expect(missingReason.status).toBe(400);
+    const denied = await handleAdmin(request('/api/admin/action', { action: 'record_moderation_action', targetType: 'user', targetId: 'user-1', status: 'restricted', reason: 'Evidence reviewed', moderationReason: 'fraud' }), env, marketing) as any;
+    expect(denied.status).toBe(403);
+    const moderated = await handleAdmin(request('/api/admin/action', { action: 'record_moderation_action', targetType: 'user', targetId: 'user-1', status: 'restricted', reason: 'Evidence reviewed', moderationReason: 'fraud' }), env, support) as any;
+    expect(moderated.success).toBe(true);
+    expect((commits.at(-1) as any[])[0].update.fields.moderationReasonCode.stringValue).toBe('fraud');
+  });
+
   test('freeze uses operationsState and does not overwrite canonical request status', async () => {
     __test.setAuth({ uid: 'admin-1', admin: true, role: 'admin' });
     __adminTest.setFirestore(() => ({ status: 'in_progress' }));

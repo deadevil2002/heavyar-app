@@ -100,12 +100,13 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 
 ## Payments and commercial status
 
+- The current-release compliance closure is complete in local source: append-only policy evidence, PDPL rights/export, retention cleanup, complaint/refund/incident workflows, regulatory catalogue, moderation reasons, and Admin controls. These changes are not deployed or committed yet.
 - Tap environment: **TEST**. LIVE is not active.
 - Current effective commercial rule: **10% provider-paid** (`1000` basis points).
 - Intended future rule: **20% provider-paid — DRAFT ONLY / NOT ACTIVE**.
 - First controlled Tap TEST transaction: **NOT COMPLETED**. No payment was created by the data-flow/performance or repository-sync phases.
 - Historical pricing/commercial snapshots are immutable. Finalized Rental V2 payment authority is the validated immutable `finalCommercialSnapshot`, never current listing/Admin pricing.
-- Refund execution remains **NOT READY**.
+- Refund case intake/review is operational in source. Automated provider execution remains **DISABLED**; approved cases use `manual_execution_required`, and `executed` requires provider evidence.
 - Tap Marketplace/Split remains **NOT VERIFIED / NOT ENABLED**.
 - External webhook/LIVE-provider behavior and accounting/VAT treatment still require their separate release/compliance gates.
 
@@ -114,24 +115,26 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 1. **Legacy Provider phone ownership conflict:** intentionally unresolved. Do not change phone ownership, Firebase data, or identity rules without a separately authorized recovery/migration plan.
 2. Real production-device performance and Android remote Push remain unverified until an authorized Development Build.
 3. Guest/Customer/Driver full real-account Android visual and auth regression matrix remains incomplete.
-4. Refund execution and Marketplace/Split settlement are not ready.
+4. Automated refund provider execution and Marketplace/Split settlement are future disabled dependencies; the current manual refund-case process is closed.
 5. The 20% commission rule is draft only and must not be activated without explicit owner approval.
 6. Google and Apple sign-in remain intentionally hidden/not implemented.
 7. Before App Store submission, the external developer must complete Apple authentication/signing and APNs setup, build and inspect the signed archive/SDK privacy manifests and required-reason APIs, enter App Store Connect metadata, App Privacy answers, Review Notes, and Store Review credentials, complete real-device QA, upload to TestFlight, and perform the final submission. The final public privacy/support deployment is verified separately above.
 
 ## Validation status
 
-Account-deletion release gate on 2026-10-04:
+Current-release compliance source gate on 2026-10-04:
 
 | Check | Result |
 |---|---|
 | Mobile TypeScript | PASS |
 | Full mobile tests | PASS — 421/421 (368 base Vitest + 39 jsdom/discovery Vitest + 14 Node) |
 | Worker TypeScript | PASS |
-| Full Worker tests | PASS — 487/487 |
+| Full Worker tests | PASS — 499/499 |
 | Focused iOS privacy/verification tests | PASS — 6/6 |
 | Store Review contract tests | PASS — 6/6 |
-| Separate website privacy/support tests/build | PASS — 40/40; build complete |
+| Admin tests/build | PASS — 95/95; build complete |
+| Firestore Rules tests | PASS — 15/15 |
+| Separate website legal-policy tests/build | PASS — 57/57; build complete |
 | `git diff --check` | PASS (line-ending warnings only) |
 | Refetch storm | NONE |
 | Listener leak | NONE |

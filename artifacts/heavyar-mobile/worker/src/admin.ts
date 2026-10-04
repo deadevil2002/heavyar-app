@@ -23,6 +23,7 @@ import { processEarlyAccessCampaigns } from './early-access-campaign-delivery';
 import { driverEligibility, driverDiscoveryMarket } from './driver-eligibility';
 import { effectiveDocumentStatus, regulatoryReviewStatuses } from './regulatory';
 import { normalizeTapEnvironment } from './payment';
+import { canTransitionComplaint, canTransitionIncident, canTransitionPrivacyRequest, canTransitionRefundCase, complaintServiceTargets, normalizeModerationReason, refundMayBeMarkedExecuted, REGULATORY_CATALOGUE, REGULATORY_CATALOG_VERSION, DRIVER_CREDENTIAL_FRAMEWORK } from './compliance';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
@@ -264,6 +265,12 @@ const FILTERS: Record<string, string[]> = {
   staffInvitations: ['status', 'email'],
   paymentGateways: ['enabled'],
   identityIntegrations: ['enabled'],
+  policyAcceptances: ['uid', 'role', 'termsVersion', 'privacyVersion'],
+  privacyRequests: ['uid', 'requestType', 'status'],
+  incidents: ['reporterUid', 'requestId', 'incidentType', 'status'],
+  moderationCases: ['targetType', 'targetId', 'reasonCode', 'status'],
+  regulatoryCatalogue: ['version', 'classification', 'action'],
+  complianceEvidence: ['evidenceType', 'issuedAt'],
 };
 
 async function listCollection(env: Env, collection: string, query: Record<string, string>, limit = 30, cursor: string | null = null) {
@@ -1020,8 +1027,8 @@ async function processDeletionJob(env: Env, row: any) {
         const writes: any[] = [];
         const historicalCursor: Record<string, string> = job.historicalCursor && typeof job.historicalCursor === 'object' ? job.historicalCursor : {};
         const nextHistoricalCursor: Record<string, string> = { ...historicalCursor };
-        for (const collection of ['equipmentRequests', 'complaints', 'driverRequests']) {
-          const historicalQuery: any = { from: [{ collectionId: collection }], where: { compositeFilter: { op: 'OR', filters: ['customerUid', 'providerUid', 'requesterUid', 'driverUid'].map(field => ({ fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: jsonValue(uid) } })) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 100 };
+        for (const collection of ['equipmentRequests', 'complaints', 'driverRequests', 'refunds', 'privacyRequests', 'incidents', 'policyAcceptances']) {
+          const historicalQuery: any = { from: [{ collectionId: collection }], where: { compositeFilter: { op: 'OR', filters: ['customerUid', 'providerUid', 'requesterUid', 'driverUid', 'reporterUid', 'uid'].map(field => ({ fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: jsonValue(uid) } })) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 100 };
           if (historicalCursor[collection]) historicalQuery.startAt = { values: [{ referenceValue: historicalCursor[collection] }] };
           const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: historicalQuery }) }) as any[] || [];
           const page = historicalCursor[collection] && rows[0]?.document?.name === historicalCursor[collection] ? rows.slice(1) : rows;
@@ -1034,12 +1041,15 @@ async function processDeletionJob(env: Env, row: any) {
               ['providerUid', ['provider', 'providerPublic', 'providerSnapshot', 'providerProfile']],
               ['requesterUid', ['requester', 'requesterPublic', 'requesterSnapshot', 'requesterProfile']],
               ['driverUid', ['driver', 'driverPublic', 'driverSnapshot', 'driverProfile']],
+              ['reporterUid', ['reporter', 'reporterPublic', 'reporterSnapshot', 'reporterProfile']],
+              ['uid', []],
             ] as const;
             for (const [uidField, snapshots] of roles) {
               if (data[uidField] !== uid) continue;
               fields[uidField] = jsonValue('deleted-user');
               for (const snapshot of snapshots) if (data[snapshot] !== undefined) fields[snapshot] = jsonValue({ deletedUser: true });
             }
+            if (collection === 'privacyRequests' && data.details !== undefined) fields.details = jsonValue(null);
             writes.push({ update: { name: item.document.name, fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: item.document.updateTime ? { updateTime: item.document.updateTime } : undefined });
           }
         }
@@ -1296,7 +1306,7 @@ function canReadCollection(user: AdminUser, collection: string) {
   if (['payments', 'invoices', 'refunds'].includes(collection)) return can(user, 'finance.read');
   if (collection === 'paymentGateways') return can(user, 'finance.read') || can(user, 'payouts.read');
   if (['verificationCases', 'verificationProfiles', 'verificationAttempts', 'verificationEvents', 'verificationPolicies', 'identityIntegrations', 'regulatoryDocuments'].includes(collection)) return can(user, 'verification.manage') || (broadOperationalRead && role !== 'auditor');
-  if (['users', 'complaints', 'deletionRequests'].includes(collection)) return can(user, 'support.manage') || broadOperationalRead;
+  if (['users', 'complaints', 'deletionRequests', 'privacyRequests', 'incidents', 'moderationCases', 'policyAcceptances', 'complianceEvidence', 'regulatoryCatalogue'].includes(collection)) return can(user, 'support.manage') || can(user, 'audit.read') || broadOperationalRead;
   if (['equipment', 'equipmentRequests', 'driverProfiles', 'driverRequests'].includes(collection)) return can(user, 'operations.manage') || can(user, 'moderation.manage') || broadOperationalRead;
   if (['providerConfigs', 'heavyarConfig'].includes(collection)) return can(user, 'config.manage');
   if (collection === 'campaigns') return can(user, 'marketing.campaign');
@@ -1694,6 +1704,8 @@ const TARGET_COLLECTIONS: Record<string, string> = {
   driverProfile: 'driverProfiles', driverProfiles: 'driverProfiles',
   paymentGateway: 'paymentGateways', paymentGateways: 'paymentGateways',
   identityIntegration: 'identityIntegrations', identityIntegrations: 'identityIntegrations',
+  privacyRequest: 'privacyRequests', privacyRequests: 'privacyRequests', incident: 'incidents', incidents: 'incidents',
+  moderationCase: 'moderationCases', moderationCases: 'moderationCases', policyAcceptance: 'policyAcceptances', policyAcceptances: 'policyAcceptances',
 };
 
 async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) {
@@ -1830,7 +1842,7 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     targetCollection = 'refunds';
     targetId = `refund:${requestId}`;
     auditTarget = 'refund';
-    const refundFields = { requestId: jsonValue(requestId), paymentId: jsonValue(String(payment.data.paymentId || current.paymentId || '')), environment: jsonValue(normalizeTapEnvironment(payment.data.environment)), originalPaidAmount: { doubleValue: paidAmount }, amount: { doubleValue: Number(payload.amount) }, currency: jsonValue('SAR'), state: jsonValue('refund_requested'), execution: jsonValue('disabled'), requestedBy: jsonValue(u.uid), reason: jsonValue(reason), requestedAt: { timestampValue: new Date().toISOString() } };
+    const refundFields = { requestId: jsonValue(requestId), paymentId: jsonValue(String(payment.data.paymentId || current.paymentId || '')), paymentEnvironment: jsonValue(normalizeTapEnvironment(payment.data.environment)), originalPaidAmount: { doubleValue: paidAmount }, amount: { doubleValue: Number(payload.amount) }, requestedAmount: { doubleValue: Number(payload.amount) }, eligibleAmount: { nullValue: null }, decisionReason: { nullValue: null }, currency: jsonValue('SAR'), state: jsonValue('requested'), execution: jsonValue('manual_only'), requesterUid: jsonValue(u.uid), reason: jsonValue(reason), evidenceReferences: jsonValue([]), requestedAt: { timestampValue: new Date().toISOString() }, updatedAt: { timestampValue: new Date().toISOString() } };
     const writes = [
       { update: { name: fullName(env, `refundReservations/${encodeURIComponent(requestId)}`), fields: { refundId: jsonValue(targetId), createdAt: { timestampValue: new Date().toISOString() } } }, currentDocument: { exists: false } },
       { update: { name: fullName(env, `${targetCollection}/${encodeURIComponent(targetId)}`), fields: refundFields }, currentDocument: { exists: false } },
@@ -1839,6 +1851,45 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     ];
     await commit(env, writes);
     return { success: true, correlationId, action: actionName, targetId };
+  } else if (normalizedType === 'complaint' && actionName === 'transition_complaint') {
+    if (!can(u, 'support.manage')) return { error: 'Support permission required', status: 403 };
+    const next = String(payload.status || '');
+    if (!canTransitionComplaint(String(current.status || 'submitted') as any, next as any)) return { error: 'Invalid complaint transition', status: 409 };
+    const now = new Date().toISOString();
+    fields = { status: jsonValue(next), updatedAt: { timestampValue: now }, statusUpdatedBy: jsonValue(u.uid),
+      ...(next === 'acknowledged' ? { acknowledgedAt: { timestampValue: now } } : {}),
+      ...(next === 'resolved' ? { resolvedAt: { timestampValue: now }, resolutionReason: jsonValue(reason) } : {}),
+      ...(next === 'closed' ? { closedAt: { timestampValue: now } } : {}) };
+  } else if (normalizedType === 'privacyRequests' && actionName === 'transition_privacy_request') {
+    if (!can(u, 'support.manage')) return { error: 'Support permission required', status: 403 };
+    const next = String(payload.status || '');
+    if (!canTransitionPrivacyRequest(String(current.status || 'submitted') as any, next as any)) return { error: 'Invalid privacy request transition', status: 409 };
+    const now = new Date().toISOString();
+    fields = { status: jsonValue(next), assignedTo: jsonValue(String(payload.assignedTo || u.uid)), updatedAt: { timestampValue: now }, statusUpdatedBy: jsonValue(u.uid),
+      ...(next === 'completed' ? { completedAt: { timestampValue: now }, completionNote: jsonValue(reason) } : {}) };
+  } else if (normalizedType === 'refunds' && actionName === 'transition_refund_case') {
+    if (!can(u, 'finance.mutate')) return { error: 'Finance permission required', status: 403 };
+    const next = String(payload.status || ''), from = String(current.state || 'requested');
+    if (!canTransitionRefundCase(from as any, next as any)) return { error: 'Invalid refund transition', status: 409 };
+    const now = new Date().toISOString(), eligibleAmount = payload.eligibleAmount === undefined ? current.eligibleAmount : Number(payload.eligibleAmount);
+    if (['approved_pending_execution', 'manual_execution_required'].includes(next) && (!Number.isFinite(eligibleAmount) || eligibleAmount <= 0 || eligibleAmount > Number(current.originalPaidAmount))) return { error: 'Valid eligible amount is required', status: 400 };
+    const providerEvidenceReference = typeof payload.providerEvidenceReference === 'string' ? payload.providerEvidenceReference.trim() : '';
+    const executionCandidate = { ...current, state: from, providerEvidenceReference, executedAt: next === 'executed' ? now : undefined };
+    if (next === 'executed' && !refundMayBeMarkedExecuted(executionCandidate)) return { error: 'Payment-provider execution evidence is required', status: 409 };
+    fields = { state: jsonValue(next), updatedAt: { timestampValue: now }, reviewedBy: jsonValue(u.uid), decisionReason: jsonValue(reason), eligibleAmount: jsonValue(Number.isFinite(eligibleAmount) ? eligibleAmount : null),
+      ...(next === 'manual_execution_required' ? { manualExecutionRequiredAt: { timestampValue: now }, execution: jsonValue('manual_required') } : {}),
+      ...(next === 'executed' ? { executedAt: { timestampValue: now }, providerEvidenceReference: jsonValue(providerEvidenceReference), execution: jsonValue('provider_evidenced') } : {}) };
+  } else if (normalizedType === 'incidents' && actionName === 'transition_incident') {
+    if (!can(u, 'support.manage') && !can(u, 'operations.manage')) return { error: 'Support or operations permission required', status: 403 };
+    const next = String(payload.status || '');
+    if (!canTransitionIncident(String(current.status || 'reported') as any, next as any)) return { error: 'Invalid incident transition', status: 409 };
+    const now = new Date().toISOString();
+    fields = { status: jsonValue(next), updatedAt: { timestampValue: now }, reviewedBy: jsonValue(u.uid), reviewNote: jsonValue(reason), ...(next === 'resolved' ? { resolvedAt: { timestampValue: now } } : {}), ...(next === 'closed' ? { closedAt: { timestampValue: now } } : {}) };
+  } else if (['user', 'equipment'].includes(normalizedType) && actionName === 'record_moderation_action') {
+    if (!can(u, 'moderation.manage') && !can(u, 'support.manage')) return { error: 'Moderation permission required', status: 403 };
+    const reasonCode = normalizeModerationReason(payload.moderationReason);
+    if (!reasonCode || !reason) return { error: 'Explicit moderation reason and note are required', status: 400 };
+    fields = { moderationReasonCode: jsonValue(reasonCode), moderationReason: jsonValue(reason), moderationStatus: jsonValue(String(payload.status || 'under_review')), moderatedBy: jsonValue(u.uid), moderatedAt: { timestampValue: new Date().toISOString() } };
   } else if (normalizedType === 'providerConfig' && actionName === 'update_provider_config') {
     if (!can(u, 'config.manage')) return { error: 'Configuration permission required', status: 403 };
     if (typeof payload.enabled !== 'boolean' || !Number.isInteger(payload.priority) || Number(payload.priority) < 1 || Number(payload.priority) > 100) return { error: 'Invalid provider configuration', status: 400 };
@@ -2703,6 +2754,16 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   if (url.pathname === '/api/admin/countries' && (req.method === 'GET' || req.method === 'PUT')) return adminCountries(req, env, user);
   if (url.pathname === '/api/admin/fx-provider' && (req.method === 'GET' || req.method === 'PUT')) return adminFxProvider(req, env, user);
   if (url.pathname === '/api/admin/overview' && !can(user, 'audit.read')) return { error: 'Operational read permission required', status: 403 };
+  if (url.pathname === '/api/admin/compliance/summary' && req.method === 'GET') {
+    if (!can(user, 'audit.read') && !can(user, 'support.manage')) return { error: 'Compliance read permission required', status: 403 };
+    return { success: true,
+      resources: ['policyAcceptances', 'deletionRequests', 'privacyRequests', 'complaints', 'refunds', 'incidents', 'moderationCases', 'adminAudit'],
+      regulatoryCatalogue: { version: REGULATORY_CATALOG_VERSION, entries: REGULATORY_CATALOGUE },
+      driverCredentialFramework: DRIVER_CREDENTIAL_FRAMEWORK,
+      privacyBoundary: { governmentId: false, ibanBankAccount: false, rawCardCvv: false, nafathEnabled: false },
+      evidence: [{ evidenceType: 'National Register for Personal Data Protection registration evidence', issuedAt: '2026-10-04', classification: 'registration_evidence_not_compliance_certification' }],
+    };
+  }
   if (url.pathname === '/api/admin/payment-gateways' && req.method === 'GET') {
     if (!can(user, 'finance.read') && !can(user, 'payouts.read')) return { error: 'Finance or payouts permission required', status: 403 };
     // Configuration is deliberately capability-only. Secrets and raw provider
@@ -2804,6 +2865,7 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
     '/api/admin/users': 'users', '/api/admin/providers': 'users', '/api/admin/equipment': 'equipment', '/api/admin/requests': 'equipmentRequests',
     '/api/admin/payments': 'payments', '/api/admin/invoices': 'invoices', '/api/admin/refunds': 'refunds', '/api/admin/complaints': 'complaints',
     '/api/admin/verification': 'verificationCases', '/api/admin/verification-profiles': 'verificationProfiles', '/api/admin/verification-attempts': 'verificationAttempts', '/api/admin/verification-events': 'verificationEvents', '/api/admin/regulatory-documents': 'regulatoryDocuments', '/api/admin/provider-configs': 'providerConfigs', '/api/admin/config': 'heavyarConfig', '/api/admin/audit': 'adminAudit', '/api/admin/deletion-requests': 'deletionRequests', '/api/admin/drivers': 'driverProfiles', '/api/admin/campaigns': 'campaigns',
+    '/api/admin/policy-acceptances': 'policyAcceptances', '/api/admin/privacy-requests': 'privacyRequests', '/api/admin/incidents': 'incidents', '/api/admin/moderation-cases': 'moderationCases',
   };
   if (url.pathname === '/api/admin/overview') {
     const requestStatuses = ['pending', 'requested', 'accepted', 'in_progress', 'completion_requested', 'under_investigation', 'escalated'];

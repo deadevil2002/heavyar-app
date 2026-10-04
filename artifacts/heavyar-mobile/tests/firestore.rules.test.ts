@@ -403,4 +403,12 @@ describe('Firestore authorization baseline', () => {
       status: 'cancelled', allowChat: false, updatedAt: serverTimestamp(),
     }));
   });
+
+  it('keeps compliance evidence and case workflows Worker-authoritative', async () => {
+    const db = authed('customer-1');
+    for (const path of ['policyAcceptances/a1', 'privacyRequests/p1', 'incidents/i1', 'moderationCases/m1', 'driverCredentials/d1']) {
+      await assertFails(getDoc(doc(db, path)));
+      await assertFails(setDoc(doc(db, path), { uid: 'customer-1', status: 'forged' }));
+    }
+  });
 });

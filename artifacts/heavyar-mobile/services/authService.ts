@@ -235,6 +235,9 @@ export async function registerWithEmail(
     role: 'customer' | 'provider' | 'driver';
     crNumber?: string;
     providerType?: 'individual' | 'company';
+    appVersion: string;
+    platform: 'ios' | 'android' | 'web';
+    locale: 'ar' | 'en';
   }
 ): Promise<FirebaseUser> {
   const auth = getFirebaseAuth();

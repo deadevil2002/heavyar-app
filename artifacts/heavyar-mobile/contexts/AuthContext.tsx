@@ -1,4 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import createContextHook from '@nkzw/create-context-hook';
 import { AccountState, User } from '@/types';
@@ -296,6 +298,9 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         role,
         crNumber,
         providerType,
+        appVersion: Constants.expoConfig?.version || '1.1.1',
+        platform: (Platform.OS === 'ios' || Platform.OS === 'web' ? Platform.OS : 'android') as 'ios' | 'android' | 'web',
+        locale: language,
       };
       if (accountState === 'provisioning_incomplete') {
         setRegistrationPhase('provisioning');

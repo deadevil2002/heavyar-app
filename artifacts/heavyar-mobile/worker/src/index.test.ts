@@ -4,10 +4,12 @@ import worker, { __test, GCC_COUNTRIES, heavyarEmailVerificationTemplate, heavya
 import { buildLegacyCatalog, calculateCommercial } from './commercial';
 import { quoteFromCommercial, tapProviderReferences, TAP_REDIRECT_URL, TAP_WEBHOOK_URL } from './payment';
 import { buildFinalPaymentHandoff } from './rental-v2';
+import { CURRENT_POLICY_VERSIONS } from './compliance';
 
 const env = { CORS_ORIGINS: 'http://localhost', TAP_MERCHANT_ID: 'merchant-test-id' } as Env;
 const request = (path: string, body: unknown, headers: Record<string, string> = {}) =>
   new Request(`https://worker.test${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+const registrationAcceptance = (role: 'customer' | 'provider' | 'driver') => ({ legalCapacityConfirmed: true, policyAcceptance: { accepted: true, legalCapacityConfirmed: true, ...(role === 'provider' ? { businessAuthorityConfirmed: true } : {}), ...CURRENT_POLICY_VERSIONS, appVersion: '1.1.1', platform: 'android', locale: 'ar' } });
 const paidFixture = {
   id: 'r', customerUid: 'customer-1', providerUid: 'provider-1', equipmentId: 'e',
   status: 'completed', paymentStatus: 'pending_payment', paymentState: 'processing',
@@ -79,8 +81,8 @@ function v2TapTransaction(baseAmountMinor = 10_000, overrides: Record<string, un
 }
 
 describe('worker security boundary', () => {
-  beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.setPublicEquipmentLimiter(undefined); __test.captureDriverQueries(undefined); __test.captureEquipmentQueries(undefined); __test.resetMutationLimits(); });
-  afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.setPublicEquipmentLimiter(undefined); __test.captureDriverQueries(undefined); __test.captureEquipmentQueries(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setReservationConflict(false); __test.resetMutationLimits(); });
+  beforeEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setIdentityQuery(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.setPublicEquipmentLimiter(undefined); __test.captureDriverQueries(undefined); __test.captureEquipmentQueries(undefined); __test.resetMutationLimits(); });
+  afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.setIdentityQuery(undefined); __test.setAssetOwned(undefined); __test.setDeletionDevices(undefined); __test.setRefreshTokenRevoke(undefined); __test.setPasswordVerifier(undefined); __test.setCustomToken(undefined); __test.setPhoneLoginLimiter(undefined); __test.setPublicDriverLimiter(undefined); __test.setPublicEquipmentLimiter(undefined); __test.captureDriverQueries(undefined); __test.captureEquipmentQueries(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setReservationConflict(false); __test.resetMutationLimits(); });
 
   test('Firestore RPC URLs use the documents colon endpoint form', () => {
     const firestoreEnv = { ...env, FIREBASE_PROJECT_ID: 'project-id' } as Env;
@@ -424,6 +426,63 @@ describe('worker security boundary', () => {
       expect(result.checkoutUrl).toBe('https://checkout.payments.tap.company/test-1');
       expect(result.quote.total).toBe(115);
     } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
+  });
+
+  test('compliance evidence is UID-bound, append-only, and safe to export', async () => {
+    const uid = 'customer-compliance';
+    __test.setAuth({ uid, email: 'customer@example.test', admin: false, accountProfile: { uid, role: 'customer', accountStatus: 'active', nameEn: 'Customer' } });
+    __test.setFirestore((collection, id) => collection === 'users' && id === uid ? { uid, role: 'customer', accountStatus: 'active', nameEn: 'Customer', email: 'customer@example.test', password: 'never-export' } : null);
+    __test.setIdentityQuery((collection, owner) => owner === uid && collection === 'policyAcceptances' ? [{ id: 'acceptance-1', data: { uid, ...CURRENT_POLICY_VERSIONS, acceptedAt: '2026-10-04T00:00:00.000Z', platform: 'android', locale: 'ar', appVersion: '1.1.1', privateNote: 'never-export' } }] : []);
+    const commits: unknown[] = []; __test.captureCommits(commits);
+    const acceptance = await worker.fetch(request('/api/compliance/policy-acceptance', { accepted: true, legalCapacityConfirmed: true, ...CURRENT_POLICY_VERSIONS, appVersion: '1.1.1', platform: 'android', locale: 'ar', uid: 'attacker' }, { Authorization: 'Bearer test' }), env);
+    expect(acceptance.status).toBe(400);
+    const valid = await worker.fetch(request('/api/compliance/policy-acceptance', { accepted: true, legalCapacityConfirmed: true, ...CURRENT_POLICY_VERSIONS, appVersion: '1.1.1', platform: 'android', locale: 'ar' }, { Authorization: 'Bearer test' }), env);
+    expect(valid.status).toBe(200);
+    expect((commits[0] as any[])[0].currentDocument).toEqual({ exists: false });
+    const exported = await worker.fetch(new Request('https://worker.test/api/compliance/data-export', { headers: { Authorization: 'Bearer test' } }), env);
+    expect(exported.headers.get('Cache-Control')).toBe('private, no-store');
+    const body: any = await exported.json();
+    expect(body.export.profile.email).toBe('customer@example.test');
+    expect(JSON.stringify(body)).not.toContain('never-export');
+    expect((await worker.fetch(request('/api/compliance/privacy-requests', { requestType: 'access' }), env)).status).toBe(401);
+  });
+
+  test('privacy, complaint, refund, and incident intake bind ownership and server lifecycle fields', async () => {
+    const uid = 'customer-compliance';
+    const rental = { customerUid: uid, providerUid: 'provider-1', driverUid: 'driver-1' };
+    const payment = { requestId: 'request-1', paymentId: 'payment-1', customerUid: uid, providerUid: 'provider-1', state: 'paid', amount: 100, currency: 'SAR', environment: 'TEST' };
+    __test.setAuth({ uid, email: 'customer@example.test', admin: false, accountProfile: { uid, role: 'customer', accountStatus: 'active' } });
+    __test.setFirestore((collection, id) => collection === 'equipmentRequests' && id === 'request-1' ? rental
+      : collection === 'payments' && id === 'request-1' ? payment : null);
+    const writes: any[] = []; __test.captureWrites(writes);
+
+    const privacy = await worker.fetch(request('/api/compliance/privacy-requests', { requestType: 'access', details: 'Provide my eligible data.' }, { Authorization: 'Bearer test' }), env);
+    expect(privacy.status).toBe(201);
+    expect(writes.at(-1).fields.uid.stringValue).toBe(uid);
+    expect(writes.at(-1).fields.status.stringValue).toBe('submitted');
+
+    const complaint = await worker.fetch(request('/api/compliance/complaints', { requestId: 'request-1', category: 'service', narrative: 'The service needs review.' }, { Authorization: 'Bearer test' }), env);
+    expect(complaint.status).toBe(201);
+    expect(writes.at(-1).fields.requesterUid.stringValue).toBe(uid);
+    expect(Date.parse(writes.at(-1).fields.acknowledgeTargetAt.timestampValue)).toBeGreaterThan(Date.parse(writes.at(-1).fields.receivedAt.timestampValue));
+    expect(Date.parse(writes.at(-1).fields.resolutionTargetAt.timestampValue)).toBeGreaterThan(Date.parse(writes.at(-1).fields.acknowledgeTargetAt.timestampValue));
+
+    const incident = await worker.fetch(request('/api/compliance/incidents', { requestId: 'request-1', incidentType: 'breakdown', narrative: 'Engine stopped safely.', incidentAt: '2026-10-04T08:00:00.000Z' }, { Authorization: 'Bearer test' }), env);
+    expect(incident.status).toBe(201);
+    expect(writes.at(-1).fields.reporterUid.stringValue).toBe(uid);
+    expect(writes.at(-1).fields.status.stringValue).toBe('reported');
+    expect((await worker.fetch(request('/api/compliance/incidents', { requestId: 'other-request', incidentType: 'breakdown', narrative: 'Not my rental.', incidentAt: '2026-10-04T08:00:00.000Z' }, { Authorization: 'Bearer test' }), env)).status).toBe(400);
+
+    __test.captureWrites(undefined);
+    const commits: unknown[] = []; __test.captureCommits(commits);
+    const refund = await worker.fetch(request('/api/compliance/refund-cases', { requestId: 'request-1', paymentId: 'payment-1', reason: 'Service was not delivered.', requestedAmount: 25, evidenceReferences: ['evidence-1'] }, { Authorization: 'Bearer test' }), env);
+    expect(refund.status).toBe(201);
+    const refundWrites = commits[0] as any[];
+    expect(refundWrites[0].currentDocument).toEqual({ exists: false });
+    expect(refundWrites[1].currentDocument).toEqual({ exists: false });
+    expect(refundWrites[1].update.fields.state.stringValue).toBe('requested');
+    expect(refundWrites[1].update.fields.execution.stringValue).toBe('manual_only');
+    expect(refundWrites[1].update.fields.requesterUid.stringValue).toBe(uid);
   });
 
   test('client cannot override Tap customer identity, provider references, or callback URLs', async () => {
@@ -776,19 +835,19 @@ describe('worker security boundary', () => {
     __test.setAuth({ uid: 'role-user', email, admin: false });
     const commits: unknown[] = []; __test.captureCommits(commits);
     __test.setFirestore((collection) => collection === 'users' ? null : null);
-    const response = await worker.fetch(request('/api/register-profile', { role: 'provider', termsAccepted: true, nameEn: 'Provider', region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    const response = await worker.fetch(request('/api/register-profile', { role: 'provider', termsAccepted: true, ...registrationAcceptance('provider'), nameEn: 'Provider', region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect(response.status).toBe(200);
     const writes: any[] = commits[0] as any[];
     const user = writes.find((write) => String(write.update?.name).includes('/users/'));
     expect(user.update.fields.role.stringValue).toBe('provider'); expect(user.update.fields.isVerified).toBe(undefined);
     expect(user.update.fields.providerType.stringValue).toBe('individual');
-    const invalidCompany = await worker.fetch(request('/api/register-profile', { role: 'provider', providerType: 'company', crNumber: '123', termsAccepted: true, nameEn: 'Provider', region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    const invalidCompany = await worker.fetch(request('/api/register-profile', { role: 'provider', providerType: 'company', crNumber: '123', termsAccepted: true, ...registrationAcceptance('provider'), nameEn: 'Provider', region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect((await invalidCompany.json()).errorCode).toBe('INVALID_REGISTRATION_DETAILS');
     __test.setFirestore((collection) => collection === 'users' ? null : collection === 'countryConfigs' ? { enabled: false } : null);
-    const disabled = await worker.fetch(request('/api/register-profile', { role: 'customer', termsAccepted: true, nameEn: 'Customer', region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    const disabled = await worker.fetch(request('/api/register-profile', { role: 'customer', termsAccepted: true, ...registrationAcceptance('customer'), nameEn: 'Customer', region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect((await disabled.json()).errorCode).toBe('COUNTRY_DISABLED');
     __test.setFirestore((collection) => collection === 'users' ? null : collection === 'heavyarConfig' ? { phoneIndexReady: true } : null);
-    const driver = await worker.fetch(request('/api/register-profile', { role: 'driver', termsAccepted: true, nameEn: 'Driver', phone: '512345678', region: 'R', city: 'C', customCity: 'Custom C' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    const driver = await worker.fetch(request('/api/register-profile', { role: 'driver', termsAccepted: true, ...registrationAcceptance('driver'), nameEn: 'Driver', phone: '512345678', region: 'R', city: 'C', customCity: 'Custom C' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect(driver.status).toBe(200);
     const driverWrites: any[] = [...commits].reverse().find((item: any) => Array.isArray(item) && item.some((write: any) => String(write.update?.name).includes('/driverProfiles/'))) as any[]; const profile = driverWrites.find((write) => String(write.update?.name).includes('/driverProfiles/'));
     expect(profile.update.fields.active.booleanValue).toBe(false); expect(profile.update.fields.moderationStatus.stringValue).toBe('pending_review'); expect(profile.update.fields.trustStatus.stringValue).toBe('unverified');
@@ -796,7 +855,7 @@ describe('worker security boundary', () => {
     const noTerms = await worker.fetch(request('/api/register-profile', { role: 'customer' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect(noTerms.status).toBe(400);
     __test.setFirestore((collection) => collection === 'users' ? null : collection === 'phoneOwners' ? { uid: 'other' } : collection === 'heavyarConfig' ? { phoneIndexReady: true } : null);
-    const collision = await worker.fetch(request('/api/register-profile', { role: 'customer', termsAccepted: true, phone: '512345678', nameEn: 'Customer', region: 'R', city: 'C' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
+    const collision = await worker.fetch(request('/api/register-profile', { role: 'customer', termsAccepted: true, ...registrationAcceptance('customer'), phone: '512345678', nameEn: 'Customer', region: 'R', city: 'C' }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);
     expect(collision.status).toBe(409); expect(commits.length).toBe(4);
   });
 
@@ -809,7 +868,7 @@ describe('worker security boundary', () => {
     __test.setFirestore((collection) => collection === 'users' ? null : {});
     const writes: Array<{ path: string; fields: Record<string, unknown> }> = []; const commits: unknown[] = []; __test.captureWrites(writes); __test.captureCommits(commits);
     const profileEnv = { ...env, FIREBASE_PROJECT_ID: 'test-project' } as Env;
-    const response = await worker.fetch(request('/api/register-profile', { nameEn: 'New User', termsAccepted: true, region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), profileEnv);
+    const response = await worker.fetch(request('/api/register-profile', { nameEn: 'New User', termsAccepted: true, ...registrationAcceptance('customer'), region: 'Riyadh', city: 'Riyadh' }, { Authorization: 'Bearer test' }), profileEnv);
     expect(response.status).toBe(200);
     expect(commits.length).toBe(2);
     expect((await worker.fetch(request('/api/register-profile', { role: 'customer' }, { Authorization: 'Bearer test' }), profileEnv)).status).toBe(400);
@@ -1011,6 +1070,7 @@ describe('worker security boundary', () => {
 
     const response = await worker.fetch(request('/api/register-profile', {
       role: 'provider', providerType: 'individual', termsAccepted: true,
+      ...registrationAcceptance('provider'),
       nameEn: 'Legacy Provider', nameAr: 'مزود قديم', countryCode: 'SA',
       region: 'Riyadh', city: 'Riyadh',
     }, { Authorization: 'Bearer test' }), { ...env, FIREBASE_PROJECT_ID: 'project' } as Env);

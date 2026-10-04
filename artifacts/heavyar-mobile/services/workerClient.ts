@@ -151,6 +151,14 @@ export async function request<T>(path: string, init: RequestInit = {}, authentic
   return body as T;
 }
 
+export type PrivacyRequestType = 'access' | 'correction' | 'deletion' | 'privacy_inquiry' | 'objection_withdrawal';
+export function submitPrivacyRequest(requestType: PrivacyRequestType, details: string) {
+  return request<{ success: true; requestId: string; status: 'submitted' }>('/api/compliance/privacy-requests', { method: 'POST', body: JSON.stringify({ requestType, details }) });
+}
+export function fetchPersonalDataExport() {
+  return request<{ success: true; export: Record<string, unknown> }>('/api/compliance/data-export');
+}
+
 export async function updateListing(id: string, patch: Record<string, unknown>) {
   const result = await request<{ success: true; listingId: string; listing?: Record<string, unknown> }>(
     `/api/listings/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(sanitizeListingPayload(patch)) },

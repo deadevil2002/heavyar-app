@@ -54,6 +54,8 @@ export const allowedNotificationEvent = (v: unknown): v is NotificationEvent =>
 export function notificationFields(uid: string, id: string, event: NotificationEvent, now: string, subjectId?: string, custom?: { titleAr?: string; titleEn?: string; bodyAr?: string; bodyEn?: string; imageUrl?: string; deepLink?: string }) {
   const category = categoryFor(event);
   const [titleAr, titleEn] = copy[event];
+  const createdAt = Date.parse(now);
+  const expiresAt = Number.isFinite(createdAt) ? new Date(createdAt + 180 * 86400000).toISOString() : null;
   const actionType = subjectId && /^[A-Za-z0-9_-]{1,100}$/.test(subjectId)
     ? (category === 'rental' ? 'request' : category === 'payment' ? 'payment' : category === 'verification' ? 'verification' : category === 'complaint' ? 'complaint' : 'profile')
     : 'profile';
@@ -65,6 +67,7 @@ export function notificationFields(uid: string, id: string, event: NotificationE
     bodyAr: { stringValue: custom?.bodyAr || titleAr }, bodyEn: { stringValue: custom?.bodyEn || titleEn },
     read: { booleanValue: false }, critical: { booleanValue: isCriticalCategory(category) },
     createdAt: { timestampValue: now }, updatedAt: { timestampValue: now },
+    ...(expiresAt ? { expiresAt: { timestampValue: expiresAt } } : {}),
     action: { mapValue: { fields: actionFields } }, ...(subjectId ? { subjectId: { stringValue: subjectId } } : {}),
     ...(custom?.imageUrl ? { imageUrl: { stringValue: custom.imageUrl } } : {}),
     ...(custom?.deepLink ? { deepLink: { stringValue: custom.deepLink } } : {}),

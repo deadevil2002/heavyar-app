@@ -20,6 +20,7 @@ describe('trusted notification foundation', () => {
     expect(fields.uid.stringValue).toBe('u1');
     expect(fields.action.mapValue.fields.type.stringValue).toBe('payment');
     expect((fields as any).token).toBe(undefined);
+    expect(fields.expiresAt?.timestampValue).toBe('1970-06-30T00:00:00.000Z');
   });
   test('preferences preserve mandatory critical categories', async () => {
     __test.setAuth({ uid: 'u1', admin: false });

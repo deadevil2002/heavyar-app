@@ -1,7 +1,7 @@
 # Heavyar legal and compliance source register
 
-Last reviewed: 2026-10-01. This is an engineering reference, not legal advice.
-Legal owners must confirm current applicability before production activation.
+Last reviewed: 2026-10-04. This is the engineering source register for the
+owner-approved current-release decisions in `LEGAL_DECISION_REGISTER.md`.
 
 ## Saudi transport regulation
 
@@ -48,8 +48,9 @@ retained only with clear disclosure and appropriate restriction/minimization.
 
 ## Review boundaries
 
-- Public policy text must receive Saudi legal review before being treated as a
-  final legal opinion.
-- Commercial cancellation fees, percentages and notice periods remain an owner
-  decision and must not be automated until approved.
+- Public policy decisions follow the owner-approved official-source process in
+  `LEGAL_DECISION_REGISTER.md`; ambiguity triggers safer disabled/fail-closed behavior.
+- Current cancellation/refund behavior is the owner-approved policy recorded in
+  the decision register and public policy; a future fee, percentage, or notice
+  period requires a new version and cannot rewrite historical transactions.
 - Sources should be rechecked when transport, privacy or store policies change.

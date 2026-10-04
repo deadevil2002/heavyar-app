@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   storage: new Map<string, string>(),
 }));
 
+vi.mock('react-native', () => ({ Platform: { OS: 'web' } }));
+vi.mock('expo-constants', () => ({ default: { expoConfig: { version: '1.1.1' } } }));
 vi.mock('@react-native-async-storage/async-storage', () => ({
   default: {
     getItem: vi.fn((key: string) => Promise.resolve(mocks.storage.get(key) ?? null)),

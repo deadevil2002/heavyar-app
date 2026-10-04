@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Globe, Bell, Info, FileText, HelpCircle, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react-native';
+import { Globe, Bell, Info, FileText, HelpCircle, ChevronLeft, ChevronRight, Trash2, ShieldCheck } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -112,7 +112,11 @@ export default function SettingsScreen() {
           </View>
 
           {isAuthenticated && user ? (
-            <View style={styles.dangerSection}>
+            <><View style={styles.section}>
+              <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.navigate('/privacy-rights' as never)}>
+                <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}><View style={styles.menuIcon}><ShieldCheck size={20} color={Colors.gold} /></View><Text style={styles.menuLabel}>{language === 'ar' ? 'حقوق الخصوصية وطلب البيانات' : 'Privacy rights & data requests'}</Text></View><ChevronIcon size={20} color={Colors.textMuted} />
+              </Pressable>
+            </View><View style={styles.dangerSection}>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t('delete_account')}
@@ -136,7 +140,7 @@ export default function SettingsScreen() {
                   </View>
                 </View>
               </Pressable>
-            </View>
+            </View></>
           ) : null}
         </ScrollView>
       </SafeAreaView>

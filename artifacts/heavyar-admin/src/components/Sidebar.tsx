@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, Truck, Wrench, FileText, 
   CreditCard, FileBox, Undo2, AlertOctagon, ShieldCheck, 
   Settings, Database, History, Bell, LogOut, Globe, Menu, X,
-  Shield, Megaphone, UserCog, Wallet, Car, Search, Rocket, ShieldAlert
+  Shield, Megaphone, UserCog, Wallet, Car, Search, Rocket, ShieldAlert, ClipboardCheck
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { useAppState } from '@/lib/app-state';
@@ -64,6 +64,7 @@ export function Sidebar() {
         { href: '/verification', icon: ShieldCheck, label: t('التحقق', 'Verification') },
         { href: '/identity-integrations', icon: Shield, label: t('تكامل الهوية', 'Identity Integrations') },
         { href: '/notifications', icon: Bell, label: t('الإشعارات', 'Notifications') },
+        { href: '/compliance', icon: ClipboardCheck, label: t('الامتثال', 'Compliance'), allowedRoles: ['owner', 'super_admin', 'admin', 'auditor', 'support'] },
       ]
     },
     {

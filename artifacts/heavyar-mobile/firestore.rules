@@ -339,6 +339,16 @@ service cloud.firestore {
     match /complaints/{complaintId} {
       allow read, write: if false;
     }
+    // Compliance evidence and case records are append-only or state-machine
+    // controlled by the Worker. Mobile clients cannot forge, replace, or
+    // enumerate them directly.
+    match /policyAcceptances/{acceptanceId} { allow read, write: if false; }
+    match /privacyRequests/{requestId} { allow read, write: if false; }
+    match /incidents/{incidentId} { allow read, write: if false; }
+    match /moderationCases/{caseId} { allow read, write: if false; }
+    match /complianceEvidence/{evidenceId} { allow read, write: if false; }
+    match /regulatoryCatalogue/{entryId} { allow read, write: if false; }
+    match /driverCredentials/{credentialId} { allow read, write: if false; }
     match /verificationCases/{caseId} {
       allow read, write: if false;
     }

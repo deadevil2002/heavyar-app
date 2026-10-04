@@ -27,11 +27,11 @@ describe('GCC mobile aliases', () => {
   it('sends only the register-profile allowlisted fields', () => {
     const payload = buildRegistrationProfilePayload({
       nameAr: 'Test', nameEn: 'Test', phone: '0501234567', countryCode: 'SA',
-      region: 'riyadh', city: 'riyadh', customCity: '', role: 'customer',
+      region: 'riyadh', city: 'riyadh', customCity: '', role: 'customer', appVersion: '1.1.1', platform: 'android', locale: 'ar',
     });
     expect(Object.keys(JSON.parse(JSON.stringify(payload))).sort()).toEqual([
-      'city', 'countryCode', 'customCity', 'nameAr', 'nameEn',
-      'phone', 'region', 'requestedRole', 'role', 'termsAccepted',
+      'city', 'countryCode', 'customCity', 'legalCapacityConfirmed', 'nameAr', 'nameEn',
+      'phone', 'policyAcceptance', 'region', 'requestedRole', 'role', 'termsAccepted',
     ]);
     expect(payload).not.toHaveProperty('displayCurrency');
     expect(payload).not.toHaveProperty('nativeCurrency');
@@ -40,13 +40,13 @@ describe('GCC mobile aliases', () => {
     const provider = buildRegistrationProfilePayload({
       nameAr: 'Provider', nameEn: 'Provider', phone: '', countryCode: 'SA',
       region: 'riyadh', city: 'riyadh', customCity: '', role: 'provider',
-      providerType: 'company', crNumber: '1234567890',
+      providerType: 'company', crNumber: '1234567890', appVersion: '1.1.1', platform: 'ios', locale: 'en',
     });
     expect(provider).toMatchObject({ providerType: 'company', crNumber: '1234567890' });
     const customer = buildRegistrationProfilePayload({
       nameAr: 'Customer', nameEn: 'Customer', phone: '', countryCode: 'SA',
       region: 'riyadh', city: 'riyadh', customCity: '', role: 'customer',
-      providerType: 'company', crNumber: '1234567890',
+      providerType: 'company', crNumber: '1234567890', appVersion: '1.1.1', platform: 'web', locale: 'en',
     });
     expect(customer).not.toHaveProperty('providerType');
     expect(customer).not.toHaveProperty('crNumber');

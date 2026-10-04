@@ -1,6 +1,6 @@
 # HEAVYAR Compliance Gate
 
-This document is a reusable engineering and product-review gate. It is **not legal, tax, or accounting advice**, does not establish legal certainty, and does not replace review by qualified Saudi counsel, accountants, platform-policy specialists, or the relevant authority.
+This document is the owner-approved engineering and product-decision gate. Decisions use current official sources recorded in `docs/LEGAL_DECISION_REGISTER.md`; where scope is ambiguous, the current release adopts the safer disabled or fail-closed behavior.
 
 ## Core rule
 
@@ -52,7 +52,7 @@ Check the current [Google Play Developer Program Policies](https://play.google.c
 
 Before changing marketplace presentation, contracting, advertising, pricing, or support, review the current official [Saudi E-Commerce Law](https://laws.boe.gov.sa/BoeLaws/Laws/LawDetails/360de590-0286-4fa5-a243-aa9100c31979/1) and the Ministry of Commerce [e-commerce laws, regulations, and guidance](https://mc.gov.sa/ar/ECC/pages/default.aspx).
 
-Confirm with qualified review, as applicable:
+Confirm through the documented official-source owner decision process:
 
 - merchant/service-provider identity and contact disclosures;
 - accurate equipment/service description, condition, availability, and responsible party;
@@ -78,7 +78,7 @@ For every new personal-data field or use:
 - define retention, deletion/anonymization, backups, legal holds, and audit evidence;
 - apply role-based access, transport/storage security, incident handling, and processor controls;
 - identify every processor/third party and contract/data-flow responsibility;
-- separately review cross-border transfer or disclosure using the current [transfer regulation](https://dgp.sdaia.gov.sa/wps/portal/pdp/knowledgecenter/details/PDPL2/);
+- separately review cross-border transfer or disclosure using the current [transfer regulation](https://dgp.sdaia.gov.sa/wps/portal/pdp/knowledgecenter/details/RegulationonPersonalDataTransferOutsidetheKingdom);
 - perform heightened review for precise location, identity documents, verification data, financial data, notification tokens, chat/media, and behavioral analytics.
 
 Privacy notices, store disclosures, actual code behavior, logs, Admin access, exports, and deletion workflows must agree.
@@ -87,9 +87,9 @@ Privacy notices, store disclosures, actual code behavior, logs, Admin access, ex
 
 Every change to pricing, commission, settlement, invoice, VAT, refund, or credit-note behavior requires separate accounting/compliance review against current official ZATCA sources, including the [VAT Implementing Regulations](https://zatca.gov.sa/en/RulesRegulations/Taxes/Pages/VATImplementingRegulations.aspx) and [FATOORA e-invoicing guidance](https://zatca.gov.sa/en/E-Invoicing/Introduction/Guidelines/Pages/default.aspx).
 
-Current implementation fact: VAT remains **15% of rental base**. Status: **ACCOUNTING REVIEW REQUIRED**. This is not a conclusion that the current basis or treatment is legally correct.
+Current implementation fact: VAT-related calculation remains **15% of rental base** where the locked commercial rule applies. The current representation and non-claims are recorded in `docs/TAX_AND_INVOICE_DECISION.md`; FATOORA integration is disabled and not claimed.
 
-Before release, determine and document:
+The current-release decision and non-claims are closed in `docs/TAX_AND_INVOICE_DECISION.md`. Before activating a future tax/invoice or commercial-model change, create a new version that determines and documents:
 
 - correct VAT basis and tax point;
 - treatment of platform commission, customer/provider shares, gateway fees, and provider settlement;
@@ -107,7 +107,7 @@ Before release, determine and document:
 - Never trust a webhook body alone as payment proof. Resolve the stored payment and re-fetch/verify the provider transaction using its stored environment.
 - Idempotency is mandatory for creation, verification, webhook reconciliation, settlement, invoice/events, and any future refund execution.
 - LIVE activation requires explicit owner/super-admin confirmation and a separate release-readiness check.
-- **REFUND EXECUTION = NOT READY** until real provider execution, reconciliation, commercial reversal, invoice/credit-note, and failure recovery are implemented and approved.
+- **AUTOMATED REFUND EXECUTION = DISABLED.** The current release uses an audited refund-case workflow and `manual_execution_required`; `executed` requires payment-provider evidence. A provider API remains a future disabled dependency.
 - **MARKETPLACE/SPLIT = NOT VERIFIED** until actual Tap Marketplace capability, merchant configuration, account onboarding, and settlement behavior are verified. Internal `providerReceivable` accounting does not prove external payout.
 
 ## Monetization classification gate
