@@ -15,6 +15,13 @@ Read in this order:
 
 Code and configuration are authoritative. Never infer deployment status from a Git commit.
 
+## Account Deletion Release Behavior
+
+- Authenticated customers, providers, and drivers can request deletion from both Profile and Settings.
+- Both controls invoke the same shared confirmation/action and authenticated Worker endpoint; do not add a second deletion implementation.
+- Successful acceptance logs out and clears local account storage. A failed request must not present logout as deletion success.
+- `https://heavyar.com/account-deletion` and `/en/account-deletion` are public informational/support pages only. Normal deletion occurs in-app and requires no website credentials or support email.
+
 ## Repository Structure
 
 - Mobile: `artifacts/heavyar-mobile`
@@ -51,10 +58,10 @@ Code and configuration are authoritative. Never infer deployment status from a G
 
 ## Verified Tests
 
-Latest local gate on 2026-10-03:
+Latest local gate on 2026-10-04:
 
 - Mobile TypeScript: PASS
-- Mobile tests: PASS — 415/415
+- Mobile tests: PASS — 421/421
 - Worker TypeScript: PASS
 - Worker tests: PASS — 487/487
 - Store Review contract: PASS — 6/6

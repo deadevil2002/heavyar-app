@@ -1,4 +1,10 @@
-/** Request shape required by the Worker account deletion endpoint. */
+export const ACCOUNT_DELETION_CONFIRMATION = 'DELETE_MY_ACCOUNT' as const;
+
+export function createAccountDeletionPayload() {
+  return { confirmation: ACCOUNT_DELETION_CONFIRMATION };
+}
+
+/** Standalone authenticated request shape used by contract tests and non-client callers. */
 export function createAccountDeletionRequest(token: string): RequestInit {
   return {
     method: 'POST',
@@ -6,6 +12,6 @@ export function createAccountDeletionRequest(token: string): RequestInit {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ confirmation: 'DELETE_MY_ACCOUNT' }),
+    body: JSON.stringify(createAccountDeletionPayload()),
   };
 }

@@ -58,6 +58,14 @@ The mobile data-flow architecture is **COHERENT WITH JUSTIFIED MIXED PATHS**. Th
 - Push registration is background work and cannot delay authenticated shell readiness.
 - Previously verified clean completed-account login baselines were Customer `2063.5 ms` and Provider `2271.2 ms` in Expo Go. One later Customer run reached `18159.6 ms` during simultaneous Firebase/network and Expo Go event-loop stalls; it is recorded as a development-runtime outlier, not production-device timing.
 
+## Account deletion
+
+- Every authenticated customer, provider, and driver can start deletion from Profile or Settings.
+- Both entry points use the same shared two-step confirmation and canonical authenticated `POST /api/account/deletion-request` contract with `DELETE_MY_ACCOUNT` confirmation.
+- The Worker durably records a pending request, changes the account to `deletion_requested`, revokes notification-device ownership and Firebase refresh tokens, and preserves retry state when revocation is temporarily unavailable.
+- The client logs out and clears local account state only after the request succeeds; request failure leaves the session available for retry/support.
+- The companion public `/account-deletion` page is informational and requires no login or password; it does not directly delete accounts.
+
 ## Cold-route and responsiveness architecture
 
 - Authenticated Home performs a controlled code-only prewarm of the Requests route and focused request read service after Home is usable and interactions settle.
@@ -113,12 +121,12 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 
 ## Validation status
 
-Final repository-sync gate on 2026-10-03:
+Account-deletion release gate on 2026-10-04:
 
 | Check | Result |
 |---|---|
 | Mobile TypeScript | PASS |
-| Full mobile tests | PASS — 415/415 (362 base Vitest + 39 jsdom/discovery Vitest + 14 Node) |
+| Full mobile tests | PASS — 421/421 (368 base Vitest + 39 jsdom/discovery Vitest + 14 Node) |
 | Worker TypeScript | PASS |
 | Full Worker tests | PASS — 487/487 |
 | Focused iOS privacy/verification tests | PASS — 6/6 |

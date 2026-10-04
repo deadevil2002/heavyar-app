@@ -1,4 +1,5 @@
 import { request } from './workerClient';
+import { createAccountDeletionPayload } from './accountDeletionContract';
 import type { CommercialSnapshot } from '@/types';
 
 export { createAccountDeletionRequest } from './accountDeletionContract';
@@ -83,6 +84,6 @@ export async function verifyPayment(paymentId: string): Promise<VerifyPaymentRes
 export async function requestAccountDeletion(): Promise<void> {
   await request('/api/account/deletion-request', {
     method: 'POST',
-    body: JSON.stringify({ confirmation: 'DELETE_MY_ACCOUNT' }),
+    body: JSON.stringify(createAccountDeletionPayload()),
   });
 }

@@ -1,21 +1,25 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Globe, Bell, Info, FileText, HelpCircle, ChevronLeft, ChevronRight } from 'lucide-react-native';
+import { Globe, Bell, Info, FileText, HelpCircle, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { useAccountDeletion } from '@/hooks/useAccountDeletion';
 import SettingsHeader from '@/components/SettingsHeader';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 
 export default function SettingsScreen() {
   mobilePerformance.countRender('Settings');
   const { isRTL, t, language, setLanguage } = useLanguage();
+  const { isAuthenticated, user } = useAuth();
   const router = useRouter();
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(true);
   const { dialog, showDialog, hideDialog } = useAppDialog();
+  const handleAccountDeletion = useAccountDeletion(showDialog);
 
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
 
@@ -106,6 +110,34 @@ export default function SettingsScreen() {
               <Text style={styles.versionText}>{t('version')} 1.0.0</Text>
             </Pressable>
           </View>
+
+          {isAuthenticated && user ? (
+            <View style={styles.dangerSection}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('delete_account')}
+                accessibilityHint={t('delete_account_hint')}
+                style={({ pressed }) => [
+                  styles.deleteAccountItem,
+                  { flexDirection: isRTL ? 'row-reverse' : 'row' },
+                  pressed && styles.deleteAccountPressed,
+                ]}
+                onPress={handleAccountDeletion}
+              >
+                <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                  <View style={styles.dangerIcon}>
+                    <Trash2 size={20} color={Colors.error} />
+                  </View>
+                  <View style={{ flex: 1, alignItems: isRTL ? 'flex-end' : 'flex-start' }}>
+                    <Text style={styles.deleteAccountLabel}>{t('delete_account')}</Text>
+                    <Text style={[styles.deleteAccountDescription, { textAlign: isRTL ? 'right' : 'left' }]}>
+                      {t('delete_account_settings_description')}
+                    </Text>
+                  </View>
+                </View>
+              </Pressable>
+            </View>
+          ) : null}
         </ScrollView>
       </SafeAreaView>
 
@@ -150,4 +182,36 @@ const styles = StyleSheet.create({
   menuLabel: { fontSize: 15, color: Colors.textPrimary, fontWeight: '700' as const },
   menuSub: { fontSize: 13, color: Colors.textMuted, marginTop: 2 },
   versionText: { color: Colors.textMuted, fontSize: 13 },
+  dangerSection: {
+    backgroundColor: 'rgba(231, 76, 60, 0.06)',
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(231, 76, 60, 0.35)',
+  },
+  deleteAccountItem: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  deleteAccountPressed: { opacity: 0.72 },
+  dangerIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(231, 76, 60, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteAccountLabel: {
+    color: Colors.error,
+    fontSize: 15,
+    fontWeight: '700' as const,
+  },
+  deleteAccountDescription: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 3,
+  },
 });

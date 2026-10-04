@@ -10,9 +10,9 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
+import { useAccountDeletion } from '@/hooks/useAccountDeletion';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionById, findRegionByCityId } from '@/mocks/saudiRegions';
 import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloudinaryService';
-import { requestAccountDeletion } from '@/services/paymentService';
 import { getVerificationProfile, type VerificationProfile } from '@/services/verificationService';
 import { hasCapability, roleLabel } from '@/services/roleCapabilities';
 import { mobilePerformance } from '@/utils/mobilePerformance';
@@ -24,6 +24,7 @@ export default function ProfileScreen() {
   const { user, isAuthenticated, logout, updateProfile, refreshProfile, accountState } = useAuth();
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
+  const handleAccountDeletion = useAccountDeletion(showDialog);
 
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [editName, setEditName] = useState<string>('');
@@ -71,33 +72,6 @@ export default function ProfileScreen() {
   const handleLogout = useCallback(async () => {
     await logout();
   }, [logout]);
-
-  const handleAccountDeletion = useCallback(() => {
-    showDialog(t('delete_account'), t('delete_account_warning'), [
-      { text: t('cancel'), style: 'cancel' },
-      {
-        text: t('confirm'),
-        style: 'danger',
-        onPress: () => showDialog(t('delete_account_confirm'), t('delete_account_confirm_message'), [
-          { text: t('cancel'), style: 'cancel' },
-          {
-            text: t('delete_account'),
-            style: 'danger',
-            onPress: () => {
-              void (async () => {
-                try {
-                  await requestAccountDeletion();
-                  await logout({ clearLocalStorage: true });
-                } catch {
-                  showDialog(t('error_title'), t('delete_account_failed'), [{ text: t('ok'), style: 'default' }]);
-                }
-              })();
-            },
-          },
-        ]),
-      },
-    ]);
-  }, [logout, showDialog, t]);
 
   const handleUploadAvatar = useCallback(async () => {
     if (!user) return;

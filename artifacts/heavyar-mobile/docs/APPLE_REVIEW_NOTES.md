@@ -10,6 +10,8 @@ All payments in the app relate exclusively to physical/off-app services. Heavyar
 
 The current iOS release does not provide an active Nafath or national-identity verification feature. The feature is disabled release-wide for every iOS user, not only reviewers. This release does not ask users to submit government-issued identity documents or identity numbers, and it does not ask users to submit bank-account or IBAN details. Provider commercial-registration information is ordinary marketplace/business information and is not presented as Nafath or government identity verification.
 
+Authenticated customers, providers, and drivers can start account deletion directly in the app from either **Profile → Delete account** or **Settings → Delete account**. Both entry points use the same two-step confirmation and authenticated Worker request. The public account-deletion URL below is informational guidance and support documentation; normal deletion does not require a website login, a support email, or sharing credentials outside the app.
+
 Dedicated Store Review accounts are available. Please use the Customer account first to browse approved review inventory and inspect the normal customer request flow. Store Review accounts are intentionally excluded from real payment and settlement paths, so App Review should not expect a live or Tap TEST financial transaction to complete from these accounts.
 
 ### Primary review account
@@ -34,7 +36,7 @@ The Apple Developer account is currently an individual account. Apple may displa
 
 - Contact: `heavyar.official@gmail.com`
 - Privacy: `https://heavyar.com/privacy`
-- Account deletion: `https://heavyar.com/account-deletion`
+- Account-deletion information: `https://heavyar.com/account-deletion`
 
 ## Internal submission checklist
 

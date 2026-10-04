@@ -13,7 +13,7 @@ legal advice and does not invent retention or business claims.
 | Current target API | Expo SDK 54 toolchain reviewed | Verify generated release manifest against the then-current Play requirement |
 | 16 KB compatibility | Not verified; no APK/AAB was produced | Run the binary commands in `HEAVYAR_RELEASE_HANDOFF.md` |
 | Data Safety | Inventory available: Firebase Auth/Firestore, AsyncStorage, Cloudinary, push tokens, Worker APIs, image picker | Store owner must complete and maintain the Play Data Safety form |
-| Account deletion | In-app request, account lock, token revocation/retry, and public process implemented | Developer/store owner must verify end-to-end fulfillment and declare retained records accurately |
+| Account deletion | Same authenticated in-app request is exposed from Profile and Settings; account lock, token revocation/retry, and public informational process implemented | Developer/store owner must verify end-to-end fulfillment and declare retained records accurately |
 | Privacy policy | Public URL live at `/privacy` | Store owner must link and review final content |
 | Terms | Public URL live at `/terms` | Store owner must review final content and listing link |
 | Support | Public URL live at `/support` | Store owner must verify contacts remain monitored |
@@ -30,7 +30,7 @@ legal advice and does not invent retention or business claims.
 | --- | --- | --- |
 | Bundle ID | Implemented: `com.heavyar.app` | Verify archive |
 | Privacy nutrition labels | Source-audited worksheet prepared in `APPLE_PRIVACY_DECLARATION.md`; App Store Connect not updated | Store owner must enter/verify the declaration against the signed binary |
-| Account deletion | In-app request and public process implemented | Verify fulfillment and final policy wording |
+| Account deletion | Same authenticated in-app request is exposed from Profile and Settings; public page is informational and requires no login | Verify fulfillment and final policy wording |
 | Privacy policy | Public `/privacy` URL live | Add to App Store Connect and review |
 | Export compliance | `ITSAppUsesNonExemptEncryption=false` configured | Verify archive metadata |
 | Required-reason APIs | Dependency inventory reviewed; final archive not inspected | Inspect `PrivacyInfo.xcprivacy` for Firebase, AsyncStorage, Expo, and RN dependencies |
@@ -90,8 +90,10 @@ Do not submit until the store owner has:
   `0182e148-a337-45fd-a4c1-d982e967fec5`, and the Firebase-hosted admin were deployed.
 - Tap remains TEST only. Moyasar and MyFatoorah remain disabled without authorized
   adapters/credentials. Official Nafath remains disabled.
-- Mobile and public website account-deletion paths are implemented; the store owner
-  still owns fulfillment verification and the final retention disclosures.
+- Mobile deletion is available to every authenticated role from Profile and Settings through
+  one canonical flow. The public website page is informational only and does not request
+  credentials or delete accounts directly; the store owner still owns fulfillment verification
+  and the final retention disclosures.
 - Native builds, signing, physical-device QA, store declarations, reviewer access, and
   submission remain human-owned release gates.
 - The final app SHA is the commit containing the updated handoff documents and is

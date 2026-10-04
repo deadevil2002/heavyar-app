@@ -66,7 +66,9 @@ The Worker is the authoritative boundary for:
 
 Firebase Hosting serves the admin dashboard. The separate `heavyar-website` production
 site serves the public policy and support routes on `https://heavyar.com`, including
-`/privacy`, `/support`, and `/en/support`. Admin actions require the admin role; normal
+`/privacy`, `/support`, `/account-deletion`, and their English equivalents. The deletion
+page is informational only and does not authenticate users or call the deletion API.
+Admin actions require the admin role; normal
 users receive authorization failures.
 
 Payment redirects never prove payment. The Worker retrieves authoritative Tap state.
@@ -95,7 +97,8 @@ Completed product areas:
 - Transactional notification outbox plus paginated bilingual promotional campaigns
 - Fail-closed gateway discovery/enforcement; Tap remains TEST only
 - Driver registration, search, service requests, and admin moderation
-- Bilingual authenticated account-deletion page in the separate website repository
+- Bilingual public account-deletion information page in the separate website repository;
+  deletion itself is initiated inside the authenticated mobile app
 
 Production deployment record:
 
@@ -370,12 +373,15 @@ Do not commit Apple passwords, certificates, provisioning profiles, or private k
 
 ### Account deletion
 
+- Available to authenticated customer, provider, and driver accounts from both Profile and Settings
+- Both entry points use one shared deletion action and canonical Worker contract
 - Explicit two-step confirmation
 - Durable deletion request
 - Account lock
 - Device-token/token-owner revocation
 - Firebase refresh-token revocation/retry state
 - Logout and local cache clearing
+- Public `/account-deletion` documentation requires no web login or password and is not a direct deletion surface
 
 ### Localization and layout
 

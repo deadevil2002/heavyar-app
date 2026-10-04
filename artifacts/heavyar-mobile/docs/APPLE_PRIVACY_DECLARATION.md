@@ -11,6 +11,7 @@ Prepared: 2026-10-03. This is a source-audit checklist for the store owner. It d
 - Bank-account/IBAN/payout-bank collection: **NO** in the enabled iOS path.
 - Raw card number/CVV access or storage by Heavyar: **NO**. Card entry occurs in Tap's hosted checkout.
 - Tracking across apps or websites: **NO**. There is no advertising or analytics SDK in the mobile dependency/configuration inventory.
+- Account deletion is requested inside the authenticated app from Profile or Settings. The request locks the account, begins the deletion lifecycle, revokes device/session access, and may retain only records required for legal, accounting, or dispute purposes as described by the public privacy information. The public account-deletion page is informational and requires no web credentials.
 
 Apple's official privacy guidance says data entered in an external payment flow need not be disclosed as Payment Info when the developer never accesses it. Heavyar still declares its own transaction records as Purchase History. See [App privacy details on the App Store](https://developer.apple.com/app-store/app-privacy-details/).
 
