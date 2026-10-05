@@ -34,7 +34,7 @@ Source: `artifacts/heavyar-mobile/app.json`.
 | Item | Value |
 |---|---|
 | App version | `1.1.1` |
-| Android `versionCode` | `2` |
+| Android `versionCode` | `3` |
 | iOS `buildNumber` | `1` |
 
 ## Mobile architecture status
