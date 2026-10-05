@@ -115,7 +115,7 @@ export default function InvoicesScreen() {
 
   return (
     <View style={styles.container}>
-      <SafeAreaView edges={['top']} style={{ flex: 1 }}>
+      <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1 }}>
         <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
           <Pressable style={styles.backBtn} onPress={() => router.back()}>
             <BackIcon size={22} color={Colors.textPrimary} />

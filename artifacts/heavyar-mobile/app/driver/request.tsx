@@ -101,7 +101,7 @@ export default function DriverRequestScreen() {
 
   return (
     <View style={styles.container}>
-      <SafeAreaView edges={['top']} style={styles.safe}>
+      <SafeAreaView edges={['top', 'bottom']} style={styles.safe}>
         <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
           <Pressable onPress={() => router.back()} style={styles.backBtn}>
             {isRTL ? <ChevronRight color={Colors.textPrimary} /> : <ChevronLeft color={Colors.textPrimary} />}

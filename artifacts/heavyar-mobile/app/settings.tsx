@@ -35,7 +35,7 @@ export default function SettingsScreen() {
 
   return (
     <View style={styles.container}>
-      <SafeAreaView edges={['top']} style={{ flex: 1 }}>
+      <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1 }}>
         <SettingsHeader title={t('settings')} fallback="/(tabs)/profile" />
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>

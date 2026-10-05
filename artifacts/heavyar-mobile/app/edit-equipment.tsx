@@ -282,7 +282,7 @@ export default function EditEquipmentScreen() {
 
   return (
     <View style={styles.container}>
-      <SafeAreaView edges={['top']} style={styles.safeArea}>
+      <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
         <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
           <Pressable style={styles.backBtn} onPress={() => router.back()}>
             <BackIcon size={22} color={Colors.textPrimary} />

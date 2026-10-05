@@ -2,6 +2,7 @@ import { Tabs } from "expo-router";
 import { House, Search, Plus, ClipboardList, CircleUserRound } from "lucide-react-native";
 import React, { useEffect } from "react";
 import { InteractionManager, View, StyleSheet } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Colors from "@/constants/colors";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -14,6 +15,9 @@ import { markRouteStage, startRoutePress } from '@/utils/routePerformance';
 export default function TabLayout() {
   const { t } = useLanguage();
   const { isAuthenticated, isLoading, isResolvingSession, accountState, user } = useAuth();
+  // A fixed tabBarStyle height disables React Navigation's own inset handling,
+  // so the Android system navigation bar (edge-to-edge) must be added here.
+  const bottomInset = useSafeAreaInsets().bottom;
   const canonicalProvider = !isLoading
     && isAuthenticated
     && accountState === 'authenticated_complete'
@@ -71,9 +75,9 @@ export default function TabLayout() {
           backgroundColor: Colors.tabBar,
           borderTopColor: Colors.border,
           borderTopWidth: 1,
-          height: 68,
+          height: 68 + bottomInset,
           paddingTop: 7,
-          paddingBottom: 8,
+          paddingBottom: 8 + bottomInset,
         },
         tabBarLabelStyle: {
           fontSize: 10,
