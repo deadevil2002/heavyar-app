@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { ArrowLeft, ArrowRight, MapPin, Star, Calendar, Share2, Heart, Lock } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, MapPin, Star, Calendar, Share2, Heart, Lock, Flag } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -22,6 +22,7 @@ import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
 import ListingPriceDisplay from '@/components/ListingPriceDisplay';
 import { HeavyarButton, HeavyarButtonText, HeavyarIconButton } from '@/components/ui/heavyar';
 import { mobilePerformance } from '@/utils/mobilePerformance';
+import { useBlockedUsers } from '@/services/blockedUsers';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -40,6 +41,7 @@ export default function EquipmentDetailScreen() {
   const [requestModalVisible, setRequestModalVisible] = useState<boolean>(false);
   const scrollRef = useRef<ScrollView>(null);
   const { dialog, showDialog, hideDialog } = useAppDialog();
+  const { isBlocked, unblock } = useBlockedUsers(currentUser?.uid);
   const fallbackOwnerUid = ownerEquipmentFallbackUid(currentUser);
   const publicAllowed = canBrowsePublicEquipment(auth);
   const detailKey = JSON.stringify([id, authLoading, publicAllowed, currentUser?.uid, currentUser?.role]);
@@ -293,6 +295,25 @@ export default function EquipmentDetailScreen() {
                 </View>
               </Pressable>
             </>
+          )}
+
+          {currentUser?.uid !== equipment.ownerUid && (
+            isBlocked(equipment.ownerUid) ? (
+              <View style={[styles.reportRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <Lock size={15} color={Colors.textMuted} />
+                <Text style={styles.reportText}>{isRTL ? 'لقد حظرت مالك هذا الإعلان' : 'You blocked this listing owner'}</Text>
+                <Pressable onPress={() => { void unblock(equipment.ownerUid); }} accessibilityRole="button" hitSlop={8}>
+                  <Text style={styles.reportAction}>{isRTL ? 'إلغاء الحظر' : 'Unblock'}</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable accessibilityRole="button" hitSlop={8}
+                style={[styles.reportRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+                onPress={() => router.push({ pathname: '/report', params: { listingId: equipment.id, subjectUid: equipment.ownerUid, subjectName: title } })}>
+                <Flag size={15} color={Colors.textMuted} />
+                <Text style={styles.reportText}>{isRTL ? 'الإبلاغ عن هذا الإعلان' : 'Report this listing'}</Text>
+              </Pressable>
+            )
           )}
 
           {!isAuthenticated && (
@@ -565,6 +586,14 @@ const styles = StyleSheet.create({
   bottomSpacer: {
     height: 116,
   },
+  reportRow: {
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 18,
+    paddingVertical: 6,
+  },
+  reportText: { color: Colors.textMuted, fontSize: 13 },
+  reportAction: { color: Colors.gold, fontSize: 13, fontWeight: '700' },
   bottomBar: {
     position: 'absolute',
     bottom: 0,

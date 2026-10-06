@@ -172,6 +172,9 @@ export function acceptCurrentPolicyVersions(payload: Record<string, unknown>) {
 export function submitPrivacyRequest(requestType: PrivacyRequestType, details: string) {
   return request<{ success: true; requestId: string; status: 'submitted' }>('/api/compliance/privacy-requests', { method: 'POST', body: JSON.stringify({ requestType, details }) });
 }
+export function submitRequestComplaint(requestId: string, category: string, narrative: string) {
+  return request<{ success: true; complaintId: string; status: 'submitted' }>('/api/compliance/complaints', { method: 'POST', body: JSON.stringify({ requestId, category, narrative }) });
+}
 export function fetchPersonalDataExport() {
   return request<{ success: true; export: Record<string, unknown> }>('/api/compliance/data-export');
 }

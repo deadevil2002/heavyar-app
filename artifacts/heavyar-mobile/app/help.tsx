@@ -5,6 +5,7 @@ import { Mail, MessageCircle } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { PUBLIC_LINKS } from '@/constants/publicLinks';
+import { SUPPORT_EMAIL } from '@/constants/support';
 import SettingsHeader from '@/components/SettingsHeader';
 
 export default function HelpScreen() {
@@ -13,7 +14,7 @@ export default function HelpScreen() {
   const handleEmail = useCallback(async () => {
     const subject = encodeURIComponent('Heavyar Support');
     const body = encodeURIComponent('السلام عليكم،\nعندي استفسار بخصوص تطبيق Heavyar:\n');
-    const url = `mailto:heavyar.official@gmail.com?subject=${subject}&body=${body}`;
+    const url = `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
     try {
       await Linking.openURL(url);
     } catch {}
@@ -37,9 +38,9 @@ export default function HelpScreen() {
       <SafeAreaView edges={['top']} />
       <SettingsHeader title={t('help')} />
       <View style={styles.content}>
-        <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>المساعدة والدعم</Text>
+        <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'المساعدة والدعم' : 'Help & Support'}</Text>
         <Text style={[styles.paragraph, { textAlign: isRTL ? 'right' : 'left' }]}>
-          نسعد بدعمكم عبر القنوات التالية. سيتم فتح التطبيق المناسب على جهازك:
+          {isRTL ? 'نسعد بدعمكم عبر القنوات التالية. سيتم فتح التطبيق المناسب على جهازك:' : 'Reach us through the channels below. The matching app will open on your device:'}
         </Text>
 
         <Pressable style={[styles.card, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={handleEmail}>
@@ -47,8 +48,8 @@ export default function HelpScreen() {
             <Mail size={20} color={Colors.primary} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>البريد الإلكتروني</Text>
-            <Text style={[styles.cardDesc, { textAlign: isRTL ? 'right' : 'left' }]}>heavyar.official@gmail.com</Text>
+            <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'البريد الإلكتروني' : 'Email'}</Text>
+            <Text style={[styles.cardDesc, { textAlign: isRTL ? 'right' : 'left' }]}>{SUPPORT_EMAIL}</Text>
           </View>
         </Pressable>
 
@@ -57,7 +58,7 @@ export default function HelpScreen() {
             <MessageCircle size={20} color={Colors.primary} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>واتساب</Text>
+            <Text style={[styles.cardTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{isRTL ? 'واتساب' : 'WhatsApp'}</Text>
             <Text style={[styles.cardDesc, { textAlign: isRTL ? 'right' : 'left' }]}>966 57 075 8881</Text>
           </View>
         </Pressable>

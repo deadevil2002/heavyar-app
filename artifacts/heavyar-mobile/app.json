@@ -61,6 +61,7 @@
       "expo-router",
       "expo-font",
       "expo-web-browser",
+      "./plugins/withPodsMinimumDeploymentTarget",
       "expo-notifications",
       [
         "expo-image-picker",

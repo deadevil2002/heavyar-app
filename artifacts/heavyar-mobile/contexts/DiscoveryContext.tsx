@@ -3,6 +3,7 @@ import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from './AuthContext';
+import { useBlockedUsers } from '@/services/blockedUsers';
 import { fetchMarketConfig } from '@/services/authService';
 import { isMarketEnabled } from '@/services/locationHierarchy';
 import { defaultDiscoveryCountry, resetDiscoveryFilters, updateDiscoveryFilter, type DiscoveryFilters } from '@/services/publicDiscovery';
@@ -142,14 +143,20 @@ function useDiscoveryState() {
     if (!allowed.current) return;
     if (inventory.hasNextPage && !inventory.isFetching && !inventory.isPlaceholderData) void fetchNextPage({ cancelRefetch: false });
   }, [fetchNextPage, inventory.hasNextPage, inventory.isFetching, inventory.isPlaceholderData]);
+  // Hide listings from owners this account blocked on this device.
+  const { blocked } = useBlockedUsers(user?.uid);
+  const visibleEquipment = useMemo(
+    () => blocked.size ? equipment.filter(item => !blocked.has(item.ownerUid)) : equipment,
+    [blocked, equipment],
+  );
   const loading = inventoryEnabled && (inventory.isPending || marketQuery.isPending);
   const error = inventory.isError || marketQuery.isError;
   const refreshing = inventory.isFetching && !inventory.isFetchingNextPage && !inventory.isPending;
   const hasFilters = !!(filters.region || filters.city || filters.category || filters.text || filters.countryCode !== defaultCountry);
-  return useMemo(() => ({ equipment: inventoryEnabled ? equipment : [], filters, markets, setFilter, applyFilters, resetFilters, refresh, refreshIfStale, loadMore,
+  return useMemo(() => ({ equipment: inventoryEnabled ? visibleEquipment : [], filters, markets, setFilter, applyFilters, resetFilters, refresh, refreshIfStale, loadMore,
     hasMore: inventory.hasNextPage, loadingMore: inventory.isFetchingNextPage,
     loading, refreshing, error, hasFilters }),
-  [inventoryEnabled, equipment, filters, markets, setFilter, applyFilters, resetFilters, refresh, refreshIfStale, loadMore,
+  [inventoryEnabled, visibleEquipment, filters, markets, setFilter, applyFilters, resetFilters, refresh, refreshIfStale, loadMore,
     inventory.hasNextPage, inventory.isFetchingNextPage, loading, refreshing, error, hasFilters]);
 }
 

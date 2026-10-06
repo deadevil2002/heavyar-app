@@ -111,6 +111,14 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 - Tap Marketplace/Split remains **NOT VERIFIED / NOT ENABLED**.
 - External webhook/LIVE-provider behavior and accounting/VAT treatment still require their separate release/compliance gates.
 
+## App Store readiness — 2026-10-06
+
+- App Store Review audit (Guideline 1.2) closed in source: chat header flag → `/report` (request-scoped reports use the existing `POST /api/compliance/complaints`; listing reports open the support mailbox) and device-local, account-scoped blocking (`services/blockedUsers.ts`) that hides the blocked account's chat messages and discovery listings. No Worker or rules change.
+- A read-only probe on 2026-10-06 confirmed Production Worker answers the compliance routes (`/api/account/deletion-request`, `/api/compliance/*`) with `401 AUTH_REQUIRED`, not `404`.
+- iOS native build: `plugins/withPodsMinimumDeploymentTarget.js` raises pod targets below iOS 15.1, which Xcode 27 otherwise rejects.
+- App Store Connect record `6819252539` (team `KAF2PJ4A8A`, Salem Alnaimi) exists; App Information subtitle, categories (Business/Productivity), and content rights were set. Remaining store metadata, build upload, and submission are not complete.
+- Owner decisions: availability Saudi Arabia only; do not submit for review while Tap is TEST.
+
 ## Known issues and blockers
 
 1. **Legacy Provider phone ownership conflict:** intentionally unresolved. Do not change phone ownership, Firebase data, or identity rules without a separately authorized recovery/migration plan.

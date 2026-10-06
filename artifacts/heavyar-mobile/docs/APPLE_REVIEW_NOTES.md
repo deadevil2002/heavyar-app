@@ -12,6 +12,8 @@ The current iOS release does not provide an active Nafath or national-identity v
 
 Authenticated customers, providers, and drivers can start account deletion directly in the app from either **Profile → Delete account** or **Settings → Delete account**. Both entry points use the same two-step confirmation and authenticated Worker request. The public account-deletion URL below is informational guidance and support documentation; normal deletion does not require a website login, a support email, or sharing credentials outside the app.
 
+User-generated content is limited to equipment listings, driver profiles, ratings, and private chat between the two participants of an accepted rental. Listings and driver profiles are moderated by Heavyar staff before they become public. Any user can report a listing from the listing screen (**Report this listing**), and either chat participant can tap the flag icon in the chat header to report the other participant or block them. Blocking immediately hides that account's messages and listings for the blocking user. Reports are reviewed by Heavyar staff within 24 hours, and violating content or accounts are removed or restricted. Support contact: `heavyar.official@gmail.com`.
+
 Dedicated Store Review accounts are available. Please use the Customer account first to browse approved review inventory and inspect the normal customer request flow. Store Review accounts are intentionally excluded from real payment and settlement paths, so App Review should not expect a live or Tap TEST financial transaction to complete from these accounts.
 
 ### Primary review account

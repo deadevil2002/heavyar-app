@@ -58,6 +58,7 @@ function RootLayoutNav() {
       <Stack.Screen name="my-equipment" options={{ headerShown: false }} />
       <Stack.Screen name="settings" options={{ headerShown: false }} />
       <Stack.Screen name="privacy-rights" options={{ headerShown: false }} />
+      <Stack.Screen name="report" options={{ headerShown: false }} />
       <Stack.Screen name="verification" options={{ headerShown: false }} />
       <Stack.Screen name="notifications" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false, presentation: "modal" }} />

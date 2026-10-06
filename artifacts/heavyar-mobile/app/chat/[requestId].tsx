@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, FlatList, TextInput, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, ArrowRight, Send, Lock } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, Send, Lock, Flag } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -16,6 +16,7 @@ import {
   tryBackfillRequestPublicSnapshots,
 } from '@/services/firestoreService';
 import { EquipmentRequest, ChatMessage, PublicUserSnapshot } from '@/types';
+import { useBlockedUsers } from '@/services/blockedUsers';
 
 export default function ChatScreen() {
   const { requestId } = useLocalSearchParams<{ requestId: string }>();
@@ -44,6 +45,18 @@ export default function ChatScreen() {
     const other = request.customerUid === currentUid ? request.providerPublic : request.customerPublic;
     return other ? localizedText(other.nameAr, other.nameEn) : '';
   }, [currentUid, localizedText, request]);
+
+  const otherUid = request ? (request.customerUid === currentUid ? request.providerUid : request.customerUid) : '';
+  const { isBlocked, unblock } = useBlockedUsers(currentUid);
+  const otherBlocked = isBlocked(otherUid);
+  const visibleMessages = useMemo(
+    () => otherBlocked ? messages.filter(item => item.senderUid !== otherUid) : messages,
+    [messages, otherBlocked, otherUid],
+  );
+  const openReport = useCallback(() => {
+    if (!requestId || !otherUid) return;
+    router.push({ pathname: '/report', params: { requestId, subjectUid: otherUid, subjectName: otherUserName } });
+  }, [otherUid, otherUserName, requestId, router]);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
@@ -174,13 +187,19 @@ export default function ChatScreen() {
             <Text style={styles.headerName}>{otherUserName}</Text>
             <Text style={styles.headerStatus}>{isChatActive ? t('chat') : t('chat_closed')}</Text>
           </View>
+          {!!otherUid && (
+            <Pressable style={styles.backBtn} onPress={openReport} accessibilityRole="button"
+              accessibilityLabel={isRTL ? 'الإبلاغ عن المستخدم أو حظره' : 'Report or block user'}>
+              <Flag size={19} color={Colors.textPrimary} />
+            </Pressable>
+          )}
         </View>
       </SafeAreaView>
 
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <FlatList
           ref={flatListRef}
-          data={messages}
+          data={visibleMessages}
           renderItem={renderMessage}
           keyExtractor={item => item.id}
           contentContainerStyle={styles.messagesList}
@@ -195,7 +214,15 @@ export default function ChatScreen() {
         />
 
         <SafeAreaView edges={['bottom']} style={{ backgroundColor: Colors.card }}>
-          {isChatActive ? (
+          {otherBlocked ? (
+            <View style={styles.closedBar}>
+              <Lock size={16} color={Colors.textMuted} />
+              <Text style={styles.closedText}>{isRTL ? 'لقد حظرت هذا المستخدم' : 'You blocked this user'}</Text>
+              <Pressable onPress={() => { void unblock(otherUid); }} accessibilityRole="button" hitSlop={8}>
+                <Text style={styles.olderText}>{isRTL ? 'إلغاء الحظر' : 'Unblock'}</Text>
+              </Pressable>
+            </View>
+          ) : isChatActive ? (
             <View style={[styles.inputBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               <TextInput
                 style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]}
