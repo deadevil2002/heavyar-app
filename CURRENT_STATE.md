@@ -35,7 +35,7 @@ Source: `artifacts/heavyar-mobile/app.json`.
 |---|---|
 | App version | `1.1.1` |
 | Android `versionCode` | `3` |
-| iOS `buildNumber` | `1` |
+| iOS `buildNumber` | `2` |
 
 ## Mobile architecture status
 
@@ -116,7 +116,9 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 - App Store Review audit (Guideline 1.2) closed in source: chat header flag → `/report` (request-scoped reports use the existing `POST /api/compliance/complaints`; listing reports open the support mailbox) and device-local, account-scoped blocking (`services/blockedUsers.ts`) that hides the blocked account's chat messages and discovery listings. No Worker or rules change.
 - A read-only probe on 2026-10-06 confirmed Production Worker answers the compliance routes (`/api/account/deletion-request`, `/api/compliance/*`) with `401 AUTH_REQUIRED`, not `404`.
 - iOS native build: `plugins/withPodsMinimumDeploymentTarget.js` raises pod targets below iOS 15.1, which Xcode 27 otherwise rejects.
-- App Store Connect record `6819252539` (team `KAF2PJ4A8A`, Salem Alnaimi) exists; App Information subtitle, categories (Business/Productivity), and content rights were set. Remaining store metadata, build upload, and submission are not complete.
+- App Store Connect record `6819252539` (team `KAF2PJ4A8A`, Salem Alnaimi). Set on 2026-10-06: subtitle, categories (Business/Productivity), content rights, age rating questionnaire (UGC + messaging yes, all else none), free price, Saudi Arabia-only availability, version `1.1.1` with Arabic description/keywords/support/marketing URLs/copyright, review notes (no credentials), manual release, privacy policy URL, and published App Privacy answers matching `docs/APPLE_PRIVACY_DECLARATION.md`.
+- Build `1.1.1 (2)` was archived locally with Xcode 27 (automatic signing, team `KAF2PJ4A8A`) and uploaded to App Store Connect. An earlier `1.1.1 (1)` upload predates the report/block fixes and must not be submitted. The iOS icon now matches the Android launcher rendering of `adaptive-icon.png`. `babel-preset-expo` is a direct devDependency so native release bundling resolves it under pnpm.
+- Not done: screenshots, Review sign-in credentials and contact details (owner enters them), APNs key for Expo push, attaching the build, and submission.
 - Owner decisions: availability Saudi Arabia only; do not submit for review while Tap is TEST.
 
 ## Known issues and blockers

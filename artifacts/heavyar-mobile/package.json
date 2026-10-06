@@ -69,6 +69,7 @@
     "@firebase/rules-unit-testing": "^3.0.4",
     "@types/react": "~19.1.10",
     "@types/react-dom": "^19.1.11",
+    "babel-preset-expo": "54.0.12",
     "eslint": "^9.31.0",
     "eslint-config-expo": "~10.0.0",
     "firebase-tools": "^15.30.1",
