@@ -35,7 +35,7 @@ Source: `artifacts/heavyar-mobile/app.json`.
 |---|---|
 | App version | `1.1.1` |
 | Android `versionCode` | `3` |
-| iOS `buildNumber` | `2` |
+| iOS `buildNumber` | `3` |
 
 ## Mobile architecture status
 
@@ -117,7 +117,7 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 - A read-only probe on 2026-10-06 confirmed Production Worker answers the compliance routes (`/api/account/deletion-request`, `/api/compliance/*`) with `401 AUTH_REQUIRED`, not `404`.
 - iOS native build: `plugins/withPodsMinimumDeploymentTarget.js` raises pod targets below iOS 15.1, which Xcode 27 otherwise rejects.
 - App Store Connect record `6819252539` (team `KAF2PJ4A8A`, Salem Alnaimi). Set on 2026-10-06: subtitle, categories (Business/Productivity), content rights, age rating questionnaire (UGC + messaging yes, all else none), free price, Saudi Arabia-only availability, version `1.1.1` with Arabic description/keywords/support/marketing URLs/copyright, review notes (no credentials), manual release, privacy policy URL, and published App Privacy answers matching `docs/APPLE_PRIVACY_DECLARATION.md`.
-- Build `1.1.1 (2)` was archived locally with Xcode 27 (automatic signing, team `KAF2PJ4A8A`) and uploaded to App Store Connect. An earlier `1.1.1 (1)` upload predates the report/block fixes and must not be submitted. The iOS icon now matches the Android launcher rendering of `adaptive-icon.png`. `babel-preset-expo` is a direct devDependency so native release bundling resolves it under pnpm.
+- Build `1.1.1 (2)` was archived locally with Xcode 27 (automatic signing, team `KAF2PJ4A8A`) and uploaded to App Store Connect. An earlier `1.1.1 (1)` upload predates the report/block fixes and must not be submitted. On 2026-10-07 both launcher icons were replaced with the owner-supplied excavator artwork (iOS `icon.png`; Android `adaptive-icon.png` fitted inside the adaptive safe zone on `#001A45`), and the iOS `buildNumber` moved to `3` for the rebuilt binary; build `2` carries the previous icon. `babel-preset-expo` is a direct devDependency so native release bundling resolves it under pnpm.
 - Not done: screenshots, Review sign-in credentials and contact details (owner enters them), APNs key for Expo push, attaching the build, and submission.
 - Owner decisions: availability Saudi Arabia only; do not submit for review while Tap is TEST.
 
