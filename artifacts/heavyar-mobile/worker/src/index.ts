@@ -19,6 +19,7 @@ import { mutationDiagnosticEvent, mutationRoute, responseErrorCode, type Mutatio
 import { reserveCloudinaryUploadQuota as reserveCloudinaryUploadQuotaAttempt, type CloudinaryQuotaRecord } from './cloudinary-upload-quota';
 import { evaluateCapabilities, isSaudiTruckRentalWithoutDriver, validateRegulatoryDocumentSubmission, type RegulatoryDocument } from './regulatory';
 import { CURRENT_POLICY_ACCEPTANCE_MODE, INCIDENT_TYPES, LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED, LEGACY_POLICY_ACCEPTANCE_MODE, PRIVACY_REQUEST_TYPES, acceptanceIsCurrent, complaintServiceTargets, policyAcceptanceState, regulatoryDecision, requiredPolicyVersions, safeUserExport, validatePolicyAcceptance } from './compliance';
+import { googleServiceAccountToken as googleToken } from './google-auth';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -171,24 +172,6 @@ async function authenticatedUser(req: Request, env: Env, allowAccountManagement 
     err(profile.accountStatus === 'deletion_requested' ? 'ACCOUNT_DELETION_REQUESTED' : 'ACCOUNT_SUSPENDED');
   }
   return user;
-}
-const googleTokenCache = new Map<string, { token: string; expiresAt: number }>();
-async function googleToken(env: Env, scope = 'https://www.googleapis.com/auth/datastore'): Promise<string> {
-  if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) err('Firestore unavailable');
-  const cacheKey = `${env.FIREBASE_PROJECT_ID}:${env.FIREBASE_CLIENT_EMAIL}:${scope}`;
-  const cached = googleTokenCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
-  const privateKey = env.FIREBASE_PRIVATE_KEY as string;
-  const now = Math.floor(Date.now() / 1000), h = b64u(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
-  const p = b64u(enc.encode(JSON.stringify({ iss: env.FIREBASE_CLIENT_EMAIL, scope, aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })));
-  const key = await crypto.subtle.importKey('pkcs8', b64(privateKey.replace(/\\n/g, '\n').replace(/-----[^-]+-----/g, '').replace(/\s/g, '')), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
-  const jwt = `${h}.${p}.${b64u(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(`${h}.${p}`)))}`;
-  const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}` });
-  if (!r.ok) err('Firestore unavailable');
-  const result = await r.json() as { access_token: string; expires_in?: number };
-  const expiresIn = Math.max(60, Math.min(3600, Number(result.expires_in || 3600)));
-  googleTokenCache.set(cacheKey, { token: result.access_token, expiresAt: Date.now() + expiresIn * 1000 });
-  return result.access_token;
 }
 export async function listFirebaseAuthIdentities(env: Env, limit = 50, pageToken?: string) {
   const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');

@@ -24,6 +24,7 @@ import { driverEligibility, driverDiscoveryMarket } from './driver-eligibility';
 import { effectiveDocumentStatus, regulatoryReviewStatuses } from './regulatory';
 import { normalizeTapEnvironment } from './payment';
 import { canTransitionComplaint, canTransitionIncident, canTransitionPrivacyRequest, canTransitionRefundCase, complaintServiceTargets, normalizeModerationReason, refundMayBeMarkedExecuted, REGULATORY_CATALOGUE, REGULATORY_CATALOG_VERSION, DRIVER_CREDENTIAL_FRAMEWORK } from './compliance';
+import { googleServiceAccountToken as googleToken } from './google-auth';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
@@ -72,22 +73,26 @@ export function evaluateLegacyEquipment(
 }
 
 type RawDoc = { data: any; updateTime?: string; name?: string };
+type BatchGetReference = { collection: string; id: string };
+type AuthDirectoryIdentity = { uid: string; email: string | null; emailVerified: boolean; disabled: boolean; createdAt?: string };
+type AuthDirectoryPage = { identities: AuthDirectoryIdentity[]; nextPageToken: string | null };
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let commitOverride: unknown[][] | undefined;
 let identityOverride: ((uid: string, role: StaffRole | null) => Promise<{ role: StaffRole | null; previousRole: unknown }>) | undefined;
 let verifiedEmailOverride: ((uid: string) => Promise<string | null>) | undefined;
 let queryOverride: ((collection: string, before: string, limit: number, query?: any) => RawDoc[]) | undefined;
+let accountIntegrityDirectoryOverride: ((limit: number, pageToken?: string) => Promise<AuthDirectoryPage>) | undefined;
+let batchGetOverride: ((references: BatchGetReference[]) => Promise<any[]>) | undefined;
 export const __adminTest = {
   setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; },
   captureCommits(target?: unknown[][]) { commitOverride = target; },
   setIdentity(fn?: (uid: string, role: StaffRole | null) => Promise<{ role: StaffRole | null; previousRole: unknown }>) { identityOverride = fn; },
   setVerifiedEmail(fn?: (uid: string) => Promise<string | null>) { verifiedEmailOverride = fn; },
   setQuery(fn?: (collection: string, before: string, limit: number, query?: any) => RawDoc[]) { queryOverride = fn; },
+  setAccountIntegrityDirectory(fn?: (limit: number, pageToken?: string) => Promise<AuthDirectoryPage>) { accountIntegrityDirectoryOverride = fn; },
+  setBatchGet(fn?: (references: BatchGetReference[]) => Promise<any[]>) { batchGetOverride = fn; },
 };
 
-const enc = new TextEncoder();
-const b64u = (v: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(v))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 const jsonValue = (value: unknown): any => {
   if (value === null) return { nullValue: null };
   if (typeof value === 'boolean') return { booleanValue: value };
@@ -97,22 +102,12 @@ const jsonValue = (value: unknown): any => {
   if (value && typeof value === 'object') return { mapValue: { fields: Object.fromEntries(Object.entries(value).map(([k, v]) => [k, jsonValue(v)])) } };
   return { nullValue: null };
 };
+const enc = new TextEncoder();
+const b64u = (value: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const decodeValue = (v: any): any => v?.stringValue ?? (v?.integerValue !== undefined ? Number(v.integerValue) : undefined) ?? v?.doubleValue ?? v?.booleanValue ?? v?.timestampValue ?? (v?.nullValue !== undefined ? null : v?.arrayValue ? (v.arrayValue.values || []).map(decodeValue) : v?.mapValue ? decode(v.mapValue) : undefined);
 const decode = (d: any) => Object.fromEntries(Object.entries(d?.fields || {}).map(([k, v]) => [k, decodeValue(v)]));
 const fullName = (env: Env, path: string) => `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/${path}`;
 const firestoreUrl = (env: Env, path: string) => `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/${path.startsWith(':') ? `documents${path}` : `documents/${path}`}`;
-
-async function googleToken(env: Env, scope = 'https://www.googleapis.com/auth/datastore') {
-  if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) throw new Error('Firestore unavailable');
-  const now = Math.floor(Date.now() / 1000);
-  const header = b64u(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
-  const payload = b64u(enc.encode(JSON.stringify({ iss: env.FIREBASE_CLIENT_EMAIL, scope, aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })));
-  const key = await crypto.subtle.importKey('pkcs8', b64(env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/-----[^-]+-----/g, '').replace(/\s/g, '')), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
-  const assertion = `${header}.${payload}.${b64u(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(`${header}.${payload}`)))}`;
-  const response = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${assertion}` });
-  if (!response.ok) throw new Error('Identity service unavailable');
-  return (await response.json() as { access_token: string }).access_token;
-}
 
 class FirestoreConflictError extends Error {}
 
@@ -136,6 +131,47 @@ async function rawDoc(env: Env, collection: string, id: string): Promise<RawDoc 
   }
   const response = await fs(env, `${collection}/${encodeURIComponent(id)}`);
   return response ? { data: decode(response), updateTime: response.updateTime, name: response.name } : null;
+}
+
+const MAX_BATCH_GET_DOCUMENTS = 100;
+class AccountIntegrityStorageError extends Error {}
+function safeBatchReference(reference: BatchGetReference) {
+  return /^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(reference.collection)
+    && typeof reference.id === 'string'
+    && reference.id.length > 0
+    && reference.id.length <= 128
+    && !/[\/\u0000-\u001f\u007f]/.test(reference.id);
+}
+async function batchGetRawDocs(env: Env, references: BatchGetReference[]): Promise<Map<string, RawDoc>> {
+  if (references.length > MAX_BATCH_GET_DOCUMENTS || references.some(reference => !safeBatchReference(reference))) {
+    throw new Error('Invalid internal batchGet references');
+  }
+  const unique = [...new Map(references.map(reference => [fullName(env, `${reference.collection}/${reference.id}`), reference])).entries()];
+  if (!unique.length) return new Map();
+  try {
+    let rows: any[] = [];
+    if (batchGetOverride) rows = await batchGetOverride(unique.map(([, reference]) => reference));
+    else if (firestoreOverride) {
+      rows = unique.map(([name, reference]): any => {
+        const data = firestoreOverride?.(reference.collection, reference.id);
+        return data ? { found: { name, updateTime: 'test-update-time', fields: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, jsonValue(value)])) } } : { missing: name };
+      });
+    } else {
+      const requested = new Set(unique.map(([name]) => name));
+      rows = await fs(env, ':batchGet', { method: 'POST', body: JSON.stringify({ documents: [...requested] }) }) as any[] || [];
+    }
+    const requested = new Set(unique.map(([name]) => name));
+    const found = new Map<string, RawDoc>();
+    for (const row of rows) {
+      const name = row?.found?.name;
+      if (typeof name === 'string' && requested.has(name)) {
+        found.set(name, { data: decode(row.found), updateTime: row.found.updateTime, name });
+      }
+    }
+    return found;
+  } catch {
+    throw new AccountIntegrityStorageError();
+  }
 }
 
 type ResendWebhookEvent = {
@@ -2705,6 +2741,7 @@ async function provisionStoreReviewAccount(req: Request, env: Env, user: AdminUs
 
 export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const url = new URL(req.url);
+  const accountIntegrityRequest = url.pathname === '/api/admin/account-integrity' && req.method === 'GET';
   // This route is intentionally before requireAdmin: an invited customer or a
   // newly created Firebase user is not staff until this atomic acceptance.
   if ((url.pathname === '/api/admin/staff/invitations/accept' || url.pathname === '/api/staff/invitations/accept') && req.method === 'POST') {
@@ -2713,7 +2750,12 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   if ((url.pathname === '/api/admin/ownership/accept' || url.pathname === '/api/ownership/accept') && req.method === 'POST') {
     return ownership(req, env, user, 'accept');
   }
-  const staff = user.testInjected ? null : await rawDoc(env, 'staffMembers', user.uid);
+  let staff: RawDoc | null;
+  try { staff = user.testInjected ? null : await rawDoc(env, 'staffMembers', user.uid); }
+  catch (error) {
+    if (accountIntegrityRequest) return { error: 'Account integrity storage unavailable', errorCode: 'ACCOUNT_INTEGRITY_STORAGE_UNAVAILABLE', status: 503 };
+    throw error;
+  }
   const bootstrapCandidate = !staff?.data
     && ['/api/admin/session', '/api/admin/owner-bootstrap'].includes(url.pathname)
     && (user.role === 'super_admin' || user.permissionRole === 'super_admin');
@@ -2721,32 +2763,52 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   const bootstrapException = bootstrapCandidate && !bootstrapConfig?.data?.ownerUid;
   if (!bootstrapException) authorizeResolvedAdmin(user, user.testInjected ? undefined : staff);
   else requireVerifiedAdmin(user);
-  if (url.pathname === '/api/admin/account-integrity' && req.method === 'GET') {
+  if (accountIntegrityRequest) {
+    const startedAt = Date.now();
     const role = normalizeStaffRole(user.permissionRole || user.role);
     if (role !== 'owner' && role !== 'super_admin') return { error: 'Owner or super-admin integrity permission required', status: 403 };
-    const rawLimit = Number(url.searchParams.get('limit') || 20);
-    const limit = Math.min(20, Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 20));
+    const limitValue = url.searchParams.get('limit');
+    const rawLimit = Number(limitValue || 20);
     const query = String(url.searchParams.get('q') || '').trim().toLowerCase();
     const registrationState = String(url.searchParams.get('registrationState') || '');
-    let directory;
-    try { directory = await listFirebaseAuthIdentities(env, limit, url.searchParams.get('pageToken') || undefined); }
-    catch { return { error: 'Account integrity directory unavailable', errorCode: 'AUTH_DIRECTORY_UNAVAILABLE', status: 503 }; }
+    const pageToken = url.searchParams.get('pageToken') || undefined;
+    if ((limitValue !== null && (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 20))
+      || query.length > 200 || /[\u0000-\u001f\u007f]/.test(query)
+      || (registrationState !== '' && !['complete', 'incomplete'].includes(registrationState))
+      || (pageToken !== undefined && (pageToken.length > 4096 || /[\u0000-\u001f\u007f]/.test(pageToken)))) {
+      return { error: 'Invalid account integrity request', errorCode: 'ACCOUNT_INTEGRITY_INVALID_REQUEST', status: 400 };
+    }
+    const limit = rawLimit;
+    let directory: AuthDirectoryPage;
+    try { directory = accountIntegrityDirectoryOverride ? await accountIntegrityDirectoryOverride(limit, pageToken) : await listFirebaseAuthIdentities(env, limit, pageToken); }
+    catch { return { error: 'Account integrity directory unavailable', errorCode: 'ACCOUNT_INTEGRITY_AUTH_DIRECTORY_UNAVAILABLE', status: 503 }; }
+    const identities = directory.identities.slice(0, limit);
+    const references: BatchGetReference[] = identities.flatMap(identity => [
+      { collection: 'users', id: identity.uid },
+      { collection: 'driverProfiles', id: identity.uid },
+      { collection: 'providerProfiles', id: identity.uid },
+    ]);
+    let documents: Map<string, RawDoc>;
+    try { documents = await batchGetRawDocs(env, references); }
+    catch (error) {
+      if (error instanceof AccountIntegrityStorageError) return { error: 'Account integrity storage unavailable', errorCode: 'ACCOUNT_INTEGRITY_STORAGE_UNAVAILABLE', status: 503 };
+      throw error;
+    }
+    const document = (collection: string, uid: string) => documents.get(fullName(env, `${collection}/${uid}`)) || null;
     const items = [];
-    for (const identity of directory.identities) {
-      const profile = await rawDoc(env, 'users', identity.uid);
-      const [driverProfile, providerProfile] = await Promise.all([
-        rawDoc(env, 'driverProfiles', identity.uid),
-        rawDoc(env, 'providerProfiles', identity.uid),
-      ]);
+    for (const identity of identities) {
+      const profile = document('users', identity.uid);
+      const driverProfile = document('driverProfiles', identity.uid);
+      const providerProfile = document('providerProfiles', identity.uid);
       const roleProfile = profile?.data?.role === 'driver' ? driverProfile : null;
-      const completeness = evaluateCanonicalCompleteness(identity, profile?.data || null, roleProfile?.data || null);
+      const completeness = evaluateCanonicalCompleteness({ uid: identity.uid, email: identity.email || undefined }, profile?.data || null, roleProfile?.data || null);
       const state = completeness.state === 'authenticated_complete' ? 'complete' : 'incomplete';
       if (registrationState && registrationState !== state) continue;
       const displayName = String(profile?.data?.nameEn || profile?.data?.nameAr || '');
       if (query && !String(identity.email || '').toLowerCase().includes(query) && !identity.uid.toLowerCase().includes(query) && !displayName.toLowerCase().includes(query)) continue;
       items.push({
         id: identity.uid,
-        email: identity.email,
+        email: identity.email || undefined,
         displayName,
         emailVerified: identity.emailVerified,
         registrationState: state,
@@ -2761,6 +2823,13 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
         updatedAt: profile?.data?.updatedAt,
       });
     }
+    console.log(JSON.stringify({
+      event: 'account_integrity_read_budget',
+      authDirectoryCalls: 1,
+      profileFirestoreRequests: references.length ? 1 : 0,
+      profileDocumentsRequested: references.length,
+      durationMs: Date.now() - startedAt,
+    }));
     return { success: true, bounded: true, limit, maxLimit: 20, items, nextCursor: directory.nextPageToken };
   }
   if (url.pathname.startsWith('/api/admin/early-access/')) {

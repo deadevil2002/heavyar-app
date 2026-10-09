@@ -159,6 +159,14 @@
       ]
     },
     {
+      "collectionGroup": "staffClaimSync",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "nextAttemptAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "notificationDeliveries",
       "queryScope": "COLLECTION",
       "fields": [

@@ -1,5 +1,5 @@
 export type MarketplaceRole = 'customer' | 'provider' | 'driver';
-export type RegistrationState = 'incomplete' | 'complete' | 'unknown';
+export type RegistrationState = 'incomplete' | 'complete';
 
 export type IncompleteRegistration = {
   id: string;
@@ -28,6 +28,10 @@ export type IncompleteRegistrationsResponse = {
 
 export const ACCOUNT_INTEGRITY_MAX_PAGE_SIZE = 20;
 export const ACCOUNT_INTEGRITY_ENDPOINT = '/account-integrity';
+export const ACCOUNT_INTEGRITY_UNAVAILABLE_MESSAGE = {
+  ar: 'تعذر تحميل بيانات سلامة الحسابات مؤقتًا. حاول مرة أخرى.',
+  en: 'Account integrity data is temporarily unavailable. Please retry.',
+} as const;
 
 const ROLE_LABELS: Record<MarketplaceRole, { ar: string; en: string }> = {
   customer: { ar: 'عميل', en: 'Customer' },
@@ -45,7 +49,7 @@ export function normalizeIntegrityParams(params: { q?: string; state?: string; l
     limit: String(Math.min(Math.max(Math.floor(params.limit || ACCOUNT_INTEGRITY_MAX_PAGE_SIZE), 1), ACCOUNT_INTEGRITY_MAX_PAGE_SIZE)),
   };
   if (params.q?.trim()) normalized.q = params.q.trim();
-  if (params.state && ['incomplete', 'complete', 'unknown'].includes(params.state)) normalized.registrationState = params.state;
+  if (params.state && ['incomplete', 'complete'].includes(params.state)) normalized.registrationState = params.state;
   if (params.cursor) normalized.pageToken = params.cursor;
   return normalized;
 }

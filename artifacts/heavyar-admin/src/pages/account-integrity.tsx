@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { Link } from 'wouter';
-import { Eye, Loader2, ShieldAlert } from 'lucide-react';
+import { Eye, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 import { useAdminSession, useAccountIntegrity } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
 import { canViewAccountIntegrity } from '@/lib/permissions';
-import { marketplaceRoleLabel, safeMissingFields, type IncompleteRegistration } from '@/lib/account-integrity';
+import { ACCOUNT_INTEGRITY_UNAVAILABLE_MESSAGE, marketplaceRoleLabel, safeMissingFields, type IncompleteRegistration } from '@/lib/account-integrity';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -21,7 +21,7 @@ export default function AccountIntegrity() {
   const [history, setHistory] = useState<string[]>([]);
   const [selected, setSelected] = useState<IncompleteRegistration | null>(null);
   const allowed = canViewAccountIntegrity(session?.role);
-  const { data, isLoading, error } = useAccountIntegrity({ q: search, state, cursor, enabled: allowed });
+  const { data, isLoading, isFetching, error, refetch } = useAccountIntegrity({ q: search, state, cursor, enabled: allowed });
 
   const next = () => {
     if (!data?.nextCursor) return;
@@ -84,11 +84,16 @@ export default function AccountIntegrity() {
             >
               <option value="">{t('كل الحالات', 'All states')}</option>
               <option value="incomplete">{t('غير مكتمل', 'Incomplete')}</option>
-              <option value="unknown">{t('غير معروف', 'Unknown')}</option>
+              <option value="complete">{t('مكتمل', 'Complete')}</option>
             </select>
           </div>
-          {error && <p role="alert" data-testid="status-account-integrity-error" className="text-destructive">{t('تعذر تحميل بيانات سلامة الحسابات.', 'Could not load account integrity data.')}</p>}
-          {isLoading ? (
+          {error && <div role="alert" data-testid="status-account-integrity-error" className="flex flex-wrap items-center gap-3 text-destructive">
+            <p>{ACCOUNT_INTEGRITY_UNAVAILABLE_MESSAGE[language]}</p>
+            <Button type="button" variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+              <RefreshCw className={`me-2 h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />{t('إعادة المحاولة', 'Retry')}
+            </Button>
+          </div>}
+          {!error && (isLoading ? (
             <div className="py-10 text-center text-muted-foreground"><Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" />{t('جاري التحميل…', 'Loading…')}</div>
           ) : !data?.items?.length ? (
             <div data-testid="status-account-integrity-empty" className="rounded-md border border-dashed p-8 text-center text-muted-foreground">{t('لا توجد تسجيلات مطابقة.', 'No matching registrations.')}</div>
@@ -108,7 +113,7 @@ export default function AccountIntegrity() {
                     return <tr key={item.id} data-testid={`row-account-integrity-${item.id}`} className="border-b last:border-0">
                       <td className="p-3"><div className="font-medium">{item.displayName || '—'}</div><div dir="ltr" className="text-xs text-muted-foreground">{item.email || '—'}</div></td>
                       <td className="p-3">{marketplaceRoleLabel(item.role, language)}</td>
-                      <td className="p-3"><Badge variant={item.registrationState === 'incomplete' ? 'destructive' : 'secondary'}>{item.registrationState === 'incomplete' ? t('غير مكتمل', 'Incomplete') : t('غير معروف', 'Unknown')}</Badge></td>
+                      <td className="p-3"><Badge variant={item.registrationState === 'incomplete' ? 'destructive' : 'secondary'}>{item.registrationState === 'incomplete' ? t('غير مكتمل', 'Incomplete') : t('مكتمل', 'Complete')}</Badge></td>
                       <td className="p-3 text-muted-foreground">{missing.length ? missing.join(', ') : t('غير محددة', 'Not specified')}</td>
                       <td className="p-3 text-end"><Button data-testid={`button-inspect-account-integrity-${item.id}`} type="button" variant="outline" size="sm" onClick={() => setSelected(item)}><Eye className="me-2 h-4 w-4" />{t('فحص', 'Inspect')}</Button></td>
                     </tr>;
@@ -116,7 +121,7 @@ export default function AccountIntegrity() {
                 </tbody>
               </table>
             </div>
-          )}
+          ))}
           <div className="flex justify-end gap-2">
             <Button data-testid="button-account-integrity-previous" variant="outline" size="sm" onClick={previous} disabled={!history.length}>{t('السابق', 'Previous')}</Button>
             <Button data-testid="button-account-integrity-next" variant="outline" size="sm" onClick={next} disabled={!data?.nextCursor}>{t('التالي', 'Next')}</Button>
@@ -131,7 +136,7 @@ export default function AccountIntegrity() {
         fields={[
           { label: t('البريد', 'Email'), value: selected.email },
           { label: t('الدور', 'Role'), value: marketplaceRoleLabel(selected.role, language) },
-          { label: t('الحالة', 'State'), value: selected.registrationState === 'incomplete' ? t('غير مكتمل', 'Incomplete') : t('غير معروف', 'Unknown') },
+          { label: t('الحالة', 'State'), value: selected.registrationState === 'incomplete' ? t('غير مكتمل', 'Incomplete') : t('مكتمل', 'Complete') },
           { label: t('الحقول الناقصة', 'Missing fields'), value: safeMissingFields(selected.missingFields).join(', ') || t('غير محددة', 'Not specified') },
           { label: t('حالة البريد', 'Email status'), value: selected.emailVerified ? t('موثق', 'Verified') : t('غير موثق', 'Unverified') },
           { label: t('تاريخ الإنشاء', 'Created'), value: selected.createdAt },

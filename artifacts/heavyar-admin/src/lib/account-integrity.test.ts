@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACCOUNT_INTEGRITY_MAX_PAGE_SIZE,
   ACCOUNT_INTEGRITY_ENDPOINT,
+  ACCOUNT_INTEGRITY_UNAVAILABLE_MESSAGE,
   marketplaceRoleLabel,
   normalizeIntegrityParams,
   safeMissingFields,
@@ -15,6 +16,8 @@ describe('account integrity contract', () => {
     expect(marketplaceRoleLabel('driver', 'ar')).toBe('سائق');
     expect(marketplaceRoleLabel('not-a-role', 'ar')).toBe('غير معروف');
     expect(marketplaceRoleLabel('customer', 'en')).toBe('Customer');
+    expect(ACCOUNT_INTEGRITY_UNAVAILABLE_MESSAGE.ar).toBe('تعذر تحميل بيانات سلامة الحسابات مؤقتًا. حاول مرة أخرى.');
+    expect(ACCOUNT_INTEGRITY_UNAVAILABLE_MESSAGE.en).toBe('Account integrity data is temporarily unavailable. Please retry.');
   });
 
   it('caps pages and only forwards known filters', () => {
@@ -30,6 +33,10 @@ describe('account integrity contract', () => {
       limit: String(ACCOUNT_INTEGRITY_MAX_PAGE_SIZE),
       pageToken: 'next',
     });
+    expect(normalizeIntegrityParams({ state: 'unknown' })).toEqual({
+      limit: String(ACCOUNT_INTEGRITY_MAX_PAGE_SIZE),
+    });
+    expect(normalizeIntegrityParams({ state: 'complete' }).registrationState).toBe('complete');
   });
 
   it('bounds missing-state metadata', () => {
