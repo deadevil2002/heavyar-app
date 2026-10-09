@@ -67,6 +67,11 @@ function fixture(options = {}) {
     '@/constants/worker': { WORKER_BASE_URL: 'https://fixture.invalid' },
     'react-native': { Platform: { OS: 'android' } },
     './mutationError': mutation,
+    '@/utils/mobilePerformance': { mobilePerformance: {
+      trackNetwork: (_label, operation) => operation(),
+      readResponseText: response => response.text(),
+      parseJson: text => { try { return JSON.parse(text); } catch { return null; } },
+    } },
   });
   return { ...media, state, auth };
 }

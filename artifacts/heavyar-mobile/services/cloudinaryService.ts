@@ -2,6 +2,7 @@ import { getFirebaseAuth } from './firebaseConfig';
 import { WORKER_BASE_URL } from '@/constants/worker';
 import { Platform } from 'react-native';
 import { MutationError } from './mutationError';
+import { mobilePerformance } from '@/utils/mobilePerformance';
 
 const UPLOAD_FOLDER = 'heavyar';
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -78,30 +79,42 @@ export async function uploadImageToCloudinary(
   try { token = await user.getIdToken(); }
   catch { throw new MutationError('AUTH_TOKEN_UNAVAILABLE'); }
   if (!token) throw new MutationError('AUTH_REQUIRED', 401);
+  const uploadLabel = 'worker.cloudinary.upload';
   const send = (authToken: string) => {
     assertSession();
-    return boundedFetch(`${WORKER_BASE_URL}/cloudinary/upload`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${authToken}` },
-    body: formData,
-    }, 45_000);
+    return mobilePerformance.trackNetwork(uploadLabel, async () => {
+      const response = await boundedFetch(`${WORKER_BASE_URL}/cloudinary/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+        body: formData,
+      }, 45_000);
+      return { response, text: await mobilePerformance.readResponseText(response, uploadLabel) };
+    });
   };
-  let response: Response;
+  let exchange: { response: Response; text: string };
   try {
-    response = await send(token);
+    exchange = await send(token);
     assertSession();
-    if (response.status === 401) response = await send(await user.getIdToken(true));
+    if (exchange.response.status === 401) exchange = await send(await user.getIdToken(true));
     assertSession();
   } catch (error) {
     if (error instanceof MutationError) throw error;
     throw new MutationError('UPLOAD_NETWORK_UNAVAILABLE');
   }
+  const { response } = exchange;
+  const body = mobilePerformance.parseJson<{
+    success?: boolean;
+    errorCode?: unknown;
+    supportCode?: unknown;
+    url?: unknown;
+    publicId?: unknown;
+    data?: { url?: unknown; publicId?: unknown };
+  }>(exchange.text, uploadLabel) || {};
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
     assertSession();
-    throw new MutationError(typeof body.errorCode === 'string' ? body.errorCode : 'UPLOAD_FAILED', response.status, response.headers.get('X-Request-ID') || body.supportCode);
+    const supportCode = typeof body.supportCode === 'string' ? body.supportCode : undefined;
+    throw new MutationError(typeof body.errorCode === 'string' ? body.errorCode : 'UPLOAD_FAILED', response.status, response.headers.get('X-Request-ID') || supportCode);
   }
-  const body = await response.json().catch(() => ({})) as { success?: boolean; url?: unknown; publicId?: unknown; data?: { url?: unknown; publicId?: unknown } };
   assertSession();
   const data = body.data || body;
   const url = typeof data.url === 'string' ? data.url : '';
@@ -181,21 +194,23 @@ export async function deleteCloudinaryImage(publicId: string, expectedUid?: stri
     // Token acquisition can yield to sign-out/account switching. Never send a
     // rollback authorized by the next session, even if cleanup already started.
     if (!token || auth.currentUser?.uid !== user.uid) return false;
-    const response = await boundedFetch(`${WORKER_BASE_URL}/cloudinary/delete`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ publicId }),
+    const label = 'worker.cloudinary.delete';
+    const exchange = await mobilePerformance.trackNetwork(label, async () => {
+      const response = await boundedFetch(`${WORKER_BASE_URL}/cloudinary/delete`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ publicId }),
+      });
+      return { response, text: await mobilePerformance.readResponseText(response, label) };
     });
+    const { response } = exchange;
 
-    if (!response.ok) {
-      await response.text();
-      return false;
-    }
+    if (!response.ok) return false;
 
-    const result = await response.json();
+    const result = mobilePerformance.parseJson<{ success?: unknown }>(exchange.text, label);
     return Boolean(result?.success);
   } catch {
     return false;

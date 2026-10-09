@@ -16,10 +16,16 @@ async function publicRequest<T>(path: string, signal?: AbortSignal): Promise<T> 
   signal?.addEventListener('abort', abort, { once: true });
   const timeout = setTimeout(() => controller.abort(), 15_000);
   try {
-    const response = await mobilePerformance.trackNetwork('worker.api.equipment.search', () =>
-      fetch(`${WORKER_BASE_URL}${path}`, { signal: controller.signal }),
-    );
-    const body = await response.json().catch(() => null) as (T & { success?: boolean; errorCode?: string }) | null;
+    const label = path.startsWith('/api/equipment/search?id=')
+      ? 'worker.api.equipment.detail'
+      : 'worker.api.equipment.search';
+    const exchange = await mobilePerformance.trackNetwork(label, async () => {
+      const response = await fetch(`${WORKER_BASE_URL}${path}`, { signal: controller.signal });
+      return { response, text: await mobilePerformance.readResponseText(response, label) };
+    });
+    const { response } = exchange;
+    let body: (T & { success?: boolean; errorCode?: string }) | null = null;
+    try { body = mobilePerformance.parseJson(exchange.text, label); } catch { /* handled below */ }
     if (!response.ok || body?.success !== true) {
       const error = new Error(body?.errorCode || 'EQUIPMENT_SEARCH_UNAVAILABLE') as Error & { status?: number };
       error.status = response.status;

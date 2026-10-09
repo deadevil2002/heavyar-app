@@ -26,6 +26,11 @@ function service(auth = { currentUser: { uid: 'qa', getIdToken: async (_force?: 
     '@/constants/worker': { WORKER_BASE_URL: 'https://worker.test' },
     'react-native': { Platform: { OS: 'android' } },
     './mutationError': { MutationError },
+    '@/utils/mobilePerformance': { mobilePerformance: {
+      trackNetwork: (_label: string, operation: () => Promise<unknown>) => operation(),
+      readResponseText: (response: Response) => response.text(),
+      parseJson: (text: string) => { try { return JSON.parse(text); } catch { return null; } },
+    } },
   }[id]), exports);
   return exports;
 }

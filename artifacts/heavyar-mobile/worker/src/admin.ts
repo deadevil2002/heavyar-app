@@ -930,8 +930,18 @@ async function migrateLegacyEquipment(req: Request, env: Env, user: AdminUser) {
   const page = await listCollection(env, 'equipment', {}, limit, typeof body.cursor === 'string' ? body.cursor : null);
   const results: any[] = [];
   const writes: any[] = [];
+  const listingIds = page.items.map(item => String(item.id));
+  const listingDocuments = await batchGetRawDocsInChunks(env, listingIds.map(id => ({ collection: 'equipment', id })));
+  const listings = page.items.map((item, index) => listingDocuments.get(fullName(env, `equipment/${listingIds[index]}`))?.data || item);
+  const ownerIds = [...new Set(listings.map(listing => String(listing.ownerUid || listing.providerUid || '')).filter(Boolean))];
+  const ownerDocuments = await batchGetRawDocsInChunks(env, ownerIds.map(id => ({ collection: 'users', id })));
+  const countryCodes = [...new Set(listings.map(listing => {
+    const ownerUid = String(listing.ownerUid || listing.providerUid || '');
+    return String(listing.countryCode || ownerDocuments.get(fullName(env, `users/${ownerUid}`))?.data?.countryCode || 'SA').toUpperCase();
+  }))];
+  const countryDocuments = await batchGetRawDocsInChunks(env, countryCodes.map(id => ({ collection: 'countryConfigs', id })));
   for (const item of page.items) {
-    const id = String(item.id), raw = await rawDoc(env, 'equipment', id), listing = raw?.data || item;
+    const id = String(item.id), raw = listingDocuments.get(fullName(env, `equipment/${id}`)), listing = raw?.data || item;
     let history: { items: any[] };
     try {
       history = await listCollection(env, 'listingAudit', { listingId: id }, 50, null);
@@ -940,9 +950,9 @@ async function migrateLegacyEquipment(req: Request, env: Env, user: AdminUser) {
       continue;
     }
     const ownerUid = String(listing.ownerUid || listing.providerUid || '');
-    const owner = ownerUid ? await rawDoc(env, 'users', ownerUid) : null;
+    const owner = ownerUid ? ownerDocuments.get(fullName(env, `users/${ownerUid}`)) : null;
     const countryCode = String(listing.countryCode || owner?.data?.countryCode || 'SA').toUpperCase();
-    const country = await rawDoc(env, 'countryConfigs', countryCode);
+    const country = countryDocuments.get(fullName(env, `countryConfigs/${countryCode}`));
     const evaluation = evaluateLegacyEquipment(listing, owner?.data || null, country?.data || null, history.items || []);
     const reviewOwned = isStoreReviewAccount(listing) || isStoreReviewAccount(owner?.data);
     const { eligible, needsMigration, reasons: evaluatedReasons } = evaluation;
@@ -1091,10 +1101,17 @@ async function emailVerificationReminder(req: Request, env: Env, user: AdminUser
   if (!can(user, 'support.manage') && !can(user, 'config.manage')) return { error: 'Support permission required', status: 403 };
   const body: any = await req.json().catch(() => ({})), uid = String(body?.uid || '').trim();
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(uid)) return { error: 'Invalid user', status: 400 };
-  const person = await rawDoc(env, 'users', uid);
+  const documents = await batchGetRawDocs(env, [
+    { collection: 'users', id: uid },
+    { collection: 'emailVerificationRateLimits', id: uid },
+    { collection: 'emailVerificationPolicies', id: 'default' },
+  ]);
+  const person = documents.get(fullName(env, `users/${uid}`));
   const email = String(person?.data?.email || person?.data?.emailLower || '').trim().toLowerCase();
   if (!person?.data || !email) return { error: 'User not found', status: 404 };
-  const rate = await rawDoc(env, 'emailVerificationRateLimits', uid), policy = await rawDoc(env, 'emailVerificationPolicies', 'default'), cooldownSeconds = Math.min(604800, Math.max(300, Number(policy?.data?.reminderCooldownSeconds) || 86400)), now = Date.now();
+  const rate = documents.get(fullName(env, `emailVerificationRateLimits/${uid}`));
+  const policy = documents.get(fullName(env, 'emailVerificationPolicies/default'));
+  const cooldownSeconds = Math.min(604800, Math.max(300, Number(policy?.data?.reminderCooldownSeconds) || 86400)), now = Date.now();
   const eligibility = reminderEligibility(person.data, rate?.data, policy?.data, now);
   if (eligibility === 'alreadyVerified') return { success: true, alreadyVerified: true };
   if (eligibility === 'restricted') return { error: 'User is restricted', status: 409 };
@@ -1196,10 +1213,14 @@ async function reminderTargets(env: Env, body: any) {
 }
 async function reminderSummary(env: Env, ids: string[]) {
   const summary = { targeted: ids.length, eligible: 0, alreadyVerified: 0, cooldown: 0, restricted: 0, missing: 0 };
+  const documents = await batchGetRawDocsInChunks(env, [
+    { collection: 'emailVerificationPolicies', id: 'default' },
+    ...ids.flatMap(uid => [{ collection: 'users', id: uid }, { collection: 'emailVerificationRateLimits', id: uid }]),
+  ]);
+  const policy = documents.get(fullName(env, 'emailVerificationPolicies/default'));
   for (const uid of ids) {
-    const person = await rawDoc(env, 'users', uid);
-    const rate = await rawDoc(env, 'emailVerificationRateLimits', uid);
-    const policy = await rawDoc(env, 'emailVerificationPolicies', 'default');
+    const person = documents.get(fullName(env, `users/${uid}`));
+    const rate = documents.get(fullName(env, `emailVerificationRateLimits/${uid}`));
     const state = reminderEligibility(person?.data, rate?.data, policy?.data, Date.now());
     if (state === 'missing') summary.missing++;
     else if (state === 'alreadyVerified') summary.alreadyVerified++;
@@ -1230,29 +1251,68 @@ async function bulkEmailVerificationReminder(req: Request, env: Env, user: Admin
   if (policy?.data?.allowReminders === false) return { error: 'Verification reminders disabled', status: 409 };
   const body: any = await req.json().catch(() => ({}));
   let ids: string[]; try { ids = await reminderTargets(env, body); } catch (error) { return { error: error instanceof Error ? error.message : 'Invalid request', status: (error as any)?.status || 400, ...(error as any)?.code ? { errorCode: (error as any).code } : {} }; }
+  const serializedTargets = enc.encode(JSON.stringify(ids));
+  if (serializedTargets.byteLength > 750_000) return { error: 'Too many targets; narrow the selection', status: 413, errorCode: 'too_many_targets' };
   const counts = { targeted: ids.length, sent: 0, skippedVerified: 0, skippedCooldown: 0, skippedRestricted: 0, missing: 0, failed: 0 };
-  const results: any[] = [];
-  for (const uid of ids) {
-    const person = await rawDoc(env, 'users', uid);
-    const rate = await rawDoc(env, 'emailVerificationRateLimits', uid), policy = await rawDoc(env, 'emailVerificationPolicies', 'default');
-    const eligibility = reminderEligibility(person?.data, rate?.data, policy?.data, Date.now());
-    if (eligibility === 'missing') { counts.missing++; results.push({ uid, status: 'missing' }); continue; }
-    if (eligibility === 'alreadyVerified') { counts.skippedVerified++; results.push({ uid, status: 'alreadyVerified' }); continue; }
-    if (eligibility === 'restricted') {
-      counts.skippedRestricted++; results.push({ uid, status: 'restricted' }); continue;
-    }
+  const jobId = crypto.randomUUID(), now = new Date().toISOString();
+  const actorRole = normalizeStaffRole(user.permissionRole || user.role);
+  if (!actorRole) return { error: 'Support permission required', status: 403 };
+  await commit(env, [
+    { update: { name: fullName(env, `emailVerificationReminderJobs/${jobId}`), fields: Object.fromEntries(Object.entries({
+      status: 'queued', uids: ids, cursor: 0, counts, actorUid: user.uid, actorRole,
+      createdAt: now, updatedAt: now, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(),
+    }).map(([key, value]) => [key, jsonValue(value)])) }, currentDocument: { exists: false } },
+    await auditWrite(env, user, 'email_verification_reminder_bulk_queued', 'emailVerificationReminderJob', jobId, crypto.randomUUID(), 'bulk verification reminders queued', undefined, { targeted: ids.length }),
+  ]);
+  env.__executionCtx?.waitUntil(processEmailVerificationReminderJobs(env));
+  return { success: true, queued: true, jobId, ...counts };
+}
+
+export async function processEmailVerificationReminderJobs(env: Env) {
+  const query = { from: [{ collectionId: 'emailVerificationReminderJobs' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['queued', 'processing'].map(jsonValue) } } } }, limit: 5 };
+  const rows = queryOverride
+    ? queryOverride('emailVerificationReminderJobs', '', 5, query).slice(0, 5).map(row => ({ document: { name: row.name, updateTime: row.updateTime, fields: Object.fromEntries(Object.entries(row.data || {}).map(([key, value]) => [key, jsonValue(value)])) } }))
+    : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: query }) }) as any[] || [];
+  for (const row of rows.filter((item: any) => item.document?.name && item.document?.updateTime)) {
+    const jobId = String(row.document.name).split('/').pop() || '', job = decode(row.document);
+    const leaseUntil = Date.parse(String(job.leaseUntil || ''));
+    if (!jobId || (Number.isFinite(leaseUntil) && leaseUntil > Date.now())) continue;
+    const leaseToken = crypto.randomUUID(), now = new Date().toISOString();
     try {
-      const result = await emailVerificationReminder(new Request(req.url, { method: 'POST', body: JSON.stringify({ uid }), headers: { 'Content-Type': 'application/json' } }), env, user);
-       if ((result as any).delivered || (result as any).accepted) { counts.sent++; results.push({ uid, status: (result as any).delivered ? 'sent' : 'accepted' }); }
-      else if ((result as any).status === 429) { counts.skippedCooldown++; results.push({ uid, status: 'cooldown' }); }
-      else { counts.failed++; results.push({ uid, status: (result as any).error || 'failed' }); }
-    } catch (error) {
-      counts.failed++;
-      results.push({ uid, status: 'failed' });
+      await commit(env, [{ update: { name: row.document.name, fields: {
+        status: jsonValue('processing'), leaseToken: jsonValue(leaseToken),
+        leaseUntil: { timestampValue: new Date(Date.now() + 120_000).toISOString() }, updatedAt: { timestampValue: now },
+      } }, updateMask: { fieldPaths: ['status', 'leaseToken', 'leaseUntil', 'updatedAt'] }, currentDocument: { updateTime: row.document.updateTime } }]);
+    } catch { continue; }
+    const claimed = await rawDoc(env, 'emailVerificationReminderJobs', jobId);
+    if (!claimed?.data || claimed.data.leaseToken !== leaseToken || !Array.isArray(claimed.data.uids)) continue;
+    const cursor = Math.max(0, Number(claimed.data.cursor || 0));
+    const uids = claimed.data.uids.map(String), chunk = uids.slice(cursor, cursor + 5);
+    const counts = { targeted: uids.length, sent: 0, skippedVerified: 0, skippedCooldown: 0, skippedRestricted: 0, missing: 0, failed: 0, ...(claimed.data.counts || {}) };
+    const storedRole = String(claimed.data.actorRole || '');
+    const actor: AdminUser = { uid: String(claimed.data.actorUid || 'system'), admin: true,
+      ...(storedRole === 'admin' || storedRole === 'super_admin' ? { role: storedRole } : {}),
+      permissionRole: storedRole, emailVerified: true, testInjected: true };
+    for (const uid of chunk) {
+      try {
+        const result: any = await emailVerificationReminder(new Request('https://worker.invalid/api/admin/email-verification/reminder', { method: 'POST', body: JSON.stringify({ uid }), headers: { 'Content-Type': 'application/json' } }), env, actor);
+        if (result?.sent || result?.accepted) counts.sent++;
+        else if (result?.alreadyVerified) counts.skippedVerified++;
+        else if (result?.status === 429) counts.skippedCooldown++;
+        else if (result?.status === 404) counts.missing++;
+        else if (result?.status === 409) counts.skippedRestricted++;
+        else counts.failed++;
+      } catch { counts.failed++; }
     }
+    const nextCursor = cursor + chunk.length, completed = nextCursor >= uids.length;
+    const current = await rawDoc(env, 'emailVerificationReminderJobs', jobId);
+    if (!current?.updateTime || current.data.leaseToken !== leaseToken) continue;
+    await commit(env, [{ update: { name: fullName(env, `emailVerificationReminderJobs/${jobId}`), fields: {
+      status: jsonValue(completed ? 'completed' : 'queued'), cursor: { integerValue: String(nextCursor) }, counts: jsonValue(counts),
+      leaseToken: { nullValue: null }, leaseUntil: { nullValue: null }, updatedAt: { timestampValue: new Date().toISOString() },
+      ...(completed ? { completedAt: { timestampValue: new Date().toISOString() } } : {}),
+    } }, updateMask: { fieldPaths: ['status', 'cursor', 'counts', 'leaseToken', 'leaseUntil', 'updatedAt', ...(completed ? ['completedAt'] : [])] }, currentDocument: { updateTime: current.updateTime } }]);
   }
-  await commit(env, [await auditWrite(env, user, 'email_verification_reminder_bulk', 'users', 'bulk', crypto.randomUUID(), 'bulk verification reminder', undefined, counts)]);
-  return { success: true, ...counts, results };
 }
 
 const deletionCollections = ['users', 'userProfiles', 'providerProfiles', 'driverProfiles', 'deviceTokens', 'notificationTokenOwners', 'notificationInstallations', 'notifications', 'notificationPreferences', 'notificationDeliveries', 'notificationOutbox', 'emailVerificationRateLimits', 'phoneAliases', 'phoneOwners', 'recoveryCodes', 'temporaryRecovery', 'verificationIndexes', 'verificationProfiles', 'verificationAttempts', 'regulatoryDocuments', 'regulatoryExpiryQueue', 'equipment', 'equipmentDrafts'];
@@ -1372,11 +1432,22 @@ async function enqueueDeletion(req: Request, env: Env, actor: AdminUser) {
   await commit(env, [{ update: { name: fullName(env, `deletionPreviewSnapshots/${encodeURIComponent(previewToken)}`), fields: { consumed: { booleanValue: true }, consumedAt: { timestampValue: new Date().toISOString() } }, }, updateMask: { fieldPaths: ['consumed', 'consumedAt'] }, currentDocument: snapshot.updateTime ? { updateTime: snapshot.updateTime } : undefined }]);
   const eligible: string[] = [];
   const jobs: string[] = [], writes: any[] = [], now = new Date().toISOString(), jobId = crypto.randomUUID();
+  const documents = await batchGetRawDocsInChunks(env, [
+    { collection: 'heavyarConfig', id: 'owner' },
+    ...uids.flatMap(uid => [
+      { collection: 'users', id: uid },
+      { collection: 'staffMembers', id: uid },
+      { collection: 'deletionRequests', id: `user:${uid}` },
+    ]),
+  ]);
+  const owner = documents.get(fullName(env, 'heavyarConfig/owner'))?.data;
+  const ownerUid = String(owner?.uid || owner?.ownerUid || owner?.currentOwnerUid || owner?.currentOwner || '');
   for (const uid of uids) {
-    const target = await rawDoc(env, 'users', uid);
+    const target = documents.get(fullName(env, `users/${uid}`));
     if (!target?.data) continue;
-    if (await protectedDeletionTarget(env, actor, uid, target.data)) continue;
-    const id = `user:${uid}`, prior = await rawDoc(env, 'deletionRequests', id);
+    const staff = documents.get(fullName(env, `staffMembers/${uid}`))?.data;
+    if (uid === actor.uid || uid === ownerUid || deletionProtected(target.data) || staff?.active === true || staff?.status === 'active' || staff?.staffStatus === 'active' || ['system', 'service', 'bootstrap'].includes(uid)) continue;
+    const id = `user:${uid}`, prior = documents.get(fullName(env, `deletionRequests/${id}`));
     if (prior?.data && ['queued', 'processing', 'partially_completed', 'pending'].includes(String(prior.data.status))) continue;
     if (prior?.data?.status === 'completed') continue;
     eligible.push(uid);
@@ -1564,7 +1635,9 @@ function countryContractRows(stored: Array<RawDoc | null>) {
 }
 async function adminCountries(req: Request, env: Env, user: AdminUser) {
   if (!can(user, 'config.manage')) return { error: 'Configuration permission required', status: 403 };
-  const stored = await Promise.all(Object.keys(COUNTRY_CONTRACTS).map(code => rawDoc(env, 'countryConfigs', code)));
+  const countryCodes = Object.keys(COUNTRY_CONTRACTS);
+  const countryDocuments = await batchGetRawDocsInChunks(env, countryCodes.map(id => ({ collection: 'countryConfigs', id })));
+  const stored = countryCodes.map(code => countryDocuments.get(fullName(env, `countryConfigs/${code}`)) || null);
   if (req.method === 'GET') return { success: true, version: Math.max(1, ...stored.map(item => Number(item?.data?.version || 1))), countries: countryContractRows(stored) };
   const body: any = await req.json().catch(() => null);
   if (!body || !Array.isArray(body.countries) || Object.keys(body).some(key => !['countries', 'expectedVersion', 'version'].includes(key))) return { error: 'Invalid countries contract', status: 400 };

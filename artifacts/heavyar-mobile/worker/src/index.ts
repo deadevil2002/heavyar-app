@@ -1,6 +1,6 @@
 import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, normalizeTapEnvironment, tapCredentials, tapCustomerFromAccount, type PaymentQuote, type PaymentState, type TapEnvironment } from './payment';
 import { calculateCommercial, majorToMinor, minorToMajor, resolveRule, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
-import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, type AdminRole } from './admin';
+import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, processEmailVerificationReminderJobs, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
 import { notificationInboxItem, notificationInboxOrder, notificationUnreadOrder } from './notification-inbox';
@@ -58,6 +58,7 @@ let capturedDriverQueries: any[] | undefined;
 let publicEquipmentLimiterOverride: ((ipHash: string) => Promise<boolean | null>) | undefined;
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
+const paymentCreateInflight = new Map<string, Promise<Response>>();
   export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationWindows.clear(); }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
@@ -512,6 +513,9 @@ async function countrySettings(env: Env, code: string) {
   const country = String(code || 'SA').toUpperCase() as GccCountryCode, base = GCC_COUNTRIES[country] || GCC_COUNTRIES.SA;
   if (!env.FIREBASE_PROJECT_ID && !firestoreOverride) return { ...base, marketplaceAvailable: base.enabled, providerOnboardingAvailable: base.enabled, crossBorderAvailable: false };
   const stored = await getDoc(env, 'countryConfigs', base.code);
+  return resolvedCountrySettings(base, stored);
+}
+function resolvedCountrySettings(base: (typeof GCC_COUNTRIES)[GccCountryCode], stored: any) {
   const enabled = stored?.enabled === undefined ? base.enabled : stored.enabled === true;
   return { ...base, ...stored, enabled, marketplaceAvailable: enabled && (stored?.marketplaceAvailable === undefined ? base.enabled : stored.marketplaceAvailable === true), providerOnboardingAvailable: enabled && (stored?.providerOnboardingAvailable === undefined ? base.enabled : stored.providerOnboardingAvailable === true), crossBorderAvailable: enabled && stored?.crossBorderAvailable === true };
 }
@@ -528,6 +532,35 @@ async function getDoc(env: Env, collection: string, id: string) {
 async function getRawDoc(env: Env, collection: string, id: string): Promise<{ data: any; updateTime?: string } | null> {
   if (firestoreOverride) { const data = firestoreOverride(collection, id); return data ? { data, updateTime: 'test-update-time' } : null; }
   const d = await fs(env, `${collection}/${encodeURIComponent(id)}`); return d ? { data: decode(d), updateTime: d.updateTime } : null;
+}
+async function batchGetRawDocs(
+  env: Env,
+  references: Array<{ collection: string; id: string }>,
+): Promise<Map<string, { data: any; updateTime?: string }>> {
+  const unique = [...new Map(references
+    .filter(reference => reference.collection && reference.id)
+    .map(reference => [`${reference.collection}/${reference.id}`, reference])).values()];
+  if (!unique.length) return new Map();
+  if (firestoreOverride) {
+    return new Map(unique.flatMap(reference => {
+      const data = firestoreOverride!(reference.collection, reference.id);
+      return data ? [[`${reference.collection}/${reference.id}`, { data, updateTime: 'test-update-time' }] as const] : [];
+    }));
+  }
+  const documents = unique.map(reference => fullName(env, `${reference.collection}/${reference.id}`));
+  const rows: any[] = [];
+  for (let offset = 0; offset < documents.length; offset += 100) {
+    const batch = await fs(env, ':batchGet', {
+      method: 'POST',
+      body: JSON.stringify({ documents: documents.slice(offset, offset + 100) }),
+    });
+    rows.push(...(batch || []));
+  }
+  return new Map(rows.filter(row => row.found).map(row => {
+    const document = row.found;
+    const path = String(document.name || '').split('/documents/')[1] || '';
+    return [path, { data: decode(document), updateTime: document.updateTime }];
+  }));
 }
 async function queryOwnedDocuments(env: Env, collection: string, uid: string, fields = ['uid']): Promise<any[]> {
   if (identityQueryOverride) return identityQueryOverride(collection, uid) || [];
@@ -656,21 +689,35 @@ function nextNotificationCursor(orderValue: unknown, id: string) {
 async function notificationDevices(env: Env, uid: string) {
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
     from: [{ collectionId: 'deviceTokens' }], where: { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: uid } } },
+    limit: 100,
   } }) });
-  const devices = [];
-  for (const x of (result || [])) {
+  const candidates = await Promise.all((result || []).map(async (x: any) => {
     const value: any = { name: x.document?.name, ...decode(x.document || x) };
-    if (value.active !== true || typeof value.token !== 'string') continue;
-    const tokenHash = await hashedId(value.token), owner = await getDoc(env, 'notificationTokenOwners', tokenHash), installation = await getDoc(env, 'notificationInstallations', await hashedId(String(value.installationId || '')));
-    if (owner?.uid === uid && owner?.active === true && owner?.tokenHash === tokenHash && installation?.uid === uid && installation?.tokenId === tokenHash) devices.push({ ...value, tokenHash });
-  }
-  return devices;
+    if (value.active !== true || typeof value.token !== 'string') return null;
+    const tokenHash = await hashedId(value.token);
+    const installationKey = value.installationId ? await hashedId(String(value.installationId)) : '';
+    return { value, tokenHash, installationKey };
+  }));
+  const eligible = candidates.filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate?.installationKey);
+  const documents = await batchGetRawDocs(env, eligible.flatMap(candidate => [
+    { collection: 'notificationTokenOwners', id: candidate.tokenHash },
+    { collection: 'notificationInstallations', id: candidate.installationKey },
+  ]));
+  return eligible.flatMap(candidate => {
+    const owner = documents.get(`notificationTokenOwners/${candidate.tokenHash}`)?.data;
+    const installation = documents.get(`notificationInstallations/${candidate.installationKey}`)?.data;
+    return owner?.uid === uid && owner?.active === true && owner?.tokenHash === candidate.tokenHash &&
+      installation?.uid === uid && installation?.tokenId === candidate.tokenHash
+      ? [{ ...candidate.value, tokenHash: candidate.tokenHash }]
+      : [];
+  });
 }
 async function deletionDeviceRows(env: Env, uid: string) {
   if (deletionDeviceQueryOverride) return deletionDeviceQueryOverride;
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
     from: [{ collectionId: 'deviceTokens' }],
     where: { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: uid } } },
+    limit: 101,
   } }) });
   return (result || []).filter((row: any) => decode(row.document || row).active === true);
 }
@@ -713,17 +760,28 @@ async function accountDeletionRequest(req: Request, env: Env, u: User) {
     accountStatus: { stringValue: 'deletion_requested' }, deletionRequestedAt: { timestampValue: String(user.data.deletionRequestedAt || now) }, updatedAt: { timestampValue: now },
   } }, updateMask: { fieldPaths: ['accountStatus', 'deletionRequestedAt', 'updatedAt'] }, currentDocument: { updateTime: user.updateTime } });
   const rows = await deletionDeviceRows(env, u.uid), seen = new Set<string>();
-  for (const row of rows) {
-    const data = decode(row.document || row), tokenHash = await hashedId(String(data.token || ''));
-    if (!data.token || seen.has(tokenHash)) continue;
+  if (rows.length > 100) return out(env, req, { success: false, error: 'Deletion request requires review' }, 409);
+  const deviceCandidates = (await Promise.all(rows.map(async (row: any) => {
+    const data = decode(row.document || row);
+    if (!data.token) return null;
+    const tokenHash = await hashedId(String(data.token));
+    const installationId = String(data.installationId || '');
+    return { row, data, tokenHash, installationKey: installationId ? await hashedId(installationId) : '' };
+  }))).filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+  const canonicalDevices = await batchGetRawDocs(env, deviceCandidates.flatMap(candidate => [
+    { collection: 'notificationTokenOwners', id: candidate.tokenHash },
+    ...(candidate.installationKey ? [{ collection: 'notificationInstallations', id: candidate.installationKey }] : []),
+  ]));
+  for (const candidate of deviceCandidates) {
+    const { row, tokenHash, installationKey } = candidate;
+    if (seen.has(tokenHash)) continue;
     seen.add(tokenHash);
     const deviceName = String(row.document?.name || '').split('/documents/')[1] || `deviceTokens/${tokenHash}`;
     writes.push({ update: { name: fullName(env, deviceName), fields: { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['active', 'revokedAt', 'updatedAt'] }, currentDocument: row.document?.updateTime ? { updateTime: row.document.updateTime } : { exists: true } });
-    const owner = await getRawDoc(env, 'notificationTokenOwners', tokenHash);
+    const owner = canonicalDevices.get(`notificationTokenOwners/${tokenHash}`);
     if (owner?.data?.uid === u.uid && owner.data.active === true && owner.updateTime) writes.push({ update: { name: fullName(env, `notificationTokenOwners/${tokenHash}`), fields: { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['active', 'revokedAt', 'updatedAt'] }, currentDocument: { updateTime: owner.updateTime } });
-    const installationId = String(data.installationId || ''), installationKey = installationId ? await hashedId(installationId) : '';
     if (installationKey) {
-      const installation = await getRawDoc(env, 'notificationInstallations', installationKey);
+      const installation = canonicalDevices.get(`notificationInstallations/${installationKey}`);
       if (installation?.data?.uid === u.uid && installation.data.tokenId === tokenHash && installation.updateTime) writes.push({ update: { name: fullName(env, `notificationInstallations/${installationKey}`), fields: { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['active', 'revokedAt', 'updatedAt'] }, currentDocument: { updateTime: installation.updateTime } });
     }
   }
@@ -817,7 +875,7 @@ async function registerDevice(req: Request, env: Env, u: User, revoke = false) {
     const prior = firestoreOverride ? [] : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'deviceTokens' }], where: { compositeFilter: { op: 'OR', filters: [
       { fieldFilter: { field: { fieldPath: 'token' }, op: 'EQUAL', value: { stringValue: token } } },
       { fieldFilter: { field: { fieldPath: 'installationId' }, op: 'EQUAL', value: { stringValue: installationId } } },
-    ] } } } }) });
+    ] } }, limit: 20 } }) });
     const transfers = (prior || []).filter((x: any) => decode(x.document || x).uid !== u.uid && decode(x.document || x).active === true);
     for (const item of transfers) {
       ownershipWrites.push({ update: { name: item.document?.name, fields: { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['active', 'revokedAt', 'updatedAt'] }, currentDocument: { updateTime: item.document?.updateTime } });
@@ -1236,9 +1294,10 @@ async function processRegulatoryExpiry(env: Env) {
     from: [{ collectionId: 'regulatoryExpiryQueue' }], where: { fieldFilter: { field: { fieldPath: 'expiresAt' }, op: 'LESS_THAN_OR_EQUAL', value: { timestampValue: now } } },
     orderBy: [{ field: { fieldPath: 'expiresAt' }, direction: 'ASCENDING' }], limit: 25,
   } }) }) as any[] || [];
-  for (const row of rows.filter(item => item?.document?.name && item?.document?.fields)) {
-    const queueId = String(row.document.name).split('/').pop()!;
-    const queue = decode(row.document), raw = await getRawDoc(env, 'regulatoryDocuments', String(queue.documentId || queueId));
+  const queued = rows.filter(item => item?.document?.name && item?.document?.fields).map(row => ({ row, queueId: String(row.document.name).split('/').pop()!, queue: decode(row.document) }));
+  const documents = await batchGetRawDocs(env, queued.map(item => ({ collection: 'regulatoryDocuments', id: String(item.queue.documentId || item.queueId) })));
+  for (const { row, queueId, queue } of queued) {
+    const documentId = String(queue.documentId || queueId), raw = documents.get(`regulatoryDocuments/${documentId}`);
     const writes: any[] = [{ delete: fullName(env, `regulatoryExpiryQueue/${queueId}`) }];
     if (raw && !['EXPIRED', 'REVOKED', 'REJECTED'].includes(String(raw.data.reviewStatus || ''))) {
       writes.unshift({ update: { name: fullName(env, `regulatoryDocuments/${encodeURIComponent(String(queue.documentId || queueId))}`), fields: { reviewStatus: { stringValue: 'EXPIRED' }, expiredAt: { timestampValue: now }, updatedAt: { timestampValue: now } }, updateMask: { fieldPaths: ['reviewStatus', 'expiredAt', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } } });
@@ -1248,7 +1307,15 @@ async function processRegulatoryExpiry(env: Env) {
   }
 }
 async function verificationProfile(req: Request, env: Env, u: User) {
-  const [profile, account, documents] = await Promise.all([getDoc(env, 'verificationProfiles', u.uid), getDoc(env, 'users', u.uid), regulatoryDocumentsForOwner(env, u.uid)]);
+  const [canonical, documents] = await Promise.all([
+    batchGetRawDocs(env, [
+      { collection: 'verificationProfiles', id: u.uid },
+      { collection: 'users', id: u.uid },
+    ]),
+    regulatoryDocumentsForOwner(env, u.uid),
+  ]);
+  const profile = canonical.get(`verificationProfiles/${u.uid}`)?.data;
+  const account = canonical.get(`users/${u.uid}`)?.data;
   const safe = safeProfile(profile, u.uid);
   const decision = evaluateCapabilities({ uid: u.uid, canonicalRole: String(account?.role || ''), accountType: account?.providerType === 'company' || account?.accountType === 'business' || account?.businessType === 'business' ? 'business' : 'individual', suspended: ['suspended', 'restricted', 'deletion_requested', 'deleted'].includes(String(account?.accountStatus || account?.suspensionStatus || '')), identityVerified: safe.identity.status === 'verified', documents });
   return out(env, req, { success: true, profile: { ...safe, capabilities: decision.capabilities, verificationBadges: decision.badges } });
@@ -1427,7 +1494,14 @@ async function startVerification(req: Request, env: Env, u: User) {
   return out(env, req, { success: true, attempt: safeAttempt(attemptId, { status: 'pending', provider: providerName, verificationType: 'identity', createdAt: nowIso, expiresAt, reviewRequired: !officialProvider }) }, 202);
 }
 async function enforceTrustForCustomerAction(env: Env, customerUid: string, request: any, equipment: any) {
-  const [profile, storedPolicy, account] = await Promise.all([getDoc(env, 'verificationProfiles', customerUid), getDoc(env, 'verificationPolicies', 'default'), getDoc(env, 'users', customerUid)]);
+  const documents = await batchGetRawDocs(env, [
+    { collection: 'verificationProfiles', id: customerUid },
+    { collection: 'verificationPolicies', id: 'default' },
+    { collection: 'users', id: customerUid },
+  ]);
+  const profile = documents.get(`verificationProfiles/${customerUid}`)?.data;
+  const storedPolicy = documents.get('verificationPolicies/default')?.data;
+  const account = documents.get(`users/${customerUid}`)?.data;
   const policy = normalizeVerificationPolicy(storedPolicy) || defaultVerificationPolicy();
   const suspension = isSecuritySuspended(account);
   const outcome = evaluateRisk({ suspended: suspension, identityStatus: profile?.identity?.status, manualReviewStatus: profile?.manualReview?.status, policy, amount: Number(request?.finalAmount ?? request?.amount), highRiskEquipment: equipment?.highRisk === true, requestType: request?.requestMode, verificationFailures: Number(profile?.verificationFailures || 0) });
@@ -1915,7 +1989,12 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
   if (!raw?.updateTime || !r) return out(env, req, { success: false, error: 'Not found' }, 404);
   if (r.pricingModelVersion === 2) return transitionV2Request(req, env, u, requestId, raw, body);
   await enforceOperationalAccess(env, u, await getDoc(env, 'equipment', r.equipmentId));
-  const [customerAccount, providerAccount] = await Promise.all([getDoc(env, 'users', r.customerUid), getDoc(env, 'users', r.providerUid)]);
+  const accounts = await batchGetRawDocs(env, [
+    { collection: 'users', id: String(r.customerUid || '') },
+    { collection: 'users', id: String(r.providerUid || '') },
+  ]);
+  const customerAccount = accounts.get(`users/${r.customerUid}`)?.data;
+  const providerAccount = accounts.get(`users/${r.providerUid}`)?.data;
   if (isOperationallyBlocked(customerAccount) || isOperationallyBlocked(providerAccount)) return out(env, req, { success: false, error: 'ACCOUNT_SUSPENDED' }, 403);
   const provider = r.providerUid === u.uid || u.admin, customer = r.customerUid === u.uid;
   const allowed = action === 'cancel' ? customer : action === 'accept' || action === 'reject' || action === 'start' ? provider : action === 'request_completion' ? provider : action === 'complete' ? customer : false;
@@ -1956,16 +2035,20 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
   }
   const reservationDates = (r.startDate && r.endDate) ? rentalDates(String(r.startDate), String(r.endDate)) : [];
   if (next === 'accepted' && reservationDates.length === 0) return out(env, req, { success: false, error: 'Invalid rental dates' }, 409);
-  const reservationWrites: any[] = next === 'accepted'
-    ? reservationDates.map((date) => ({ update: { name: fullName(env, reservationPath(String(r.equipmentId), date)), fields: { equipmentId: { stringValue: String(r.equipmentId) }, requestId: { stringValue: requestId }, date: { stringValue: date }, status: { stringValue: 'active' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } }))
-    : (action === 'cancel' || action === 'reject') && reservationDates.length
-      ? (await Promise.all(reservationDates.map(async (date) => {
-        const reservation = await getRawDoc(env, 'equipmentReservations', `${r.equipmentId}:${date}`);
-        return reservation?.data?.requestId === requestId && reservation.updateTime
-          ? { delete: fullName(env, reservationPath(String(r.equipmentId), date)), currentDocument: { updateTime: reservation.updateTime } }
-          : null;
-      }))).filter(Boolean)
-      : [];
+  let reservationWrites: any[] = [];
+  if (next === 'accepted') {
+    reservationWrites = reservationDates.map((date) => ({ update: { name: fullName(env, reservationPath(String(r.equipmentId), date)), fields: { equipmentId: { stringValue: String(r.equipmentId) }, requestId: { stringValue: requestId }, date: { stringValue: date }, status: { stringValue: 'active' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } }));
+  } else if ((action === 'cancel' || action === 'reject') && reservationDates.length) {
+    const reservations = await batchGetRawDocs(env, reservationDates.map(date => ({
+      collection: 'equipmentReservations', id: `${r.equipmentId}:${date}`,
+    })));
+    reservationWrites = reservationDates.flatMap(date => {
+      const id = `${r.equipmentId}:${date}`, reservation = reservations.get(`equipmentReservations/${id}`);
+      return reservation?.data?.requestId === requestId && reservation.updateTime
+        ? [{ delete: fullName(env, reservationPath(String(r.equipmentId), date)), currentDocument: { updateTime: reservation.updateTime } }]
+        : [];
+    });
+  }
   if (next === 'accepted') {
     const legacyInterval = activeInterval({ ...r, status: 'pending' });
     if (!legacyInterval) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'LEGACY_INTERVAL_UNAVAILABLE' }, 409);
@@ -2407,9 +2490,10 @@ function tapRedirectBridge(req: Request): Response {
   return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } });
 }
 
-async function create(req: Request, env: Env, u: User) {
-  const body = await req.json() as { requestId?: string; amount?: number; purpose?: string };
-  if (!body.requestId || Object.keys(body).some(key => !['requestId', 'purpose'].includes(key)) || (body.purpose && body.purpose !== 'equipment_request')) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
+async function createPaymentAttempt(body: { requestId: string; purpose?: string }, req: Request, env: Env, u: User) {
+  const paymentStartedAt = Date.now();
+  mutationStage(env, 'validation');
+  if (env.__diagnostics) env.__diagnostics.payment = { firestoreBeforeProviderMs: 0, providerMs: 0, firestoreAfterProviderMs: 0 };
   const raw = await getRawDoc(env, 'equipmentRequests', body.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
   let customerProfile: any = null;
   try {
@@ -2463,6 +2547,7 @@ async function create(req: Request, env: Env, u: User) {
   catch { return out(env, req, { success: false, error: 'Payment profile incomplete', code: 'PAYMENT_PROFILE_INCOMPLETE' }, 409); }
   if (!isReserved) {
     try {
+      mutationStage(env, 'commit');
       if (reservationConflict) throw new Error('precondition failed');
       const now = new Date().toISOString();
       const writes: any[] = [
@@ -2488,9 +2573,23 @@ async function create(req: Request, env: Env, u: User) {
       return out(env, req, { success: false, error: 'Payment reservation conflict' }, 409);
     }
   }
+  if (env.__diagnostics?.payment) env.__diagnostics.payment.firestoreBeforeProviderMs = Date.now() - paymentStartedAt;
   const provider = new TapPaymentProvider(tapRuntime.secret, tapRuntime.merchantId);
   const tapMetadata = { requestId: body.requestId, customerUid: u.uid, amount: String(expected), currency: 'SAR', quoteId: quote.quoteId, paymentId: paymentIdForRequest(body.requestId), idempotencyKey, paymentEnvironment };
-  let data; try { data = await provider.create({ amount: expected, currency: 'SAR', idempotencyKey, metadata: tapMetadata, requestId: body.requestId, customerUid: u.uid, customer: tapCustomer }); } catch {
+  const providerStartedAt = Date.now();
+  let data; try {
+    data = await provider.create({ amount: expected, currency: 'SAR', idempotencyKey, metadata: tapMetadata, requestId: body.requestId, customerUid: u.uid, customer: tapCustomer });
+    if (env.__diagnostics) {
+      env.__diagnostics.upstreamDurationMs += Date.now() - providerStartedAt;
+      env.__diagnostics.upstream = { service: 'tap', operation: 'payment_create', status: 200, ok: true };
+      if (env.__diagnostics.payment) env.__diagnostics.payment.providerMs = Date.now() - providerStartedAt;
+    }
+  } catch {
+    if (env.__diagnostics) {
+      env.__diagnostics.upstreamDurationMs += Date.now() - providerStartedAt;
+      env.__diagnostics.upstream = { service: 'tap', operation: 'payment_create', status: 0, ok: false };
+      if (env.__diagnostics.payment) env.__diagnostics.payment.providerMs = Date.now() - providerStartedAt;
+    }
     const reservedRaw = capturedCommits ? { data: { ...r, paymentId: reservation, paymentState: 'pending' }, updateTime: 'test-reserved' } : await getRawDoc(env, 'equipmentRequests', body.requestId);
     if (reservedRaw?.updateTime && reservedRaw.data.paymentId === reservation && reservedRaw.data.paymentState !== 'processing') {
       const now = new Date().toISOString();
@@ -2510,6 +2609,7 @@ async function create(req: Request, env: Env, u: User) {
   if (!canTransition('created', state)) return out(env, req, { success: false, error: 'Invalid payment transition' }, 409);
   if (['pending', 'requires_action', 'processing'].includes(state) && !data.checkoutUrl) return out(env, req, { success: false, error: 'Invalid provider response' }, 502);
   const reservedRaw = capturedCommits ? { data: { ...r, paymentId: reservation }, updateTime: 'test-reserved' } : await getRawDoc(env, 'equipmentRequests', body.requestId);
+  const postProviderStartedAt = Date.now();
   if (!reservedRaw?.updateTime || reservedRaw.data.paymentId !== reservation) return out(env, req, { success: false, error: 'Payment reservation changed' }, 409);
   if (state === 'paid') {
     try {
@@ -2519,6 +2619,8 @@ async function create(req: Request, env: Env, u: User) {
         return out(env, req, { success: false, paymentId: data.id, chargeId: data.id, status: 'processing', paymentState: 'processing', canonicalStatus: 'processing', error: 'Payment received; settlement pending', retryable: true }, 409);
       }
     }
+    if (env.__diagnostics?.payment) env.__diagnostics.payment.firestoreAfterProviderMs = Date.now() - postProviderStartedAt;
+    mutationStage(env, 'response');
     return out(env, req, { success: true, paymentId: data.id, chargeId: data.id, status: 'paid', providerStatus: data.status, paymentState: 'paid', canonicalStatus: 'paid', checkoutUrl: '', paymentUrl: '', quote, amount: data.amount, currency: data.currency, quoteId: quote.quoteId, provider: 'tap' });
   }
   {
@@ -2530,7 +2632,25 @@ async function create(req: Request, env: Env, u: User) {
       eventWrite(env, `${body.requestId}:attempt_${attempt}:payment_${state}`, body.requestId, r, `payment_${state}`, state, now, String(data.id)),
     ]);
   }
+  if (env.__diagnostics?.payment) env.__diagnostics.payment.firestoreAfterProviderMs = Date.now() - postProviderStartedAt;
+  mutationStage(env, 'response');
   return out(env, req, { success: true, paymentId: data.id, chargeId: data.id, status: state, providerStatus: data.status, paymentState: state, canonicalStatus: state, checkoutUrl: data.checkoutUrl || '', paymentUrl: data.checkoutUrl || '', quote, amount: data.amount, currency: data.currency, quoteId: quote.quoteId, provider: 'tap' });
+}
+
+async function create(req: Request, env: Env, u: User) {
+  let body: { requestId?: string; amount?: number; purpose?: string };
+  try { body = await req.json() as typeof body; }
+  catch { return out(env, req, { success: false, error: 'Invalid payment request' }, 400); }
+  if (!body.requestId || Object.keys(body).some(key => !['requestId', 'purpose'].includes(key)) || (body.purpose && body.purpose !== 'equipment_request')) {
+    return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
+  }
+  const key = `${u.uid}:${body.requestId}`;
+  const existing = paymentCreateInflight.get(key);
+  if (existing) return (await existing).clone();
+  const operation = createPaymentAttempt({ requestId: body.requestId, purpose: body.purpose }, req, env, u);
+  paymentCreateInflight.set(key, operation);
+  try { return (await operation).clone(); }
+  finally { if (paymentCreateInflight.get(key) === operation) paymentCreateInflight.delete(key); }
 }
 async function verify(req: Request, env: Env, u: User) {
   const body = await req.json() as { chargeId?: string; paymentId?: string }, chargeId = body.paymentId || body.chargeId;
@@ -2832,11 +2952,16 @@ async function deliverEmailVerification(env: Env, email: string, idToken: string
 async function emailVerificationSend(req: Request, env: Env, u: User) {
   const raw = req.headers.get('Authorization') || '', token = raw.replace(/^Bearer\s+/, '');
   if (u.emailVerified === true) return out(env, req, { success: true, alreadyVerified: true });
-  const rate = await getRawDoc(env, 'emailVerificationRateLimits', u.uid), now = Date.now(), prior = rate?.data;
+  const documents = await batchGetRawDocs(env, [
+    { collection: 'emailVerificationRateLimits', id: u.uid },
+    { collection: 'users', id: u.uid },
+    { collection: 'emailVerificationPolicies', id: 'default' },
+  ]);
+  const rate = documents.get(`emailVerificationRateLimits/${u.uid}`), now = Date.now(), prior = rate?.data;
   if (prior?.nextAllowedAt && Date.parse(String(prior.nextAllowedAt)) > now) return out(env, req, { success: false, error: 'Verification email cooldown active' }, 429);
-  const account = await getDoc(env, 'users', u.uid), email = String(u.email || account?.email || account?.emailLower || '').trim().toLowerCase();
+  const account = documents.get(`users/${u.uid}`)?.data, email = String(u.email || account?.email || account?.emailLower || '').trim().toLowerCase();
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return out(env, req, { success: false, error: 'Verification unavailable' }, 503);
-  const policy = await emailVerificationPolicy(env);
+  const policy = normalizeEmailVerificationPolicy(documents.get('emailVerificationPolicies/default')?.data);
   const language = account?.language === 'en' || account?.preferredLanguage === 'en' ? 'en' : 'ar';
   const delivery = await deliverEmailVerification(env, email, token, String(account?.nameEn || account?.nameAr || ''), language);
   const reconciled = delivery.provider === 'resend' && delivery.messageId ? await priorResendWebhookEvent(env, delivery.messageId) : null;
@@ -2846,12 +2971,16 @@ async function emailVerificationSend(req: Request, env: Env, u: User) {
   return out(env, req, { success: delivery.delivered, accepted: true, deliveryStatus: delivery.delivered ? 'sent' : 'delivery_unavailable', provider: delivery.provider }, delivery.delivered ? 202 : 503);
 }
 async function emailVerificationStatus(req: Request, env: Env, u: User) {
-  const profile = await getDoc(env, 'users', u.uid);
+  const documents = await batchGetRawDocs(env, [
+    { collection: 'users', id: u.uid },
+    { collection: 'emailVerificationPolicies', id: 'default' },
+  ]);
+  const profile = documents.get(`users/${u.uid}`)?.data;
   const verified = u.emailVerified === true;
   if (profile && profile.emailVerified !== verified) {
     await patchDoc(env, `users/${encodeURIComponent(u.uid)}`, { emailVerified: { booleanValue: verified }, ...(verified ? { emailVerifiedAt: { timestampValue: new Date().toISOString() } } : {}) }).catch(() => undefined);
   }
-  return out(env, req, { success: true, emailVerified: verified, email: u.email || profile?.email || null, policy: await emailVerificationPolicy(env) });
+  return out(env, req, { success: true, emailVerified: verified, email: u.email || profile?.email || null, policy: normalizeEmailVerificationPolicy(documents.get('emailVerificationPolicies/default')?.data) });
 }
 function effectiveAuthConfig(config: any, passwordEndpointReady = false) {
   const value = { ...DEFAULT_AUTH_CONFIG, ...(config || {}) };
@@ -2870,12 +2999,16 @@ export function normalizeSaudiPhone(value: unknown): string | null {
   return result?.countryCode === 'SA' ? result.phone : null;
 }
 async function authConfig(req: Request, env: Env) {
-  const stored = await getDoc(env, 'heavyarConfig', 'auth');
+  const documents = await batchGetRawDocs(env, [
+    { collection: 'heavyarConfig', id: 'auth' },
+    { collection: 'emailVerificationPolicies', id: 'default' },
+  ]);
+  const stored = documents.get('heavyarConfig/auth')?.data;
   const requested = { ...DEFAULT_AUTH_CONFIG, ...(stored || {}) };
   const effective = effectiveAuthConfig(stored, !!env.FIREBASE_WEB_API_KEY && !!env.FIREBASE_PROJECT_ID && !!env.FIREBASE_CLIENT_EMAIL && !!env.FIREBASE_PRIVATE_KEY);
   await resendSenderReady(env);
   const senderDomainVerified = env.RESEND_SENDER_DOMAIN_VERIFIED === 'true' || resendLastDeliverySucceeded;
-  const emailVerification = await emailVerificationPolicy(env);
+  const emailVerification = normalizeEmailVerificationPolicy(documents.get('emailVerificationPolicies/default')?.data);
   const status = {
     emailReset: env.FIREBASE_WEB_API_KEY || env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY ? 'configured' : 'blocked',
     phone: 'disabled',
@@ -2888,10 +3021,14 @@ async function authConfig(req: Request, env: Env) {
   return out(env, req, { success: true, config: projection, version: effective.version, requireMobileDuringSignup: effective.requirePhoneOnSignup });
 }
 async function marketConfig(req: Request, env: Env) {
-  const countries = await Promise.all(Object.values(GCC_COUNTRIES).map(async country => {
-    const value = await countrySettings(env, country.code);
+  const bases = Object.values(GCC_COUNTRIES);
+  const documents = !env.FIREBASE_PROJECT_ID && !firestoreOverride
+    ? new Map<string, { data: any; updateTime?: string }>()
+    : await batchGetRawDocs(env, bases.map(country => ({ collection: 'countryConfigs', id: country.code })));
+  const countries = bases.map(country => {
+    const value = resolvedCountrySettings(country, documents.get(`countryConfigs/${country.code}`)?.data);
     return { ...value, nativeCurrency: value.currency, marketplaceAvailable: value.marketplaceAvailable, providerOnboardingAvailable: value.providerOnboardingAvailable };
-  }));
+  });
   return out(env, req, { success: true, countries, currencies: countries.map(country => ({ code: country.currency, countryCode: country.code, enabled: country.enabled })), fx: { enabled: false, provider: null, status: 'disabled', sourceCurrency: null, displayCurrencies: countries.map(country => country.currency), rateSnapshotSupported: true }, phoneVerification: { enabled: false, provider: null, requireAfterSignup: false, requireBeforeRentalRequest: false, requireBeforeProviderActivation: false, requireBeforeDriverActivation: false } });
 }
 const PHONE_LOGIN_INVALID = 'Invalid mobile number or password.';
@@ -3181,7 +3318,7 @@ async function userDataExportApi(req: Request, env: Env, u: User) {
 
 export async function processTemporaryComplianceCleanup(env: Env) {
   const now = new Date().toISOString();
-  const temporaryCollections = ['temporaryRecovery', 'verificationRateLimits', 'authRecoveryRateLimits', 'emailVerificationRateLimits', 'phoneLoginRateLimits', 'uploadReservations', 'deviceTokens', 'notificationTokenOwners', 'notificationInstallations', 'notificationDeliveries', 'notificationOutbox', 'notifications'];
+  const temporaryCollections = ['temporaryRecovery', 'verificationRateLimits', 'authRecoveryRateLimits', 'emailVerificationRateLimits', 'emailVerificationReminderJobs', 'phoneLoginRateLimits', 'uploadReservations', 'deviceTokens', 'notificationTokenOwners', 'notificationInstallations', 'notificationDeliveries', 'notificationOutbox', 'notifications'];
   for (const collection of temporaryCollections) {
     const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where: { fieldFilter: { field: { fieldPath: 'expiresAt' }, op: 'LESS_THAN_OR_EQUAL', value: { timestampValue: now } } }, limit: 50 } }) }) as any[] || [];
     const writes = rows.filter(row => row.document?.name && row.document?.updateTime).map(row => ({ delete: row.document.name, currentDocument: { updateTime: row.document.updateTime } }));
@@ -4128,7 +4265,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     let processorFailed = false;
     // Sequence processors so exhaustion in one prevents the next scan. Existing
     // per-record leases/idempotency remain unchanged; future ticks can recover.
-    for (const processor of [processPendingNotificationOutbox, processScheduledCampaigns, processScheduledEarlyAccessCampaigns,
+    for (const processor of [processPendingNotificationOutbox, processScheduledCampaigns, processScheduledEarlyAccessCampaigns, processEmailVerificationReminderJobs,
       processStaffClaimSync, processDeletionJobs, processRegulatoryExpiry, retryDueNotificationDeliveries, pollNotificationReceipts, processEarlyAccessRetention, processTemporaryComplianceCleanup]) {
       if (quotaBlocked()) break;
       try { await processor(requestEnv); }

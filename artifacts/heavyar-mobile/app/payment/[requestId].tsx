@@ -36,6 +36,7 @@ export default function PaymentScreen() {
   const [gateways, setGateways] = useState<CheckoutGateway[]>([]);
   const [gatewayLoading, setGatewayLoading] = useState<boolean>(true);
   const handledCallbackPayment = useRef<string | null>(null);
+  const paymentCreationInFlight = useRef(false);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
@@ -100,8 +101,9 @@ export default function PaymentScreen() {
   const handleVerifyRef = React.useRef<(cId?: string) => Promise<void>>(() => Promise.resolve());
 
   const handleCreatePayment = useCallback(async () => {
-    if (!request || !requestId || !user) return;
+    if (!request || !requestId || !user || paymentCreationInFlight.current) return;
 
+    paymentCreationInFlight.current = true;
     setStep('processing');
     try {
 
@@ -131,6 +133,8 @@ export default function PaymentScreen() {
       setStep('failed');
       try {
       } catch {}
+    } finally {
+      paymentCreationInFlight.current = false;
     }
   }, [request, requestId, user]);
 
@@ -273,7 +277,7 @@ export default function PaymentScreen() {
                 </Text>
               </View>
 
-              <Pressable style={[styles.payButton, (gatewayLoading || gateways.length === 0) && styles.payButtonDisabled]} onPress={handleCreatePayment} disabled={gatewayLoading || gateways.length === 0}>
+              <Pressable style={[styles.payButton, (gatewayLoading || gateways.length === 0 || step !== 'summary') && styles.payButtonDisabled]} onPress={handleCreatePayment} disabled={gatewayLoading || gateways.length === 0 || step !== 'summary'}>
                 <CreditCard size={20} color={Colors.primary} />
                 <Text style={styles.payButtonText}>
                   {t('pay_now')}{totalWithVat === null ? '' : ` - ${money(totalWithVat)}`}

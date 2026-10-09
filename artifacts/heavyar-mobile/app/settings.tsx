@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Globe, Bell, Info, FileText, HelpCircle, ChevronLeft, ChevronRight, Trash2, ShieldCheck } from 'lucide-react-native';
+import { Globe, Bell, Info, FileText, HelpCircle, ChevronLeft, ChevronRight, Trash2, ShieldCheck, Gauge } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -109,6 +109,14 @@ export default function SettingsScreen() {
               </View>
               <Text style={styles.versionText}>{t('version')} 1.0.0</Text>
             </Pressable>
+
+            {mobilePerformance.isQaBuild() ? <Pressable style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => router.navigate('/performance-report' as never)}>
+              <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                <View style={styles.menuIcon}><Gauge size={20} color={Colors.gold} /></View>
+                <Text style={styles.menuLabel}>{isRTL ? 'تقرير أداء QA' : 'QA performance report'}</Text>
+              </View>
+              <ChevronIcon size={20} color={Colors.textMuted} />
+            </Pressable> : null}
           </View>
 
           {isAuthenticated && user ? (

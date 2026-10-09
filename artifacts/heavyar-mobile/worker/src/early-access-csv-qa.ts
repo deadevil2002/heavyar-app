@@ -146,10 +146,12 @@ export async function cleanupCampaignCsvQa(store: EarlyAccessStore, campaignId: 
     if (importId) byImport.set(importId, [...(byImport.get(importId) || []), row]);
   }
   const importRecords = new Map<string, NonNullable<RecordVersion>>();
-  for (const importId of byImport.keys()) {
-    const record = await store.read(EA.imports, importId);
+  const importIds = [...byImport.keys()];
+  const storedImports = await readManyRecords(store, importIds.map(id => ({ collection: EA.imports, id })));
+  importIds.forEach((importId, index) => {
+    const record = storedImports[index];
     if (record) importRecords.set(importId, record);
-  }
+  });
   const deletions: Array<{ collection: string; id: string; prior: NonNullable<RecordVersion> }> = [];
   for (const row of rows) {
     const importId = typeof row.data.importId === 'string' ? row.data.importId : '';

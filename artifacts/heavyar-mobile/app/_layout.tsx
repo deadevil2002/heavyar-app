@@ -20,8 +20,10 @@ import HeavyarLaunchMotion, { claimHeavyarLaunchMotion } from "@/components/Heav
 import { HeavyarLoadingState } from "@/components/ui/heavyar";
 import { useLanguage } from "@/contexts/LanguageContext";
 import PolicyReacceptanceScreen from "@/components/PolicyReacceptanceScreen";
+import { enableQaPerformanceMode } from "@/utils/qaPerformance";
 
 void SplashScreen.preventAutoHideAsync();
+enableQaPerformanceMode();
 
 const queryClient = new QueryClient();
 
@@ -67,6 +69,7 @@ function RootLayoutNav() {
       <Stack.Screen name="create-listing" options={{ headerShown: false, presentation: "modal" }} />
       <Stack.Screen name="edit-equipment" options={{ headerShown: false }} />
       <Stack.Screen name="invoices" options={{ headerShown: false }} />
+      <Stack.Screen name="performance-report" options={{ headerShown: false }} />
     </Stack>
   );
 }

@@ -13,7 +13,17 @@ export type MutationDiagnostics = {
   firestoreLastOperation?: string;
   firestoreFailure?: { operation: string; status: number; code?: string };
   upstreamDurationMs: number;
-  upstream?: { service: 'cloudinary'; operation: 'image_upload' | 'image_delete'; status: number; ok: boolean };
+  upstream?: {
+    service: 'cloudinary' | 'tap';
+    operation: 'image_upload' | 'image_delete' | 'payment_create';
+    status: number;
+    ok: boolean;
+  };
+  payment?: {
+    firestoreBeforeProviderMs: number;
+    providerMs: number;
+    firestoreAfterProviderMs: number;
+  };
   cas?: 'not_used' | 'succeeded' | 'conflict' | 'failed';
   quota: {
     checked: boolean;
@@ -44,6 +54,7 @@ const SAFE_FIRESTORE_CODES = new Set([
 ]);
 
 const ROUTES: Array<[RegExp, string]> = [
+  [/^\/api\/create-payment$/, '/api/create-payment'],
   [/^\/api\/requests\/estimate$/, '/api/requests/estimate'],
   [/^\/api\/requests$/, '/api/requests'],
   [/^\/api\/listings$/, '/api/listings'],
@@ -134,5 +145,6 @@ export function mutationDiagnosticEvent(
       },
     } : {}),
     ...(diagnostics.upstream ? { upstream: diagnostics.upstream } : {}),
+    ...(diagnostics.payment ? { payment: diagnostics.payment } : {}),
   };
 }

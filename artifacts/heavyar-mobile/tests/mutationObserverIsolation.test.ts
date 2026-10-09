@@ -6,6 +6,13 @@ import ts from 'typescript';
 import { safeSupportCode } from '../services/mutationError';
 
 const unsubscribe: Array<() => void> = [];
+const performanceMock = {
+  trackNetwork: (_label: string, run: () => unknown) => run(),
+  readResponseText: (response: Response) => response.text(),
+  parseJson: (text: string) => JSON.parse(text),
+  markTimeout: () => {},
+  markCancellation: () => {},
+};
 afterEach(() => { unsubscribe.splice(0).forEach(stop => stop()); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 it('isolates synchronous and asynchronous observer failures and still notifies peers', async () => {
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -32,7 +39,7 @@ it('actual createListing returns committed success despite a failing observer', 
     './listingPayload': { sanitizeCreateListingPayload: (value: unknown) => value },
     './discoveryInvalidation': { invalidatePublicEquipment },
     './mutationError': { safeSupportCode },
-    '@/utils/mobilePerformance': { mobilePerformance: { trackNetwork: (_label: string, run: () => unknown) => run(), markTimeout: () => {}, markCancellation: () => {} } },
+    '@/utils/mobilePerformance': { mobilePerformance: performanceMock },
   };
   new Function('require', 'exports', code)((name: string) => modules[name] || {}, exports);
   const result = { success: true, id: 'committed-listing' };
@@ -55,7 +62,7 @@ it.each(['before', 'token', 'response'])('pins Worker request identity across %s
     './firebaseConfig': { getFirebaseAuth: () => auth },
     '../constants/worker': { WORKER_BASE_URL: 'https://worker.test' },
     './mutationError': { safeSupportCode },
-    '@/utils/mobilePerformance': { mobilePerformance: { trackNetwork: (_label: string, run: () => unknown) => run(), markTimeout: () => {}, markCancellation: () => {} } },
+    '@/utils/mobilePerformance': { mobilePerformance: performanceMock },
   };
   new Function('require', 'exports', code)((name: string) => modules[name] || {}, exports);
   const mock = vi.fn(async () => { auth.currentUser = other; return Response.json({ success: true }); });

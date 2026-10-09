@@ -582,7 +582,7 @@ export function useRemindersPreview() {
 export function useRemindersBulk() {
   return useMutation({
     mutationFn: (data: AccountTargetSelection) =>
-      fetchApi<{ success: boolean; targeted: number; sent: number; skippedVerified: number; skippedCooldown: number; skippedRestricted: number; missing: number; failed: number; results?: any }>('/email-verification/reminders/bulk', { method: 'POST', body: JSON.stringify(data) }),
+      fetchApi<{ success: boolean; queued?: boolean; jobId?: string; targeted: number; sent: number; skippedVerified: number; skippedCooldown: number; skippedRestricted: number; missing: number; failed: number }>('/email-verification/reminders/bulk', { method: 'POST', body: JSON.stringify(data) }),
     onSettled: () => refreshQueries(queryClient, accountRefreshKeys),
   });
 }

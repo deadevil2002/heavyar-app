@@ -122,6 +122,17 @@ class FirestoreRest {
       this.operations.push(`query:${body.transaction || 'none'}`);
       return Response.json(this.query(body, ++this.queryCalls));
     }
+    if (suffix === ':batchGet') {
+      expect(method).toBe('POST');
+      const body = JSON.parse(String(init.body));
+      expect(Array.isArray(body.documents)).toBe(true);
+      this.operations.push(`batchGet:${body.transaction || 'none'}`);
+      return Response.json(body.documents.map((name: string) => {
+        const path = name.split('/documents/')[1] || '';
+        const stored = this.documents.get(path);
+        return stored ? { found: stored } : { missing: name };
+      }));
+    }
     if (suffix === ':commit') {
       expect(method).toBe('POST');
       const body = JSON.parse(String(init.body));

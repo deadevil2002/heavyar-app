@@ -38,11 +38,7 @@ describe('driver live synchronization', () => {
   });
 
   it('sends only driverId and trimmed notes contract fields', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ success: true, requestId: 'request-1' }),
-    });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ success: true, requestId: 'request-1' }));
     vi.stubGlobal('fetch', fetchMock);
     const { createDriverRequest } = await import('../services/workerClient');
 
@@ -55,11 +51,7 @@ describe('driver live synchronization', () => {
   });
 
   it('includes the name query and canonical availability in real search URLs', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ success: true, drivers: [] }),
-    });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ success: true, drivers: [] }));
     vi.stubGlobal('fetch', fetchMock);
     const { searchDrivers } = await import('../services/workerClient');
 

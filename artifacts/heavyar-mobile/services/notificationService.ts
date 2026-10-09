@@ -99,14 +99,17 @@ async function request<T>(path: string, init?: RequestInit, expectedUid?: string
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        mobilePerformance.trackNetwork(label, () => fetch(`${WORKER_BASE_URL}${path}`, {
-          ...init,
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`,
-            ...(init?.headers || {}),
-          },
-        })),
+        mobilePerformance.trackNetwork(label, async () => {
+          const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+            ...init,
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${authToken}`,
+              ...(init?.headers || {}),
+            },
+          });
+          return { response, text: await mobilePerformance.readResponseText(response, label) };
+        }),
         new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('NOTIFICATIONS_TIMEOUT')), 15_000); }),
       ]);
     } catch (error) {
@@ -117,19 +120,22 @@ async function request<T>(path: string, init?: RequestInit, expectedUid?: string
       if (timeout) clearTimeout(timeout);
     }
   };
-  let response = await send(token);
+  let exchange = await send(token);
+  let response = exchange.response;
   assertCurrent();
   if (response.status === 401 && user) {
     const refreshedToken = await user.getIdToken(true);
     assertCurrent();
-    response = await send(refreshedToken);
+    exchange = await send(refreshedToken);
+    response = exchange.response;
     assertCurrent();
     if (response.status === 401) {
       await signOut(auth).catch(() => undefined);
       throw new Error('SESSION_EXPIRED');
     }
   }
-  const body = await response.json().catch(() => ({}));
+  let body: any = {};
+  try { body = mobilePerformance.parseJson(exchange.text, label) || {}; } catch { /* handled as unavailable */ }
   assertCurrent();
   if (!response.ok || body.success === false) {
     const error = new Error(typeof body.error === 'string' ? body.error : response.status === 401 ? 'SESSION_EXPIRED' : 'NOTIFICATIONS_UNAVAILABLE');

@@ -37,8 +37,10 @@ describe('bounded Firestore read paths', () => {
     const batch = requestService.split('export async function fetchRequestEquipmentByIds(')[1]
       .split('export async function fetchRequestById(')[0];
     expect(batch).toContain('Promise.allSettled');
-    expect(batch).toContain('fetchRequestEquipmentById(id)');
-    expect(batch).toContain('result.status === \'fulfilled\'');
+    expect(batch).toContain('firestoreDocumentIdChunks(ids)');
+    expect(batch).toContain("where(documentId(), 'in', chunk)");
+    expect(batch).not.toContain('uniqueIds.map(async id');
+    expect(batch).toContain("result.status !== 'fulfilled'");
     expect(service).toContain('equipmentSnapshot: parseEquipmentRequestSnapshot');
     expect(source('../components/RequestCard.tsx')).not.toContain('fetchEquipmentById');
     expect(source('../app/(tabs)/requests/index.tsx')).toContain('fetchRequestEquipmentByIds');

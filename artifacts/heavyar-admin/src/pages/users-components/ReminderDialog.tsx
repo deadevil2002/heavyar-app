@@ -28,7 +28,7 @@ export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, se
   const singleMut = useSendReminder();
 
   const [preview, setPreview] = useState<{ targeted: number; eligible: number; alreadyVerified: number; cooldown: number; restricted: number; missing: number } | null>(null);
-  const [result, setResult] = useState<{ sent: number; skippedVerified: number; skippedCooldown: number; skippedRestricted: number; failed: number } | null>(null);
+  const [result, setResult] = useState<{ queued?: boolean; targeted?: number; sent: number; skippedVerified: number; skippedCooldown: number; skippedRestricted: number; failed: number } | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -74,7 +74,7 @@ export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, se
           : { scope: accountScope, uids: Array.from(selectedIds) };
         const res = await bulkMut.mutateAsync(payload);
         setResult(res);
-        toast({ title: t('اكتملت معالجة طلبات التذكير', 'Reminder requests processed') });
+        toast({ title: res.queued ? t('تمت جدولة طلبات التذكير', 'Reminder requests queued') : t('اكتملت معالجة طلبات التذكير', 'Reminder requests processed') });
         onSuccess();
       }
     } catch (err: any) {
@@ -99,11 +99,19 @@ export function ReminderDialog({ open, onOpenChange, targetUser, selectedIds, se
         <div className="py-4">
           {result ? (
             <div className="space-y-3">
+              {result.queued && (
+                <div className="flex justify-between items-center bg-primary/10 p-3 rounded-md border border-primary/20">
+                  <span className="text-sm font-medium text-primary">{t('قيد المعالجة الآمنة في الخلفية', 'Queued for safe background processing')}</span>
+                  <span className="font-bold text-primary">{result.targeted || 0}</span>
+                </div>
+              )}
+              {!result.queued && (
               <div className="flex justify-between items-center bg-emerald-500/10 p-3 rounded-md border border-emerald-500/20">
                 <span className="text-sm font-medium text-emerald-600">{t('تم الإرسال بنجاح', 'Sent successfully')}</span>
                 <span className="font-bold text-emerald-600">{result.sent}</span>
               </div>
-              {(result.skippedVerified > 0 || result.skippedCooldown > 0 || result.skippedRestricted > 0 || result.failed > 0) && (
+              )}
+              {!result.queued && (result.skippedVerified > 0 || result.skippedCooldown > 0 || result.skippedRestricted > 0 || result.failed > 0) && (
                 <div className="space-y-2 bg-muted/30 p-3 rounded-md border text-sm">
                   {result.skippedVerified > 0 && <div className="flex justify-between"><span>{t('موثق بالفعل', 'Already verified')}</span><span>{result.skippedVerified}</span></div>}
                   {result.skippedCooldown > 0 && <div className="flex justify-between"><span>{t('في فترة الانتظار', 'In cooldown period')}</span><span>{result.skippedCooldown}</span></div>}

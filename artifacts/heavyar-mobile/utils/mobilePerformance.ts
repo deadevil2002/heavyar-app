@@ -46,10 +46,21 @@ export interface MobilePerformanceMetric {
   p95DurationMs?: number;
 }
 
+export interface MobileResponseSizeMetric {
+  label: string;
+  status: number;
+  count: number;
+  totalBytes: number;
+  maxBytes: number;
+  p50Bytes: number;
+  p95Bytes: number;
+}
+
 export interface MobilePerformanceSnapshot {
   startedAtMs: number;
   capturedAtMs: number;
   metrics: MobilePerformanceMetric[];
+  responseSizes: MobileResponseSizeMetric[];
   events: MobilePerformanceEvent[];
 }
 
@@ -93,18 +104,21 @@ interface PerformanceState {
   metrics: Map<string, MutableMetric>;
   events: MobilePerformanceEvent[];
   durations: Map<string, number[]>;
+  responseSizes: Map<string, { label: string; status: number; samples: number[] }>;
 }
 
 const runtimeGlobal = globalThis as typeof globalThis & {
   __DEV__?: boolean;
   process?: { env?: { NODE_ENV?: string } };
 };
+const QA_PERFORMANCE_BUILD = process.env.EXPO_PUBLIC_HEAVYAR_QA_PERFORMANCE === '1';
 
 // Default-deny when neither signal exists. Expo explicitly defines __DEV__;
 // NODE_ENV=test permits deterministic tests outside Metro.
 const DEVELOPMENT_BUILD =
   runtimeGlobal.__DEV__ === true ||
-  runtimeGlobal.process?.env?.NODE_ENV === 'test';
+  runtimeGlobal.process?.env?.NODE_ENV === 'test' ||
+  QA_PERFORMANCE_BUILD;
 
 const clock = (): number =>
   typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -118,6 +132,7 @@ const state: PerformanceState = {
   metrics: new Map(),
   events: [],
   durations: new Map(),
+  responseSizes: new Map(),
 };
 
 const NOOP_PRESS: PressToVisibleMeasurement = Object.freeze({
@@ -231,6 +246,52 @@ export function configureMobilePerformance(
 
 export function isMobilePerformanceEnabled(): boolean {
   return DEVELOPMENT_BUILD && state.enabled;
+}
+
+export function isQaPerformanceBuild(): boolean {
+  return QA_PERFORMANCE_BUILD;
+}
+
+/** Exact UTF-8 byte length without retaining or exposing the response body. */
+export function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) || 0;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
+/** Records only a static route label, numeric status, and byte count. */
+export function recordResponseSize(label: string, status: number, bytes: number): void {
+  if (!state.enabled) return;
+  const normalizedLabel = safeLabel(label);
+  const normalizedStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : 0;
+  const key = `${normalizedLabel}:${normalizedStatus}`;
+  const metric = state.responseSizes.get(key) || { label: normalizedLabel, status: normalizedStatus, samples: [] };
+  metric.samples.push(Math.max(0, Math.floor(bytes)));
+  if (metric.samples.length > 200) metric.samples.shift();
+  state.responseSizes.set(key, metric);
+}
+
+/** Reads a body once. Wrap this inside trackNetwork so transfer time is included. */
+export async function readMeasuredResponseText(response: Response, label: string): Promise<string> {
+  const text = await response.text();
+  recordResponseSize(label, response.status, utf8ByteLength(text));
+  return text;
+}
+
+/** Parses an already-read body and records local JSON decode time separately. */
+export function parseMeasuredJson<T>(text: string, label: string): T | null {
+  if (!text) return null;
+  const startedAt = clock();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  } finally {
+    recordOperationDuration(`${safeLabel(label)}.json_decode`, clock() - startedAt);
+  }
 }
 
 export function countRender(label: string): void {
@@ -418,6 +479,7 @@ export function snapshotMobilePerformance(): MobilePerformanceSnapshot {
       startedAtMs: capturedAtMs,
       capturedAtMs,
       metrics: [],
+      responseSizes: [],
       events: [],
     };
   }
@@ -431,6 +493,19 @@ export function snapshotMobilePerformance(): MobilePerformanceSnapshot {
         : undefined;
       return { ...metric, p50DurationMs: percentile(0.5), p95DurationMs: percentile(0.95) };
     }),
+    responseSizes: Array.from(state.responseSizes.values(), metric => {
+      const samples = [...metric.samples].sort((a, b) => a - b);
+      const percentile = (fraction: number) => samples[Math.min(samples.length - 1, Math.ceil(samples.length * fraction) - 1)] || 0;
+      return {
+        label: metric.label,
+        status: metric.status,
+        count: samples.length,
+        totalBytes: samples.reduce((sum, value) => sum + value, 0),
+        maxBytes: samples.at(-1) || 0,
+        p50Bytes: percentile(0.5),
+        p95Bytes: percentile(0.95),
+      };
+    }),
     events: state.events.map((event) => ({ ...event })),
   };
 }
@@ -440,6 +515,7 @@ export function resetMobilePerformance(): void {
   state.metrics.clear();
   state.events.length = 0;
   state.durations.clear();
+  state.responseSizes.clear();
   state.startedAtMs = state.enabled ? clock() : 0;
 }
 
@@ -462,4 +538,7 @@ export const mobilePerformance = Object.freeze({
   startEventLoopLagMonitor,
   snapshot: snapshotMobilePerformance,
   reset: resetMobilePerformance,
+  isQaBuild: isQaPerformanceBuild,
+  readResponseText: readMeasuredResponseText,
+  parseJson: parseMeasuredJson,
 });

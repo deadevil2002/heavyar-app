@@ -6,6 +6,7 @@ import { getFirebaseDb } from './firebaseConfig';
 import type { Equipment, EquipmentRequest } from '@/types';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import { parseFirestoreEquipment, parseFirestoreRequest } from './requestFirestoreCodec';
+import { firestoreDocumentIdChunks } from './firestoreBatching';
 
 export const REQUESTS_PAGE_SIZE = 20;
 export type RequestFirestoreCursor = QueryDocumentSnapshot<DocumentData>;
@@ -17,12 +18,18 @@ export async function fetchRequestEquipmentById(id: string): Promise<Equipment |
 }
 
 export async function fetchRequestEquipmentByIds(ids: string[]): Promise<Map<string, Equipment>> {
-  const uniqueIds = [...new Set(ids.filter(Boolean))];
-  const results = await Promise.allSettled(uniqueIds.map(async id => {
-    return fetchRequestEquipmentById(id);
-  }));
   const equipment = new Map<string, Equipment>();
-  results.forEach((result, index) => { if (result.status === 'fulfilled' && result.value) equipment.set(uniqueIds[index], result.value); });
+  const results = await Promise.allSettled(firestoreDocumentIdChunks(ids).map(chunk =>
+    mobilePerformance.trackFirestoreRead('firestore.get-docs', () => getDocs(query(
+      collection(getFirebaseDb(), 'equipment'), where(documentId(), 'in', chunk),
+    ))),
+  ));
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue;
+    for (const snapshot of result.value.docs) {
+      equipment.set(snapshot.id, parseFirestoreEquipment(snapshot.id, snapshot.data() as Record<string, unknown>));
+    }
+  }
   return equipment;
 }
 

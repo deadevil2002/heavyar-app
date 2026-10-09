@@ -6,16 +6,25 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_HEAVYAR_QA_PERFORMANCE": "1"
+      }
     },
     "preview": {
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_HEAVYAR_QA_PERFORMANCE": "1"
+      },
       "android": {
         "buildType": "apk"
       }
     },
     "production": {
       "distribution": "store",
+      "env": {
+        "EXPO_PUBLIC_HEAVYAR_QA_PERFORMANCE": "0"
+      },
       "android": {
         "buildType": "app-bundle"
       }

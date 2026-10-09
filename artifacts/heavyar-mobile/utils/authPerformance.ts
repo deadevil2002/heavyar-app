@@ -15,6 +15,7 @@ let activeTrace: AuthLoginTrace | null = null;
 export function enableAuthPerformanceTracing(): void {
   if (configured || runtime.__DEV__ !== true) return;
   configured = true;
+  if (mobilePerformance.isEnabled()) return;
   mobilePerformance.configure({
     enabled: true,
     maxEvents: 500,

@@ -56,6 +56,12 @@ describe('invitation HTTP and Firestore resource contract', () => {
       }
       if (url.hostname !== 'firestore.googleapis.com') throw new Error(`Unexpected test network: ${url.hostname}`);
       const body = init.body ? JSON.parse(init.body) : null;
+      if (url.pathname.endsWith(':batchGet')) {
+        return Response.json((body.documents || []).map((name: string) => {
+          const stored = docs.get(name);
+          return stored ? { found: stored } : { missing: name };
+        }));
+      }
       if (url.pathname.endsWith(':runQuery')) {
         const collection = body.structuredQuery.from[0].collectionId;
         return Response.json([...docs.values()].filter(doc => doc.name.startsWith(`${prefix}${collection}/`)).map(document => ({ document })));

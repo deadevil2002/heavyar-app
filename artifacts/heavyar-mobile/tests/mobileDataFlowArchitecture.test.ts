@@ -22,7 +22,10 @@ describe('mobile data-flow architecture guardrails', () => {
     }
     const publicSearch = read('../services/equipmentSearchService.ts');
     expect(publicSearch).toContain('setTimeout(() => controller.abort(), 15_000)');
-    expect(publicSearch).toContain("trackNetwork('worker.api.equipment.search'");
+    expect(publicSearch).toContain("'worker.api.equipment.search'");
+    expect(publicSearch).toContain("'worker.api.equipment.detail'");
+    expect(publicSearch).toContain('trackNetwork(label');
+    expect(publicSearch).toContain('readResponseText(response, label)');
   });
 
   it('guards async request and chat enrichment after account or route teardown', () => {

@@ -33,6 +33,7 @@ import {
 } from './rentalV2';
 import { request as boundedWorkerRequest } from './workerClient';
 import { mobilePerformance } from '@/utils/mobilePerformance';
+import { firestoreDocumentIdChunks } from './firestoreBatching';
 
 const loggedIndexFallbacks = new Set<string>();
 
@@ -352,14 +353,18 @@ export async function fetchEquipmentByOwner(
 }
 
 export async function fetchEquipmentByIds(ids: string[]): Promise<Map<string, Equipment>> {
-  const uniqueIds = [...new Set(ids.filter(Boolean))];
   const equipment = new Map<string, Equipment>();
-  // Each listing is deliberately isolated: a missing, deleted, hidden, or
-  // legacy listing must not make an otherwise readable request page fail.
-  const results = await Promise.allSettled(uniqueIds.map(id => fetchEquipmentById(id)));
-  results.forEach((result, index) => {
-    if (result.status === 'fulfilled' && result.value) equipment.set(uniqueIds[index], result.value);
-  });
+  // Missing/deleted listings are omitted by the bounded IN query. Chunk
+  // failures remain isolated without issuing one network request per ID.
+  const results = await Promise.allSettled(firestoreDocumentIdChunks(ids).map(chunk =>
+    getDocs(query(collection(getFirebaseDb(), 'equipment'), where(documentId(), 'in', chunk))),
+  ));
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue;
+    for (const snapshot of result.value.docs) {
+      equipment.set(snapshot.id, parseEquipment(snapshot.id, snapshot.data() as Record<string, unknown>));
+    }
+  }
   return equipment;
 }
 

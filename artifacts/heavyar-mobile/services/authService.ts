@@ -59,14 +59,32 @@ const FIRESTORE_PROFILE_TIMEOUT_MS = 40_000;
 const FIREBASE_SIGN_IN_TIMEOUT_MS = 20_000;
 const authPolicyCache = createShortLivedRequestCache<AuthPolicy>(AUTH_POLICY_CACHE_MS);
 
+async function measuredWorkerFetch(
+  label: string,
+  input: string,
+  init: RequestInit | undefined,
+  timeoutCode: string,
+): Promise<{ response: Response; text: string }> {
+  return mobilePerformance.trackNetwork(label, async () => {
+    const response = await fetchWithTimeout(input, init, AUTH_HTTP_TIMEOUT_MS, timeoutCode);
+    return { response, text: await mobilePerformance.readResponseText(response, label) };
+  });
+}
+
 export async function fetchAuthPolicy(): Promise<AuthPolicy> {
   try {
     return await authPolicyCache.get(async () => {
-      const response = await mobilePerformance.trackNetwork('auth.policy', () => fetchWithTimeout(
-        `${WORKER_BASE_URL}/api/auth/config`, undefined, AUTH_HTTP_TIMEOUT_MS, 'AUTH_POLICY_TIMEOUT',
-      ));
+      const label = 'auth.policy';
+      const exchange = await mobilePerformance.trackNetwork(label, async () => {
+        const response = await fetchWithTimeout(
+          `${WORKER_BASE_URL}/api/auth/config`, undefined, AUTH_HTTP_TIMEOUT_MS, 'AUTH_POLICY_TIMEOUT',
+        );
+        return { response, text: await mobilePerformance.readResponseText(response, label) };
+      });
+      const { response } = exchange;
       if (!response.ok) throw new Error('AUTH_POLICY_UNAVAILABLE');
-      const data = await response.json() as any;
+      const data = mobilePerformance.parseJson<any>(exchange.text, label);
+      if (!data) throw new Error('AUTH_POLICY_UNAVAILABLE');
       const config = data.effective || data.config?.effective || data.config || data;
       const requested = data.requested || data.config?.requested || {};
       const status = data.status || data.config?.status || {};
@@ -96,9 +114,15 @@ export type MarketConfig = { code: GccCountryCode; enabled: boolean; marketplace
 
 export async function fetchMarketConfig(signal?: AbortSignal): Promise<MarketConfig[]> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}/api/config/markets`, { signal });
+    const label = 'worker.api.config.markets';
+    const exchange = await mobilePerformance.trackNetwork(label, async () => {
+      const response = await fetch(`${WORKER_BASE_URL}/api/config/markets`, { signal });
+      return { response, text: await mobilePerformance.readResponseText(response, label) };
+    });
+    const { response } = exchange;
     if (!response.ok) throw new Error('MARKET_CONFIG_UNAVAILABLE');
-    const data = await response.json() as { countries?: MarketConfig[] };
+    const data = mobilePerformance.parseJson<{ countries?: MarketConfig[] }>(exchange.text, label);
+    if (!data) throw new Error('MARKET_CONFIG_INVALID');
     if (!Array.isArray(data.countries)) throw new Error('MARKET_CONFIG_INVALID');
     return data.countries;
   } catch {
@@ -150,11 +174,11 @@ export async function sendVerificationEmail(locale: 'ar' | 'en' = 'ar'): Promise
   if (!firebaseUser) return 'unavailable';
   try {
     const token = await firebaseUser.getIdToken();
-    const response = await fetch(`${WORKER_BASE_URL}/api/auth/email-verification`, {
+    const { response } = await measuredWorkerFetch('auth.email_verification_send', `${WORKER_BASE_URL}/api/auth/email-verification`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ locale }),
-    });
+    }, 'EMAIL_VERIFICATION_TIMEOUT');
     if (response.status === 429) return 'rate_limited';
     return response.ok ? 'sent' : 'unavailable';
   } catch {
@@ -170,14 +194,20 @@ export async function fetchEmailVerificationStatus(): Promise<{ emailVerified: b
   if (!firebaseUser) return null;
   try {
     const token = await firebaseUser.getIdToken();
-    const response = await mobilePerformance.trackNetwork('auth.email_verification_request', () => fetchWithTimeout(
-      `${WORKER_BASE_URL}/api/auth/email-verification`,
-      { headers: { Authorization: `Bearer ${token}` } },
-      AUTH_HTTP_TIMEOUT_MS,
-      'EMAIL_VERIFICATION_TIMEOUT',
-    ));
+    const label = 'auth.email_verification_request';
+    const exchange = await mobilePerformance.trackNetwork(label, async () => {
+      const response = await fetchWithTimeout(
+        `${WORKER_BASE_URL}/api/auth/email-verification`,
+        { headers: { Authorization: `Bearer ${token}` } },
+        AUTH_HTTP_TIMEOUT_MS,
+        'EMAIL_VERIFICATION_TIMEOUT',
+      );
+      return { response, text: await mobilePerformance.readResponseText(response, label) };
+    });
+    const { response } = exchange;
     if (!response.ok) return null;
-    const data = await response.json() as any;
+    const data = mobilePerformance.parseJson<any>(exchange.text, label);
+    if (!data) return null;
     return { emailVerified: data.emailVerified === true, policy: data.policy };
   } catch {
     return null;
@@ -188,19 +218,21 @@ export async function fetchEmailVerificationStatus(): Promise<{ emailVerified: b
 export async function loginWithPhone(phone: string, password: string): Promise<FirebaseUser> {
   const normalizedPhone = normalizeGccPhone(phone);
   if (!normalizedPhone) throw new Error('PHONE_LOGIN_INVALID');
-  let response: Response;
+  const label = 'auth.phone_login';
+  let exchange: { response: Response; text: string };
   try {
-    response = await fetchWithTimeout(`${WORKER_BASE_URL}/api/auth/alias-login`, {
+    exchange = await measuredWorkerFetch(label, `${WORKER_BASE_URL}/api/auth/alias-login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone: normalizedPhone, password }),
-    }, AUTH_HTTP_TIMEOUT_MS, 'PHONE_LOGIN_TIMEOUT');
+    }, 'PHONE_LOGIN_TIMEOUT');
   } catch {
     throw new Error('PHONE_LOGIN_UNAVAILABLE');
   }
+  const { response } = exchange;
   if (response.status === 429) throw new Error('PHONE_LOGIN_RATE_LIMITED');
   if (response.status === 503) throw new Error('PHONE_LOGIN_UNAVAILABLE');
-  const body = await response.json().catch(() => null) as { customToken?: unknown } | null;
+  const body = mobilePerformance.parseJson<{ customToken?: unknown }>(exchange.text, label);
   if (!response.ok || typeof body?.customToken !== 'string' || Object.keys(body).some(key => key !== 'customToken')) {
     throw new Error('PHONE_LOGIN_INVALID');
   }
@@ -280,20 +312,22 @@ export async function registerWithEmail(
       }
     }
     const token = await credential.user.getIdToken();
-    let response: Response;
+    const label = 'auth.registration_profile';
+    let exchange: { response: Response; text: string };
     try {
-      response = await fetchWithTimeout(`${WORKER_BASE_URL}/api/register-profile`, {
+      exchange = await measuredWorkerFetch(label, `${WORKER_BASE_URL}/api/register-profile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(buildRegistrationProfilePayload(profileData)),
-      }, AUTH_HTTP_TIMEOUT_MS, 'REGISTRATION_TIMEOUT');
+      }, 'REGISTRATION_TIMEOUT');
     } catch {
       const networkError = new Error('NETWORK_UNAVAILABLE');
       (networkError as Error & { errorCode?: string }).errorCode = 'NETWORK_UNAVAILABLE';
       throw networkError;
     }
+    const { response } = exchange;
     if (!response.ok) {
-      const failure = await response.json().catch(() => null) as { safeToDeleteIdentity?: unknown; error?: unknown; errorCode?: unknown } | null;
+      const failure = mobilePerformance.parseJson<{ safeToDeleteIdentity?: unknown; error?: unknown; errorCode?: unknown }>(exchange.text, label);
       failureCode = typeof failure?.errorCode === 'string' ? failure.errorCode : undefined;
       safeToDeleteIdentity = failure?.safeToDeleteIdentity === true;
       const protocolCode = response.status >= 500 ? 'REGISTRATION_RETRY_REQUIRED' : failureCode;
@@ -359,13 +393,15 @@ export async function provisionCurrentIdentity(profileData: Parameters<typeof bu
   if (!firebaseUser) throw Object.assign(new Error('AUTH_REQUIRED'), { errorCode: 'AUTH_REQUIRED' });
   const token = await firebaseUser.getIdToken();
   const uid = firebaseUser.uid;
-  const response = await fetchWithTimeout(`${WORKER_BASE_URL}/api/register-profile`, {
+  const label = 'auth.registration_profile_resume';
+  const exchange = await measuredWorkerFetch(label, `${WORKER_BASE_URL}/api/register-profile`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(buildRegistrationProfilePayload(profileData)),
-  }, AUTH_HTTP_TIMEOUT_MS, 'REGISTRATION_TIMEOUT');
+  }, 'REGISTRATION_TIMEOUT');
+  const { response } = exchange;
   if (getFirebaseAuth().currentUser?.uid !== uid) throw Object.assign(new Error('AUTH_SESSION_CHANGED'), { errorCode: 'AUTH_SESSION_CHANGED' });
   if (!response.ok) {
-    const failure = await response.json().catch(() => ({})) as { errorCode?: string };
+    const failure = mobilePerformance.parseJson<{ errorCode?: string }>(exchange.text, label) || {};
     throw Object.assign(new Error(failure.errorCode || 'REGISTRATION_RETRY_REQUIRED'), { errorCode: failure.errorCode || 'REGISTRATION_RETRY_REQUIRED' });
   }
   return firebaseUser;
@@ -386,14 +422,21 @@ export async function fetchAccountProfileStatus(): Promise<AccountProfileStatus>
   const firebaseUser = getFirebaseAuth().currentUser;
   if (!firebaseUser) throw Object.assign(new Error('AUTH_REQUIRED'), { errorCode: 'AUTH_REQUIRED' });
   const token = await firebaseUser.getIdToken();
-  const response = await mobilePerformance.trackNetwork('auth.account_profile_status_request', () => fetchWithTimeout(
-    `${WORKER_BASE_URL}/api/account/profile-status`,
-    { headers: { Authorization: `Bearer ${token}` } },
-    AUTH_HTTP_TIMEOUT_MS,
-    'PROFILE_STATUS_TIMEOUT',
-  ));
+  const label = 'auth.account_profile_status_request';
+  const exchange = await mobilePerformance.trackNetwork(label, async () => {
+    const response = await fetchWithTimeout(
+      `${WORKER_BASE_URL}/api/account/profile-status`,
+      { headers: { Authorization: `Bearer ${token}` } },
+      AUTH_HTTP_TIMEOUT_MS,
+      'PROFILE_STATUS_TIMEOUT',
+    );
+    return { response, text: await mobilePerformance.readResponseText(response, label) };
+  });
+  const { response } = exchange;
   if (!response.ok) throw Object.assign(new Error('PROFILE_STATUS_UNAVAILABLE'), { errorCode: 'PROFILE_STATUS_UNAVAILABLE' });
-  return response.json() as Promise<AccountProfileStatus>;
+  const body = mobilePerformance.parseJson<AccountProfileStatus>(exchange.text, label);
+  if (!body) throw Object.assign(new Error('PROFILE_STATUS_UNAVAILABLE'), { errorCode: 'PROFILE_STATUS_UNAVAILABLE' });
+  return body;
 }
 
 export async function deleteIncompleteIdentity(): Promise<void> {
@@ -401,14 +444,16 @@ export async function deleteIncompleteIdentity(): Promise<void> {
   if (!firebaseUser) throw Object.assign(new Error('AUTH_REQUIRED'), { errorCode: 'AUTH_REQUIRED' });
   const token = await firebaseUser.getIdToken();
   const uid = firebaseUser.uid;
-  const response = await fetchWithTimeout(`${WORKER_BASE_URL}/api/account/identity-delete`, {
+  const label = 'auth.identity_delete';
+  const exchange = await measuredWorkerFetch(label, `${WORKER_BASE_URL}/api/account/identity-delete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ confirmation: 'DELETE_INCOMPLETE_ACCOUNT' }),
-  }, AUTH_HTTP_TIMEOUT_MS, 'IDENTITY_DELETE_TIMEOUT');
+  }, 'IDENTITY_DELETE_TIMEOUT');
+  const { response } = exchange;
   if (getFirebaseAuth().currentUser?.uid !== uid) throw Object.assign(new Error('AUTH_SESSION_CHANGED'), { errorCode: 'AUTH_SESSION_CHANGED' });
   if (!response.ok) {
-    const failure = await response.json().catch(() => ({})) as { errorCode?: string };
+    const failure = mobilePerformance.parseJson<{ errorCode?: string }>(exchange.text, label) || {};
     throw Object.assign(new Error(failure.errorCode || 'AUTH_IDENTITY_DELETE_UNAVAILABLE'), {
       errorCode: failure.errorCode || 'AUTH_IDENTITY_DELETE_UNAVAILABLE',
     });
@@ -432,11 +477,11 @@ export async function requestPasswordReset(identifier: string, locale: 'ar' | 'e
   const isPhone = normalizeGccPhone(compactPhone) !== null;
   if (!isEmail && !isPhone) return 'invalid';
   try {
-    const response = await fetchWithTimeout(`${WORKER_BASE_URL}/api/auth/password-reset`, {
+    const { response } = await measuredWorkerFetch('auth.password_reset', `${WORKER_BASE_URL}/api/auth/password-reset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ identifier: normalized, ...(isEmail ? { email: normalized } : {}), locale }),
-    }, AUTH_HTTP_TIMEOUT_MS, 'PASSWORD_RESET_TIMEOUT');
+    }, 'PASSWORD_RESET_TIMEOUT');
     return response.ok ? 'sent' : 'unavailable';
   } catch {
     return 'unavailable';

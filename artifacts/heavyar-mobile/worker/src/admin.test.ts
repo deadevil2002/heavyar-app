@@ -183,6 +183,23 @@ describe('admin authorization and operational boundary', () => {
     expect(result.eligible).toBe(0);
   });
 
+  test('bulk verification reminders return a durable job instead of sending emails in the request', async () => {
+    const commits: unknown[][] = [];
+    __adminTest.captureCommits(commits);
+    __adminTest.setFirestore(() => null);
+    const support = { uid: 'support-1', admin: true, role: 'admin' as const, permissionRole: 'support', testInjected: true as const };
+    const result = await handleAdmin(request('/api/admin/email-verification/reminders/bulk', { uids: ['user-a', 'user-b'] }), env, support) as any;
+    expect(result.success).toBe(true);
+    expect(result.queued).toBe(true);
+    expect(result.targeted).toBe(2);
+    expect(result.sent).toBe(0);
+    expect(typeof result.jobId).toBe('string');
+    const serialized = JSON.stringify(commits);
+    expect(serialized).toContain('/emailVerificationReminderJobs/');
+    expect(serialized).toContain('email_verification_reminder_bulk_queued');
+    expect(serialized).not.toContain('providerMessageId');
+  });
+
   test('deletion enqueue consumes immutable preview token and ignores changed target input', async () => {
     let consumed = false;
     const commits: unknown[][] = [];

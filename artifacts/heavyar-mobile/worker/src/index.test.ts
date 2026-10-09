@@ -429,6 +429,46 @@ describe('worker security boundary', () => {
     } finally { globalThis.fetch = old; __test.captureCommits(undefined); }
   });
 
+  for (const concurrency of [2, 5]) {
+    test(`${concurrency} concurrent create-payment calls share one Tap attempt`, async () => {
+      __test.setAuth({ uid: 'customer-1', admin: false });
+      __test.setFirestore((collection) => collection === 'equipmentRequests'
+        ? { id: 'r', customerUid: 'customer-1', status: 'completed', amount: 100, paymentStatus: 'unpaid', equipmentId: 'e' }
+        : null);
+      const commits: unknown[][] = [];
+      __test.captureCommits(commits);
+      const old = globalThis.fetch;
+      let tapCalls = 0;
+      let idempotencyKey = '';
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (!String(input).includes('tap.company')) return new Response('{}');
+        tapCalls += 1;
+        idempotencyKey = new Headers(init?.headers).get('Idempotency-Key') || '';
+        const submitted = JSON.parse(String(init?.body));
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return new Response(JSON.stringify({
+          id: 'charge-concurrent', status: 'INITIATED', amount: 115, currency: 'SAR',
+          transaction: { url: 'https://checkout.payments.tap.company/concurrent' },
+          metadata: submitted.metadata,
+        }));
+      }) as typeof fetch;
+      try {
+        const responses = await Promise.all(Array.from({ length: concurrency }, () =>
+          worker.fetch(request('/api/create-payment', { requestId: 'r' }, { Authorization: 'Bearer test' }), { ...env, TAP_SECRET_KEY_TEST: 'test' }),
+        ));
+        const bodies = await Promise.all(responses.map(response => response.json() as Promise<any>));
+        expect(responses.every(response => response.status === 200)).toBe(true);
+        expect(new Set(bodies.map(body => body.paymentId))).toEqual(new Set(['charge-concurrent']));
+        expect(tapCalls).toBe(1);
+        expect(idempotencyKey).toBe('heavyar-payment:customer-1:r');
+        expect(commits).toHaveLength(2);
+      } finally {
+        globalThis.fetch = old;
+        __test.captureCommits(undefined);
+      }
+    });
+  }
+
   test('legacy acceptance is reported without making a complete account non-operational', async () => {
     const uid = 'legacy-operational';
     const profile = {

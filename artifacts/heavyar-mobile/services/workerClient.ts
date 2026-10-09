@@ -130,8 +130,14 @@ export async function request<T>(path: string, init: RequestInit = {}, authentic
   assertSession();
   const bounded = requestSignal(init.signal);
   let response: Response;
+  let responseText = '';
   try {
-    response = await mobilePerformance.trackNetwork(label, () => fetch(`${WORKER_BASE_URL}${path}`, { ...init, headers, signal: bounded.signal }));
+    const exchange = await mobilePerformance.trackNetwork(label, async () => {
+      const result = await fetch(`${WORKER_BASE_URL}${path}`, { ...init, headers, signal: bounded.signal });
+      return { response: result, text: await mobilePerformance.readResponseText(result, label) };
+    });
+    response = exchange.response;
+    responseText = exchange.text;
   } catch {
     if (init.signal?.aborted) { mobilePerformance.markCancellation(label); throw new WorkerError('Request cancelled', 0, 'REQUEST_CANCELLED'); }
     if (bounded.timedOut()) { mobilePerformance.markTimeout(label); throw new WorkerError('Request timed out', 0, 'NETWORK_TIMEOUT'); }
@@ -139,7 +145,7 @@ export async function request<T>(path: string, init: RequestInit = {}, authentic
   } finally { bounded.cleanup(); }
   assertSession();
   let body: any = null;
-  try { body = await response.json(); } catch { /* empty response */ }
+  try { body = mobilePerformance.parseJson(responseText, label); } catch { /* empty or non-JSON response */ }
   assertSession();
   if (!response.ok || body?.success === false) {
     const code = typeof body?.errorCode === 'string' ? body.errorCode : typeof body?.code === 'string' ? body.code
