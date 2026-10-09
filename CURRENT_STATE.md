@@ -2,7 +2,7 @@
 
 ## Current date
 
-2026-10-04 (Asia/Riyadh).
+2026-10-10 (Asia/Riyadh).
 
 ## Source baseline
 
@@ -15,15 +15,15 @@
 | Worker root | `artifacts/heavyar-mobile/worker` |
 | Handoff baseline | The Git commit containing this document and `HANDOFF.md` |
 
-The committed GitHub baseline includes the approved authentication recovery/performance, coherent mobile data-flow, bounded-operation, account-switch safety, request N+1 removal, and cold-route responsiveness work. A GitHub commit or push is source synchronization only and does not mean any release surface was deployed.
+The committed GitHub baseline includes the approved authentication recovery/performance, coherent mobile data-flow, bounded-operation, account-switch safety, request N+1 removal, cold-route responsiveness, and end-to-end performance observability/data-budget work. A GitHub commit or push is source synchronization only and does not mean any release surface was deployed.
 
 ## Local/GitHub state versus deployed Production
 
 | Surface | Source state | Deployed Production state |
 |---|---|---|
-| Mobile | Auth/data-flow/performance batch is in the handoff baseline | No EAS build, APK, AAB, or store submission was produced from this batch |
-| Worker/API | Source and tests include controlled driver concurrency and supporting data-flow changes | This batch was not deployed. The last separately verified Worker deployment before it was version `8e09fc26-4dd6-4dad-8fcc-8a3ef6ee8c71` from commit `dfb2aaa91cdbce75e33a07701d1dcf305d074020` |
-| Admin | Existing source remains in the repository; no Admin source change was required by this batch | No Admin/Firebase Hosting deployment was performed for this batch |
+| Mobile | Source includes privacy-safe QA performance mode, response-size instrumentation, deterministic read/request budgets, and the approved N+1/listener/payment safeguards | No EAS build, APK, AAB, or store submission was produced from this batch; a new internal build is required for physical QA measurements |
+| Worker/API | Source includes privacy-safe timing diagnostics, explicit Firestore read/query counters, bounded batching, payment concurrency protection, and durable background verification-reminder jobs | Deployed from commit `39c70b880d46818eb87e976f8da0bd21336b9585`; current Worker version `0cb28a33-490a-45a4-a155-bf08351124b8`; public market-config smoke check returned HTTP 200 |
+| Admin | Source includes the queued verification-reminder UX required by the durable background job contract | No Admin/Firebase Hosting deployment was performed for this batch |
 | Website | Canonical content remains in separate repository `deadevil2002/heavyar-website` | Privacy commit `90fba5348b77a1631f93cbeb42334cafa24406d9` and support-route commit `65fb49deefe977834d95838d73f6b72033a86390` are deployed; public `/privacy`, `/support`, and `/en/support` return HTTP 200 |
 | Production data | No business-data mutation in this freeze/sync phase | Unchanged |
 
@@ -87,6 +87,22 @@ Measured Android/Expo Go first-visible shell results:
 
 The Requests module was demonstrably prewarmed `81.6 s` before one Customer press and its cached evaluation measured `0.27 ms`; the remaining Customer delay was therefore not cold route evaluation. Clean optimized runs recorded maximum route event-loop lag `394.9 ms`; the largest noisy Expo Go outlier was `1638.6 ms`. A local production-mode Android export succeeded, but real production-device timing has not been measured and must not be inferred from Expo Go.
 
+## Performance observability and data budgets — 2026-10-10
+
+The detailed source audit and deterministic budgets are recorded in `docs/PERFORMANCE_DATA_BUDGET_AUDIT.md`.
+
+- QA performance reporting is explicitly gated by `EXPO_PUBLIC_HEAVYAR_QA_PERFORMANCE`; it records static operation labels, durations, status, and exact UTF-8 JSON byte counts only. It excludes UIDs, emails, names, request/equipment identifiers, search text, and payload bodies.
+- Physical internal-build latency percentiles and representative Production JSON rankings remain **UNVERIFIED**. No emulator timing or deterministic fixture size is presented as Google Play/Production evidence.
+- Exact deterministic cold-Home budgets are: Customer `6` HTTP requests, `11` Firestore query operations, and `16 + N` logical document reads (`N <= 41`, maximum `57`); Provider `5` / `8` / `14`; Driver `5` / `9` / `15`; Guest `3` / `5` / `10 + N` (maximum `51`). Stable mounted warm Home is `0` / `0` / `0` within cache/stale windows.
+- Request first-page budget is at most `2` Firestore queries and `40` logical document reads. Successful Rental V2 estimate/create budgets are respectively at most `6`/`303` and `8`/`305`.
+- Five mobile `onSnapshot` listener shapes are inventoried; every subscription has route/effect cleanup and account-switch protection. No listener leak remains.
+- Across Mobile, Worker, and Admin there are `79` collection-query shapes: `74` explicitly limited, `1` bounded spread, `2` exact-key `IN` queries, and `2` aggregate-only queries. Unsafe unbounded collection queries: `0`.
+- All avoidable audited N+1 patterns were removed or batched. Remaining looped I/O is limited to bounded CAS/lease/transaction work, fixed query families, background processors, and bounded external-provider batches where per-item semantics are required.
+- Payment creation remains synchronous because checkout requires the Tap result. Mobile double-tap protection, Worker same-isolate coalescing, durable Firestore/Tap idempotency, and two-way/five-way concurrency regressions pass.
+- Bulk verification reminders use durable bounded background jobs (`5` jobs and `5` recipients per tick); interactive verification/password-reset paths remain synchronous where provider acceptance is part of the response contract.
+- Firestore is in `me-central2`; the Worker runs on Cloudflare's global edge. Physical Worker-to-Firestore p50/p95 is unverified pending an authorized QA measurement run.
+- Image uploads still follow App → Worker → Cloudinary. A signed direct-upload design is recommended for a later separately authorized migration; no upload-path migration occurred in this phase.
+
 ## UI and runtime status
 
 - Current iOS release capability: identity/Nafath verification UI is **DISABLED for all iOS users**. The Profile menu/badge and verification fetch are gated; direct and notification verification links return to Profile. Android/web retain the prior capability behavior.
@@ -100,7 +116,7 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 
 ## Payments and commercial status
 
-- The current-release compliance closure baseline is committed in GitHub. Source now also preserves the previous terms-only registration contract as explicit `legacy_unversioned` evidence while keeping current-client registration strict and adding role-aware current-policy re-acceptance. None of this compliance source is deployed yet.
+- The current-release compliance closure baseline is committed in GitHub. Source also preserves the previous terms-only registration contract as explicit `legacy_unversioned` evidence while keeping current-client registration strict and adding role-aware current-policy re-acceptance. The current Worker source is deployed; mobile and Admin source changes still require their separately authorized release processes.
 - Legacy acceptance never fabricates current versions, legal capacity, provider business authority, or role-specific terms. Existing versionless users are interpreted at runtime without a Production backfill; previous clients remain operational while `LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED` is true.
 - Tap environment: **TEST**. LIVE is not active.
 - Current effective commercial rule: **10% provider-paid** (`1000` basis points).
@@ -131,30 +147,30 @@ The Requests module was demonstrably prewarmed `81.6 s` before one Customer pres
 6. Google and Apple sign-in remain intentionally hidden/not implemented.
 7. Before App Store submission, the external developer must complete Apple authentication/signing and APNs setup, build and inspect the signed archive/SDK privacy manifests and required-reason APIs, enter App Store Connect metadata, App Privacy answers, Review Notes, and Store Review credentials, complete real-device QA, upload to TestFlight, and perform the final submission. The final public privacy/support deployment is verified separately above.
 8. Legacy policy-acceptance compatibility cannot be retired until the owner explicitly approves retirement after updated-store adoption and migration/re-acceptance readiness are verified.
+9. Physical top-five latency percentiles, Worker-to-Firestore latency, 1/5/10 MB upload timings, and representative largest/top-ten mobile JSON responses remain unverified until a new authorized internal QA build is exercised with safe fixtures and scenarios.
 
 ## Validation status
 
-Current-release compliance source gate on 2026-10-04:
+Performance observability/data-budget gate on 2026-10-10:
 
 | Check | Result |
 |---|---|
 | Mobile TypeScript | PASS |
-| Full mobile tests | PASS — 426/426 (371 base Vitest + 41 jsdom/discovery Vitest + 14 Node) |
+| Full mobile tests | PASS — 445/445 (390 base Vitest + 41 jsdom/discovery Vitest + 14 Node) |
 | Worker TypeScript | PASS |
-| Full Worker tests | PASS — 505/505 |
-| Focused iOS privacy/verification tests | PASS — 6/6 |
-| Store Review contract tests | PASS — 6/6 |
-| Admin tests/build | PASS — 96/96; build complete |
-| Firestore Rules tests | PASS — 15/15 |
-| Separate website legal-policy tests/build | PASS — 57/57; build complete |
-| `git diff --check` | PASS (line-ending warnings only) |
+| Full Worker tests | PASS — 556/556 |
+| Admin tests | PASS — 81/81 |
+| Shared tests | No test files present |
+| Root TypeScript | PASS |
+| `git diff --check` | PASS |
 | Refetch storm | NONE |
 | Listener leak | NONE |
 | Stale-account data | NONE |
 | Production data modified | NO |
 | Tap payment created | NO |
 | EAS/mobile build | NO |
-| Production deployment for this batch | NO |
+| Worker Production deployment | PASS — version `0cb28a33-490a-45a4-a155-bf08351124b8`; required binding inventory preserved 16/16; public smoke HTTP 200 |
+| Mobile/Admin deployment for this batch | NO |
 
 ## Permanent safety memory
 
@@ -168,4 +184,4 @@ Current-release compliance source gate on 2026-10-04:
 
 ## Next recommended phase
 
-Run the real Android Guest/Customer/Provider/Driver regression matrix and remote-push validation in an explicitly authorized Development Build, then collect production-like performance measurements. Keep Tap in TEST and the 20% commission rule in draft. The first controlled Tap TEST transaction remains a separate explicitly authorized phase.
+Proceed to P2-D / targeted performance remediation based on measured evidence. First collect the missing physical QA measurements in a separately authorized new internal Android build; do not infer Production latency or payload rankings from emulator/unit-test data. Keep Tap in TEST and the 20% commission rule in draft.
