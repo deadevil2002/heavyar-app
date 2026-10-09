@@ -2,7 +2,7 @@ import { listFirebaseAuthIdentities, type Env } from './index';
 import { evaluateCanonicalCompleteness, SECURITY_SUSPENSION_STATUSES, STORE_REVIEW_PURPOSE, isOperationallyBlocked, isStoreReviewAccount } from './integrity';
 import { canTransitionManualReview, deriveProviderTrust, isProviderComponentName, normalizeRequiredProviderComponents, providerComponentNames, providerVerificationFor, verificationStatuses } from './verification';
 import { defaultVerificationPolicy, normalizeVerificationPolicy } from './verification';
-import { notificationWrite } from './notifications';
+import { defaultNotificationPreferences, notificationWrite } from './notifications';
 import { gatewayRegistry, campaignRecipients, invitationExpiry, normalizeStaffRole, hasPermission, identityIntegrationMayEnable, identityIntegrationRegistry, type StaffRole, type Permission } from './completion';
 import { invitationRole, isFreshReauthentication, normalizeAuthorityEmail, pendingAndUnexpired } from './authority';
 import { createAdminExportService, createInvoicePdfService, type DocumentBinaryResponse, type DocumentActor, type ExportEntity, type ExportFilters, type InvoiceBusinessSettings, type TrustedInvoiceSource } from './admin-documents';
@@ -17,6 +17,7 @@ import { sendResend } from './index';
 import { handleEarlyAccessAdmin } from './early-access-admin';
 import { handleEarlyAccessPublic } from './early-access-public';
 import { EarlyAccessError, permissions as earlyAccessPermissions, subscriberFacets, type EarlyAccessStore } from './early-access-model';
+import { FIRESTORE_BATCH_READ_LIMIT, FIRESTORE_COMMIT_WRITE_LIMIT, firestoreChunks } from './firestore-batch';
 import { dailyEarlyAccessRetention } from './early-access-retention';
 import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-access-delivery';
 import { processEarlyAccessCampaigns } from './early-access-campaign-delivery';
@@ -139,7 +140,6 @@ async function rawDoc(env: Env, collection: string, id: string): Promise<RawDoc 
   return response ? { data: decode(response), updateTime: response.updateTime, name: response.name } : null;
 }
 
-const MAX_BATCH_GET_DOCUMENTS = 100;
 class AccountIntegrityStorageError extends Error {}
 function safeBatchReference(reference: BatchGetReference) {
   return /^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(reference.collection)
@@ -149,7 +149,7 @@ function safeBatchReference(reference: BatchGetReference) {
     && !/[\/\u0000-\u001f\u007f]/.test(reference.id);
 }
 async function batchGetRawDocs(env: Env, references: BatchGetReference[]): Promise<Map<string, RawDoc>> {
-  if (references.length > MAX_BATCH_GET_DOCUMENTS || references.some(reference => !safeBatchReference(reference))) {
+  if (references.length > FIRESTORE_BATCH_READ_LIMIT || references.some(reference => !safeBatchReference(reference))) {
     throw new Error('Invalid internal batchGet references');
   }
   const unique = [...new Map(references.map(reference => [fullName(env, `${reference.collection}/${reference.id}`), reference])).entries()];
@@ -178,6 +178,15 @@ async function batchGetRawDocs(env: Env, references: BatchGetReference[]): Promi
   } catch {
     throw new AccountIntegrityStorageError();
   }
+}
+
+async function batchGetRawDocsInChunks(env: Env, references: BatchGetReference[]): Promise<Map<string, RawDoc>> {
+  const unique = [...new Map(references.map(reference => [fullName(env, `${reference.collection}/${reference.id}`), reference])).values()];
+  const documents = new Map<string, RawDoc>();
+  for (const batch of firestoreChunks(unique)) {
+    for (const [name, document] of await batchGetRawDocs(env, batch)) documents.set(name, document);
+  }
+  return documents;
 }
 
 type ResendWebhookEvent = {
@@ -1756,24 +1765,47 @@ async function campaignCreate(req: Request, env: Env, user: AdminUser) {
   return { success: true, campaignId: id, status: sendNow ? 'queued' : 'scheduled', recipients: null };
 }
 export async function processScheduledCampaigns(env: Env) {
-  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'campaigns' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['scheduled', 'processing'].map(jsonValue) } } } }, limit: 10 } }) }) as any[] || [];
-  for (const row of rows) {
-    if (!row.document) continue;
-    const campaign = decode(row.document), scheduledAt = Date.parse(String(campaign.scheduledAt || ''));
+  const queryDocuments = async (collection: string, structuredQuery: any, limit: number) => {
+    if (queryOverride) return queryOverride(collection, '', limit, structuredQuery).slice(0, limit);
+    const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [];
+    return rows.flatMap(row => row.document ? [{ data: decode(row.document), updateTime: row.document.updateTime, name: row.document.name } as RawDoc] : []);
+  };
+  const reportFailure = (stage: string) => console.warn('campaign_processor_failed', { processor: 'generic_marketing', stage });
+  let campaigns: RawDoc[];
+  try {
+    campaigns = await queryDocuments('campaigns', { from: [{ collectionId: 'campaigns' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['scheduled', 'processing'].map(jsonValue) } } } }, limit: 10 }, 10);
+  } catch {
+    reportFailure('campaign_query_unavailable');
+    return;
+  }
+  for (const campaignDocument of campaigns) {
+    if (!campaignDocument.name) continue;
+    const campaign = campaignDocument.data, scheduledAt = Date.parse(String(campaign.scheduledAt || ''));
     if (!Number.isFinite(scheduledAt) || scheduledAt > Date.now()) continue;
-    const id = String(row.document.name).split('/').pop(), now = new Date().toISOString();
+    const id = String(campaignDocument.name).split('/').pop()!, now = new Date().toISOString();
     const custom = { titleAr: campaign.titleAr || campaign.title, titleEn: campaign.titleEn || campaign.title, bodyAr: campaign.bodyAr || campaign.message, bodyEn: campaign.bodyEn || campaign.message, imageUrl: campaign.imageUrl, deepLink: campaign.deepLink };
+    let stage = 'recipient_query_unavailable';
     try {
-      const users = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'users' }], orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 301, ...(campaign.recipientCursor ? { startAt: { before: false, values: [{ referenceValue: campaign.recipientCursor }] } } : {}) } }) }) as any[] || [];
-      const page = users.filter((x) => x.document).slice(0, 300);
-      const prefDocs = await Promise.all(page.map((x: any) => fs(env, `notificationPreferences/${encodeURIComponent(String(x.document.name).split('/').pop() || '')}`)));
-      const optedOut = new Set(page.flatMap((x: any, index: number) => prefDocs[index] && decode(prefDocs[index]).marketing === false ? [String(x.document.name).split('/').pop()] : []));
-      const recipients = campaignRecipients(page.map((x) => ({ uid: String(x.document.name).split('/').pop(), ...decode(x.document), marketingOptOut: optedOut.has(String(x.document.name).split('/').pop()) })) as any, campaign.filter || { audience: 'all' });
+      const users = await queryDocuments('users', { from: [{ collectionId: 'users' }], orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 301, ...(campaign.recipientCursor ? { startAt: { before: false, values: [{ referenceValue: campaign.recipientCursor }] } } : {}) }, 301);
+      const page = users.slice(0, 300), userIds = page.map(user => String(user.name).split('/').pop() || '');
+      stage = 'preference_batch_unavailable';
+      const prefDocs = await batchGetRawDocsInChunks(env, userIds.map(id => ({ collection: 'notificationPreferences', id })));
+      const defaultMarketing = defaultNotificationPreferences().marketing === true;
+      const optedOut = new Set(userIds.filter(uid => {
+        const preference = prefDocs.get(fullName(env, `notificationPreferences/${uid}`));
+        return preference ? preference.data?.marketing !== true : !defaultMarketing;
+      }));
+      const recipients = campaignRecipients(page.map((user, index) => ({ uid: userIds[index], ...user.data, marketingOptOut: optedOut.has(userIds[index]) })) as any, campaign.filter || { audience: 'all' });
+      stage = 'notification_build_unavailable';
       const writes: any[] = await Promise.all(recipients.map((uid) => notificationWrite(fullName.bind(null, env), uid, 'campaign_message' as any, now, id, `campaign:${id}:${uid}`, custom)));
-      const last = page[page.length - 1]?.document?.name, done = users.length <= 300;
-      writes.push({ update: { name: row.document.name, fields: { status: jsonValue(done ? 'sent' : 'processing'), recipientCursor: last ? jsonValue(last) : { nullValue: null }, chunkId: jsonValue(`${id}:${last || 'complete'}`), recipientCount: { integerValue: String(Number(campaign.recipientCount || 0) + recipients.length), ...(done ? {} : {}) }, ...(done ? { sentAt: { timestampValue: now } } : {}) } }, updateMask: { fieldPaths: ['status', 'recipientCursor', 'chunkId', 'recipientCount', ...(done ? ['sentAt'] : [])] }, currentDocument: { updateTime: row.document.updateTime } });
+      const last = page[page.length - 1]?.name, done = users.length <= 300;
+      writes.push({ update: { name: campaignDocument.name, fields: { status: jsonValue(done ? 'sent' : 'processing'), recipientCursor: last ? jsonValue(last) : { nullValue: null }, chunkId: jsonValue(`${id}:${last || 'complete'}`), recipientCount: { integerValue: String(Number(campaign.recipientCount || 0) + recipients.length), ...(done ? {} : {}) }, ...(done ? { sentAt: { timestampValue: now } } : {}) } }, updateMask: { fieldPaths: ['status', 'recipientCursor', 'chunkId', 'recipientCount', ...(done ? ['sentAt'] : [])] }, currentDocument: { updateTime: campaignDocument.updateTime } });
+      stage = 'campaign_commit_unavailable';
       await commit(env, writes);
-    } catch { /* retry on the next scheduled tick; deterministic outbox ids make retry safe */ }
+    } catch (error) {
+      reportFailure(error instanceof FirestoreConflictError ? 'campaign_commit_conflict' : stage);
+      // Retry on the next scheduled tick; deterministic outbox ids make retry safe.
+    }
   }
 }
 
@@ -2597,11 +2629,9 @@ export function earlyAccessStore(env: Env, user: AdminUser = { uid: 'system', ad
   return {
     read: (collection, id) => rawDoc(env, collection, id),
     readMany: async references => {
-      if (references.length > 200) throw new EarlyAccessError('INVALID_SELECTION');
-      if (firestoreOverride) return Promise.all(references.map(ref => rawDoc(env, ref.collection, ref.id)));
+      if (references.length > FIRESTORE_BATCH_READ_LIMIT) throw new EarlyAccessError('INVALID_SELECTION');
       const documents = references.map(ref => fullName(env, `${ref.collection}/${ref.id}`));
-      const rows = await fs(env, ':batchGet', { method: 'POST', body: JSON.stringify({ documents }) }) as any[] || [];
-      const found = new Map<string, RawDoc>(rows.flatMap(row => row.found ? [[row.found.name, { data: decode(row.found), updateTime: row.found.updateTime, name: row.found.name }] as [string, RawDoc]] : []));
+      const found = await batchGetRawDocs(env, references);
       return documents.map(name => found.get(name) || null);
     },
     ownEmail: () => verifiedIdentityEmail(env, user),
@@ -2627,9 +2657,19 @@ export function earlyAccessStore(env: Env, user: AdminUser = { uid: 'system', ad
       }));
       // A missing version must never become an unconditional overwrite.
       if (changes.some(change => change.prior && !change.prior.updateTime)) throw new EarlyAccessError('STORAGE_UNAVAILABLE', 503);
-      if (action) writes.push(await auditWrite(env, user, action, 'earlyAccess', target, crypto.randomUUID(), reason || action));
       try {
-        await commit(env, writes);
+        const maxChanges = action ? FIRESTORE_COMMIT_WRITE_LIMIT - 1 : FIRESTORE_COMMIT_WRITE_LIMIT;
+        const writeChunks = writes.length ? firestoreChunks(writes, maxChanges) : [[]];
+        for (const [index, writeChunk] of writeChunks.entries()) {
+          const batch = [...writeChunk];
+          if (action) {
+            const chunkReason = writeChunks.length > 1
+              ? `${reason || action};chunk:${index + 1}/${writeChunks.length}`
+              : reason || action;
+            batch.push(await auditWrite(env, user, action, 'earlyAccess', target, crypto.randomUUID(), chunkReason));
+          }
+          if (batch.length) await commit(env, batch);
+        }
         if (action === 'early_access_email_accepted') {
           for (const change of changes) if (change.collection === 'earlyAccessDeliveries' && change.data.providerMessageId) {
             await reconcileResendProjection(env, 'earlyAccessDeliveries', change.id, change.data.providerMessageId);

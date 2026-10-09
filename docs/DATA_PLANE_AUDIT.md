@@ -107,8 +107,8 @@ Counts are code bounds; Firestore query operations are distinct from the number 
 | Admin Dashboard cold | about 37 aggregate/query operations plus staff read | token exchange per Admin Firestore call | two aggregate stages | RED |
 | Admin generic list page | one bounded query, max 50; batch enrichment chunks up to 100 | optional batched Auth lookup | bounded parallel batch | GREEN/YELLOW |
 | Admin searched list page | same bounded query, then local filter | same as above | bounded, incomplete search | YELLOW |
-| Generic campaign processor | users page 301 + up to 300 individual preference reads | token exchange per Firestore call in Admin module | 300-way `Promise.all` | RED |
-| Early Access campaign recipients | campaign bound 500, several direct-read fallbacks | Firestore store calls | bounded but high fan-out | RED |
+| Generic campaign processor | per campaign: users page 301 + 3 preference batchGet calls + one commit of at most 301 writes | shared cached Google token | bounded page; no preference network `Promise.all` | GREEN |
+| Early Access campaign recipients | audience bound 500; snapshot preflight 5 delivery + 5 suppression batchGet calls; queue worst case 5 delivery + 10 subscriber/suppression batchGet calls | Firestore store calls | bounded chunks of 100; provider delivery remains sequential and capped at 50/invocation | GREEN |
 | Early Access unseen badge | one state read + query up to 100 every 20 s while visible | none beyond Firestore | bounded | YELLOW |
 | Notification inbox | list `limit+1` plus unread aggregate | no Auth directory | two query operations | GREEN |
 | Request realtime | one listener, limit 20 | Firebase client SDK | realtime | GREEN |
@@ -122,8 +122,8 @@ Counts are code bounds; Firestore query operations are distinct from the number 
 | Path | Classification | Current requests | Safer future model | Estimated reduction | Semantic/security risk |
 |---|---|---:|---|---:|---|
 | Account Integrity profile join | HIGH RISK | 60 doc calls/page + 61 token calls incl. staff | batchGet references; shared cached token | roughly 121 external calls to 2-3 | Low if authorization remains before batch and fields remain redacted |
-| Generic campaign preferences | HIGH RISK | up to 300 preference calls after one users query | batchGet preferences in chunks | 300 to about 3 | Preserve opt-out snapshot immediately before enqueue |
-| Early Access delivery/recipient reads | NEEDS OPTIMIZATION | up to 500 direct reads in fallbacks | require `readMany`/batchGet path | 500 to about 5 | Preserve suppression/consent checks and campaign snapshot semantics |
+| Generic campaign preferences | RESOLVED (P2-B) | 300 preference network GETs after one users query | batchGet preferences in chunks of 100 | 300 to 3 | Missing preference keeps canonical `marketing=true`; explicit false and malformed values remain excluded; deterministic enqueue/checkpoint commit is unchanged |
+| Early Access delivery/recipient reads | RESOLVED (P2-B) | snapshot: 500 delivery + 500 suppression point reads; queue worst case: 500 initial + 500 duplicate delivery + 1,000 subscriber/suppression point reads | required `readMany`, shared chunks of 100, one selected-delivery read pass | snapshot 1,000 to 10; queue 2,000 to 15 | Authoritative suppression immediately before provider send, consent/lawful basis, Owner QA, leases, CAS, and retry reconciliation remain in place |
 | Admin users/providers/drivers enrichment | SAFE/BOUNDED | one list query + batchGet chunks + one batched Auth lookup | keep | already batched | None |
 | Country config enrichment | BOUNDED | at most GCC country set | keep/cache short-lived | small | Country configuration remains authoritative |
 | Payment/request details | SAFE/BOUNDED | tightly bounded point reads | use immutable snapshots where already present | small | Never replace financial snapshots with live listing data |

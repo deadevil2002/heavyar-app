@@ -1,4 +1,4 @@
-import { EA, OWNER_QA_EMAIL, body, configValue, countryCodes, facetKey, fail, nowIso, permissions, safeId, selectedRecords, text, type EarlyAccessStore } from './early-access-model';
+import { EA, OWNER_QA_EMAIL, body, configValue, countryCodes, facetKey, fail, nowIso, permissions, readManyRecords, safeId, selectedRecords, text, type EarlyAccessStore } from './early-access-model';
 import { deleteSubscriber, suppress } from './early-access-public';
 import { campaignAction } from './early-access-campaigns';
 import { campaignProgress, campaignRecipients, ownerQaSnapshot, retryCampaignRecipients, snapshotCampaignRecipients } from './early-access-campaign-delivery';
@@ -151,17 +151,13 @@ export async function handleEarlyAccessAdmin(req: Request, store: EarlyAccessSto
         ids = rows.filter(row => Object.entries(filters).every(([key, value]) => String(row.data[key]) === String(value))).map(row => String(row.name || '').split('/').pop()).filter((value): value is string => Boolean(value));
       }
       if (!ids.length || ids.length > 500) fail('INVALID_SELECTION');
-       const records: any[] = [];
-       for (let offset = 0; offset < ids.length; offset += 100) {
-         const batch = ids.slice(offset, offset + 100);
-         const subscribers = store.readMany
-           ? await store.readMany(batch.map(id => ({ collection: EA.subscribers, id })))
-           : await Promise.all(batch.map(id => store.read(EA.subscribers, id)));
-         const suppressions = store.readMany
-           ? await store.readMany(batch.map(id => ({ collection: EA.suppression, id })))
-           : await Promise.all(batch.map(id => store.read(EA.suppression, id)));
-         records.push(...subscribers.map((subscriber, index) => subscriber ? { ...subscriber.data, id: batch[index], suppression: suppressions[index] } : null));
-       }
+       const selected = await readManyRecords(store, ids.flatMap(id => [
+         { collection: EA.subscribers, id },
+         { collection: EA.suppression, id },
+       ]));
+       const records = ids.map((id, index) => selected[index * 2]
+         ? { ...selected[index * 2]!.data, id, suppression: selected[index * 2 + 1] }
+         : null);
        const contacts = records.filter(Boolean);
       return { snapshot: await snapshotCampaignRecipients(store, campaignId, actor.uid, contacts, 'subscriber') };
     }

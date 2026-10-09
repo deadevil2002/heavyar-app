@@ -1,4 +1,4 @@
-import { EA, fail, hash, nowIso, type EarlyAccessStore, type RecordVersion } from './early-access-model';
+import { EA, fail, hash, nowIso, readManyRecords, type EarlyAccessStore, type RecordVersion } from './early-access-model';
 import { normalizeCampaignEmail, parseCampaignCsv } from './early-access-campaign-delivery';
 
 type CsvAssessment = ReturnType<typeof parseCampaignCsv> & {
@@ -16,13 +16,7 @@ async function assessCampaignCsv(store: EarlyAccessStore, campaignId: string, cs
     delivery: { collection: EA.deliveries, id: await hash(`early-access-campaign:${campaignId}:${contact.email}`) },
   })));
   const flattened = references.flatMap(reference => [reference.suppression, reference.delivery]);
-  const records: RecordVersion[] = [];
-  for (let offset = 0; offset < flattened.length; offset += 200) {
-    const batch = flattened.slice(offset, offset + 200);
-    records.push(...(store.readMany
-      ? await store.readMany(batch)
-      : await Promise.all(batch.map(reference => store.read(reference.collection, reference.id)))));
-  }
+  const records: RecordVersion[] = await readManyRecords(store, flattened);
   const suppressedEmails = new Set<string>(), duplicateEmails = new Set<string>();
   parsed.contacts.forEach((contact, index) => {
     if (records[index * 2]?.data.suppressed === true) suppressedEmails.add(contact.email);

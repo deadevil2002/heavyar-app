@@ -1,3 +1,5 @@
+import { firestoreChunks } from './firestore-batch';
+
 /** Early Access is not an authentication identity or a launched market. */
 export const EA = {
   config: 'earlyAccessConfig', subscribers: 'earlyAccessSubscribers', suppression: 'earlyAccessSuppression',
@@ -11,17 +13,26 @@ export type Change = { collection: string; id: string; data: Record<string, any>
 export type DeleteRecord = { collection: string; id: string; prior: NonNullable<RecordVersion> };
 export interface EarlyAccessStore {
   read(collection: string, id: string): Promise<RecordVersion>;
-  readMany?(references: Array<{ collection: string; id: string }>): Promise<RecordVersion[]>;
+  readMany(references: Array<{ collection: string; id: string }>): Promise<RecordVersion[]>;
   save(changes: Change[], action: string, target: string, reason?: string): Promise<void>;
   delete?(records: DeleteRecord[], action: string, target: string, reason?: string, guards?: Change[]): Promise<void>;
   query(collection: string, query: any): Promise<NonNullable<RecordVersion>[]>;
   ownEmail(): Promise<string | null>;
   send(to: string, subject: string, html: string, key: string, text?: string): Promise<{ delivered: boolean; messageId?: string }>;
 }
+export async function readManyRecords(store: EarlyAccessStore, references: Array<{ collection: string; id: string }>) {
+  const records: RecordVersion[] = [];
+  for (const batch of firestoreChunks(references)) {
+    const batchRecords = await store.readMany(batch);
+    if (batchRecords.length !== batch.length) fail('STORAGE_UNAVAILABLE', 503);
+    records.push(...batchRecords);
+  }
+  return records;
+}
 export async function selectedRecords(store: EarlyAccessStore, references: Array<{ collection: string; id: string }>) {
   if (references.length > 200) fail('INVALID_SELECTION');
   if (!references.length) return [];
-  return store.readMany ? store.readMany(references) : Promise.all(references.map(ref => store.read(ref.collection, ref.id)));
+  return readManyRecords(store, references);
 }
 export class EarlyAccessError extends Error {
   constructor(public code: string, public status = 400) { super(code); }

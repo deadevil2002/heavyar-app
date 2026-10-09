@@ -1,4 +1,4 @@
-import { EA, OWNER_QA_EMAIL, EarlyAccessError, eligible, fail, hash, nowIso, opaqueToken, renderCampaign, type EarlyAccessStore, type RecordVersion } from './early-access-model';
+import { EA, OWNER_QA_EMAIL, EarlyAccessError, eligible, fail, hash, nowIso, opaqueToken, readManyRecords, renderCampaign, type EarlyAccessStore, type RecordVersion } from './early-access-model';
 
 export const campaignDeliveryStatuses = ['not_sent', 'queued', 'accepted', 'delivered', 'failed', 'bounced', 'complained', 'suppressed', 'skipped'] as const;
 export type CampaignDeliveryStatus = typeof campaignDeliveryStatuses[number];
@@ -53,15 +53,26 @@ export async function snapshotCampaignRecipients(store: EarlyAccessStore, campai
   if (!contacts.length || contacts.length > 500) fail('INVALID_SELECTION');
   if ((await store.read(EA.campaigns, campaignId))?.data.ownerQa === true) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
   const timestamp = nowIso(), changes: any[] = [], selectedIds: string[] = [];
+  const candidates: Array<{ contact: any; email: string; id: string; subscriberId?: string; suppressionId: string }> = [];
+  const seenEmails = new Set<string>();
   for (const contact of contacts) {
     const email = normalizeCampaignEmail(contact.email);
-    if (!email) continue;
+    if (!email || seenEmails.has(email)) continue;
+    seenEmails.add(email);
     const id = await hash(`early-access-campaign:${campaignId}:${email}`);
-    const prior = await store.read(EA.deliveries, id);
-    if (prior) { selectedIds.push(id); continue; }
     const subscriberId = source === 'subscriber' ? contact.id : undefined;
     const suppressionId = subscriberId || await hash(`early-access-email:${email}`);
-    const suppression = await store.read(EA.suppression, suppressionId);
+    candidates.push({ contact, email, id, subscriberId, suppressionId });
+  }
+  const existingDeliveries = await readManyRecords(store, candidates.map(candidate => ({ collection: EA.deliveries, id: candidate.id })));
+  const missingCandidates = candidates.filter((_, index) => !existingDeliveries[index]);
+  const suppressions = await readManyRecords(store, missingCandidates.map(candidate => ({ collection: EA.suppression, id: candidate.suppressionId })));
+  const suppressionByRecipient = new Map(missingCandidates.map((candidate, index) => [candidate.id, suppressions[index]]));
+  for (const [index, candidate] of candidates.entries()) {
+    const { contact, email, id, subscriberId } = candidate;
+    const prior = existingDeliveries[index];
+    if (prior) { selectedIds.push(id); continue; }
+    const suppression = suppressionByRecipient.get(id) || null;
     const suppressed = suppression?.data.suppressed === true;
     if (source === 'subscriber' && (contact.eligibleReason || eligible({ data: contact }, contact.suppression))) continue;
     selectedIds.push(id);
@@ -157,31 +168,52 @@ export async function queueCampaign(store: EarlyAccessStore, campaignId: string,
   if (!recipients.length || recipients.length > 500) fail('EMPTY_AUDIENCE', 409);
   const campaign = await store.read(EA.campaigns, campaignId);
   if (!campaign || campaign.data.status !== 'approved' || campaign.data.previewId !== previewId) fail('CAMPAIGN_NOT_APPROVED', 409);
+  const uniqueRecipients = [...new Set(recipients)];
+  let selected: RecordVersion[];
   if (campaign.data.ownerQa === true) {
-    const unique = [...new Set(recipients)];
-    const recipient = unique.length === 1 ? await store.read(EA.deliveries, unique[0]) : null;
-    if (unique[0] !== campaign.data.ownerQaRecipientId || !recipient || recipient.data.campaignId !== campaignId ||
+    const recipient = uniqueRecipients.length === 1 ? await store.read(EA.deliveries, uniqueRecipients[0]) : null;
+    if (uniqueRecipients[0] !== campaign.data.ownerQaRecipientId || !recipient || recipient.data.campaignId !== campaignId ||
       recipient.data.source !== 'owner_qa' || recipient.data.email !== OWNER_QA_EMAIL ||
       recipient.data.normalizedEmail !== OWNER_QA_EMAIL || recipient.data.ownerQa !== true) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
+    selected = [recipient];
   } else {
-    const selected = await Promise.all([...new Set(recipients)].map(recipientId => store.read(EA.deliveries, recipientId)));
+    selected = await readManyRecords(store, uniqueRecipients.map(recipientId => ({ collection: EA.deliveries, id: recipientId })));
     if (selected.some(recipient => recipient?.data.source === 'owner_qa')) fail('OWNER_QA_AUDIENCE_MISMATCH', 409);
   }
+  const subscriberIds = [...new Set(selected.flatMap(recipient =>
+    recipient?.data.source === 'subscriber' && typeof recipient.data.subscriberId === 'string'
+      ? [recipient.data.subscriberId]
+      : []))];
+  const subscriberRecords = await readManyRecords(store, subscriberIds.flatMap(subscriberId => [
+    { collection: EA.subscribers, id: subscriberId },
+    { collection: EA.suppression, id: subscriberId },
+  ]));
+  const subscribers = new Map(subscriberIds.map((subscriberId, index) => [subscriberId, {
+    subscriber: subscriberRecords[index * 2],
+    suppression: subscriberRecords[index * 2 + 1],
+  }]));
   const changes: any[] = [], skipped: string[] = [];
-  for (const recipientId of [...new Set(recipients)]) {
-    const recipient = await store.read(EA.deliveries, recipientId);
-    if (!recipient || recipient.data.campaignId !== campaignId || recipient.data.deliveryStatus !== 'not_sent') { skipped.push(recipientId); continue; }
+  const finalRecipientIds: string[] = [];
+  for (const [index, recipientId] of uniqueRecipients.entries()) {
+    const recipient = selected[index];
+    const staged = recipient?.data.deliveryStatus === 'queued';
+    if (!recipient || recipient.data.campaignId !== campaignId || !['not_sent', 'queued'].includes(recipient.data.deliveryStatus)) { skipped.push(recipientId); continue; }
     if (recipient.data.source === 'csv_import' && recipient.data.lawfulBasisConfirmed !== true) fail('LAWFUL_BASIS_REQUIRED', 409);
     if (recipient.data.source === 'subscriber') {
-      const subscriber = recipient.data.subscriberId ? await store.read(EA.subscribers, recipient.data.subscriberId) : null;
-      const suppression = recipient.data.subscriberId ? await store.read(EA.suppression, recipient.data.subscriberId) : null;
-      if (eligible(subscriber, suppression)) { skipped.push(recipientId); continue; }
+      const current = subscribers.get(recipient.data.subscriberId);
+      if (eligible(current?.subscriber || null, current?.suppression || null)) {
+        skipped.push(recipientId);
+        if (staged) changes.push({ collection: EA.deliveries, id: recipientId, prior: recipient, data: { ...recipient.data, deliveryStatus: 'not_sent', queuedAt: null, updatedAt: nowIso() } });
+        continue;
+      }
     }
-    const now = nowIso();
-    changes.push({ collection: EA.deliveries, id: recipientId, prior: recipient, data: { ...recipient.data, deliveryStatus: 'queued', queuedAt: now, updatedAt: now } });
+    finalRecipientIds.push(recipientId);
+    if (!staged) {
+      const now = nowIso();
+      changes.push({ collection: EA.deliveries, id: recipientId, prior: recipient, data: { ...recipient.data, deliveryStatus: 'queued', queuedAt: now, updatedAt: now } });
+    }
   }
-  if (!changes.length) fail('EMPTY_AUDIENCE', 409);
-  const finalRecipientIds = changes.map(change => change.id);
+  if (!finalRecipientIds.length) fail('EMPTY_AUDIENCE', 409);
   await store.save([
     ...changes,
     { collection: EA.campaigns, id: campaignId, prior: campaign, data: {
@@ -200,8 +232,9 @@ export async function retryCampaignRecipients(store: EarlyAccessStore, campaignI
   if (!campaign) fail('NOT_FOUND', 404);
   const hasFinalSelection = Array.isArray(campaign.data.finalRecipientIds);
   const finalIds = new Set<string>(hasFinalSelection ? campaign.data.finalRecipientIds : []);
-  const candidates = recipientIds
-    ? (await Promise.all(recipientIds.map(id => store.read(EA.deliveries, id)))).map((record, index) => record ? { ...record, requestedId: recipientIds[index] } : null)
+  const requestedIds = recipientIds ? [...new Set(recipientIds)] : undefined;
+  const candidates = requestedIds
+    ? (await readManyRecords(store, requestedIds.map(id => ({ collection: EA.deliveries, id })))).map((record, index) => record ? { ...record, requestedId: requestedIds[index] } : null)
     : await store.query(EA.deliveries, {
       from: [{ collectionId: EA.deliveries }],
       where: { fieldFilter: { field: { fieldPath: 'campaignId' }, op: 'EQUAL', value: { stringValue: campaignId } } },
@@ -212,7 +245,9 @@ export async function retryCampaignRecipients(store: EarlyAccessStore, campaignI
   let queued = 0, skipped = 0;
   for (const candidate of candidates) {
     const id = String(candidate?.name || '').split('/').pop();
-    if (!candidate || !id || hasFinalSelection && !finalIds.has(id) || candidate.data.campaignId !== campaignId || candidate.data.source === 'owner_qa' || candidate.data.ownerQa === true || candidate.data.deliveryStatus !== 'failed' || candidate.data.retryEligible !== true) { skipped++; continue; }
+    const staged = campaign.data.status === 'sent' && candidate?.data.deliveryStatus === 'queued';
+    if (!candidate || !id || hasFinalSelection && !finalIds.has(id) || candidate.data.campaignId !== campaignId || candidate.data.source === 'owner_qa' || candidate.data.ownerQa === true || (!staged && (candidate.data.deliveryStatus !== 'failed' || candidate.data.retryEligible !== true))) { skipped++; continue; }
+    if (staged) { queued++; continue; }
     changes.push({ collection: EA.deliveries, id, prior: candidate, data: {
       ...candidate.data, deliveryStatus: 'queued', retryEligible: false, nextAttemptAt: null,
       leaseToken: null, leaseUntil: null, updatedAt: nowIso(),

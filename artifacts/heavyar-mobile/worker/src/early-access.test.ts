@@ -11,6 +11,7 @@ function memoryStore() {
   const put = (collection: string, id: string, data: any) => docs.set(`${collection}/${id}`, { data: structuredClone(data), updateTime: String(++version), name: `projects/demo-early/databases/(default)/documents/${collection}/${id}` });
     const store: EarlyAccessStore = {
     read: async (c, id) => structuredClone(docs.get(`${c}/${id}`) || null),
+    readMany: async references => Promise.all(references.map(reference => store.read(reference.collection, reference.id))),
     save: async (changes, action, target) => {
       for (const c of changes) if (docs.get(`${c.collection}/${c.id}`)?.updateTime !== c.prior?.updateTime) throw new EarlyAccessError('CONCURRENT_UPDATE', 409);
       for (const c of changes) put(c.collection, c.id, c.data);

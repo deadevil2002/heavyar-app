@@ -1,4 +1,4 @@
-import { EA, OWNER_QA_EMAIL, body, countryCodes, eligible, fail, hash, nowIso, safeId, selectedRecords, template, text, type EarlyAccessStore } from './early-access-model';
+import { EA, OWNER_QA_EMAIL, body, countryCodes, eligible, fail, hash, nowIso, readManyRecords, safeId, selectedRecords, template, text, type EarlyAccessStore } from './early-access-model';
 import { deliver, rateLimit } from './early-access-public';
 import { campaignDeliveryStatuses, snapshotCampaignRecipients, queueCampaign } from './early-access-campaign-delivery';
 
@@ -6,23 +6,13 @@ export function campaignFields(value: Record<string, any>) {
   return { name: text(value.name, 100), subjectAr: text(value.subjectAr, 200), subjectEn: text(value.subjectEn, 200), bodyAr: text(value.bodyAr, 8000), bodyEn: text(value.bodyEn, 8000) };
 }
 async function subscriberPairs(store: EarlyAccessStore, ids: string[]) {
-  const records: any[] = [];
-  for (let offset = 0; offset < ids.length; offset += 100) {
-    const batch = ids.slice(offset, offset + 100);
-    records.push(...await Promise.all(batch.map(async subscriberId => {
-      const [subscriber, suppression] = await Promise.all([store.read(EA.subscribers, subscriberId), store.read(EA.suppression, subscriberId)]);
-      return [subscriber, suppression];
-    })));
-  }
-  return records.flat();
+  return readManyRecords(store, ids.flatMap(subscriberId => [
+    { collection: EA.subscribers, id: subscriberId },
+    { collection: EA.suppression, id: subscriberId },
+  ]));
 }
 async function readReferences(store: EarlyAccessStore, references: Array<{ collection: string; id: string }>) {
-  const records: any[] = [];
-  for (let offset = 0; offset < references.length; offset += 100) {
-    const batch = references.slice(offset, offset + 100);
-    records.push(...(store.readMany ? await store.readMany(batch) : await Promise.all(batch.map(reference => store.read(reference.collection, reference.id)))));
-  }
-  return records;
+  return readManyRecords(store, references);
 }
 export async function campaignAction(req: Request, store: EarlyAccessStore, actorUid: string, allowed: { manage: boolean; testSend: boolean; approve: boolean; send?: boolean }) {
   const url = new URL(req.url), segments = url.pathname.split('/'), id = segments[5] ? safeId(segments[5]) : crypto.randomUUID(), action = segments[6];
