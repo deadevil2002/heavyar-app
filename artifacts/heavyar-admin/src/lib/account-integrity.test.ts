@@ -20,7 +20,7 @@ describe('account integrity contract', () => {
     expect(ACCOUNT_INTEGRITY_UNAVAILABLE_MESSAGE.en).toBe('Account integrity data is temporarily unavailable. Please retry.');
   });
 
-  it('caps pages and only forwards known filters', () => {
+  it('caps pages, forwards known filters, and omits list cursors during indexed search', () => {
     expect(normalizeIntegrityParams({
       q: '  auth-only  ',
       state: 'incomplete',
@@ -30,6 +30,9 @@ describe('account integrity contract', () => {
     } as never)).toEqual({
       q: 'auth-only',
       registrationState: 'incomplete',
+      limit: String(ACCOUNT_INTEGRITY_MAX_PAGE_SIZE),
+    });
+    expect(normalizeIntegrityParams({ cursor: 'next' })).toEqual({
       limit: String(ACCOUNT_INTEGRITY_MAX_PAGE_SIZE),
       pageToken: 'next',
     });

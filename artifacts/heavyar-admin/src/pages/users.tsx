@@ -191,7 +191,7 @@ export default function Users() {
               ? t('تم تحديد جميع النتائج المطابقة؛ سيتم تأكيد العدد في المعاينة.', 'All matching results selected; the preview will confirm the count.')
               : t(`تم تحديد ${selectedIds.size} عنصر في هذه الصفحة`, `${selectedIds.size} items selected on this page`)
             }
-            {!selectAllMatching && (data?.nextCursor || (data?.items?.length || 0) > selectedIds.size) && (
+            {!search.trim() && !selectAllMatching && (data?.nextCursor || (data?.items?.length || 0) > selectedIds.size) && (
               <button onClick={selectAllFiltered} className="ms-2 text-primary hover:underline font-semibold">
                 {t('تحديد كل النتائج المطابقة', 'Select all matching results')}
               </button>
@@ -217,7 +217,8 @@ export default function Users() {
         loading={isLoading}
         search={search}
         onSearch={handleSearch}
-        searchPlaceholder={t('ابحث بالاسم أو البريد...', 'Search name or email…')}
+        searchPlaceholder={t('البريد أو المعرّف أو بداية الاسم…', 'Email, identifier, or name prefix…')}
+        searchTruncated={data?.truncated}
         onDetails={setSelected}
         nextCursor={data?.nextCursor}
         hasPrevious={history.length > 0}
@@ -243,7 +244,7 @@ export default function Users() {
               <option value="">{t('كل أغراض الحساب', 'All account purposes')}</option>
               <option value="store_review">{t('حسابات مراجعة/اختبار', 'Store Review / QA')}</option>
             </select>
-            <ExportControls resource="users" params={{ search, status, accountPurpose: purpose || undefined, emailVerified: verification === 'verified' ? true : verification === 'unverified' ? false : undefined }} />
+            <ExportControls resource="users" params={{ q: search, status, accountPurpose: purpose || undefined, emailVerified: verification === 'verified' ? true : verification === 'unverified' ? false : undefined }} />
           </>
         }
       />

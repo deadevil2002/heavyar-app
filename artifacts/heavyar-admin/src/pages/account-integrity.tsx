@@ -72,7 +72,7 @@ export default function AccountIntegrity() {
             <Input
               data-testid="input-account-integrity-search"
               className="max-w-sm"
-              placeholder={t('البريد أو المعرف العام…', 'Email or public identifier…')}
+              placeholder={t('البريد أو UID أو بداية الاسم…', 'Email, UID, or name prefix…')}
               value={search}
               onChange={event => { setSearch(event.target.value); reset(); }}
             />
@@ -93,6 +93,11 @@ export default function AccountIntegrity() {
               <RefreshCw className={`me-2 h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />{t('إعادة المحاولة', 'Retry')}
             </Button>
           </div>}
+          {!error && search.trim() && data?.truncated && (
+            <p role="status" className="text-sm text-muted-foreground">
+              {t('توجد نتائج إضافية. اكتب بحثًا أكثر تحديدًا.', 'More results are available. Refine your search.')}
+            </p>
+          )}
           {!error && (isLoading ? (
             <div className="py-10 text-center text-muted-foreground"><Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" />{t('جاري التحميل…', 'Loading…')}</div>
           ) : !data?.items?.length ? (
@@ -122,10 +127,10 @@ export default function AccountIntegrity() {
               </table>
             </div>
           ))}
-          <div className="flex justify-end gap-2">
+          {!search.trim() && <div className="flex justify-end gap-2">
             <Button data-testid="button-account-integrity-previous" variant="outline" size="sm" onClick={previous} disabled={!history.length}>{t('السابق', 'Previous')}</Button>
             <Button data-testid="button-account-integrity-next" variant="outline" size="sm" onClick={next} disabled={!data?.nextCursor}>{t('التالي', 'Next')}</Button>
-          </div>
+          </div>}
         </CardContent>
       </Card>
       {selected && <OperationDetails

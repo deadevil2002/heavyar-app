@@ -31,11 +31,13 @@ const complete = (role: 'customer' | 'provider' | 'driver', extra: Record<string
 beforeEach(() => {
   __adminTest.setFirestore(undefined);
   __adminTest.setAccountIntegrityDirectory(undefined);
+  __adminTest.setAuthIdentityLookup(undefined);
   __adminTest.setBatchGet(undefined);
 });
 afterEach(() => {
   __adminTest.setFirestore(undefined);
   __adminTest.setAccountIntegrityDirectory(undefined);
+  __adminTest.setAuthIdentityLookup(undefined);
   __adminTest.setBatchGet(undefined);
 });
 

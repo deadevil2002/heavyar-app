@@ -43,6 +43,22 @@
       ]
     },
     {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "role", "order": "ASCENDING" },
+        { "fieldPath": "nameAr", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "role", "order": "ASCENDING" },
+        { "fieldPath": "nameEn", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "equipmentRequests",
       "queryScope": "COLLECTION",
       "fields": [

@@ -5,7 +5,7 @@ import type { Env } from './index';
 const env = { FIREBASE_PROJECT_ID: 'demo-admin-query' } as Env;
 const actor: AdminUser = { uid: 'staff', admin: true, role: 'super_admin', permissionRole: 'super_admin', emailVerified: true, testInjected: true };
 const request = (path: string) => new Request(`https://worker.test/api/admin/${path}`);
-afterEach(() => { __adminTest.setQuery(); __adminTest.setFirestore(); });
+afterEach(() => { __adminTest.setQuery(); __adminTest.setFirestore(); __adminTest.setAuthIdentityLookup(); });
 
 describe('bounded admin queries', () => {
   for (const endpoint of ['users', 'providers']) {
@@ -42,16 +42,13 @@ describe('bounded admin queries', () => {
     await handleAdmin(request('providers?limit=20&accountStatus=active'), env, { ...actor });
   });
 
-  test('empty search candidate page retains continuation instead of hiding later matches', async () => {
+  test('search uses the indexed path and never returns an unrelated physical-page cursor', async () => {
     __adminTest.setFirestore(() => null);
-    __adminTest.setQuery((_collection, _before, limit) => Array.from({ length: limit }, (_, i) => ({
-      name: `projects/demo-admin-query/databases/(default)/documents/users/u${i}`, data: { role: 'user', displayName: 'Other' },
-    })));
+    __adminTest.setQuery(() => []);
     const result: any = await handleAdmin(request('users?limit=20&q=matching'), env, { ...actor });
     expect(result.items.length).toBe(0);
-    expect(result.boundedCandidatePage).toBe(true);
-    expect(result.candidatesExamined).toBe(20);
-    expect(typeof result.nextCursor).toBe('string');
+    expect(result.searchMode).toBe('indexed');
+    expect(result.nextCursor).toBeUndefined();
   });
 
   test('session reads staff once and does not read owner configuration for established staff', async () => {

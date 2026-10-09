@@ -24,6 +24,10 @@ export type IncompleteRegistrationsResponse = {
   nextCursor?: string;
   limit: number;
   maxLimit: number;
+  searchMode?: 'indexed';
+  query?: string;
+  truncated?: boolean;
+  boundedStructuredFiltered?: boolean;
 };
 
 export const ACCOUNT_INTEGRITY_MAX_PAGE_SIZE = 20;
@@ -50,7 +54,7 @@ export function normalizeIntegrityParams(params: { q?: string; state?: string; l
   };
   if (params.q?.trim()) normalized.q = params.q.trim();
   if (params.state && ['incomplete', 'complete'].includes(params.state)) normalized.registrationState = params.state;
-  if (params.cursor) normalized.pageToken = params.cursor;
+  if (params.cursor && !normalized.q) normalized.pageToken = params.cursor;
   return normalized;
 }
 

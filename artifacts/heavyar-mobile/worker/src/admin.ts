@@ -24,6 +24,15 @@ import { processEarlyAccessCampaigns } from './early-access-campaign-delivery';
 import { driverEligibility, driverDiscoveryMarket } from './driver-eligibility';
 import { effectiveDocumentStatus, regulatoryReviewStatuses } from './regulatory';
 import { normalizeTapEnvironment } from './payment';
+import {
+  ADMIN_SEARCH_DEFAULT_LIMIT,
+  ADMIN_SEARCH_MAX_LIMIT,
+  ADMIN_SEARCH_SOURCE_DOCUMENT_BUDGET,
+  adminPrefixBounds,
+  normalizeAdminSearchQuery,
+  safeAdminDocumentId,
+  type NormalizedAdminSearchQuery,
+} from './admin-search';
 import { canTransitionComplaint, canTransitionIncident, canTransitionPrivacyRequest, canTransitionRefundCase, complaintServiceTargets, normalizeModerationReason, refundMayBeMarkedExecuted, REGULATORY_CATALOGUE, REGULATORY_CATALOG_VERSION, DRIVER_CREDENTIAL_FRAMEWORK } from './compliance';
 import { googleServiceAccountToken as googleToken } from './google-auth';
 
@@ -77,12 +86,14 @@ type RawDoc = { data: any; updateTime?: string; name?: string };
 type BatchGetReference = { collection: string; id: string };
 type AuthDirectoryIdentity = { uid: string; email: string | null; emailVerified: boolean; disabled: boolean; createdAt?: string };
 type AuthDirectoryPage = { identities: AuthDirectoryIdentity[]; nextPageToken: string | null };
+type AuthIdentityLookup = { localIds?: string[]; emails?: string[] };
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let commitOverride: unknown[][] | undefined;
 let identityOverride: ((uid: string, role: StaffRole | null) => Promise<{ role: StaffRole | null; previousRole: unknown }>) | undefined;
 let verifiedEmailOverride: ((uid: string) => Promise<string | null>) | undefined;
 let queryOverride: ((collection: string, before: string, limit: number, query?: any) => RawDoc[]) | undefined;
 let accountIntegrityDirectoryOverride: ((limit: number, pageToken?: string) => Promise<AuthDirectoryPage>) | undefined;
+let authIdentityLookupOverride: ((lookup: AuthIdentityLookup) => Promise<AuthDirectoryIdentity[]>) | undefined;
 let batchGetOverride: ((references: BatchGetReference[]) => Promise<any[]>) | undefined;
 let aggregateOverride: ((input: { collection: string; filter?: AggregateFilter | AggregateFilter[]; sumField?: string; structuredQuery: any }) => number | null | Promise<number | null>) | undefined;
 let recentAuditOverride: (() => any[] | null | Promise<any[] | null>) | undefined;
@@ -93,6 +104,7 @@ export const __adminTest = {
   setVerifiedEmail(fn?: (uid: string) => Promise<string | null>) { verifiedEmailOverride = fn; },
   setQuery(fn?: (collection: string, before: string, limit: number, query?: any) => RawDoc[]) { queryOverride = fn; },
   setAccountIntegrityDirectory(fn?: (limit: number, pageToken?: string) => Promise<AuthDirectoryPage>) { accountIntegrityDirectoryOverride = fn; },
+  setAuthIdentityLookup(fn?: (lookup: AuthIdentityLookup) => Promise<AuthDirectoryIdentity[]>) { authIdentityLookupOverride = fn; },
   setBatchGet(fn?: (references: BatchGetReference[]) => Promise<any[]>) { batchGetOverride = fn; },
   setAggregate(fn?: (input: { collection: string; filter?: AggregateFilter | AggregateFilter[]; sumField?: string; structuredQuery: any }) => number | null | Promise<number | null>) { aggregateOverride = fn; },
   setRecentAudit(fn?: () => any[] | null | Promise<any[] | null>) { recentAuditOverride = fn; },
@@ -177,6 +189,35 @@ async function batchGetRawDocs(env: Env, references: BatchGetReference[]): Promi
     return found;
   } catch {
     throw new AccountIntegrityStorageError();
+  }
+}
+
+class AuthDirectoryUnavailableError extends Error {}
+
+async function lookupFirebaseAuthRecords(env: Env, lookup: AuthIdentityLookup): Promise<AuthDirectoryIdentity[]> {
+  const localIds = [...new Set((lookup.localIds || []).filter(Boolean))].slice(0, 100);
+  const emails = [...new Set((lookup.emails || []).map(value => value.trim().toLowerCase()).filter(Boolean))].slice(0, 100);
+  if ((localIds.length > 0) === (emails.length > 0)) throw new Error('Invalid identity lookup');
+  if (authIdentityLookupOverride) return authIdentityLookupOverride(localIds.length ? { localIds } : { emails });
+  if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) throw new AuthDirectoryUnavailableError();
+  try {
+    const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:lookup`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(localIds.length ? { localId: localIds } : { email: emails }),
+    });
+    if (!response.ok) throw new AuthDirectoryUnavailableError();
+    return ((await response.json() as any).users || []).map((identity: any) => ({
+      uid: String(identity.localId || ''),
+      email: typeof identity.email === 'string' ? identity.email : null,
+      emailVerified: identity.emailVerified === true,
+      disabled: identity.disabled === true,
+      createdAt: identity.createdAt ? new Date(Number(identity.createdAt)).toISOString() : undefined,
+    })).filter((identity: AuthDirectoryIdentity) => identity.uid);
+  } catch (error) {
+    if (error instanceof AuthDirectoryUnavailableError) throw error;
+    throw new AuthDirectoryUnavailableError();
   }
 }
 
@@ -324,11 +365,26 @@ const FILTERS: Record<string, string[]> = {
   complianceEvidence: ['evidenceType', 'issuedAt'],
 };
 
-async function listCollection(env: Env, collection: string, query: Record<string, string>, limit = 30, cursor: string | null = null) {
+type AdminListResult = {
+  items: any[];
+  nextCursor?: string;
+  maxSelectable?: number;
+  boundedCandidatePage?: boolean;
+  candidatesExamined?: number;
+  boundedAuthFiltered?: boolean;
+  boundedStructuredFiltered?: boolean;
+  searchMode?: 'indexed';
+  query?: string;
+  truncated?: boolean;
+  searchBudget?: { firestoreQueries: number; sourceDocuments: number; batchEnrichmentLimit: number };
+};
+
+async function listCollection(env: Env, collection: string, query: Record<string, string>, limit = 30, cursor: string | null = null): Promise<AdminListResult> {
   if (!FILTERS[collection]) throw new Error('Unsupported collection');
   // Empty controls are not active filters (including q= and direction=).
   query = Object.fromEntries(Object.entries(query).filter(([, value]) => value.trim() !== ''));
   const safeLimit = Math.min(50, Math.max(1, Number.isFinite(limit) ? limit : 30));
+  if (query.q !== undefined) return indexedSearchCollection(env, collection, query, Math.min(ADMIN_SEARCH_MAX_LIMIT, safeLimit));
   const sort = query.sort;
   const sortDirection = query.direction || 'asc';
   if (sort && !['createdAt', 'updatedAt', 'timestamp', 'status', 'amount'].includes(sort)) throw new Error('Invalid sort field');
@@ -354,35 +410,10 @@ async function listCollection(env: Env, collection: string, query: Record<string
     } }))
     : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [];
   const rows = response.filter(item => item.document);
-  const valueAt = (record: any, path: string): any => path.split('.').reduce((value, key) => value && typeof value === 'object' ? value[key] : undefined, record);
   // emailVerified is authoritative in Firebase Auth; never discard rows using
   // the stale Firestore projection before Auth enrichment.
-  const activeFilters = FILTERS[collection].filter(field => query[field] !== undefined && !(collection === 'users' && field === 'emailVerified')).map(field => [field, query[field]] as const);
-  const search = query.q?.trim().toLowerCase();
-  if (search !== undefined && (!search || search.length > 200)) throw new Error('Invalid search query');
-  const searchFields: Record<string, string[]> = {
-    users: ['emailLower', 'email', 'displayName', 'name', 'nameEn', 'accountPurpose'],
-    equipment: ['slug', 'title', 'name', 'publicEquipmentNumber', 'equipmentNumber'],
-    equipmentRequests: ['requestId', 'publicRequestNumber', 'requestNumber'],
-    payments: ['requestId', 'paymentId', 'providerReference'],
-    invoices: ['requestId', 'invoiceNumber'],
-    refunds: ['requestId', 'refundId', 'publicRequestNumber', 'requestNumber'],
-    complaints: ['requestId'],
-    driverProfiles: ['uid', 'displayName', 'name'],
-  };
-  const matches = (record: any, name: string) => activeFilters.every(([field, rawValue]) => {
-    const actual = valueAt(record, field);
-    if (typeof actual === 'boolean') return actual === (rawValue === 'true');
-    if (typeof actual === 'number') return actual === Number(rawValue);
-    return String(actual ?? '') === rawValue;
-  }) && (!search || [name.split('/').pop(), ...(searchFields[collection] || []).map(field => valueAt(record, field))]
-    .some(value => String(value || '').toLowerCase().includes(search)));
-  // Search and Auth verification have no trustworthy indexed representation in
-  // the current schema. Consume one bounded candidate page, never refill it by
-  // scanning. A continuation can therefore accompany an empty result page.
   const candidates = rows.slice(0, safeLimit);
-  const matching = candidates.filter(item => matches(decode(item.document), String(item.document.name)));
-  const docs = matching.slice(0, safeLimit);
+  const docs = candidates;
   const cursorDocument = candidates[candidates.length - 1]?.document;
   const cursorSortValue = sort && cursorDocument ? (decode(cursorDocument)[sort] ?? null) : undefined;
   // The physical identity must not be shadowed by a historical data.id field.
@@ -392,32 +423,222 @@ async function listCollection(env: Env, collection: string, query: Record<string
     : baseItems;
   const verifiedFilter = collection === 'users' && query.emailVerified !== undefined ? query.emailVerified === 'true' : undefined;
   const filteredProjection = verifiedFilter === undefined ? projection : queryOverride
-    ? matching.filter(item => decode(item.document).emailVerified === verifiedFilter).slice(0, safeLimit).map(item => ({ id: String(item.document.name).split('/').pop(), ...redact(decode(item.document)) }))
+    ? docs.filter(item => decode(item.document).emailVerified === verifiedFilter).slice(0, safeLimit).map(item => ({ id: String(item.document.name).split('/').pop(), ...redact(decode(item.document)) }))
     : projection.filter(item => item.emailVerified === verifiedFilter);
   return {
     items: filteredProjection,
     ...(collection === 'users' ? { maxSelectable: 5000 } : {}),
-    ...(search || verifiedFilter !== undefined ? { boundedCandidatePage: true, candidatesExamined: candidates.length } : {}),
+    ...(verifiedFilter !== undefined ? { boundedCandidatePage: true, candidatesExamined: candidates.length, boundedAuthFiltered: true } : {}),
     nextCursor: rows.length > safeLimit
       ? nextCursor(cursorDocument?.name, cursorSortValue, !!(sort && cursorDocument?.fields?.[sort]?.timestampValue)) : undefined,
+  };
+}
+
+type IndexedSearchCandidate = { id: string; data: any; rank: number };
+type IndexedSearchPlan = {
+  exactFields: Array<{ field: string; value: string }>;
+  prefixFields: string[];
+  mandatoryFilters: Array<[string, string]>;
+};
+
+const ADMIN_BOOLEAN_FILTERS = new Set(['isActive', 'active', 'enabled', 'read', 'automated']);
+const adminValueAt = (record: any, path: string): any => path.split('.').reduce((value, key) => value && typeof value === 'object' ? value[key] : undefined, record);
+const adminFilterValue = (field: string, value: string) => jsonValue(ADMIN_BOOLEAN_FILTERS.has(field) ? value === 'true' : value);
+const adminFieldFilter = (field: string, op: string, value: any) => ({ fieldFilter: { field: { fieldPath: field }, op, value } });
+const adminWhere = (filters: any[]) => filters.length === 1 ? filters[0] : { compositeFilter: { op: 'AND', filters } };
+
+function indexedSearchPlan(collection: string, search: NormalizedAdminSearchQuery, query: Record<string, string>): IndexedSearchPlan {
+  const role = collection === 'users' && query.role ? [['role', query.role] as [string, string]] : [];
+  if (collection === 'users') return {
+    exactFields: [
+      { field: 'emailLower', value: search.email || search.folded },
+      { field: 'email', value: search.email || search.folded },
+    ],
+    prefixFields: ['nameAr', 'nameEn'],
+    mandatoryFilters: role,
+  };
+  if (collection === 'driverProfiles') return {
+    exactFields: search.email ? [] : [{ field: 'publicId', value: search.query }],
+    prefixFields: search.email ? [] : ['nameAr', 'nameEn', 'displayName'],
+    mandatoryFilters: [],
+  };
+  if (collection === 'equipment') return {
+    exactFields: [
+      { field: 'publicEquipmentNumber', value: search.publicIdentifier },
+      { field: 'equipmentNumber', value: search.publicIdentifier },
+      { field: 'slug', value: search.folded },
+    ],
+    prefixFields: ['titleAr', 'titleEn'],
+    mandatoryFilters: [],
+  };
+  if (collection === 'equipmentRequests') return {
+    exactFields: [
+      { field: 'requestId', value: search.query },
+      { field: 'publicRequestNumber', value: search.publicIdentifier },
+      { field: 'requestNumber', value: search.publicIdentifier },
+    ],
+    prefixFields: [],
+    mandatoryFilters: [],
+  };
+  const exactFields: Record<string, string[]> = {
+    payments: ['requestId', 'paymentId', 'providerReference'],
+    invoices: ['requestId', 'invoiceNumber'],
+    refunds: ['requestId', 'refundId', 'publicRequestNumber', 'requestNumber'],
+    complaints: ['requestId'],
+  };
+  if (exactFields[collection]) return {
+    exactFields: exactFields[collection].map(field => ({
+      field,
+      value: ['publicRequestNumber', 'requestNumber'].includes(field) ? search.publicIdentifier : search.query,
+    })),
+    prefixFields: [],
+    mandatoryFilters: [],
+  };
+  throw new Error('Search is not supported for this resource');
+}
+
+async function adminSearchRows(env: Env, collection: string, structuredQuery: any) {
+  const response = queryOverride
+    ? queryOverride(collection, '', structuredQuery.limit, structuredQuery).slice(0, structuredQuery.limit).map(item => ({ document: {
+      name: item.name || fullName(env, `${collection}/${crypto.randomUUID()}`),
+      updateTime: item.updateTime,
+      fields: Object.fromEntries(Object.entries(item.data || {}).map(([key, value]) => [key, jsonValue(value)])),
+    } }))
+    : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [];
+  return response.filter(item => item.document).slice(0, structuredQuery.limit);
+}
+
+async function indexedSearchCollection(env: Env, collection: string, query: Record<string, string>, safeLimit: number): Promise<AdminListResult> {
+  const startedAt = Date.now();
+  const search = normalizeAdminSearchQuery(query.q);
+  if (!search) throw new Error('Invalid search query');
+  const plan = indexedSearchPlan(collection, search, query);
+  const activeFilters = FILTERS[collection]
+    .filter(field => query[field] !== undefined && field !== 'emailVerified' && !plan.mandatoryFilters.some(([mandatory]) => mandatory === field))
+    .map(field => [field, query[field]] as [string, string]);
+  // Admin search intentionally returns one small, non-paginated result set.
+  // Twenty results keep every collection's downstream joins within one
+  // Firestore batchGet operation (the wider 50-document budget is for the
+  // independent index branches used to discover and rank those results).
+  const resultLimit = Math.min(ADMIN_SEARCH_DEFAULT_LIMIT, Math.max(1, safeLimit));
+  const candidates = new Map<string, IndexedSearchCandidate>();
+  let firestoreQueries = 0;
+  let sourceDocuments = 0;
+  let truncated = false;
+
+  const matchesFilters = (data: any, filters = [...plan.mandatoryFilters, ...activeFilters]) => filters.every(([field, rawValue]) => {
+    const actual = adminValueAt(data, field);
+    if (typeof actual === 'boolean') return actual === (rawValue === 'true');
+    if (typeof actual === 'number') return actual === Number(rawValue);
+    return String(actual ?? '') === rawValue;
+  });
+  const addCandidate = (id: string, data: any, rank: number) => {
+    if (!id || !matchesFilters(data)) return;
+    const previous = candidates.get(id);
+    if (!previous || rank < previous.rank) candidates.set(id, { id, data, rank });
+  };
+
+  // Email input cannot be a document ID. Avoid a guaranteed miss and preserve
+  // the five-operation search budget for useful index-backed work.
+  if (!search.email && safeAdminDocumentId(search.query) && sourceDocuments < ADMIN_SEARCH_SOURCE_DOCUMENT_BUDGET) {
+    firestoreQueries += 1;
+    const direct = await rawDoc(env, collection, search.query);
+    if (direct?.data) {
+      sourceDocuments += 1;
+      addCandidate(search.query, direct.data, 0);
+    }
+  }
+
+  if (collection === 'driverProfiles' && search.email) {
+    const identities = await lookupFirebaseAuthRecords(env, { emails: [search.email] });
+    for (const identity of identities.slice(0, 1)) {
+      if (sourceDocuments >= ADMIN_SEARCH_SOURCE_DOCUMENT_BUDGET) break;
+      firestoreQueries += 1;
+      const profile = await rawDoc(env, 'driverProfiles', identity.uid);
+      if (profile?.data) {
+        sourceDocuments += 1;
+        addCandidate(identity.uid, { ...profile.data, emailVerified: identity.emailVerified }, 1);
+      }
+    }
+  } else if (plan.exactFields.length && sourceDocuments < ADMIN_SEARCH_SOURCE_DOCUMENT_BUDGET) {
+    const exactFilters = plan.exactFields.map(({ field, value }) => adminFieldFilter(field, 'EQUAL', jsonValue(value)));
+    const exactMatch = exactFilters.length === 1 ? exactFilters[0] : { compositeFilter: { op: 'OR', filters: exactFilters } };
+    const filters = [
+      ...plan.mandatoryFilters.map(([field, value]) => adminFieldFilter(field, 'EQUAL', adminFilterValue(field, value))),
+      ...activeFilters.map(([field, value]) => adminFieldFilter(field, 'EQUAL', adminFilterValue(field, value))),
+      exactMatch,
+    ];
+    const branchLimit = Math.min(5, ADMIN_SEARCH_SOURCE_DOCUMENT_BUDGET - sourceDocuments);
+    firestoreQueries += 1;
+    const rows = await adminSearchRows(env, collection, { from: [{ collectionId: collection }], where: adminWhere(filters), limit: branchLimit });
+    sourceDocuments += rows.length;
+    if (rows.length === branchLimit) truncated = true;
+    for (const row of rows) addCandidate(String(row.document.name).split('/').pop() || '', decode(row.document), collection === 'users' ? 1 : 2);
+  }
+
+  for (let index = 0; index < plan.prefixFields.length && sourceDocuments < ADMIN_SEARCH_SOURCE_DOCUMENT_BUDGET; index += 1) {
+    const field = plan.prefixFields[index];
+    const fieldsRemaining = plan.prefixFields.length - index;
+    const branchLimit = Math.max(1, Math.floor((ADMIN_SEARCH_SOURCE_DOCUMENT_BUDGET - sourceDocuments) / fieldsRemaining));
+    const bounds = adminPrefixBounds(search.query);
+    const filters = [
+      ...plan.mandatoryFilters.map(([filterField, value]) => adminFieldFilter(filterField, 'EQUAL', adminFilterValue(filterField, value))),
+      adminFieldFilter(field, 'GREATER_THAN_OR_EQUAL', jsonValue(bounds.start)),
+      adminFieldFilter(field, 'LESS_THAN_OR_EQUAL', jsonValue(bounds.end)),
+    ];
+    firestoreQueries += 1;
+    const rows = await adminSearchRows(env, collection, {
+      from: [{ collectionId: collection }],
+      where: adminWhere(filters),
+      orderBy: [{ field: { fieldPath: field }, direction: 'ASCENDING' }, { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+      limit: branchLimit,
+    });
+    sourceDocuments += rows.length;
+    if (rows.length === branchLimit) truncated = true;
+    for (const row of rows) addCandidate(String(row.document.name).split('/').pop() || '', decode(row.document), 3);
+  }
+
+  const ranked = [...candidates.values()]
+    .sort((left, right) => left.rank - right.rank || left.id.localeCompare(right.id))
+    .slice(0, resultLimit)
+    .map(candidate => ({ ...redact(candidate.data), id: candidate.id }));
+  if (candidates.size > resultLimit || activeFilters.length > 0 && plan.prefixFields.length > 0) truncated = true;
+  const accounts = ['users', 'providerProfiles', 'driverProfiles'].includes(collection);
+  const projected = accounts && (!queryOverride || authIdentityLookupOverride)
+    ? await authoritativeAccountProjection(env, ranked)
+    : ranked;
+  const verifiedFilter = collection === 'users' && query.emailVerified !== undefined ? query.emailVerified === 'true' : undefined;
+  const items = verifiedFilter === undefined ? projected : projected.filter(item => item.emailVerified === verifiedFilter);
+  const boundedAuthFiltered = verifiedFilter !== undefined;
+  if (boundedAuthFiltered) truncated = true;
+  console.log(JSON.stringify({
+    event: 'admin_indexed_search_budget',
+    collection,
+    firestoreQueries,
+    sourceDocuments,
+    resultCount: items.length,
+    resultLimit,
+    truncated,
+    durationMs: Date.now() - startedAt,
+  }));
+  return {
+    items,
+    ...(collection === 'users' ? { maxSelectable: 5000 } : {}),
+    searchMode: 'indexed' as const,
+    query: search.email || search.query,
+    truncated,
+    ...(boundedAuthFiltered ? { boundedAuthFiltered: true } : {}),
+    ...(activeFilters.length > 0 && plan.prefixFields.length > 0 ? { boundedStructuredFiltered: true } : {}),
+    searchBudget: { firestoreQueries, sourceDocuments, batchEnrichmentLimit: 1 },
   };
 }
 
 /** One bounded Auth lookup per page; Firebase remains the verification source. */
 async function authoritativeAccountProjection(env: Env, items: any[]) {
   if (!items.length) return items;
-  if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) throw new Error('Account verification temporarily unavailable');
-  const projectId = env.FIREBASE_PROJECT_ID;
-  const chunks: any[][] = [];
-  for (let i = 0; i < items.length; i += 100) chunks.push(items.slice(i, i + 100));
   try {
-    const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
-    const responses = await Promise.all(chunks.map(chunk => fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/accounts:lookup`, {
-      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: chunk.map(item => String(item.uid || item.id)).filter(Boolean) }),
-    })));
-    if (responses.some(response => !response.ok)) throw new Error('Account verification temporarily unavailable');
-    const records = (await Promise.all(responses.map(response => response.json() as Promise<any>))).flatMap(body => body.users || []);
-    const verified = new Map(records.map((record: any) => [String(record.localId), record.emailVerified === true]));
+    const records = await lookupFirebaseAuthRecords(env, { localIds: items.map(item => String(item.uid || item.id)).filter(Boolean) });
+    const verified = new Map(records.map(record => [record.uid, record.emailVerified === true]));
     return items.map(item => ({ ...item, emailVerified: verified.get(String(item.uid || item.id)) === true }));
   } catch { throw new Error('Account verification temporarily unavailable'); }
 }
@@ -1425,11 +1646,18 @@ async function enrichAdminItems(env: Env, collection: string, items: any[]) {
   if (collection === 'users') for (const item of items) people.set(String(item.id), item);
   const accounts = ['users', 'providerProfiles', 'driverProfiles'].includes(collection);
   const equipment = new Map<string, any>();
+  const driverPolicies = new Map<string, any>();
+  const driverMarkets = new Map<string, any>();
+  const driverCountries = collection === 'driverProfiles'
+    ? [...new Set(items.map(item => String(item.countryCode || '')))].filter(code => ['SA', 'AE', 'KW', 'QA', 'BH', 'OM'].includes(code))
+    : [];
   const equipmentIds = [...new Set(items.map((item) => item.equipmentId).filter((id): id is string => typeof id === 'string' && id.length > 0))].slice(0, 50);
   const reads = [
     ...[...needed].filter(uid => !people.has(uid)).map(id => ({ collection: 'users', id, target: people })),
     ...(accounts ? items.map(item => ({ collection: 'emailVerificationRateLimits', id: String(item.uid || item.id), target: reminders })) : []),
     ...equipmentIds.map(id => ({ collection: 'equipment', id, target: equipment })),
+    ...(collection === 'driverProfiles' ? [{ collection: 'emailVerificationPolicies', id: 'default', target: driverPolicies }] : []),
+    ...driverCountries.map(id => ({ collection: 'countryConfigs', id, target: driverMarkets })),
   ];
   for (let offset = 0; offset < reads.length; offset += 100) {
     const chunk = reads.slice(offset, offset + 100);
@@ -1448,16 +1676,8 @@ async function enrichAdminItems(env: Env, collection: string, items: any[]) {
     }
   }
   // Enrich only the bounded page; never scan all drivers to imply global totals.
-  const driverMarkets = new Map<string, any>();
-  let driverEmailPolicy: any;
-  if (collection === 'driverProfiles') {
-    driverEmailPolicy = (await rawDoc(env, 'emailVerificationPolicies', 'default'))?.data;
-    const countries = [...new Set(items.map(item => String(item.countryCode || '')))]
-      .filter(code => ['SA', 'AE', 'KW', 'QA', 'BH', 'OM'].includes(code));
-    await Promise.all(countries.map(async code => {
-      driverMarkets.set(code, driverDiscoveryMarket(code, (await rawDoc(env, 'countryConfigs', code))?.data));
-    }));
-  }
+  const driverEmailPolicy = driverPolicies.get('default');
+  for (const code of driverCountries) driverMarkets.set(code, driverDiscoveryMarket(code, driverMarkets.get(code)));
   return items.map((item) => {
     const record = { ...item };
     const accountUid = String(record.uid || record.id || '');
@@ -1475,6 +1695,7 @@ async function enrichAdminItems(env: Env, collection: string, items: any[]) {
       const person = people.get(record.uid || record.id);
       record.discoveryEligibility = driverEligibility(record, person, driverMarkets.get(String(record.countryCode || '')), driverEmailPolicy);
       record.displayName = displayName(record, displayName(person));
+      record.role = person?.role;
       if (person?.email) record.email = person.email;
       // Do not overwrite the authoritative Auth value with the profile mirror.
     }
@@ -2859,18 +3080,65 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
     if (role !== 'owner' && role !== 'super_admin') return { error: 'Owner or super-admin integrity permission required', status: 403 };
     const limitValue = url.searchParams.get('limit');
     const rawLimit = Number(limitValue || 20);
-    const query = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    const rawQuery = String(url.searchParams.get('q') || '');
+    let normalizedQuery: NormalizedAdminSearchQuery | null = null;
+    try { normalizedQuery = normalizeAdminSearchQuery(rawQuery); }
+    catch { return { error: 'Invalid account integrity request', errorCode: 'ACCOUNT_INTEGRITY_INVALID_REQUEST', status: 400 }; }
     const registrationState = String(url.searchParams.get('registrationState') || '');
     const pageToken = url.searchParams.get('pageToken') || undefined;
     if ((limitValue !== null && (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 20))
-      || query.length > 200 || /[\u0000-\u001f\u007f]/.test(query)
       || (registrationState !== '' && !['complete', 'incomplete'].includes(registrationState))
+      || (normalizedQuery && pageToken !== undefined)
       || (pageToken !== undefined && (pageToken.length > 4096 || /[\u0000-\u001f\u007f]/.test(pageToken)))) {
       return { error: 'Invalid account integrity request', errorCode: 'ACCOUNT_INTEGRITY_INVALID_REQUEST', status: 400 };
     }
     const limit = rawLimit;
     let directory: AuthDirectoryPage;
-    try { directory = accountIntegrityDirectoryOverride ? await accountIntegrityDirectoryOverride(limit, pageToken) : await listFirebaseAuthIdentities(env, limit, pageToken); }
+    let searchFirestoreQueries = 0;
+    let searchSourceDocuments = 0;
+    let searchTruncated = false;
+    let authDirectoryCalls = 0;
+    try {
+      if (!normalizedQuery) {
+        authDirectoryCalls = 1;
+        directory = accountIntegrityDirectoryOverride ? await accountIntegrityDirectoryOverride(limit, pageToken) : await listFirebaseAuthIdentities(env, limit, pageToken);
+      } else if (normalizedQuery.email) {
+        authDirectoryCalls = 1;
+        const identities = await lookupFirebaseAuthRecords(env, { emails: [normalizedQuery.email] });
+        directory = { identities: identities.slice(0, limit), nextPageToken: null };
+        searchTruncated = identities.length > limit;
+      } else {
+        const rankedIds = new Map<string, number>();
+        if (safeAdminDocumentId(normalizedQuery.query)) rankedIds.set(normalizedQuery.query, 0);
+        for (const field of ['nameAr', 'nameEn']) {
+          const bounds = adminPrefixBounds(normalizedQuery.query);
+          const branchLimit = Math.floor(ADMIN_SEARCH_SOURCE_DOCUMENT_BUDGET / 2);
+          searchFirestoreQueries += 1;
+          const rows = await adminSearchRows(env, 'users', {
+            from: [{ collectionId: 'users' }],
+            where: adminWhere([
+              adminFieldFilter(field, 'GREATER_THAN_OR_EQUAL', jsonValue(bounds.start)),
+              adminFieldFilter(field, 'LESS_THAN_OR_EQUAL', jsonValue(bounds.end)),
+            ]),
+            orderBy: [{ field: { fieldPath: field }, direction: 'ASCENDING' }, { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+            limit: branchLimit,
+          });
+          searchSourceDocuments += rows.length;
+          if (rows.length === branchLimit) searchTruncated = true;
+          for (const row of rows) {
+            const uid = String(row.document.name).split('/').pop() || '';
+            if (uid && !rankedIds.has(uid)) rankedIds.set(uid, 3);
+          }
+        }
+        const ids = [...rankedIds.entries()].sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0])).map(([uid]) => uid);
+        const identities = ids.length ? await lookupFirebaseAuthRecords(env, { localIds: ids.slice(0, 100) }) : [];
+        if (ids.length) authDirectoryCalls = 1;
+        const rank = new Map(ids.map((uid, index) => [uid, index]));
+        identities.sort((left, right) => (rank.get(left.uid) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right.uid) ?? Number.MAX_SAFE_INTEGER));
+        directory = { identities: identities.slice(0, limit), nextPageToken: null };
+        searchTruncated ||= identities.length > limit || ids.length > 100;
+      }
+    }
     catch { return { error: 'Account integrity directory unavailable', errorCode: 'ACCOUNT_INTEGRITY_AUTH_DIRECTORY_UNAVAILABLE', status: 503 }; }
     const identities = directory.identities.slice(0, limit);
     const references: BatchGetReference[] = identities.flatMap(identity => [
@@ -2895,7 +3163,6 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
       const state = completeness.state === 'authenticated_complete' ? 'complete' : 'incomplete';
       if (registrationState && registrationState !== state) continue;
       const displayName = String(profile?.data?.nameEn || profile?.data?.nameAr || '');
-      if (query && !String(identity.email || '').toLowerCase().includes(query) && !identity.uid.toLowerCase().includes(query) && !displayName.toLowerCase().includes(query)) continue;
       items.push({
         id: identity.uid,
         email: identity.email || undefined,
@@ -2915,12 +3182,26 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
     }
     console.log(JSON.stringify({
       event: 'account_integrity_read_budget',
-      authDirectoryCalls: 1,
+      authDirectoryCalls,
+      searchFirestoreQueries,
+      searchSourceDocuments,
       profileFirestoreRequests: references.length ? 1 : 0,
       profileDocumentsRequested: references.length,
       durationMs: Date.now() - startedAt,
     }));
-    return { success: true, bounded: true, limit, maxLimit: 20, items, nextCursor: directory.nextPageToken };
+    if (normalizedQuery && registrationState) searchTruncated = true;
+    return {
+      success: true,
+      bounded: true,
+      limit,
+      maxLimit: 20,
+      items,
+      ...(normalizedQuery ? {
+        searchMode: 'indexed', query: normalizedQuery.email || normalizedQuery.query, truncated: searchTruncated,
+        ...(registrationState ? { boundedStructuredFiltered: true } : {}),
+        searchBudget: { firestoreQueries: searchFirestoreQueries, sourceDocuments: searchSourceDocuments, batchEnrichmentLimit: 1 },
+      } : { nextCursor: directory.nextPageToken }),
+    };
   }
   if (url.pathname.startsWith('/api/admin/early-access/')) {
     try { return await handleEarlyAccessAdmin(req, earlyAccessStore(env, user), { uid: user.uid, role: user.permissionRole || user.role }); }
@@ -3243,10 +3524,17 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   }
   try {
     const result = await listCollection(env, collection, query, limit, cursor);
-    return { success: true, ...result, items: await enrichAdminItems(env, collection, result.items) };
+    const enriched = await enrichAdminItems(env, collection, result.items);
+    const items = collection === 'driverProfiles' && result.searchMode === 'indexed'
+      ? enriched.filter(item => item.role === 'driver')
+      : enriched;
+    return { success: true, ...result, items };
   } catch (error) {
     if (error instanceof Error && ['Invalid cursor', 'Invalid sort field', 'Invalid sort direction', 'Invalid search query'].includes(error.message)) {
       return { error: error.message, status: 400 };
+    }
+    if (error instanceof AuthDirectoryUnavailableError || error instanceof Error && error.message === 'Account verification temporarily unavailable') {
+      return { error: 'Account search temporarily unavailable', errorCode: 'AUTH_DIRECTORY_UNAVAILABLE', status: 503 };
     }
     throw error;
   }

@@ -17,6 +17,17 @@ describe('admin operations table contract', () => {
   it('maps UI search to the backend q filter and drops empty filters', () => {
     assert.deepEqual(adminListParams({ search: 'person@example.com', status: '', cursor: undefined }), { q: 'person@example.com' });
   });
+  it('labels indexed search semantics and renders an honest truncation state on every supported list', () => {
+    const table = readFileSync('artifacts/heavyar-admin/src/components/operations-table.tsx', 'utf8');
+    assert.equal(table.includes('More results are available. Refine your search.'), true);
+    for (const page of ['users', 'providers', 'drivers', 'equipment', 'requests', 'payments', 'invoices', 'refunds', 'complaints']) {
+      const source = readFileSync(`artifacts/heavyar-admin/src/pages/${page}.tsx`, 'utf8');
+      assert.equal(source.includes('searchTruncated={data?.truncated}'), true, `${page} must expose capped search results`);
+    }
+    const integrity = readFileSync('artifacts/heavyar-admin/src/pages/account-integrity.tsx', 'utf8');
+    assert.equal(integrity.includes('data?.truncated'), true);
+    assert.equal(integrity.includes("!search.trim() && <div"), true);
+  });
   it('keeps export scope and active filters on the server endpoint', () => {
     assert.equal(adminExportEndpoint('requests', 'current_page', { search: 'HV-REQ-1', status: 'pending' }), '/exports/requests.xlsx?scope=current_page&q=HV-REQ-1&status=pending');
   });

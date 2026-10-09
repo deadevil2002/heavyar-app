@@ -11,6 +11,7 @@ export function ExportControls({ resource, params = {} }: { resource: string; pa
   const [pending, setPending] = useState<'current' | 'all' | null>(null);
   const { toast } = useToast();
   const { language } = useAppState();
+  const hasSearch = Boolean(String(params.q ?? params.search ?? '').trim());
   const exportFile = async (scope: 'current' | 'all') => {
     setPending(scope);
     try {
@@ -20,5 +21,5 @@ export function ExportControls({ resource, params = {} }: { resource: string; pa
       toast({ title: language === 'ar' ? 'تعذر التصدير' : 'Export failed', description: userErrorMessage(error, language), variant: 'destructive' });
     } finally { setPending(null); }
   };
-  return <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={() => exportFile('current')} disabled={Boolean(pending)}>{pending === 'current' ? <Loader2 className="me-2 h-4 w-4 animate-spin" /> : <Download className="me-2 h-4 w-4" />}{language === 'ar' ? 'تصدير الصفحة' : 'Export current'}</Button><Button type="button" variant="outline" size="sm" onClick={() => exportFile('all')} disabled={Boolean(pending)}>{pending === 'all' ? <Loader2 className="me-2 h-4 w-4 animate-spin" /> : <Download className="me-2 h-4 w-4" />}{language === 'ar' ? 'تصدير الكل' : 'Export all'}</Button></div>;
+  return <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={() => exportFile('current')} disabled={Boolean(pending)}>{pending === 'current' ? <Loader2 className="me-2 h-4 w-4 animate-spin" /> : <Download className="me-2 h-4 w-4" />}{language === 'ar' ? 'تصدير النتائج' : 'Export results'}</Button><Button type="button" variant="outline" size="sm" onClick={() => exportFile('all')} disabled={Boolean(pending) || hasSearch} title={hasSearch ? (language === 'ar' ? 'البحث محدود؛ صدّر النتائج الظاهرة أو حسّن عبارة البحث.' : 'Search is capped; export shown results or refine the query.') : undefined}>{pending === 'all' ? <Loader2 className="me-2 h-4 w-4 animate-spin" /> : <Download className="me-2 h-4 w-4" />}{language === 'ar' ? 'تصدير الكل' : 'Export all'}</Button></div>;
 }

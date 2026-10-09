@@ -37,6 +37,7 @@ type Props<T extends { id: string }> = {
   onSelect?: (id: string, checked: boolean) => void;
   onSelectPage?: (checked: boolean) => void;
   cardAtTablet?: boolean;
+  searchTruncated?: boolean;
 };
 
 export function OperationsTable<T extends { id: string }>({
@@ -61,12 +62,13 @@ export function OperationsTable<T extends { id: string }>({
   onSelect,
   onSelectPage,
   cardAtTablet = false,
+  searchTruncated = false,
 }: Props<T>) {
   const { language } = useAppState();
   const rtl = language === 'ar';
   const t = (ar: string, en: string) => rtl ? ar : en;
   const resolvedSearchPlaceholder = searchPlaceholder || t('بحث…', 'Search…');
-   const resolvedEmptyLabel = candidatePageEmptyLabel(Boolean(nextCursor), language) || emptyLabel || t('لم يتم العثور على نتائج', 'No results found');
+  const resolvedEmptyLabel = candidatePageEmptyLabel(Boolean(nextCursor), language) || emptyLabel || t('لم يتم العثور على نتائج', 'No results found');
   const resolvedActionLabel = actionLabel || t('عرض التفاصيل', 'View details');
 
   const pageIds = items.map(i => i.id);
@@ -81,13 +83,18 @@ export function OperationsTable<T extends { id: string }>({
             <Input
               value={search || ''}
               onChange={(event) => onSearch(event.target.value)}
-               placeholder={resolvedSearchPlaceholder}
+              placeholder={resolvedSearchPlaceholder}
               className="w-full sm:max-w-sm bg-card"
-               aria-label={resolvedSearchPlaceholder}
+              aria-label={resolvedSearchPlaceholder}
             />
           )}
           {toolbar && <div className="flex flex-wrap items-center gap-2">{toolbar}</div>}
         </div>
+      )}
+      {Boolean(search?.trim()) && searchTruncated && (
+        <p className="text-xs font-medium text-amber-700 dark:text-amber-300" role="status">
+          {t('توجد نتائج إضافية. اكتب بحثًا أكثر تحديدًا.', 'More results are available. Refine your search.')}
+        </p>
       )}
       {cardAtTablet && (
         <div className="grid gap-3 lg:hidden">

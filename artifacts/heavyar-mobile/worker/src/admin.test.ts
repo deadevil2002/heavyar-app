@@ -23,6 +23,7 @@ describe('admin authorization and operational boundary', () => {
     __adminTest.setIdentity(undefined);
     __adminTest.setVerifiedEmail(undefined);
     __adminTest.setQuery(undefined);
+    __adminTest.setAuthIdentityLookup(undefined);
   });
   afterEach(() => {
     __test.setAuth(undefined);
@@ -33,6 +34,7 @@ describe('admin authorization and operational boundary', () => {
     __adminTest.setIdentity(undefined);
     __adminTest.setVerifiedEmail(undefined);
     __adminTest.setQuery(undefined);
+    __adminTest.setAuthIdentityLookup(undefined);
   });
 
   const legacyListing = (moderationStatus?: string) => ({
@@ -722,10 +724,11 @@ describe('admin authorization and operational boundary', () => {
   });
 
   test('refund filters accept empty UI controls and preserve search/filter intersection', async () => {
-    __adminTest.setQuery(() => [
-      { name: 'projects/undefined/databases/(default)/documents/refunds/refund-1', data: { requestId: 'request-1', state: 'pending', amount: 10 } },
-      { name: 'projects/undefined/databases/(default)/documents/refunds/refund-2', data: { requestId: 'request-1', state: 'completed', amount: 20 } },
-    ]);
+    const observedQueries: any[] = [];
+    __adminTest.setQuery((_collection, _before, _limit, query) => {
+      observedQueries.push(query);
+      return [{ name: 'projects/undefined/databases/(default)/documents/refunds/refund-1', data: { requestId: 'request-1', state: 'pending', amount: 10 } }];
+    });
     __adminTest.setFirestore(() => null);
     const actor = { uid: 'finance-1', admin: true, permissionRole: 'finance', testInjected: true as const };
     const blank: any = await handleAdmin(new Request('https://worker.test/api/admin/refunds?q=&state=pending&sort=&direction='), env, actor);
@@ -733,6 +736,8 @@ describe('admin authorization and operational boundary', () => {
     const searched: any = await handleAdmin(new Request('https://worker.test/api/admin/refunds?q=request-1&state=pending&sort=amount&direction=desc'), env, actor);
     expect(searched.items.length).toBe(1);
     expect(searched.items[0].id).toBe('refund-1');
+    expect(JSON.stringify(observedQueries).includes('state')).toBe(true);
+    expect(JSON.stringify(observedQueries).includes('requestId')).toBe(true);
     const malformed: any = await handleAdmin(new Request('https://worker.test/api/admin/refunds?cursor=invalid'), env, actor);
     expect(malformed.status).toBe(400);
   });

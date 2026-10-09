@@ -143,6 +143,11 @@ export type PaginatedResponse<T> = {
   items: T[];
   nextCursor?: string;
   total?: number;
+  searchMode?: 'indexed';
+  query?: string;
+  truncated?: boolean;
+  boundedAuthFiltered?: boolean;
+  boundedStructuredFiltered?: boolean;
 };
 
 // Types

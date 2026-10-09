@@ -6,9 +6,17 @@ Repository: `deadevil2002/heavyar-app`
 
 Baseline: `186348a3a5ccca9577fc2161e55e3e70253525e0`
 
-Mode: read-only diagnosis; no production data, configuration, or deployment was changed.
+P2-C implementation baseline: `edd9a4298162d080bdc5e1d599334019a8f617f1`
+
+Original audit mode: read-only diagnosis. The P2-C addendum changes source and deploys only the two required Firestore indexes, `heavyar-api`, and the Admin bundle; no production document data or Firestore rules are changed.
 
 ## Executive result
+
+### P2-C global Admin search update
+
+DP-003 is resolved by a dedicated, allowlisted indexed-search path. An empty `q` still uses the stable normal-list cursor. A non-empty `q` no longer reads a normal physical page or applies local substring matching: it performs exact document/identity/public-number lookups and canonical-field prefix range queries, merges and ranks by source ID, returns at most 20 results, and never returns the normal list cursor. Search is capped at five Firestore operations, 50 source documents, and one bounded enrichment batch. No projection, token array, normalized-name field, production backfill, or source-of-truth change was introduced. The two provider-prefix composite indexes were deployed independently and verified `READY` before the Worker/Admin release.
+
+The only new composites are `users(role ASC,nameAr ASC)` and `users(role ASC,nameEn ASC)` for provider prefix search. User names remain direct canonical `users` fields because Firestore rules allow client-owned profile updates. Exact email remains case-normalized; English-name prefix matching remains case-sensitive because a synchronously maintained lowercase name field does not exist. `emailVerified` remains Firebase Auth authoritative and is applied only after bounded search enrichment with an explicit `boundedAuthFiltered`/`truncated` contract. Public driver discovery DP-010 is unchanged.
 
 The core mobile request/chat data paths remain bounded and preserve the Worker as the authority for mutations. The Admin data plane has one confirmed P1 production failure and several P2 growth risks. The immediate failure is `GET /api/admin/account-integrity`: production returned HTTP 500 while the UI displayed its safe generic localized failure. At a page size of 20 the handler performs one Firebase Auth directory call, up to 61 Firestore document reads including Admin authorization, and up to 61 uncached OAuth token exchanges from `admin.ts`. The 60 integrity document reads are executed as 20 serial iterations; only the two role-profile reads inside each iteration are parallel.
 
@@ -106,7 +114,7 @@ Counts are code bounds; Firestore query operations are distinct from the number 
 | Account Integrity page 20 | 61 point reads | 1 directory + up to 61 token exchanges | 20 serial stages | RED |
 | Admin Dashboard cold | about 37 aggregate/query operations plus staff read | token exchange per Admin Firestore call | two aggregate stages | RED |
 | Admin generic list page | one bounded query, max 50; batch enrichment chunks up to 100 | optional batched Auth lookup | bounded parallel batch | GREEN/YELLOW |
-| Admin searched list page | same bounded query, then local filter | same as above | bounded, incomplete search | YELLOW |
+| Admin searched list page | max 5 exact/prefix index operations, max 50 source docs, one bounded enrichment batch, max 20 returned | exact driver email/Account Integrity identity lookup where applicable | bounded global source search; explicit truncation; no unrelated cursor | GREEN |
 | Generic campaign processor | per campaign: users page 301 + 3 preference batchGet calls + one commit of at most 301 writes | shared cached Google token | bounded page; no preference network `Promise.all` | GREEN |
 | Early Access campaign recipients | audience bound 500; snapshot preflight 5 delivery + 5 suppression batchGet calls; queue worst case 5 delivery + 10 subscriber/suppression batchGet calls | Firestore store calls | bounded chunks of 100; provider delivery remains sequential and capped at 50/invocation | GREEN |
 | Early Access unseen badge | one state read + query up to 100 every 20 s while visible | none beyond Firestore | bounded | YELLOW |
@@ -145,21 +153,21 @@ Counts are code bounds; Firestore query operations are distinct from the number 
 ## Pagination and search
 
 - `listCollection` enforces cursor-based pagination with a stable sort plus `__name__`, and max limit 50.
-- Search (`q`) and `emailVerified` are applied after one bounded candidate page. The handler returns `boundedCandidatePage: true`, but this means a matching record outside that physical page is missed. An empty page may legitimately carry `nextCursor`, creating UI ambiguity.
+- Search (`q`) uses a separate allowlisted indexed path. It performs exact document/email/identifier lookup and canonical-field prefix ranges, then bounded enrichment and deterministic merge/deduplication. It never returns a normal list `nextCursor`.
 - No offset pagination or proven unbounded Worker collection query was found.
-- Users, Providers, Drivers, Equipment, Requests, and Account Integrity search are bounded candidate search, not globally complete search.
+- Users, Providers, Drivers, Equipment, Requests, Payments, Invoices, Refunds, Complaints, and Account Integrity now use global index-backed source semantics with a 20-result cap. Broad matches return `truncated: true` and ask the operator to refine the query.
 - Early Access uses normalized fields/facets and indexed cursor-oriented queries; select-all is capped at 500/501.
 - Public driver discovery reads at most 100 active profiles ordered by document name and applies region/city/equipment/availability/trust filters in memory. It is bounded but incomplete at scale.
 - Listing search is also candidate-page based; it is safe from an unbounded scan but can omit text/city results that lie outside the candidate page.
 
 Expected search behavior:
 
-| Records | Admin exact/index filters | `q` candidate search | Driver/public candidate search |
+| Records | Admin exact/index filters | Admin indexed `q` search | Driver/public candidate search |
 |---:|---|---|---|
-| 100 | GREEN | GREEN/YELLOW | GREEN |
-| 1,000 | GREEN | YELLOW: requires paging to discover all matches | YELLOW |
-| 10,000 | GREEN | RED: global search semantics fail | RED |
-| 100,000 | GREEN if indexed | RED: dedicated normalized search/projection needed | RED |
+| 100 | GREEN | GREEN: global source lookup, bounded result set | GREEN |
+| 1,000 | GREEN | GREEN: constant query budget; broad results may require refinement | YELLOW |
+| 10,000 | GREEN | GREEN: index-backed exact/prefix semantics | RED |
+| 100,000 | GREEN if indexed | GREEN: max 5 queries / 50 source docs; no full scan | RED |
 
 ## Aggregation and cache audit
 

@@ -2,6 +2,8 @@
 
 Audit baseline: `186348a3a5ccca9577fc2161e55e3e70253525e0`
 
+P2-C implementation baseline: `edd9a4298162d080bdc5e1d599334019a8f617f1`
+
 Source: all non-test `collectionId` query-builder sites under `artifacts/heavyar-mobile/worker/src`.
 
 ## Coverage and interpretation
@@ -9,9 +11,9 @@ Source: all non-test `collectionId` query-builder sites under `artifacts/heavyar
 - 59/59 query-builder sites were inventoried. Repeated sites with the same logical shape remain listed because they have independent production callers.
 - `AUTO` means Firestore's automatic single-field indexes/index merging are sufficient for the observed shape; it does not mean the query is free of cost or search-correctness concerns.
 - `READY` is based on read-only production index inspection against Firebase project `heavyar-app`.
-- `SOURCE` is `artifacts/heavyar-mobile/firestore.indexes.json` (22 composite indexes, four TTL overrides).
-- One source-required composite is missing: `staffClaimSync(status ASC, nextAttemptAt ASC)`.
-- No index was deployed or changed.
+- `SOURCE` is `artifacts/heavyar-mobile/firestore.indexes.json` (26 composite indexes, four TTL overrides at the P2-C source state).
+- P2-C adds only `users(role ASC,nameAr ASC)` and `users(role ASC,nameEn ASC)`. Exact equality/OR searches and unscoped prefix searches use automatic single-field indexes/index merging.
+- Both P2-C composites were deployed index-only to Firebase project `heavyar-app` and verified `READY`; no Firestore rules change is included.
 
 ## All query-builder sites
 
@@ -76,6 +78,12 @@ Source: all non-test `collectionId` query-builder sites under `artifacts/heavyar
 | Q57 | `admin.ts:1681` | users | none | `__name__` ASC | 301/cursor | AUTO | YES / READY | generic campaign audience page |
 | Q58 | `admin.ts:1709` | verificationAttempts | status/provider time predicates | bounded order | bounded | query-dependent field indexes | YES in current production paths | verification cleanup/reconcile |
 | Q59 | `admin.ts:2893` | paymentGateways | none | none | 20 | AUTO | YES / READY | Admin gateway inventory |
+| Q60 | `admin.ts:511` | users | email/emailLower exact OR; optional equality filters; provider path adds role `== provider` | none | branch max 5; merged result cap 20 | AUTO/index merging | YES / automatic | Admin users/providers exact email |
+| Q61 | `admin.ts:575` | users | nameAr/nameEn prefix range; provider path adds role `== provider` | prefix field ASC + `__name__` ASC | shared source budget 50; result cap 20 | provider: role+nameAr / role+nameEn; users: AUTO | YES / READY | Admin users/providers name prefix |
+| Q62 | `admin.ts:575` | driverProfiles / equipment | canonical name/title prefix range | prefix field ASC + `__name__` ASC | shared source budget 50; result cap 20 | AUTO single-field | YES / automatic | Admin drivers/equipment prefix |
+| Q63 | `admin.ts:558` | equipment, equipmentRequests, payments, invoices, refunds, complaints | allowlisted exact identifier equality OR | none | branch max 5; result cap 20 | AUTO/index merging | YES / automatic | Admin operational identifier search |
+| Q64 | `admin.ts:3113` | users | nameAr/nameEn prefix range | prefix field ASC + `__name__` ASC | two branches, max 50 source docs; result cap 20 | AUTO single-field | YES / automatic | Account Integrity name search |
+| Q65 | `admin.ts:538` / `admin.ts:3105` | document/Auth identity point lookup | exact document ID, UID, or email | none | one point/Auth lookup | not a composite query | N/A | Admin exact identity search |
 
 ## Source composite indexes and production state
 
@@ -103,6 +111,10 @@ Source: all non-test `collectionId` query-builder sites under `artifacts/heavyar
 | I20 | notificationDeliveries | status ASC, nextAttemptAt ASC | YES | READY |
 | I21 | notificationDeliveries | status ASC, receiptPending ASC | YES | READY |
 | I22 | notificationDeliveries | status ASC, createdAt DESC | YES | READY |
+| I23 | payments | state ASC, amount ASC | YES | READY before P2-C |
+| I24 | staffClaimSync | status ASC, nextAttemptAt ASC | YES | READY before P2-C |
+| I25 | users | role ASC, nameAr ASC | YES | READY |
+| I26 | users | role ASC, nameEn ASC | YES | READY |
 
 TTL overrides for `earlyAccessTokens`, `earlyAccessRateLimits`, `earlyAccessPreviews`, and `earlyAccessDeliveries` on `expiresAt` are present and ACTIVE.
 
@@ -124,3 +136,5 @@ npx firebase-tools firestore:indexes --project heavyar-app --pretty
 ```
 
 Expected static inventory at this baseline: 59 query-builder sites, 22 source composite indexes, four TTL overrides. Production inspection found all source entries READY/ACTIVE, one missing source/query composite for Q48, and one production-only ratings ASC index.
+
+P2-C source inventory: 26 composite indexes and four TTL overrides. The global Admin search implementation adds query shapes Q60-Q65 and only composites I25-I26; both are `READY` after the index-only deployment. The pre-existing Production-only `ratings(toUid ASC, createdAt ASC)` index was preserved and was not deleted.
