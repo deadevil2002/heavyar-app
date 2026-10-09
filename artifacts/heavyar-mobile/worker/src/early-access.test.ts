@@ -16,6 +16,13 @@ function memoryStore() {
       for (const c of changes) put(c.collection, c.id, c.data);
       if (action) audit.push({ action, target });
     },
+    delete: async (records, action, target, _reason, guards = []) => {
+      for (const record of records) if (docs.get(`${record.collection}/${record.id}`)?.updateTime !== record.prior.updateTime) throw new EarlyAccessError('CONCURRENT_UPDATE', 409);
+      for (const guard of guards) if (docs.get(`${guard.collection}/${guard.id}`)?.updateTime !== guard.prior?.updateTime) throw new EarlyAccessError('CONCURRENT_UPDATE', 409);
+      for (const record of records) docs.delete(`${record.collection}/${record.id}`);
+      for (const guard of guards) put(guard.collection, guard.id, guard.data);
+      if (action) audit.push({ action, target });
+    },
     send: async (to, subject, html, key, text) => { sent.push({ to, subject, html, key, text }); return { delivered: true, messageId: 'provider-id' }; },
     ownEmail: async () => ownEmail,
     query: async (collection, query) => {
@@ -472,6 +479,87 @@ describe('Early Access privacy and races', () => {
     expect(JSON.stringify([...m.docs.values()]).includes('Private Person')).toBe(false);
     expect(m.docs.get(`${EA.suppression}/${id}`)!.data.suppressed).toBe(true);
     expect(await errorCode(() => handleEarlyAccessPublic(request(`/api/early-access/verify?token=${token}`, {}), m.store))).toBe('LINK_EXPIRED');
+  });
+  test('admin unsubscribe remains visible while canonical delete removes contact data and preserves suppression, audit, and campaign history', async () => {
+    const unsubscribed = memoryStore();
+    unsubscribed.put(EA.subscribers, 'keep', {
+      email: 'keep@example.com', normalizedEmail: 'keep@example.com', name: 'Keep', country: 'SA', language: 'en',
+      status: 'active', verified: true, consentMarketing: true, createdAt: '2026-01-01', updatedAt: '2026-01-01',
+    });
+    await handleEarlyAccessAdmin(request('/api/admin/early-access/subscribers/keep/action', { action: 'unsubscribe', reason: 'Owner request' }), unsubscribed.store, actor);
+    expect(unsubscribed.docs.get(`${EA.subscribers}/keep`)!.data.status).toBe('unsubscribed');
+    expect(unsubscribed.docs.get(`${EA.suppression}/keep`)!.data.suppressed).toBe(true);
+    expect((await page(unsubscribed.store, EA.subscribers, new URL('https://worker.test/?limit=20'))).items.map(item => item.id)).toContain('keep');
+    expect(unsubscribed.audit.at(-1)?.action).toBe('early_access_admin_unsubscribe');
+
+    const deleted = memoryStore();
+    const deletedId = await hash('early-access-email:remove@example.com');
+    deleted.put(EA.subscribers, deletedId, {
+      email: 'remove@example.com', normalizedEmail: 'remove@example.com', name: 'Remove', country: 'SA', language: 'en',
+      status: 'active', verified: true, consentMarketing: true, createdAt: '2026-01-01', updatedAt: '2026-01-01',
+    });
+    deleted.put(EA.deliveries, 'historical', {
+      campaignId: 'completed-campaign', subscriberId: deletedId, email: 'remove@example.com', deliveryStatus: 'delivered',
+    });
+    await handleEarlyAccessAdmin(request(`/api/admin/early-access/subscribers/${deletedId}/action`, { action: 'delete', reason: 'Owner request' }), deleted.store, actor);
+    expect(deleted.docs.has(`${EA.subscribers}/${deletedId}`)).toBe(false);
+    expect(deleted.docs.get(`${EA.suppression}/${deletedId}`)!.data).toMatchObject({ suppressed: true });
+    expect(Object.keys(deleted.docs.get(`${EA.suppression}/${deletedId}`)!.data).sort()).toEqual(['suppressed', 'updatedAt']);
+    expect((await page(deleted.store, EA.subscribers, new URL('https://worker.test/?limit=20'))).items).toHaveLength(0);
+    expect(deleted.docs.get(`${EA.deliveries}/historical`)!.data).toMatchObject({ deliveryStatus: 'delivered', email: 'remove@example.com' });
+    expect(deleted.audit.at(-1)?.action).toBe('early_access_admin_delete');
+
+    const auditCount = deleted.audit.length;
+    await handleEarlyAccessAdmin(request(`/api/admin/early-access/subscribers/${deletedId}/action`, { action: 'delete', reason: 'Safe retry' }), deleted.store, actor);
+    expect(deleted.audit).toHaveLength(auditCount);
+
+    deleted.put(EA.campaigns, 'future', { status: 'draft', revision: 1 });
+    expect(await errorCode(() => handleEarlyAccessAdmin(request('/api/admin/early-access/campaigns/future/snapshot', { subscriberIds: ['remove'] }), deleted.store, actor))).toBe('INVALID_SELECTION');
+    const imported = await snapshotCampaignRecipients(deleted.store, 'future', actor.uid, [{ email: 'remove@example.com', lawfulBasisConfirmed: true }], 'csv_import');
+    expect(deleted.docs.get(`${EA.deliveries}/${imported.recipientIds[0]}`)!.data).toMatchObject({ deliveryStatus: 'suppressed', suppressionReason: 'global_suppression' });
+  });
+  test('legacy anonymized tombstones remain stored but never appear in the normal subscriber list', async () => {
+    const m = memoryStore();
+    m.put(EA.subscribers, 'legacy', {
+      email: '', normalizedEmail: '', name: '', country: null, language: 'ar', status: 'anonymized',
+      verified: false, consentMarketing: false, createdAt: '2025-01-01', updatedAt: '2026-01-01',
+    });
+    m.put(EA.subscribers, 'active', {
+      email: 'active@example.com', normalizedEmail: 'active@example.com', name: 'Active', country: 'SA', language: 'ar', status: 'active',
+      verified: true, consentMarketing: true, createdAt: '2026-01-02', updatedAt: '2026-01-02',
+    });
+    const normal = await page(m.store, EA.subscribers, new URL('https://worker.test/?limit=20'));
+    expect(normal.items.map(item => item.id)).toEqual(['active']);
+    const legacyFilter = await page(m.store, EA.subscribers, new URL('https://worker.test/?limit=20&status=anonymized'));
+    expect(legacyFilter.items).toHaveLength(0);
+    expect(m.docs.has(`${EA.subscribers}/legacy`)).toBe(true);
+  });
+  test('deleted subscriber suppression requires a fresh explicit verified consent before re-registration', async () => {
+    const m = memoryStore(); enabled(m);
+    const id = await hash('early-access-email:deleted@example.com');
+    m.put(EA.subscribers, id, {
+      email: 'deleted@example.com', normalizedEmail: 'deleted@example.com', status: 'active', verified: true,
+      consentMarketing: true, createdAt: '2026-01-01', updatedAt: '2026-01-01',
+    });
+    await handleEarlyAccessAdmin(request(`/api/admin/early-access/subscribers/${id}/action`, { action: 'delete', reason: 'Owner request' }), m.store, actor);
+
+    await handleEarlyAccessPublic(register({ email: 'deleted@example.com', consentMarketing: false }), m.store);
+    expect(m.docs.has(`${EA.subscribers}/${id}`)).toBe(false);
+    expect(m.sent).toHaveLength(0);
+
+    await handleEarlyAccessPublic(register({ email: 'deleted@example.com', consentMarketing: true }), m.store);
+    const firstProof = m.token('verify');
+    await handleEarlyAccessPublic(request(`/api/early-access/verify?token=${firstProof}`, {}), m.store);
+    expect(m.docs.get(`${EA.subscribers}/${id}`)!.data).toMatchObject({ status: 'unsubscribed', consentMarketing: false });
+    expect(m.docs.get(`${EA.suppression}/${id}`)!.data.suppressed).toBe(true);
+
+    const current = m.docs.get(`${EA.subscribers}/${id}`)!;
+    m.put(EA.subscribers, id, { ...current.data, nextEmailAt: '2000-01-01' });
+    await handleEarlyAccessPublic(register({ email: 'deleted@example.com', consentMarketing: true }), m.store);
+    const freshProof = m.token('verify');
+    await handleEarlyAccessPublic(request(`/api/early-access/verify?token=${freshProof}`, { consentMarketing: true }), m.store);
+    expect(m.docs.get(`${EA.subscribers}/${id}`)!.data).toMatchObject({ status: 'active', consentMarketing: true });
+    expect(m.docs.get(`${EA.suppression}/${id}`)!.data.suppressed).toBe(false);
   });
   test('email holder must separately opt in, including form POST; no implicit consent from attacker', async () => {
     const m = memoryStore(); enabled(m);

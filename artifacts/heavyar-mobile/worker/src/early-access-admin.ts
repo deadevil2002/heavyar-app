@@ -1,5 +1,5 @@
 import { EA, OWNER_QA_EMAIL, body, configValue, countryCodes, facetKey, fail, nowIso, permissions, safeId, selectedRecords, text, type EarlyAccessStore } from './early-access-model';
-import { suppress } from './early-access-public';
+import { deleteSubscriber, suppress } from './early-access-public';
 import { campaignAction } from './early-access-campaigns';
 import { campaignProgress, campaignRecipients, ownerQaSnapshot, retryCampaignRecipients, snapshotCampaignRecipients } from './early-access-campaign-delivery';
 import { cleanupCampaignCsvQa, importCampaignCsv, previewCampaignCsv } from './early-access-csv-qa';
@@ -23,6 +23,8 @@ export async function page(store: EarlyAccessStore, collection: string, url: URL
   const filterKeys = ['status', 'consentMarketing', 'verified', 'country', 'language'];
   const filters: Record<string, string> = Object.fromEntries(filterKeys.map(k => [k, url.searchParams.get(k)]).filter(([, v]) => v));
   for (const [key, v] of Object.entries(filters)) {
+    // Keep the legacy value accepted during the Worker-first rollout, but it
+    // never exposes tombstones in the normal subscriber surface.
     const choices = key === 'status' ? ['active', 'unsubscribed', 'anonymized'] : key === 'country' ? countryCodes : key === 'language' ? ['ar', 'en'] : ['true', 'false'];
     if (!choices.includes(v!)) fail('INVALID_FILTER');
   }
@@ -41,7 +43,7 @@ export async function page(store: EarlyAccessStore, collection: string, url: URL
     } catch { fail('INVALID_CURSOR'); }
   }
   const rows = await store.query(collection, query), candidates = rows.slice(0, n);
-  const matching = candidates.filter(row => Object.entries(filters).every(([k, v]) => String(row.data[k]) === v));
+  const matching = candidates.filter(row => (!subscribers || row.data.status !== 'anonymized') && Object.entries(filters).every(([k, v]) => String(row.data[k]) === v));
   const fields = ['email', 'name', 'country', 'language', 'status', 'consentMarketing', 'consentAt', 'consentSource', 'createdAt', 'updatedAt', 'verified', 'deliveryStatus', 'unsubscribedAt'];
   const deliveryIds = subscribers ? [...new Set(matching.flatMap(row => row.data.deliveryId && row.data.status !== 'anonymized' ? [String(row.data.deliveryId)] : []))] : [];
   const deliveries = await selectedRecords(store, deliveryIds.map(id => ({ collection: EA.deliveries, id })));
@@ -79,9 +81,15 @@ export async function handleEarlyAccessAdmin(req: Request, store: EarlyAccessSto
   if (action && req.method === 'POST') {
     if (!allowed.manage) fail('FORBIDDEN', 403);
     const value = await body(req, ['action', 'reason']);
-    if (!['unsubscribe', 'anonymize'].includes(value.action)) fail('INVALID_ACTION');
+    if (!['unsubscribe', 'delete', 'anonymize'].includes(value.action)) fail('INVALID_ACTION');
     const reason = text(value.reason, 500);
-    await suppress(store, safeId(action[1]), value.action === 'anonymize', `early_access_admin_${value.action}`, reason);
+    const subscriberId = safeId(action[1]);
+    if (value.action === 'unsubscribe') await suppress(store, subscriberId, false, 'early_access_admin_unsubscribe', reason);
+    else {
+      // `anonymize` is a rollout-only alias for the previously deployed Admin.
+      // New callers use the canonical `delete` contract and audit action.
+      await deleteSubscriber(store, subscriberId, 'early_access_admin_delete', reason);
+    }
     return { success: true };
   }
   if (path === '/api/admin/early-access/campaigns' && req.method === 'GET') return page(store, EA.campaigns, url);

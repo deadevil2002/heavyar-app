@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useEarlyAccessSubscribers, useSubscriberAction, EarlyAccessPermissions } from '@/lib/early-access';
+import { removeSelectedSubscriber, useEarlyAccessSubscribers, useSubscriberAction, EarlyAccessPermissions } from '@/lib/early-access';
 import { useAppState } from '@/lib/app-state';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -9,7 +9,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Loader2, Search, MoreHorizontal, ShieldOff, UserX, AlertCircle, AlertOctagon, RefreshCw } from 'lucide-react';
+import { Loader2, Search, MoreHorizontal, ShieldOff, Trash2, AlertCircle, AlertOctagon, RefreshCw } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
@@ -62,9 +62,11 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
     return () => window.clearInterval(timer);
   }, [error]);
 
-  const [actionDialog, setActionDialog] = useState<{ id: string; action: 'unsubscribe' | 'anonymize' } | null>(null);
+  const [actionDialog, setActionDialog] = useState<{ id: string; action: 'unsubscribe' | 'delete' } | null>(null);
   const [actionReason, setActionReason] = useState('');
-  const subscriberAction = useSubscriberAction();
+  const subscriberAction = useSubscriberAction((subscriberId) => {
+    setSelectedIds(removeSelectedSubscriber(selectedIds, subscriberId));
+  });
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -139,12 +141,12 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
       { id: actionDialog.id, action: actionDialog.action, reason: actionReason },
       {
         onSuccess: () => {
-          toast({ title: t('تم التنفيذ بنجاح', 'Action successful') });
+          toast({ title: actionDialog.action === 'delete' ? t('تم حذف المشترك', 'Subscriber deleted') : t('تم إلغاء الاشتراك', 'Subscriber unsubscribed') });
           setActionDialog(null);
           setActionReason('');
         },
-        onError: () => {
-          toast({ title: t('حدث خطأ', 'Error occurred'), variant: 'destructive' });
+        onError: (actionError) => {
+          toast({ title: t('تعذر تنفيذ الإجراء', 'Action failed'), description: userErrorMessage(actionError, appLang), variant: 'destructive' });
         },
       }
     );
@@ -195,7 +197,6 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
               <SelectItem value="all">{t('كل الحالات', 'All Statuses')}</SelectItem>
               <SelectItem value="active">{t('نشط', 'Active')}</SelectItem>
               <SelectItem value="unsubscribed">{t('إلغاء الاشتراك', 'Unsubscribed')}</SelectItem>
-              <SelectItem value="anonymized">{t('مجهول', 'Anonymized')}</SelectItem>
             </SelectContent>
           </Select>
 
@@ -320,7 +321,7 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
                       {format(new Date(sub.createdAt), 'yyyy-MM-dd')}
                     </TableCell>
                     <TableCell>
-                      {permissions.manage && sub.status !== 'anonymized' && (
+                      {permissions.manage && (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="w-4 h-4" /></Button>
@@ -331,8 +332,8 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
                                 <ShieldOff className="w-4 h-4 me-2" /> {t('إلغاء الاشتراك', 'Unsubscribe')}
                               </DropdownMenuItem>
                             )}
-                            <DropdownMenuItem className="text-destructive" onClick={() => setActionDialog({ id: sub.id, action: 'anonymize' })}>
-                              <UserX className="w-4 h-4 me-2" /> {t('مجهول / حذف', 'Anonymize')}
+                            <DropdownMenuItem className="text-destructive" onClick={() => setActionDialog({ id: sub.id, action: 'delete' })}>
+                              <Trash2 className="w-4 h-4 me-2" /> {t('حذف', 'Delete')}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -365,7 +366,7 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
                       <div className="font-semibold text-base">{sub.email}</div>
                       <div className="text-sm text-muted-foreground mt-1">{sub.name || '-'}</div>
                     </div>
-                    {permissions.manage && sub.status !== 'anonymized' && (
+                    {permissions.manage && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="w-4 h-4" /></Button>
@@ -376,8 +377,8 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
                               <ShieldOff className="w-4 h-4 me-2" /> {t('إلغاء الاشتراك', 'Unsubscribe')}
                             </DropdownMenuItem>
                           )}
-                          <DropdownMenuItem className="text-destructive" onClick={() => setActionDialog({ id: sub.id, action: 'anonymize' })}>
-                            <UserX className="w-4 h-4 me-2" /> {t('مجهول / حذف', 'Anonymize')}
+                          <DropdownMenuItem className="text-destructive" onClick={() => setActionDialog({ id: sub.id, action: 'delete' })}>
+                            <Trash2 className="w-4 h-4 me-2" /> {t('حذف', 'Delete')}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -426,10 +427,12 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive">
               <AlertCircle className="w-5 h-5" />
-              {actionDialog?.action === 'unsubscribe' ? t('إلغاء الاشتراك', 'Unsubscribe') : t('تحويل لمجهول', 'Anonymize')}
+              {actionDialog?.action === 'unsubscribe' ? t('إلغاء الاشتراك', 'Unsubscribe') : t('حذف المشترك؟', 'Delete subscriber?')}
             </DialogTitle>
             <DialogDescription>
-              {t('يرجى تقديم سبب لتنفيذ هذا الإجراء يدوياً. هذا الإجراء لا يمكن التراجع عنه بسهولة.', 'Please provide a reason for manual action. This cannot be easily undone.')}
+              {actionDialog?.action === 'delete'
+                ? t('سيتم إزالة بيانات هذا المشترك من قائمة الوصول المبكر ومنعه من تلقي رسائل الوصول المبكر المستقبلية حسب حالة الاستبعاد. لا يمكن التراجع عن هذا الإجراء.', 'This subscriber will be removed from the Early Access list and prevented from receiving future Early Access messages according to their suppression status. This action cannot be undone.')
+                : t('يرجى تقديم سبب لإلغاء الاشتراك. سيبقى المشترك ظاهرًا في القائمة بحالة إلغاء الاشتراك.', 'Please provide a reason for unsubscribing. The subscriber will remain visible with an unsubscribed status.')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -446,7 +449,7 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
             <Button variant="outline" onClick={() => setActionDialog(null)} disabled={subscriberAction.isPending}>{t('إلغاء', 'Cancel')}</Button>
             <Button variant="destructive" onClick={submitAction} disabled={!actionReason.trim() || subscriberAction.isPending}>
               {subscriberAction.isPending && <Loader2 className="w-4 h-4 animate-spin me-2" />}
-              {t('تأكيد', 'Confirm')}
+              {actionDialog?.action === 'delete' ? t('حذف', 'Delete') : t('إلغاء الاشتراك', 'Unsubscribe')}
             </Button>
           </DialogFooter>
         </DialogContent>

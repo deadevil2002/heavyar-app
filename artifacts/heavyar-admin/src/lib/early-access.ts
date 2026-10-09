@@ -28,7 +28,7 @@ export type Subscriber = {
   name?: string;
   country?: string;
   language?: string;
-  status: 'active' | 'unsubscribed' | 'anonymized';
+  status: 'active' | 'unsubscribed';
   consentMarketing: boolean;
   consentAt?: string;
   consentSource?: string;
@@ -346,16 +346,43 @@ export function useEarlyAccessSubscribers(params: Record<string, any> = {}) {
   });
 }
 
-export function useSubscriberAction() {
+export function removeSubscriberFromPage(
+  page: PaginatedResponse<Subscriber> | undefined,
+  subscriberId: string,
+) {
+  if (!page) return page;
+  const items = page.items.filter(item => item.id !== subscriberId);
+  return items.length === page.items.length ? page : { ...page, items };
+}
+
+export function removeSelectedSubscriber(selectedIds: Set<string>, subscriberId: string) {
+  if (!selectedIds.has(subscriberId)) return selectedIds;
+  const next = new Set(selectedIds);
+  next.delete(subscriberId);
+  return next;
+}
+
+export function useSubscriberAction(onDeleteCommitted?: (subscriberId: string) => void) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, action, reason }: { id: string; action: 'unsubscribe' | 'anonymize'; reason: string }) =>
+    mutationFn: ({ id, action, reason }: { id: string; action: 'unsubscribe' | 'delete'; reason: string }) =>
       fetchApi<{ success: boolean }>(`/early-access/subscribers/${id}/action`, {
         method: 'POST',
         body: JSON.stringify({ action, reason }),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['early-access', 'subscribers'] });
+    onSuccess: async (_result, variables) => {
+      if (variables.action === 'delete') {
+        queryClient.setQueriesData<PaginatedResponse<Subscriber>>(
+          { queryKey: ['early-access', 'subscribers'] },
+          page => removeSubscriberFromPage(page, variables.id),
+        );
+        onDeleteCommitted?.(variables.id);
+      }
+      await queryClient.invalidateQueries({ queryKey: ['early-access', 'subscribers'], refetchType: 'none' });
+      await queryClient.refetchQueries(
+        { queryKey: ['early-access', 'subscribers'], type: 'active' },
+        { throwOnError: true },
+      );
     },
   });
 }

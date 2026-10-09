@@ -33,10 +33,12 @@ describe('Early Access real adapter, signed shared webhook and REST precondition
       if (url.pathname.endsWith('/documents:commit')) {
         intercept?.(payload.writes);
         for (const w of payload.writes) {
-          const prior = docs.get(w.update.name), pre = w.currentDocument;
+          const name = w.update?.name || w.delete;
+          const prior = docs.get(name), pre = w.currentDocument;
           if (pre?.exists === false && prior || pre?.updateTime && prior?.updateTime !== pre.updateTime) return Response.json({ error: { status: 'FAILED_PRECONDITION' } }, { status: 400 });
         }
         for (const w of payload.writes) {
+          if (w.delete) { docs.delete(w.delete); continue; }
           const old = docs.get(w.update.name);
           docs.set(w.update.name, { ...w.update, fields: w.updateMask ? { ...old?.fields, ...w.update.fields } : w.update.fields, updateTime: `2026-01-01T00:00:01.${String(++revision).padStart(6, '0')}Z` });
         }
@@ -99,13 +101,13 @@ describe('Early Access real adapter, signed shared webhook and REST precondition
 
   test('authenticated actor is server-derived and manual action is atomic with audit', async () => {
     put(EA.subscribers, 'subscriber', { email: 'a@example.test', status: 'active', updatedAt: new Date().toISOString() });
-    const response = await worker.fetch(req('/api/admin/early-access/subscribers/subscriber/action', { action: 'anonymize', reason: 'privacy request' }), env);
+    const response = await worker.fetch(req('/api/admin/early-access/subscribers/subscriber/action', { action: 'delete', reason: 'privacy request' }), env);
     expect(response.status).toBe(200);
     const batch = commits.at(-1)!;
     expect(batch.length).toBe(3);
-    expect(batch.find(w => w.update.name.includes('/adminAudit/')).update.fields.actorUid.stringValue).toBe('owner');
-    expect(docs.get(`${prefix}${EA.subscribers}/subscriber`).fields.email.stringValue).toBe('');
-    expect(docs.get(`${prefix}${EA.subscribers}/subscriber`).fields.retentionAt.nullValue).toBe(null);
+    expect(batch.find(w => w.update?.name.includes('/adminAudit/')).update.fields.actorUid.stringValue).toBe('owner');
+    expect(docs.has(`${prefix}${EA.subscribers}/subscriber`)).toBe(false);
+    expect(decode(docs.get(`${prefix}${EA.suppression}/subscriber`).fields.suppressed)).toBe(true);
   });
 
   test('shared signed webhook accepted/delivered/bounced/complained/failed projects then preview excludes failures; replay safe', async () => {

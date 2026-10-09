@@ -55,6 +55,27 @@ describe('Early Access API Payload Contract', () => {
     expect(mockSubscriber.email).toBe('test@example.com');
   });
 
+  it('removes a successfully deleted subscriber from cached pages and selected IDs', () => {
+    const subscriber = {
+      id: 'delete-me', email: 'delete@example.com', status: 'active' as const,
+      consentMarketing: true, createdAt: '2026-01-01', updatedAt: '2026-01-01', verified: true,
+    };
+    const page = { items: [subscriber, { ...subscriber, id: 'keep-me', email: 'keep@example.com' }], nextCursor: null };
+    expect(earlyAccess.removeSubscriberFromPage(page, 'delete-me')?.items.map(item => item.id)).toEqual(['keep-me']);
+    expect([...earlyAccess.removeSelectedSubscriber(new Set(['delete-me', 'keep-me']), 'delete-me')]).toEqual(['keep-me']);
+  });
+
+  it('keeps subscriber state untouched when no successful delete cache update occurs', () => {
+    const subscriber = {
+      id: 'keep-me', email: 'keep@example.com', status: 'active' as const,
+      consentMarketing: true, createdAt: '2026-01-01', updatedAt: '2026-01-01', verified: true,
+    };
+    const page = { items: [subscriber], nextCursor: null };
+    expect(earlyAccess.removeSubscriberFromPage(page, 'different-id')).toBe(page);
+    const selection = new Set(['keep-me']);
+    expect(earlyAccess.removeSelectedSubscriber(selection, 'different-id')).toBe(selection);
+  });
+
   it('builds bounded server-side snapshot payloads without scanning the browser', () => {
     expect(earlyAccess.buildSnapshotPayload(new Set(['a', 'b']))).toEqual({ subscriberIds: ['a', 'b'] });
     expect(earlyAccess.buildSnapshotPayload(new Set(), { source: 'csv_import' }, true)).toEqual({

@@ -31,6 +31,30 @@ export async function suppress(store: EarlyAccessStore, id: string, anonymize: b
   return true;
 }
 
+/**
+ * Removes the contact record while retaining only the opaque suppression key
+ * and immutable audit evidence. Existing campaign delivery snapshots are not
+ * touched: they remain governed by their own retention policy.
+ */
+export async function deleteSubscriber(store: EarlyAccessStore, id: string, action: string, reason: string) {
+  const [prior, suppression] = await Promise.all([store.read(EA.subscribers, id), store.read(EA.suppression, id)]);
+  if (!prior) {
+    // A completed retry is safe and does not create duplicate audit evidence.
+    if (suppression?.data.suppressed === true) return false;
+    fail('NOT_FOUND', 404);
+  }
+  if (!store.delete) fail('STORAGE_UNAVAILABLE', 503);
+  const timestamp = nowIso();
+  await store.delete(
+    [{ collection: EA.subscribers, id, prior }],
+    action,
+    id,
+    reason,
+    [{ collection: EA.suppression, id, prior: suppression, data: { suppressed: true, updatedAt: timestamp } }],
+  );
+  return true;
+}
+
 export async function deliver(store: EarlyAccessStore, id: string, to: string, subject: string, html: string) {
   let result: { delivered: boolean; messageId?: string };
   try { result = await store.send(to, subject, html, `early-access-${id}`); }
