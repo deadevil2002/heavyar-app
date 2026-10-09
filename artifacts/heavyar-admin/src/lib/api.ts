@@ -6,6 +6,7 @@ import { SafeApiError } from './error-messages';
 import { accountRefreshKeys, refreshQueries } from './admin-feedback';
 import { useEffect } from 'react';
 import { ACCOUNT_INTEGRITY_ENDPOINT, normalizeIntegrityParams, type IncompleteRegistrationsResponse } from './account-integrity';
+export { formatUnseenCount } from './admin-seen-state';
 
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'https://heavyar-api.heavyar-official.workers.dev';
 export const API_BASE = configuredApiBase.replace(/\/+$/, '').replace(/\/api\/admin$/, '') + '/api/admin';
@@ -263,6 +264,9 @@ export type OverviewMetrics = {
   pendingSarVolume?: number;
 };
 export type OverviewResponse = { success: boolean; metrics: OverviewMetrics };
+export type DashboardMetricKey = 'users' | 'providers' | 'equipment' | 'requests' | 'payments';
+export type DashboardMetricDetailsResponse = { success: boolean; metric: DashboardMetricKey; items: Record<string, any>[] };
+export type EarlyAccessUnseenResponse = { earlyAccess: { unseenCount: number; lastSeenAt: string } };
 export type NotificationFailure = {
   id: string;
   category?: string;
@@ -292,6 +296,34 @@ export function useOverview() {
   return useQuery({
     queryKey: ['overview'],
     queryFn: () => fetchApi<OverviewResponse>('/overview'),
+  });
+}
+
+export function useDashboardMetricDetails(metric: DashboardMetricKey | null) {
+  return useQuery({
+    queryKey: ['overviewDetails', metric],
+    queryFn: () => fetchApi<DashboardMetricDetailsResponse>(`/overview/details?metric=${encodeURIComponent(metric!)}&limit=5`),
+    enabled: Boolean(metric),
+    retry: false,
+  });
+}
+
+export function useEarlyAccessUnseen(enabled = true) {
+  return useQuery({
+    queryKey: ['adminSeenState', 'earlyAccess'],
+    queryFn: () => fetchApi<EarlyAccessUnseenResponse>('/seen-state/early-access'),
+    enabled,
+    retry: false,
+    refetchInterval: 20_000,
+    refetchOnWindowFocus: true,
+  });
+}
+
+export function useMarkEarlyAccessSeen() {
+  return useMutation({
+    mutationFn: () => fetchApi<EarlyAccessUnseenResponse>('/seen-state/early-access', { method: 'POST', body: '{}' }),
+    retry: 1,
+    onSuccess: data => queryClient.setQueryData(['adminSeenState', 'earlyAccess'], data),
   });
 }
 

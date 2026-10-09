@@ -17,6 +17,7 @@ export default mergeConfig(viteConfig, defineConfig({
       'src/lib/account-integrity.test.ts',
       'src/lib/early-access.test.ts',
       'src/lib/early-access-live.integration.test.tsx',
+      'src/pages/dashboard.test.tsx',
       'src/components/ui/switch-contract.test.ts',
     ],
   },

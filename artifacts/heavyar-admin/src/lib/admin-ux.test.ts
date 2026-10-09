@@ -5,6 +5,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { SafeApiError, safeErrorCode, userErrorMessage } from './error-messages';
 import { invitationId, cancellationPayload } from './invitation-contract';
 import { accountRefreshKeys, invitationRefreshKeys, refreshQueries, adminActionPolicy, actionSuccessMessage } from './admin-feedback';
+import { formatUnseenCount } from './admin-seen-state';
 
 const source = (path: string) => readFileSync(`artifacts/heavyar-admin/src/${path}`, 'utf8');
 
@@ -147,5 +148,74 @@ describe('live sync and reason policy regressions', () => {
         assert.doesNotMatch(source(`${folder}/${file}`), /description:\s*(?:err|error)\.message|\{(?:err|error|action\.error|authError|countriesError)\.message\}/, file);
       }
     }
+  });
+});
+
+describe('global Early Access unseen badge contract', () => {
+  it('hides zero and caps the visual count at 99+', () => {
+    assert.equal(formatUnseenCount(), null);
+    assert.equal(formatUnseenCount(0), null);
+    assert.equal(formatUnseenCount(1), '1');
+    assert.equal(formatUnseenCount(99), '99');
+    assert.equal(formatUnseenCount(100), '99+');
+    assert.equal(formatUnseenCount(1000), '99+');
+  });
+  it('uses a server-authoritative visible-tab query and never browser storage', () => {
+    const api = source('lib/api.ts');
+    const sidebar = source('components/Sidebar.tsx');
+    assert.match(api, /fetchApi<EarlyAccessUnseenResponse>\('\/seen-state\/early-access'\)/);
+    assert.match(api, /refetchInterval: 20_000/);
+    assert.match(api, /refetchOnWindowFocus: true/);
+    assert.doesNotMatch(`${api}\n${sidebar}`, /localStorage|sessionStorage/);
+  });
+  it('renders the same accessible badge in shared desktop and mobile sidebar content', () => {
+    const sidebar = source('components/Sidebar.tsx');
+    assert.match(sidebar, /badge: earlyAccessBadge/);
+    assert.match(sidebar, /new early access registrations/);
+    assert.match(sidebar, /تسجيلات وصول مبكر جديدة/);
+    assert.match(sidebar, /sidebarContent\(false\)/);
+    assert.match(sidebar, /sidebarContent\(true\)/);
+  });
+  it('marks seen only after the Subscribers view loads successfully', () => {
+    const subscribers = source('pages/early-access/subscribers-tab.tsx');
+    const page = source('pages/early-access/index.tsx');
+    assert.match(subscribers, /if \(!isSuccess \|\| !data \|\| hasMarkedSuccessfulView\.current\) return/);
+    assert.match(subscribers, /markSeen\.mutate\(\)/);
+    assert.doesNotMatch(page, /useMarkEarlyAccessSeen/);
+  });
+});
+
+describe('dashboard metric drill-down contract', () => {
+  it('uses semantic expandable cards and toggles the selected card closed', () => {
+    const dashboard = source('pages/dashboard.tsx');
+    assert.match(dashboard, /<button/);
+    assert.match(dashboard, /aria-expanded=\{active\}/);
+    assert.match(dashboard, /aria-controls="dashboard-metric-details"/);
+    assert.match(dashboard, /setSelectedMetric\(active \? null : metric\.key\)/);
+  });
+  it('lazy-loads one bounded metric endpoint only after selection', () => {
+    const api = source('lib/api.ts');
+    assert.match(api, /\/overview\/details\?metric=\$\{encodeURIComponent\(metric!\)\}&limit=5/);
+    assert.match(api, /enabled: Boolean\(metric\)/);
+  });
+  it('defines every metric and its correct View all destination', () => {
+    const dashboard = source('pages/dashboard.tsx');
+    for (const [key, href] of [['users', '/users'], ['providers', '/providers'], ['equipment', '/equipment'], ['requests', '/requests'], ['payments', '/payments']]) {
+      assert.match(dashboard, new RegExp(`key: '${key}'.*href: '${href}'`));
+    }
+    assert.match(dashboard, /إجمالي المستخدمين/);
+    assert.match(dashboard, /Total Users/);
+    assert.match(dashboard, /إجمالي المزودين/);
+    assert.match(dashboard, /Total Providers/);
+  });
+  it('keeps inline loading, error, retry and empty states mobile-safe', () => {
+    const dashboard = source('pages/dashboard.tsx');
+    assert.match(dashboard, /id="dashboard-metric-details"/);
+    assert.match(dashboard, /details\.isLoading/);
+    assert.match(dashboard, /details\.error/);
+    assert.match(dashboard, /details\.refetch\(\)/);
+    assert.match(dashboard, /No matching records/);
+    assert.match(dashboard, /grid gap-3 sm:grid-cols-2 lg:grid-cols-5/);
+    assert.doesNotMatch(dashboard, /overflow-x-auto|<table/i);
   });
 });

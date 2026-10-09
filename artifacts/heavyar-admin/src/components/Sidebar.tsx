@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { useAppState } from '@/lib/app-state';
-import { useAdminSession } from '@/lib/api';
+import { formatUnseenCount, useAdminSession, useEarlyAccessUnseen } from '@/lib/api';
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 
@@ -17,6 +17,10 @@ export function Sidebar() {
   const { language, toggleLanguage, direction } = useAppState();
   const { data: session } = useAdminSession();
   const [isOpen, setIsOpen] = useState(false);
+  const earlyAccessRoles = ['owner', 'super_admin', 'marketing', 'admin', 'auditor'];
+  const mayReadEarlyAccess = Boolean(session?.role && earlyAccessRoles.includes(session.role));
+  const { data: earlyAccessSeen } = useEarlyAccessUnseen(mayReadEarlyAccess);
+  const earlyAccessBadge = formatUnseenCount(earlyAccessSeen?.earlyAccess.unseenCount);
 
   // Close sidebar when location changes (mobile)
   useEffect(() => {
@@ -28,7 +32,7 @@ export function Sidebar() {
   const groups: {
     title: string;
     adminOnly?: boolean;
-    links: { href: string; icon: any; label: string; allowedRoles?: string[] }[];
+    links: { href: string; icon: any; label: string; allowedRoles?: string[]; badge?: string | null }[];
   }[] = [
     {
       title: t('الرئيسية', 'Main'),
@@ -71,7 +75,7 @@ export function Sidebar() {
       title: t('التسويق', 'Marketing'),
       links: [
         { href: '/campaigns', icon: Megaphone, label: t('الحملات الترويجية', 'Marketing Campaigns') },
-        { href: '/early-access', icon: Rocket, label: t('الوصول المبكر', 'Early Access'), allowedRoles: ['owner', 'super_admin', 'marketing', 'admin', 'auditor'] },
+        { href: '/early-access', icon: Rocket, label: t('الوصول المبكر', 'Early Access'), allowedRoles: earlyAccessRoles, badge: earlyAccessBadge },
         { href: '/seo', icon: Search, label: t('تحسين الظهور والبحث', 'SEO & Search') },
       ]
     },
@@ -88,13 +92,21 @@ export function Sidebar() {
     }
   ];
 
-  const NavLink = ({ href, icon: Icon, label }: any) => {
+  const NavLink = ({ href, icon: Icon, label, badge }: any) => {
     const isActive = location === href || (href !== '/' && location.startsWith(href));
     return (
       <Link href={href} onClick={() => setIsOpen(false)}>
-        <div aria-current={isActive ? 'page' : undefined} className={`flex items-center gap-3 px-4 py-3 rounded-md transition-colors cursor-pointer ${isActive ? 'bg-primary/20 text-primary font-medium' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'}`}>
+        <div aria-current={isActive ? 'page' : undefined} className={`flex min-h-11 items-center gap-3 px-4 py-3 rounded-md transition-colors cursor-pointer ${isActive ? 'bg-primary/20 text-primary font-medium' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'}`}>
           <Icon className="w-5 h-5 flex-shrink-0" />
-          <span>{label}</span>
+          <span className="min-w-0 flex-1">{label}</span>
+          {badge && (
+            <span
+              className="inline-flex min-w-6 h-6 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-bold tabular-nums text-primary-foreground"
+              aria-label={t(`${badge} تسجيلات وصول مبكر جديدة`, `${badge} new early access registrations`)}
+            >
+              {badge}
+            </span>
+          )}
         </div>
       </Link>
     );

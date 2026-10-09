@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useMarkEarlyAccessSeen } from '@/lib/api';
 import { removeSelectedSubscriber, useEarlyAccessSubscribers, useSubscriberAction, EarlyAccessPermissions } from '@/lib/early-access';
 import { useAppState } from '@/lib/app-state';
 import { Input } from '@/components/ui/input';
@@ -42,7 +43,7 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
   const [cursorHistory, setCursorHistory] = useState<string[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | undefined>(undefined);
 
-  const { data, isLoading, isFetching, error, refetch } = useEarlyAccessSubscribers({
+  const { data, isLoading, isFetching, isSuccess, error, refetch } = useEarlyAccessSubscribers({
     q: q || undefined,
     status: status !== 'all' ? status : undefined,
     consentMarketing: consentMarketing !== 'all' ? consentMarketing : undefined,
@@ -67,6 +68,14 @@ export function SubscribersTab({ permissions, selectedIds, setSelectedIds }: Sub
   const subscriberAction = useSubscriberAction((subscriberId) => {
     setSelectedIds(removeSelectedSubscriber(selectedIds, subscriberId));
   });
+  const markSeen = useMarkEarlyAccessSeen();
+  const hasMarkedSuccessfulView = useRef(false);
+
+  useEffect(() => {
+    if (!isSuccess || !data || hasMarkedSuccessfulView.current) return;
+    hasMarkedSuccessfulView.current = true;
+    markSeen.mutate();
+  }, [data, isSuccess, markSeen]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();

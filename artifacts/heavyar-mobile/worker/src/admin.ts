@@ -16,7 +16,7 @@ import { quotaFetch, isQuotaError } from './quota-policy';
 import { sendResend } from './index';
 import { handleEarlyAccessAdmin } from './early-access-admin';
 import { handleEarlyAccessPublic } from './early-access-public';
-import { EarlyAccessError, subscriberFacets, type EarlyAccessStore } from './early-access-model';
+import { EarlyAccessError, permissions as earlyAccessPermissions, subscriberFacets, type EarlyAccessStore } from './early-access-model';
 import { dailyEarlyAccessRetention } from './early-access-retention';
 import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-access-delivery';
 import { processEarlyAccessCampaigns } from './early-access-campaign-delivery';
@@ -431,6 +431,114 @@ async function recentAudit(env: Env) {
     } }) }) as any[] || [];
     return response.filter(item => item.document).map(item => ({ id: String(item.document.name).split('/').pop(), ...redact(decode(item.document)) }));
   } catch { return []; }
+}
+
+const EARLY_ACCESS_SEEN_RESOURCE = 'earlyAccessSubscribers';
+const EARLY_ACCESS_SEEN_LIMIT = 100;
+
+async function countUnseenEarlyAccessRegistrations(env: Env, lastSeenAt: string) {
+  const structuredQuery = {
+    from: [{ collectionId: 'earlyAccessSubscribers' }],
+    where: { fieldFilter: { field: { fieldPath: 'createdAt' }, op: 'GREATER_THAN', value: jsonValue(lastSeenAt) } },
+    orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' }],
+    limit: EARLY_ACCESS_SEEN_LIMIT,
+  };
+  const records = queryOverride
+    ? queryOverride('earlyAccessSubscribers', '', EARLY_ACCESS_SEEN_LIMIT, structuredQuery).map(record => record.data)
+    : ((await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [])
+      .flatMap(item => item.document ? [decode(item.document)] : []));
+  return records.filter(record => ['active', 'unsubscribed'].includes(String(record.status))
+    && typeof record.createdAt === 'string' && record.createdAt > lastSeenAt).length;
+}
+
+function earlyAccessSeenData(uid: string, prior: RawDoc | null, lastSeenAt: string) {
+  return {
+    ...(prior?.data || {}),
+    uid,
+    resources: {
+      ...(prior?.data?.resources || {}),
+      [EARLY_ACCESS_SEEN_RESOURCE]: {
+        ...(prior?.data?.resources?.[EARLY_ACCESS_SEEN_RESOURCE] || {}),
+        lastSeenAt,
+      },
+    },
+    updatedAt: lastSeenAt,
+  };
+}
+
+async function initializeEarlyAccessSeenState(env: Env, user: AdminUser, timestamp: string) {
+  const data = earlyAccessSeenData(user.uid, null, timestamp);
+  try {
+    await commit(env, [{
+      update: { name: fullName(env, `adminSeenState/${encodeURIComponent(user.uid)}`), fields: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, jsonValue(value)])) },
+      currentDocument: { exists: false },
+    }]);
+    return timestamp;
+  } catch (error) {
+    if (!(error instanceof FirestoreConflictError)) throw error;
+    const winner = await rawDoc(env, 'adminSeenState', user.uid);
+    const winnerTimestamp = winner?.data?.resources?.[EARLY_ACCESS_SEEN_RESOURCE]?.lastSeenAt;
+    if (typeof winnerTimestamp !== 'string' || !Number.isFinite(Date.parse(winnerTimestamp))) throw error;
+    return winnerTimestamp;
+  }
+}
+
+async function earlyAccessUnseen(env: Env, user: AdminUser) {
+  const prior = await rawDoc(env, 'adminSeenState', user.uid);
+  let lastSeenAt = prior?.data?.resources?.[EARLY_ACCESS_SEEN_RESOURCE]?.lastSeenAt;
+  if (typeof lastSeenAt !== 'string' || !Number.isFinite(Date.parse(lastSeenAt))) {
+    lastSeenAt = await initializeEarlyAccessSeenState(env, user, new Date().toISOString());
+    return { earlyAccess: { unseenCount: 0, lastSeenAt } };
+  }
+  return { earlyAccess: { unseenCount: await countUnseenEarlyAccessRegistrations(env, lastSeenAt), lastSeenAt } };
+}
+
+async function markEarlyAccessSeen(env: Env, user: AdminUser) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const prior = await rawDoc(env, 'adminSeenState', user.uid);
+    const lastSeenAt = new Date().toISOString();
+    const data = earlyAccessSeenData(user.uid, prior, lastSeenAt);
+    try {
+      await commit(env, [{
+        update: { name: fullName(env, `adminSeenState/${encodeURIComponent(user.uid)}`), fields: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, jsonValue(value)])) },
+        currentDocument: prior?.updateTime ? { updateTime: prior.updateTime } : { exists: false },
+      }]);
+      return { success: true, earlyAccess: { unseenCount: 0, lastSeenAt } };
+    } catch (error) {
+      if (!(error instanceof FirestoreConflictError) || attempt === 1) throw error;
+    }
+  }
+  throw new Error('Seen state unavailable');
+}
+
+type DashboardMetricKey = 'users' | 'providers' | 'equipment' | 'requests' | 'payments';
+async function dashboardMetricDetails(env: Env, user: AdminUser, metric: DashboardMetricKey, limit: number) {
+  const collectionByMetric: Record<DashboardMetricKey, string> = {
+    users: 'users', providers: 'users', equipment: 'equipment', requests: 'equipmentRequests', payments: 'payments',
+  };
+  const collection = collectionByMetric[metric];
+  if (!canReadCollection(user, collection)) return { error: 'Permission required', status: 403 };
+  const activeRequestStatuses = ['pending', 'requested', 'accepted', 'in_progress', 'completion_requested', 'under_investigation', 'escalated'];
+  if (metric === 'requests') {
+    const pages = await Promise.all(activeRequestStatuses.map(status => listCollection(env, collection, { status, sort: 'createdAt', direction: 'desc' }, limit)));
+    const items = pages.flatMap(page => page.items)
+      .filter((item, index, records) => records.findIndex(record => record.id === item.id) === index)
+      .sort((left, right) => Date.parse(String(right.createdAt || '')) - Date.parse(String(left.createdAt || '')))
+      .slice(0, limit);
+    return { success: true, metric, items };
+  }
+  const filtered = ['users', 'providers', 'equipment', 'requests'].includes(metric);
+  const query: Record<string, string> = { sort: 'createdAt', direction: 'desc' };
+  if (metric === 'providers') query.role = 'provider';
+  if (metric === 'equipment') query.isActive = 'true';
+  const page = await listCollection(env, collection, query, filtered ? Math.min(25, Math.max(limit, 10)) : limit);
+  const items = page.items.filter((item: any) => {
+    if (['users', 'providers', 'equipment'].includes(metric) && isStoreReviewAccount(item)) return false;
+    if (metric === 'providers' && item.role !== 'provider') return false;
+    if (metric === 'equipment' && item.isActive !== true) return false;
+    return true;
+  }).slice(0, limit);
+  return { success: true, metric, items };
 }
 async function notificationHealth(env: Env) {
   const [success, permanent, retryable, ticketed, queued, active, deactivated] = await Promise.all([
@@ -2663,6 +2771,12 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
       return { error: 'EARLY_ACCESS_UNAVAILABLE', status: 503 };
     }
   }
+  if (url.pathname === '/api/admin/seen-state/early-access') {
+    if (!earlyAccessPermissions(user.permissionRole || user.role).read) return { error: 'Permission required', status: 403 };
+    if (req.method === 'GET') return earlyAccessUnseen(env, user);
+    if (req.method === 'POST') return markEarlyAccessSeen(env, user);
+    return { error: 'Method not allowed', status: 405 };
+  }
   if (url.pathname === '/api/admin/seo' || url.pathname.startsWith('/api/admin/seo/')) {
     return handleSeoAdmin(req, seoStore(env, user), {
       uid: user.uid, canRead: can(user, 'seo.read'), canEdit: can(user, 'seo.edit'), canPublish: can(user, 'seo.publish'),
@@ -2754,6 +2868,14 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   if (url.pathname === '/api/admin/countries' && (req.method === 'GET' || req.method === 'PUT')) return adminCountries(req, env, user);
   if (url.pathname === '/api/admin/fx-provider' && (req.method === 'GET' || req.method === 'PUT')) return adminFxProvider(req, env, user);
   if (url.pathname === '/api/admin/overview' && !can(user, 'audit.read')) return { error: 'Operational read permission required', status: 403 };
+  if (url.pathname === '/api/admin/overview/details' && req.method === 'GET') {
+    if (!can(user, 'audit.read')) return { error: 'Operational read permission required', status: 403 };
+    const metric = url.searchParams.get('metric');
+    if (!metric || !['users', 'providers', 'equipment', 'requests', 'payments'].includes(metric)) return { error: 'Invalid dashboard metric', status: 400 };
+    const requestedLimit = Number(url.searchParams.get('limit') || 5);
+    const detailLimit = Math.min(5, Math.max(1, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 5));
+    return dashboardMetricDetails(env, user, metric as DashboardMetricKey, detailLimit);
+  }
   if (url.pathname === '/api/admin/compliance/summary' && req.method === 'GET') {
     if (!can(user, 'audit.read') && !can(user, 'support.manage')) return { error: 'Compliance read permission required', status: 403 };
     return { success: true,
