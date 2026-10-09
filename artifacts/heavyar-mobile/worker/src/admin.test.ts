@@ -1306,4 +1306,53 @@ describe('admin authorization and operational boundary', () => {
     const invalid: any = await handleAdmin(new Request('https://worker.test/api/admin/overview/details?metric=secrets'), env, actor);
     expect(invalid.status).toBe(400);
   });
+
+  test('dashboard detail queries keep indexed latest-record contracts for every metric', async () => {
+    const queries: Array<{ collection: string; query: any }> = [];
+    __adminTest.setFirestore(() => null);
+    __adminTest.setQuery((collection, _before, _limit, query) => {
+      queries.push({ collection, query });
+      return [];
+    });
+    const actor: any = { uid: 'admin-1', admin: true, role: 'admin', permissionRole: 'admin', testInjected: true };
+
+    for (const metric of ['users', 'providers', 'equipment', 'requests', 'payments']) {
+      const result: any = await handleAdmin(new Request(`https://worker.test/api/admin/overview/details?metric=${metric}&limit=5`), env, actor);
+      expect(result).toMatchObject({ success: true, metric, items: [] });
+    }
+
+    const providerQuery = queries.find(({ collection, query }) => collection === 'users' && query.where?.fieldFilter?.field?.fieldPath === 'role')?.query;
+    expect(providerQuery?.where?.fieldFilter).toEqual({
+      field: { fieldPath: 'role' },
+      op: 'EQUAL',
+      value: { stringValue: 'provider' },
+    });
+    expect(providerQuery?.orderBy).toEqual([
+      { field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' },
+      { field: { fieldPath: '__name__' }, direction: 'DESCENDING' },
+    ]);
+
+    const requestQueries = queries.filter(({ collection }) => collection === 'equipmentRequests').map(({ query }) => query);
+    expect(requestQueries).toHaveLength(7);
+    for (const query of requestQueries) {
+      expect(query.where?.fieldFilter?.field?.fieldPath).toBe('status');
+      expect(query.where?.fieldFilter?.op).toBe('EQUAL');
+      expect(query.orderBy).toEqual([
+        { field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' },
+        { field: { fieldPath: '__name__' }, direction: 'DESCENDING' },
+      ]);
+      expect(query.limit).toBe(6);
+    }
+
+    const userQuery = queries.find(({ collection, query }) => collection === 'users' && !query.where)?.query;
+    const equipmentQuery = queries.find(({ collection }) => collection === 'equipment')?.query;
+    const paymentQuery = queries.find(({ collection }) => collection === 'payments')?.query;
+    expect(userQuery?.orderBy?.[0]).toEqual({ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' });
+    expect(equipmentQuery?.where?.fieldFilter).toEqual({
+      field: { fieldPath: 'isActive' },
+      op: 'EQUAL',
+      value: { booleanValue: true },
+    });
+    expect(paymentQuery?.orderBy?.[0]).toEqual({ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' });
+  });
 });
