@@ -13,6 +13,11 @@ export default function Dashboard() {
   const [selectedMetric, setSelectedMetric] = useState<DashboardMetricKey | null>(null);
   const details = useDashboardMetricDetails(selectedMetric);
   const t = (ar: string, en: string) => language === 'ar' ? ar : en;
+  const unavailableText = t('غير متاح مؤقتًا', 'Temporarily unavailable');
+  const availability = data?.metricAvailability as Record<string, 'available' | 'unavailable'> | undefined;
+  const metricAvailable = (key: string, value: unknown) => availability?.[key]
+    ? availability[key] === 'available' && value !== null && value !== undefined
+    : value !== null && value !== undefined;
   const humanizeAction = (action?: string) => {
     const labels: Record<string, [string, string]> = {
       owner_bootstrap: ['تم تفعيل المالك الأول للنظام', 'Initial system owner activated'],
@@ -24,19 +29,19 @@ export default function Dashboard() {
     return action && labels[action] ? labels[action][language === 'ar' ? 0 : 1] : action || '—';
   };
 
-  const metrics: Array<{ key: DashboardMetricKey; title: string; value?: number; icon: typeof Users; color: string; href: string }> = [
-    { key: 'users', title: t('إجمالي المستخدمين', 'Total Users'), value: data?.metrics?.totalUsers, icon: Users, color: 'text-blue-500', href: '/users' },
-    { key: 'providers', title: t('إجمالي المزودين', 'Total Providers'), value: data?.metrics?.activeProviders, icon: Truck, color: 'text-primary', href: '/providers' },
-    { key: 'equipment', title: t('المعدات النشطة', 'Active Equipment'), value: data?.metrics?.equipmentListings, icon: Wrench, color: 'text-amber-500', href: '/equipment' },
-    { key: 'requests', title: t('الطلبات النشطة', 'Active Requests'), value: data?.metrics?.activeRequests, icon: FileText, color: 'text-rose-500', href: '/requests' },
-    { key: 'payments', title: t('إجمالي المدفوعات', 'Total Payments'), value: data?.metrics?.payments, icon: CreditCard, color: 'text-emerald-500', href: '/payments' },
+  const metrics: Array<{ key: DashboardMetricKey; availabilityKey: string; title: string; value?: number | null; icon: typeof Users; color: string; href: string }> = [
+    { key: 'users', availabilityKey: 'totalUsers', title: t('إجمالي المستخدمين', 'Total Users'), value: data?.metrics?.totalUsers, icon: Users, color: 'text-blue-500', href: '/users' },
+    { key: 'providers', availabilityKey: 'activeProviders', title: t('إجمالي المزودين', 'Total Providers'), value: data?.metrics?.activeProviders, icon: Truck, color: 'text-primary', href: '/providers' },
+    { key: 'equipment', availabilityKey: 'equipmentListings', title: t('المعدات النشطة', 'Active Equipment'), value: data?.metrics?.equipmentListings, icon: Wrench, color: 'text-amber-500', href: '/equipment' },
+    { key: 'requests', availabilityKey: 'activeRequests', title: t('الطلبات النشطة', 'Active Requests'), value: data?.metrics?.activeRequests, icon: FileText, color: 'text-rose-500', href: '/requests' },
+    { key: 'payments', availabilityKey: 'payments', title: t('إجمالي المدفوعات', 'Total Payments'), value: data?.metrics?.payments, icon: CreditCard, color: 'text-emerald-500', href: '/payments' },
   ];
   const selected = metrics.find(metric => metric.key === selectedMetric);
 
   const pendingWork = [
-    { label: t('شكاوى مفتوحة', 'Open Complaints'), value: data?.metrics?.openComplaints || 0 },
-    { label: t('مدفوعات فاشلة', 'Failed Payments'), value: data?.metrics?.failedPayments || 0 },
-    { label: t('حسابات موقوفة', 'Suspended Accounts'), value: data?.metrics?.suspendedAccounts?.[0] || 0 },
+    { key: 'openComplaints', label: t('شكاوى مفتوحة', 'Open Complaints'), value: data?.metrics?.openComplaints },
+    { key: 'failedPayments', label: t('مدفوعات فاشلة', 'Failed Payments'), value: data?.metrics?.failedPayments },
+    { key: 'suspendedAccounts', label: t('حسابات موقوفة', 'Suspended Accounts'), value: data?.metrics?.suspendedAccounts },
   ];
 
   const formatDate = (dateStr?: string) => {
@@ -76,13 +81,14 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         {metrics.map(metric => {
           const active = selectedMetric === metric.key;
+          const available = metricAvailable(metric.availabilityKey, metric.value);
           return (
             <button
               key={metric.key}
               type="button"
               aria-expanded={active}
               aria-controls="dashboard-metric-details"
-              disabled={!isLoading && metric.value === undefined}
+              disabled={!isLoading && metric.value === undefined && availability?.[metric.availabilityKey] === undefined}
               onClick={() => setSelectedMetric(active ? null : metric.key)}
               className="rounded-lg text-start outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -92,7 +98,9 @@ export default function Dashboard() {
                   <metric.icon aria-hidden="true" className={`h-4 w-4 ${metric.color}`} />
                 </CardHeader>
                 <CardContent className="flex items-end justify-between gap-3">
-                  {isLoading ? <Skeleton className="h-8 w-24" /> : error ? <div className="text-sm text-destructive">{t('خطأ في التحميل', 'Error loading')}</div> : <div className="text-2xl font-bold tabular-nums">{metric.value ?? 0}</div>}
+                  {isLoading ? <Skeleton className="h-8 w-24" /> : error ? <div className="text-sm text-destructive">{t('خطأ في التحميل', 'Error loading')}</div> : available
+                    ? <div className="text-2xl font-bold tabular-nums">{metric.value}</div>
+                    : <div className="text-2xl font-bold text-muted-foreground" aria-label={`${metric.title}: ${unavailableText}`} title={unavailableText}>—</div>}
                   <ChevronDown aria-hidden="true" className={`h-4 w-4 text-muted-foreground transition-transform duration-200 motion-reduce:transition-none ${active ? 'rotate-180' : ''}`} />
                 </CardContent>
               </Card>
@@ -141,6 +149,7 @@ export default function Dashboard() {
           <CardHeader><CardTitle className="flex items-center gap-2"><Activity className="h-5 w-5 text-primary" />{t('أحدث النشاطات', 'Recent Activity')}</CardTitle></CardHeader>
           <CardContent>
             {isLoading ? <div className="space-y-4"><Skeleton className="h-12 w-full" /><Skeleton className="h-12 w-full" /><Skeleton className="h-12 w-full" /></div>
+              : !metricAvailable('recentAuditEvents', data?.metrics?.recentAuditEvents) ? <div className="text-center py-8 text-muted-foreground flex flex-col items-center"><Clock className="h-12 w-12 text-muted-foreground/30 mb-3" />{unavailableText}</div>
               : !data?.metrics?.recentAuditEvents?.length ? <div className="text-center py-8 text-muted-foreground flex flex-col items-center"><Clock className="h-12 w-12 text-muted-foreground/30 mb-3" />{t('لا توجد نشاطات حديثة للعرض', 'No recent activity to display')}</div>
               : <div className="space-y-4">{data.metrics.recentAuditEvents.slice(0, 5).map((event: any) => <div key={event.id} className="flex flex-col sm:flex-row justify-between sm:items-center p-3 rounded-md border border-border/50 bg-muted/20"><div><p className="font-medium text-sm">{humanizeAction(event.action)}</p><p className="text-xs text-muted-foreground mt-1">{event.actorName || event.actorEmail || '—'} &bull; {event.targetType || '—'}</p></div><div className="text-xs text-muted-foreground whitespace-nowrap mt-2 sm:mt-0 text-start sm:text-end">{formatDate(event.timestamp)}</div></div>)}</div>}
           </CardContent>
@@ -150,13 +159,16 @@ export default function Dashboard() {
           <Card className="border-border">
             <CardHeader><CardTitle className="flex items-center gap-2 text-rose-500"><BellRing className="h-5 w-5" />{t('تنبيهات النظام', 'Pending Work')}</CardTitle></CardHeader>
             <CardContent>
-              {isLoading ? <div className="space-y-4"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div> : <div className="space-y-3">{pendingWork.map(work => <div key={work.label} className="flex justify-between items-center p-3 rounded-md bg-muted/30 border border-border/50"><span className="text-sm font-medium text-foreground">{work.label}</span><span className={`text-sm font-bold px-2.5 py-0.5 rounded-full ${work.value > 0 ? 'bg-destructive/20 text-destructive' : 'bg-emerald-500/10 text-emerald-500'}`}>{work.value}</span></div>)}{pendingWork.every(work => work.value === 0) && <div className="text-center py-4 text-xs text-emerald-500 font-medium">{t('الأنظمة تعمل بشكل طبيعي، لا توجد مهام معلقة', 'All systems operational, no pending work')}</div>}</div>}
+              {isLoading ? <div className="space-y-4"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div> : <div className="space-y-3">{pendingWork.map(work => {
+                const available = metricAvailable(work.key, work.value);
+                return <div key={work.label} className="flex justify-between items-center p-3 rounded-md bg-muted/30 border border-border/50"><span className="text-sm font-medium text-foreground">{work.label}</span><span aria-label={available ? undefined : `${work.label}: ${unavailableText}`} title={available ? undefined : unavailableText} className={`text-sm font-bold px-2.5 py-0.5 rounded-full ${!available ? 'bg-muted text-muted-foreground' : Number(work.value) > 0 ? 'bg-destructive/20 text-destructive' : 'bg-emerald-500/10 text-emerald-500'}`}>{available ? work.value : '—'}</span></div>;
+              })}{pendingWork.every(work => metricAvailable(work.key, work.value) && work.value === 0) && <div className="text-center py-4 text-xs text-emerald-500 font-medium">{t('الأنظمة تعمل بشكل طبيعي، لا توجد مهام معلقة', 'All systems operational, no pending work')}</div>}</div>}
             </CardContent>
           </Card>
 
           <Card className="border-border">
             <CardHeader className="pb-3"><CardTitle className="text-base">{t('حجم المعاملات', 'Financial Volume')}</CardTitle></CardHeader>
-            <CardContent>{isLoading ? <Skeleton className="h-16 w-full" /> : <div className="space-y-4"><div><p className="text-xs text-muted-foreground mb-1">{t('المدفوعات الناجحة', 'Paid Volume')}</p><p className="text-2xl font-bold text-emerald-500">{data?.metrics?.paidSarVolume || 0} <span className="text-sm font-normal text-muted-foreground">SAR</span></p></div><div><p className="text-xs text-muted-foreground mb-1">{t('المدفوعات المعلقة', 'Pending Volume')}</p><p className="text-xl font-bold text-amber-500">{data?.metrics?.pendingSarVolume || 0} <span className="text-sm font-normal text-muted-foreground">SAR</span></p></div></div>}</CardContent>
+            <CardContent>{isLoading ? <Skeleton className="h-16 w-full" /> : <div className="space-y-4"><div><p className="text-xs text-muted-foreground mb-1">{t('المدفوعات الناجحة', 'Paid Volume')}</p>{metricAvailable('paidSarVolume', data?.metrics?.paidSarVolume) ? <p className="text-2xl font-bold text-emerald-500">{data?.metrics?.paidSarVolume} <span className="text-sm font-normal text-muted-foreground">SAR</span></p> : <p className="text-2xl font-bold text-muted-foreground" aria-label={`${t('المدفوعات الناجحة', 'Paid Volume')}: ${unavailableText}`} title={unavailableText}>—</p>}</div><div><p className="text-xs text-muted-foreground mb-1">{t('المدفوعات المعلقة', 'Pending Volume')}</p>{metricAvailable('pendingSarVolume', data?.metrics?.pendingSarVolume) ? <p className="text-xl font-bold text-amber-500">{data?.metrics?.pendingSarVolume} <span className="text-sm font-normal text-muted-foreground">SAR</span></p> : <p className="text-xl font-bold text-muted-foreground" aria-label={`${t('المدفوعات المعلقة', 'Pending Volume')}: ${unavailableText}`} title={unavailableText}>—</p>}</div></div>}</CardContent>
           </Card>
         </div>
       </div>

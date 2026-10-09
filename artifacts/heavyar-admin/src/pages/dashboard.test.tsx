@@ -6,16 +6,34 @@ const state = vi.hoisted(() => ({
   language: 'en' as 'ar' | 'en',
   detailCalls: [] as Array<string | null>,
   mode: 'data' as 'data' | 'loading' | 'error' | 'empty',
+  overviewMode: 'available' as 'available' | 'unavailable',
   refetch: vi.fn(),
 }));
 
 vi.mock('@/lib/app-state', () => ({ useAppState: () => ({ language: state.language }) }));
 vi.mock('@/lib/api', () => ({
-  useOverview: () => ({
-    data: { metrics: { totalUsers: 5, activeProviders: 2, equipmentListings: 4, activeRequests: 3, payments: 6, openComplaints: 0, failedPayments: 0, suspendedAccounts: [0], recentAuditEvents: [] } },
-    isLoading: false,
-    error: null,
-  }),
+  useOverview: () => {
+    const unavailable = state.overviewMode === 'unavailable';
+    return {
+      data: {
+        metrics: {
+          totalUsers: 5, activeProviders: 2, equipmentListings: 4, activeRequests: unavailable ? null : 3,
+          payments: 6, openComplaints: unavailable ? null : 0, failedPayments: unavailable ? null : 0,
+          suspendedAccounts: unavailable ? null : 0, paidSarVolume: unavailable ? null : 0,
+          pendingSarVolume: unavailable ? null : 0, recentAuditEvents: unavailable ? null : [],
+        },
+        metricAvailability: {
+          totalUsers: 'available', activeProviders: 'available', equipmentListings: 'available',
+          activeRequests: unavailable ? 'unavailable' : 'available', payments: 'available',
+          openComplaints: unavailable ? 'unavailable' : 'available', failedPayments: unavailable ? 'unavailable' : 'available',
+          suspendedAccounts: unavailable ? 'unavailable' : 'available', paidSarVolume: unavailable ? 'unavailable' : 'available',
+          pendingSarVolume: unavailable ? 'unavailable' : 'available', recentAuditEvents: unavailable ? 'unavailable' : 'available',
+        },
+      },
+      isLoading: false,
+      error: null,
+    };
+  },
   useDashboardMetricDetails: (metric: string | null) => {
     state.detailCalls.push(metric);
     return {
@@ -52,6 +70,7 @@ describe('Dashboard metric interactions', () => {
     state.language = 'en';
     state.detailCalls = [];
     state.mode = 'data';
+    state.overviewMode = 'available';
     state.refetch.mockReset();
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   });
@@ -95,5 +114,18 @@ describe('Dashboard metric interactions', () => {
     const retry = renderer.root.findAll(node => node.type === 'button' && node.children.some(child => child === 'Retry'))[0];
     act(() => { retry.props.onClick(); });
     expect(state.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps real zero green but never renders unavailable metrics as zero or all-clear', () => {
+    act(() => { renderer = create(<Dashboard />); });
+    expect(JSON.stringify(renderer.toJSON())).toContain('All systems operational');
+    expect(renderer.root.findAll(node => node.type === 'p' && node.children[0] === '0')).toHaveLength(2);
+
+    state.overviewMode = 'unavailable';
+    act(() => { renderer.update(<Dashboard />); });
+    const rendered = JSON.stringify(renderer.toJSON());
+    expect(rendered).toContain('Temporarily unavailable');
+    expect(rendered).not.toContain('All systems operational');
+    expect(renderer.root.findAll(node => node.type === 'p' && node.children[0] === '0')).toHaveLength(0);
   });
 });

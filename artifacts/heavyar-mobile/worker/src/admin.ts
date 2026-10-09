@@ -83,6 +83,8 @@ let verifiedEmailOverride: ((uid: string) => Promise<string | null>) | undefined
 let queryOverride: ((collection: string, before: string, limit: number, query?: any) => RawDoc[]) | undefined;
 let accountIntegrityDirectoryOverride: ((limit: number, pageToken?: string) => Promise<AuthDirectoryPage>) | undefined;
 let batchGetOverride: ((references: BatchGetReference[]) => Promise<any[]>) | undefined;
+let aggregateOverride: ((input: { collection: string; filter?: AggregateFilter | AggregateFilter[]; sumField?: string; structuredQuery: any }) => number | null | Promise<number | null>) | undefined;
+let recentAuditOverride: (() => any[] | null | Promise<any[] | null>) | undefined;
 export const __adminTest = {
   setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; },
   captureCommits(target?: unknown[][]) { commitOverride = target; },
@@ -91,6 +93,9 @@ export const __adminTest = {
   setQuery(fn?: (collection: string, before: string, limit: number, query?: any) => RawDoc[]) { queryOverride = fn; },
   setAccountIntegrityDirectory(fn?: (limit: number, pageToken?: string) => Promise<AuthDirectoryPage>) { accountIntegrityDirectoryOverride = fn; },
   setBatchGet(fn?: (references: BatchGetReference[]) => Promise<any[]>) { batchGetOverride = fn; },
+  setAggregate(fn?: (input: { collection: string; filter?: AggregateFilter | AggregateFilter[]; sumField?: string; structuredQuery: any }) => number | null | Promise<number | null>) { aggregateOverride = fn; },
+  setRecentAudit(fn?: () => any[] | null | Promise<any[] | null>) { recentAuditOverride = fn; },
+  resetSecondaryStats() { secondaryStats.clear(); },
 };
 
 const jsonValue = (value: unknown): any => {
@@ -407,33 +412,46 @@ async function authoritativeAccountProjection(env: Env, items: any[]) {
   } catch { throw new Error('Account verification temporarily unavailable'); }
 }
 
-type AggregateFilter = { field: string; value: unknown };
-async function countCollection(env: Env, collection: string, filter?: AggregateFilter | AggregateFilter[]) {
-  return aggregateCollection(env, collection, filter);
+type AggregateFilter = { field: string; value: unknown; op?: 'EQUAL' | 'IN' };
+type OverviewReadBudget = { aggregateQueries: number; queryOperations: number; aggregateCacheHits: number };
+class AggregateUnavailableError extends Error {
+  readonly code = 'AGGREGATE_UNAVAILABLE';
+  constructor() { super('Dashboard aggregate temporarily unavailable'); }
 }
-async function countOperationalUsers(env: Env, filter?: AggregateFilter) {
-  const reviewFilter = filter ? [filter, { field: 'accountPurpose', value: STORE_REVIEW_PURPOSE }] : { field: 'accountPurpose', value: STORE_REVIEW_PURPOSE };
-  const [total, review] = await Promise.all([
-    countCollection(env, 'users', filter),
-    countCollection(env, 'users', reviewFilter),
-  ]);
-  if (total === null) return null;
-  return Math.max(0, total - Number(review || 0));
+async function countCollection(env: Env, collection: string, filter?: AggregateFilter | AggregateFilter[], budget?: OverviewReadBudget) {
+  return aggregateCollection(env, collection, filter, undefined, budget);
 }
-async function countOperationalEquipment(env: Env) {
+async function countOperationalUsers(env: Env, filter?: AggregateFilter | AggregateFilter[], budget?: OverviewReadBudget) {
+  const filters = filter ? (Array.isArray(filter) ? filter : [filter]) : [];
+  const reviewFilter = [...filters, { field: 'accountPurpose', value: STORE_REVIEW_PURPOSE }];
   const [total, review] = await Promise.all([
-    countCollection(env, 'equipment', { field: 'isActive', value: true }),
-    countCollection(env, 'equipment', [{ field: 'isActive', value: true }, { field: 'accountPurpose', value: STORE_REVIEW_PURPOSE }]),
+    countCollection(env, 'users', filters.length ? filters : undefined, budget),
+    countCollection(env, 'users', reviewFilter, budget),
   ]);
-  return total === null ? null : Math.max(0, total - Number(review || 0));
+  if (total === null || review === null) return null;
+  return Math.max(0, total - review);
+}
+async function countOperationalEquipment(env: Env, budget?: OverviewReadBudget) {
+  const [total, review] = await Promise.all([
+    countCollection(env, 'equipment', { field: 'isActive', value: true }, budget),
+    countCollection(env, 'equipment', [{ field: 'isActive', value: true }, { field: 'accountPurpose', value: STORE_REVIEW_PURPOSE }], budget),
+  ]);
+  return total === null || review === null ? null : Math.max(0, total - review);
 }
 
 const secondaryStats = new Map<string, { expires: number; value: Promise<number | null> }>();
-async function aggregateCollection(env: Env, collection: string, filter?: AggregateFilter | AggregateFilter[], sumField?: string) {
+async function aggregateCollection(env: Env, collection: string, filter?: AggregateFilter | AggregateFilter[], sumField?: string, budget?: OverviewReadBudget) {
   const key = JSON.stringify([env.FIREBASE_PROJECT_ID, collection, filter, sumField]);
   const cached = secondaryStats.get(key);
-  if (cached && cached.expires > Date.now()) return cached.value;
-  const value = loadAggregateCollection(env, collection, filter, sumField);
+  if (cached && cached.expires > Date.now()) {
+    if (budget) budget.aggregateCacheHits += 1;
+    return cached.value;
+  }
+  if (budget) budget.aggregateQueries += 1;
+  const value = loadAggregateCollection(env, collection, filter, sumField).catch(() => {
+    console.warn('admin_aggregate_unavailable', { errorCode: 'AGGREGATE_UNAVAILABLE', collection, operation: sumField ? 'sum' : 'count' });
+    return null;
+  });
   const entry = { expires: Date.now() + 60_000, value };
   secondaryStats.set(key, entry);
   if (secondaryStats.size > 128) secondaryStats.delete(secondaryStats.keys().next().value!);
@@ -448,25 +466,41 @@ async function loadAggregateCollection(env: Env, collection: string, filter?: Ag
     const structuredQuery: any = { from: [{ collectionId: collection }] };
     if (filter) {
       const filters = Array.isArray(filter) ? filter : [filter];
+      const fieldFilter = (item: AggregateFilter) => {
+        if (item.op === 'IN' && (!Array.isArray(item.value) || item.value.length < 1 || item.value.length > 30)) throw new AggregateUnavailableError();
+        return { fieldFilter: { field: { fieldPath: item.field }, op: item.op || 'EQUAL', value: jsonValue(item.value) } };
+      };
       structuredQuery.where = filters.length === 1
-        ? { fieldFilter: { field: { fieldPath: filters[0].field }, op: 'EQUAL', value: jsonValue(filters[0].value) } }
-        : { compositeFilter: { op: 'AND', filters: filters.map(item => ({ fieldFilter: { field: { fieldPath: item.field }, op: 'EQUAL', value: jsonValue(item.value) } })) } };
+        ? fieldFilter(filters[0])
+        : { compositeFilter: { op: 'AND', filters: filters.map(fieldFilter) } };
     }
     const aggregations: any[] = [{ alias: 'count', count: {} }];
     if (sumField) aggregations.push({ alias: 'sum', sum: { field: { fieldPath: sumField } } });
+    if (aggregateOverride) return await aggregateOverride({ collection, filter, sumField, structuredQuery });
     const response = await fs(env, ':runAggregationQuery', { method: 'POST', body: JSON.stringify({ structuredAggregationQuery: { structuredQuery, aggregations } }) }) as any[] || [];
-    const values = response[0]?.result?.aggregateFields || {};
-    return sumField ? Number(values.sum?.doubleValue ?? values.sum?.integerValue ?? 0) : Number(values.count?.integerValue || 0);
-  } catch { return null; }
+    const values = response[0]?.result?.aggregateFields;
+    const encoded = sumField ? values?.sum : values?.count;
+    const raw = encoded?.doubleValue ?? encoded?.integerValue;
+    const value = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : Number.NaN;
+    if (!Number.isFinite(value)) throw new AggregateUnavailableError();
+    return value;
+  } catch (error) {
+    throw error instanceof AggregateUnavailableError ? error : new AggregateUnavailableError();
+  }
 }
 
-async function recentAudit(env: Env) {
+async function recentAudit(env: Env, budget?: OverviewReadBudget) {
+  if (budget) budget.queryOperations += 1;
   try {
+    if (recentAuditOverride) return await recentAuditOverride();
     const response = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
       from: [{ collectionId: 'adminAudit' }], orderBy: [{ field: { fieldPath: 'timestamp' }, direction: 'DESCENDING' }], limit: 10,
     } }) }) as any[] || [];
     return response.filter(item => item.document).map(item => ({ id: String(item.document.name).split('/').pop(), ...redact(decode(item.document)) }));
-  } catch { return []; }
+  } catch {
+    console.warn('admin_dashboard_recent_audit_unavailable', { errorCode: 'AGGREGATE_UNAVAILABLE' });
+    return null;
+  }
 }
 
 const EARLY_ACCESS_SEEN_RESOURCE = 'earlyAccessSubscribers';
@@ -3060,32 +3094,46 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   };
   if (url.pathname === '/api/admin/overview') {
     const requestStatuses = ['pending', 'requested', 'accepted', 'in_progress', 'completion_requested', 'under_investigation', 'escalated'];
-    const paymentStates = ['created', 'pending', 'requires_action', 'processing', 'paid', 'failed', 'cancelled', 'expired', 'refund_pending', 'refunded', 'partially_refunded'];
     const financeVisible = can(user, 'finance.read') || can(user, 'payouts.read');
-    const [users, providers, equipment, requests, payments, invoices, complaints, suspended, paidVolume, pendingVolume, failedPayments, recent] = await Promise.all([
-      countOperationalUsers(env),
-      countOperationalUsers(env, { field: 'role', value: 'provider' }),
-      countOperationalEquipment(env),
-      Promise.all(requestStatuses.map(status => countCollection(env, 'equipmentRequests', { field: 'status', value: status }))),
-      financeVisible ? countCollection(env, 'payments') : Promise.resolve(null),
-      financeVisible ? countCollection(env, 'invoices') : Promise.resolve(null),
-      countCollection(env, 'complaints', { field: 'status', value: 'open' }),
-      Promise.all([...SECURITY_SUSPENSION_STATUSES].map(status => countOperationalUsers(env, { field: 'suspensionStatus', value: status }))),
-      financeVisible ? aggregateCollection(env, 'payments', { field: 'state', value: 'paid' }, 'amount') : Promise.resolve(null),
-      financeVisible ? aggregateCollection(env, 'payments', { field: 'state', value: 'pending' }, 'amount') : Promise.resolve(null),
-      financeVisible ? countCollection(env, 'payments', { field: 'state', value: 'failed' }) : Promise.resolve(null),
-      recentAudit(env),
+    const startedAt = Date.now();
+    const budget: OverviewReadBudget = { aggregateQueries: 0, queryOperations: 0, aggregateCacheHits: 0 };
+    const [users, providers, equipment, activeRequests, payments, invoices, complaints, suspendedAccounts, paidVolume, pendingVolume, failedPayments, recent] = await Promise.all([
+      countOperationalUsers(env, undefined, budget),
+      countOperationalUsers(env, { field: 'role', value: 'provider' }, budget),
+      countOperationalEquipment(env, budget),
+      countCollection(env, 'equipmentRequests', { field: 'status', op: 'IN', value: requestStatuses }, budget),
+      financeVisible ? countCollection(env, 'payments', undefined, budget) : Promise.resolve(null),
+      financeVisible ? countCollection(env, 'invoices', undefined, budget) : Promise.resolve(null),
+      countCollection(env, 'complaints', { field: 'status', value: 'open' }, budget),
+      countOperationalUsers(env, { field: 'suspensionStatus', op: 'IN', value: [...SECURITY_SUSPENSION_STATUSES] }, budget),
+      financeVisible ? aggregateCollection(env, 'payments', { field: 'state', value: 'paid' }, 'amount', budget) : Promise.resolve(null),
+      financeVisible ? aggregateCollection(env, 'payments', { field: 'state', value: 'pending' }, 'amount', budget) : Promise.resolve(null),
+      financeVisible ? countCollection(env, 'payments', { field: 'state', value: 'failed' }, budget) : Promise.resolve(null),
+      recentAudit(env, budget),
     ]);
-    const requestsByStatus = Object.fromEntries(requestStatuses.map((status, index) => [status, (requests as any[])[index]]));
-    const paymentCounts = financeVisible ? await Promise.all(paymentStates.map(status => countCollection(env, 'payments', { field: 'state', value: status }))) : [];
-    const paymentsByState = Object.fromEntries(paymentStates.map((status, index) => [status, paymentCounts[index]]));
-    return { success: true, metrics: {
+    const metrics: Record<string, number | any[] | null> = {
       totalUsers: users, activeProviders: providers, listings: equipment, equipmentListings: equipment,
-      activeRequests: (requests as any[]).reduce((sum, value) => sum + (Number(value) || 0), 0),
-      requestsByStatus, openComplaints: complaints, suspendedAccounts: suspended,
+      activeRequests, openComplaints: complaints, suspendedAccounts,
       recentAuditEvents: recent,
-      ...(financeVisible ? { payments, paymentsByState, paidSarVolume: paidVolume, pendingSarVolume: pendingVolume, failedPayments, invoices } : {}),
-    } };
+      ...(financeVisible ? { payments, paidSarVolume: paidVolume, pendingSarVolume: pendingVolume, failedPayments, invoices } : {}),
+    };
+    const metricAvailability = Object.fromEntries(Object.entries(metrics).map(([key, value]) => [key, value === null ? 'unavailable' : 'available']));
+    const generatedAt = new Date().toISOString();
+    console.log('admin_dashboard_read_budget', {
+      aggregateQueries: budget.aggregateQueries,
+      queryOperations: budget.queryOperations,
+      firestoreOperations: budget.aggregateQueries + budget.queryOperations,
+      aggregateCacheHits: budget.aggregateCacheHits,
+      unavailableMetrics: Object.values(metricAvailability).filter(value => value === 'unavailable').length,
+      durationMs: Date.now() - startedAt,
+    });
+    return {
+      success: true,
+      metrics,
+      metricAvailability,
+      generatedAt,
+      freshness: { generatedAt, cacheScope: 'isolate_local', maxAgeSeconds: 60 },
+    };
   }
   const detailMatch = url.pathname.match(/^\/api\/admin\/detail\/([^/]+)\/([^/]+)$/);
   if (detailMatch) {
