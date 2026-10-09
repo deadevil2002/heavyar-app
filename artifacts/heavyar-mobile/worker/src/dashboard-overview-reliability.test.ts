@@ -114,6 +114,13 @@ describe('Admin Dashboard overview reliability', () => {
     expect(JSON.stringify(result)).not.toContain('provider detail must stay private');
   });
 
+  test('accepts an omitted empty-set sum only when the same aggregate proves count zero', () => {
+    expect(__adminTest.decodeAggregateFields({ count: { integerValue: '0' }, sum: { nullValue: null } }, 'amount')).toBe(0);
+    expect(() => __adminTest.decodeAggregateFields({ count: { integerValue: '1' }, sum: { nullValue: null } }, 'amount'))
+      .toThrow('Dashboard aggregate temporarily unavailable');
+    expect(() => __adminTest.decodeAggregateFields({}, 'amount')).toThrow('Dashboard aggregate temporarily unavailable');
+  });
+
   test('does not cache aggregate failures and retries them on the next request', async () => {
     let activeRequestAttempts = 0;
     __adminTest.setAggregate(input => {

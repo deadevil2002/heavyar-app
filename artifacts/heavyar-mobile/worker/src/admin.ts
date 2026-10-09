@@ -96,6 +96,7 @@ export const __adminTest = {
   setAggregate(fn?: (input: { collection: string; filter?: AggregateFilter | AggregateFilter[]; sumField?: string; structuredQuery: any }) => number | null | Promise<number | null>) { aggregateOverride = fn; },
   setRecentAudit(fn?: () => any[] | null | Promise<any[] | null>) { recentAuditOverride = fn; },
   resetSecondaryStats() { secondaryStats.clear(); },
+  decodeAggregateFields(values: any, sumField?: string) { return decodeAggregateFields(values, sumField); },
 };
 
 const jsonValue = (value: unknown): any => {
@@ -418,6 +419,26 @@ class AggregateUnavailableError extends Error {
   readonly code = 'AGGREGATE_UNAVAILABLE';
   constructor() { super('Dashboard aggregate temporarily unavailable'); }
 }
+function aggregateNumber(encoded: any) {
+  const raw = encoded?.doubleValue ?? encoded?.integerValue;
+  const value = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : Number.NaN;
+  return Number.isFinite(value) ? value : null;
+}
+function decodeAggregateFields(values: any, sumField?: string) {
+  const count = aggregateNumber(values?.count);
+  if (!sumField) {
+    if (count === null) throw new AggregateUnavailableError();
+    return count;
+  }
+  const sum = aggregateNumber(values?.sum);
+  if (sum !== null) return sum;
+  // Firestore documents SUM(empty) as zero. Some REST responses omit/null the
+  // sum alias for that case, so only an explicit same-response count of zero
+  // can prove a real financial zero. Every other missing/malformed sum remains
+  // unavailable instead of being fabricated.
+  if (count === 0) return 0;
+  throw new AggregateUnavailableError();
+}
 async function countCollection(env: Env, collection: string, filter?: AggregateFilter | AggregateFilter[], budget?: OverviewReadBudget) {
   return aggregateCollection(env, collection, filter, undefined, budget);
 }
@@ -478,12 +499,7 @@ async function loadAggregateCollection(env: Env, collection: string, filter?: Ag
     if (sumField) aggregations.push({ alias: 'sum', sum: { field: { fieldPath: sumField } } });
     if (aggregateOverride) return await aggregateOverride({ collection, filter, sumField, structuredQuery });
     const response = await fs(env, ':runAggregationQuery', { method: 'POST', body: JSON.stringify({ structuredAggregationQuery: { structuredQuery, aggregations } }) }) as any[] || [];
-    const values = response[0]?.result?.aggregateFields;
-    const encoded = sumField ? values?.sum : values?.count;
-    const raw = encoded?.doubleValue ?? encoded?.integerValue;
-    const value = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : Number.NaN;
-    if (!Number.isFinite(value)) throw new AggregateUnavailableError();
-    return value;
+    return decodeAggregateFields(response[0]?.result?.aggregateFields, sumField);
   } catch (error) {
     throw error instanceof AggregateUnavailableError ? error : new AggregateUnavailableError();
   }
