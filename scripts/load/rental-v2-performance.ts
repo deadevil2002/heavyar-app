@@ -10,9 +10,14 @@ import {
 const warmupCalls = boundedInteger(process.env.RENTAL_V2_WARMUP_CALLS || '3', 'RENTAL_V2_WARMUP_CALLS', 0, 20);
 const measuredCalls = boundedInteger(process.env.RENTAL_V2_MEASURED_CALLS || '25', 'RENTAL_V2_MEASURED_CALLS', 1, 100);
 const scenarios = [
-  { name: 'estimate-available', expectedStatus: 200, expectedSuccess: true },
-  { name: 'estimate-cap-exhausted', expectedStatus: 503, expectedSuccess: false },
-  { name: 'create-available-max-scan', expectedStatus: 201, expectedSuccess: true },
+  { name: 'estimate-available-0', expectedStatus: 200, expectedSuccess: true, queryDocuments: 0 },
+  { name: 'estimate-non-overlap-1', expectedStatus: 200, expectedSuccess: true, queryDocuments: 1 },
+  { name: 'estimate-overlap-1', expectedStatus: 409, expectedSuccess: false, queryDocuments: 1 },
+  { name: 'estimate-overlap-25', expectedStatus: 409, expectedSuccess: false, queryDocuments: 25 },
+  { name: 'estimate-overlap-50', expectedStatus: 409, expectedSuccess: false, queryDocuments: 50 },
+  { name: 'estimate-overlap-100', expectedStatus: 409, expectedSuccess: false, queryDocuments: 100 },
+  { name: 'estimate-cap-exhausted-101', expectedStatus: 503, expectedSuccess: false, queryDocuments: 101 },
+  { name: 'create-available-0', expectedStatus: 201, expectedSuccess: true, queryDocuments: 0 },
 ] as const;
 
 installRentalV2Fixture();
@@ -59,25 +64,24 @@ try {
 }
 
 function assertScenario(
-  scenario: { name: string; expectedStatus: number; expectedSuccess: boolean },
+  scenario: { name: string; expectedStatus: number; expectedSuccess: boolean; queryDocuments: number },
   samples: FixtureObservation[],
 ) {
   const mismatch = samples.find(sample => sample.status !== scenario.expectedStatus || sample.success !== scenario.expectedSuccess);
   if (mismatch) {
     throw new Error(`${scenario.name}: expected status ${scenario.expectedStatus} and success=${scenario.expectedSuccess}, got ${mismatch.status}, success=${mismatch.success}, errorCode=${mismatch.errorCode || 'none'}`);
   }
-  if (scenario.name === 'estimate-cap-exhausted' && samples.some(sample => sample.firestore.queryDocuments !== 101)) {
-    throw new Error('estimate-cap-exhausted did not exercise the 101-document fail-closed cap');
+  if (samples.some(sample => sample.firestore.queryDocuments !== scenario.queryDocuments || sample.firestore.queryCalls !== 3)) {
+    throw new Error(`${scenario.name} did not exercise the expected three-query/${scenario.queryDocuments}-document budget`);
   }
-  if (scenario.name === 'create-available-max-scan') {
+  if (scenario.name === 'create-available-0') {
     const mismatchBudget = samples.find(sample =>
-      sample.firestore.queryDocuments !== 100 ||
       sample.firestore.counterReads !== 1 ||
       sample.firestore.commits !== 1 ||
       sample.firestore.writes < 3 ||
       sample.firestore.verifies !== 1
     );
-    if (mismatchBudget) throw new Error('create-available-max-scan did not capture the expected query, counter, commit, write, and verify protocol operations');
+    if (mismatchBudget) throw new Error('create-available-0 did not capture the expected query, counter, commit, write, and verify protocol operations');
   }
 }
 

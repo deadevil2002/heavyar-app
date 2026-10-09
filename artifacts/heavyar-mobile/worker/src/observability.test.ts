@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mutationDiagnosticEvent, responseErrorCode, type MutationDiagnostics } from './observability';
+import { mutationDiagnosticEvent, mutationRoute, responseErrorCode, type MutationDiagnostics } from './observability';
 
 const request = new Request('https://worker.test/api/listings/private-id?token=private', { method: 'POST' });
 const diagnostics = (overrides: Partial<MutationDiagnostics> = {}): MutationDiagnostics => ({
@@ -23,6 +23,13 @@ describe('sanitized mutation observability', () => {
     expect(responseErrorCode('EMAIL_VERIFICATION_REQUIRED', 403)).toBe('EMAIL_VERIFICATION_REQUIRED');
     expect(responseErrorCode('private raw provider detail', 400)).toBe('REQUEST_FAILED');
     expect(responseErrorCode('private raw provider detail', 502)).toBe('INTERNAL_SERVICE_ERROR');
+  });
+
+  test('rental estimate/create support codes map to sanitized traceable routes and errors', () => {
+    expect(mutationRoute(new Request('https://worker.test/api/requests/estimate', { method: 'POST' }))).toBe('/api/requests/estimate');
+    expect(mutationRoute(new Request('https://worker.test/api/requests', { method: 'POST' }))).toBe('/api/requests');
+    expect(responseErrorCode('ACTIVE_RENTAL_OVERLAP', 409)).toBe('ACTIVE_RENTAL_OVERLAP');
+    expect(responseErrorCode('AVAILABILITY_UNAVAILABLE', 503)).toBe('AVAILABILITY_UNAVAILABLE');
   });
 
   test('denied writes report attempts without claiming a commit', () => {

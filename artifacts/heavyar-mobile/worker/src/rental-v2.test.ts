@@ -191,7 +191,9 @@ describe('Rental V2 HTTP authority boundary', () => {
       if (collection === 'equipment' && id === 'eq_1') return listing;
       if (collection === 'commercialSettings' && id === 'catalog') return buildLegacyCatalog();
       if (collection === 'users' && id === actor.uid) return { uid: actor.uid, role: actor.accountRole || 'customer', accountPurpose: actor.accountPurpose, emailVerified: true };
-      if (collection === '__queries') return extra[`__queries/${id}`] || [];
+      if (collection === '__queries') return Object.hasOwn(extra, `__queries/${id}`)
+        ? extra[`__queries/${id}`]
+        : extra['__queries/equipmentRequests'];
       return undefined;
     });
   }
@@ -320,7 +322,7 @@ describe('Rental V2 HTTP authority boundary', () => {
     fixture({
       '__queries/equipmentRequests': Array.from({ length: 101 }, (_, index) => ({
         id: `active-${index}`, equipmentId: 'eq_1', pricingModelVersion: 2, status: 'accepted',
-        requestedStartAt: '2098-01-01T00:00:00.000Z', requestedEndAt: '2098-01-01T01:00:00.000Z',
+        requestedStartAt: '2099-09-20T08:00:00.000Z', requestedEndAt: '2099-09-20T10:00:00.000Z',
       })),
     });
     const response = await worker.fetch(new Request('https://api.test/api/requests/estimate', {
@@ -329,6 +331,90 @@ describe('Rental V2 HTTP authority boundary', () => {
     }), env);
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ errorCode: 'AVAILABILITY_CAP_EXHAUSTED' });
+    __test.setAuth(); __test.setFirestore();
+  });
+
+  it('ignores 1,000 completed historical requests without scanning them as overlap candidates', async () => {
+    fixture({
+      '__queries/equipmentRequests': Array.from({ length: 1_000 }, (_, index) => ({
+        id: `historical-${index}`, equipmentId: 'eq_1', pricingModelVersion: 2, status: index % 2 ? 'completed' : 'cancelled',
+        requestedStartAt: '2098-01-01T00:00:00.000Z', requestedEndAt: '2098-01-01T01:00:00.000Z',
+      })),
+    });
+    const response = await worker.fetch(new Request('https://api.test/api/requests/estimate', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...request(), requestedStartAt: '2099-09-20T08:00:00.000Z', requestedEndAt: '2099-09-20T10:00:00.000Z' }),
+    }), env);
+    expect(response.status).toBe(200);
+    __test.setAuth(); __test.setFirestore();
+  });
+
+  it('finds one active overlap after 1,000 completed historical requests', async () => {
+    fixture({
+      '__queries/equipmentRequests': [
+        ...Array.from({ length: 1_000 }, (_, index) => ({
+          id: `historical-${index}`, equipmentId: 'eq_1', pricingModelVersion: 2, status: 'completed',
+          requestedStartAt: '2098-01-01T00:00:00.000Z', requestedEndAt: '2098-01-01T01:00:00.000Z',
+        })),
+        { id: 'overlap', equipmentId: 'eq_1', pricingModelVersion: 2, status: 'accepted', rentalMode: 'hourly', requestedStartAt: '2099-09-20T08:30:00.000Z', requestedEndAt: '2099-09-20T09:30:00.000Z' },
+      ],
+    });
+    const response = await worker.fetch(new Request('https://api.test/api/requests/estimate', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...request(), requestedStartAt: '2099-09-20T08:00:00.000Z', requestedEndAt: '2099-09-20T10:00:00.000Z' }),
+    }), env);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ errorCode: 'ACTIVE_RENTAL_OVERLAP' });
+    __test.setAuth(); __test.setFirestore();
+  });
+
+  it('blocks open-ended active rentals and permits a touching half-open boundary', async () => {
+    const invoke = async (existing: Record<string, unknown>) => {
+      fixture({ '__queries/equipmentRequests': [{ id: 'candidate', equipmentId: 'eq_1', pricingModelVersion: 2, status: 'accepted', ...existing }] });
+      return worker.fetch(new Request('https://api.test/api/requests/estimate', {
+        method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...request(), requestedStartAt: '2099-09-20T08:00:00.000Z', requestedEndAt: '2099-09-20T10:00:00.000Z' }),
+      }), env);
+    };
+    const openEnded = await invoke({ rentalMode: 'open_ended', requestedStartAt: '2099-09-19T08:00:00.000Z', requestedEndAt: null, actualEndAt: null });
+    expect(openEnded.status).toBe(409);
+    expect(await openEnded.json()).toMatchObject({ errorCode: 'ACTIVE_RENTAL_OVERLAP' });
+    const boundary = await invoke({ rentalMode: 'hourly', requestedStartAt: '2099-09-20T06:00:00.000Z', requestedEndAt: '2099-09-20T08:00:00.000Z' });
+    expect(boundary.status).toBe(200);
+    __test.setAuth(); __test.setFirestore();
+  });
+
+  it('returns stable account eligibility errors without converting them to overlap errors', async () => {
+    fixture({}, { uid: 'unverified', admin: false, emailVerified: false, testInjected: true, accountRole: 'customer' });
+    let response = await worker.fetch(new Request('https://api.test/api/requests', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' }, body: JSON.stringify(request()),
+    }), env);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ errorCode: 'EMAIL_VERIFICATION_REQUIRED' });
+
+    fixture({}, { uid: 'incomplete', admin: false, emailVerified: true, testInjected: false, accountRole: 'customer' });
+    response = await worker.fetch(new Request('https://api.test/api/requests', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' }, body: JSON.stringify(request()),
+    }), env);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ errorCode: 'PROFILE_REQUIRED' });
+
+    for (const [accountStatus, errorCode] of [['restricted', 'ACCOUNT_SUSPENDED'], ['deletion_requested', 'ACCOUNT_DELETION_REQUESTED']] as const) {
+      const actor = { uid: accountStatus, admin: false, emailVerified: true, testInjected: true as const, accountRole: 'customer' };
+      fixture({ [`users/${accountStatus}`]: { role: 'customer', accountStatus, email: 'qa@example.test', nameEn: 'QA', countryCode: 'SA', region: 'Riyadh', city: 'Riyadh' } }, actor);
+      response = await worker.fetch(new Request('https://api.test/api/requests', {
+        method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' }, body: JSON.stringify(request()),
+      }), env);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ errorCode });
+    }
+
+    fixture({ 'equipment/eq_1': { ...listing, ownerUid: 'owner-customer' } }, { uid: 'owner-customer', admin: false, emailVerified: true, testInjected: true, accountRole: 'customer' });
+    response = await worker.fetch(new Request('https://api.test/api/requests', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' }, body: JSON.stringify(request()),
+    }), env);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ errorCode: 'LISTING_UNAVAILABLE' });
     __test.setAuth(); __test.setFirestore();
   });
 });

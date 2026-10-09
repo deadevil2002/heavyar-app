@@ -39,7 +39,8 @@ export interface Env {
   __diagnostics?: MutationDiagnostics;
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; roleProfileRaw?: { data: any; updateTime?: string } | null };
-let authOverride: User | undefined;
+type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
+let authOverride: TestUser | undefined;
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let assetOwnedOverride: boolean | undefined;
 let firestoreWrites: Array<{ path: string; fields: Record<string, unknown> }> | undefined;
@@ -57,7 +58,7 @@ let capturedDriverQueries: any[] | undefined;
 let publicEquipmentLimiterOverride: ((ipHash: string) => Promise<boolean | null>) | undefined;
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
-  export const __test = { setAuth(user?: User) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationWindows.clear(); }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource };
+  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationWindows.clear(); }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -121,7 +122,7 @@ async function refreshFirebaseKeys() {
   firebaseKeys = Object.fromEntries(keys.filter(key => key.kid).map(key => [key.kid!, key]));
 }
 async function auth(req: Request, env: Env): Promise<User> {
-  if (authOverride && req.headers.has('Authorization')) return { ...authOverride, authTime: authOverride.authTime || Date.now(), permissionRole: authOverride.permissionRole || authOverride.role, testInjected: true };
+  if (authOverride && req.headers.has('Authorization')) return { ...authOverride, authTime: authOverride.authTime || Date.now(), permissionRole: authOverride.permissionRole || authOverride.role, testInjected: authOverride.testInjected === false ? undefined : true };
   const token = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, '');
   if (!token || !env.FIREBASE_PROJECT_ID) authErr();
   const [h, p, s] = token.split('.'); if (!h || !p || !s) authErr();
@@ -1141,7 +1142,9 @@ function assertSarSettlement(r: any, e: any) {
 function owned(u: User, r: any) { return !!r && (u.admin || r.customerUid === u.uid || r.renterUid === u.uid); }
 async function enforceOperationalAccess(env: Env, u: User, equipment?: any) {
   if (!u.admin) {
-    const profile = await getDoc(env, 'users', u.uid);
+    // authenticatedUser already resolves and validates the canonical account.
+    // Reuse it so every rental mutation has one authoritative account read.
+    const profile = u.accountProfile || await getDoc(env, 'users', u.uid);
     if (profile?.accountStatus === 'deletion_requested') err('ACCOUNT_DELETION_REQUESTED');
     if (isSecuritySuspended(profile)) err('ACCOUNT_SUSPENDED');
   }
@@ -1452,37 +1455,109 @@ function reservationPath(equipmentId: string, date: string) {
   return `equipmentReservations/${encodeURIComponent(`${equipmentId}:${date}`)}`;
 }
 const V2_AVAILABILITY_LIMIT = 101;
-const BLOCKING_RENTAL_STATUSES = ['pending', 'accepted', 'in_progress', 'completion_requested', 'payment_pending', 'paid'];
+const ALL_ACTIVE_RENTAL_INTERVAL = { startAt: '1970-01-01T00:00:00.000Z', endAt: null } as const;
+const V2_BLOCKING_RENTAL_STATUSES = ['accepted', 'in_progress', 'completion_requested', 'payment_pending', 'paid'];
+const LEGACY_BLOCKING_RENTAL_STATUSES = ['pending', ...V2_BLOCKING_RENTAL_STATUSES];
 type RentalRowsResult = { rows: Array<{ data: any; updateTime?: string; name?: string }>; exhausted: boolean };
-async function rentalRowsForEquipment(env: Env, equipmentId: string, transaction?: string): Promise<RentalRowsResult> {
+type RentalAvailabilityFamily = 'v2' | 'legacy-fixed' | 'legacy-open';
+const stringField = (fieldPath: string, op: string, stringValue: string) => ({ fieldFilter: { field: { fieldPath }, op, value: { stringValue } } });
+const integerField = (fieldPath: string, op: string, integerValue: number) => ({ fieldFilter: { field: { fieldPath }, op, value: { integerValue: String(integerValue) } } });
+const nullField = (fieldPath: string) => ({ fieldFilter: { field: { fieldPath }, op: 'EQUAL', value: { nullValue: null } } });
+const anyOf = (...filters: any[]) => ({ compositeFilter: { op: 'OR', filters } });
+const allOf = (...filters: any[]) => ({ compositeFilter: { op: 'AND', filters } });
+const blockingStateFilter = (statuses: string[]) => anyOf(
+  { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: statuses.map(stringValue => ({ stringValue })) } } } },
+  stringField('paymentState', 'EQUAL', 'paid'),
+);
+function availabilityQueriesForEquipment(equipmentId: string, requested: { startAt: string; endAt: string | null }): Array<{ family: RentalAvailabilityFamily; structuredQuery: any }> {
+  // A null requested end means the new rental is open-ended.  The maximum
+  // canonical instant keeps the same indexed query shape while including every
+  // possible existing start.
+  const requestedEndBound = requested.endAt || '9999-12-31T23:59:59.999Z';
+  const requestedStartDay = requested.startAt.slice(0, 10);
+  const base = stringField('equipmentId', 'EQUAL', equipmentId);
+  return [
+    {
+      family: 'v2',
+      structuredQuery: {
+        from: [{ collectionId: 'equipmentRequests' }],
+        where: allOf(
+          base,
+          integerField('pricingModelVersion', 'EQUAL', 2),
+          blockingStateFilter(V2_BLOCKING_RENTAL_STATUSES),
+          stringField('requestedStartAt', 'LESS_THAN', requestedEndBound),
+          anyOf(
+            stringField('requestedEndAt', 'GREATER_THAN', requested.startAt),
+            nullField('requestedEndAt'),
+            stringField('actualEndAt', 'GREATER_THAN', requested.startAt),
+          ),
+        ),
+        limit: V2_AVAILABILITY_LIMIT,
+      },
+    },
+    {
+      family: 'legacy-fixed',
+      structuredQuery: {
+        from: [{ collectionId: 'equipmentRequests' }],
+        where: allOf(
+          base,
+          blockingStateFilter(LEGACY_BLOCKING_RENTAL_STATUSES),
+          stringField('startDate', 'LESS_THAN', requestedEndBound),
+          anyOf(
+            stringField('endDate', 'GREATER_THAN_OR_EQUAL', requestedStartDay),
+            stringField('actualEndAt', 'GREATER_THAN', requested.startAt),
+          ),
+        ),
+        limit: V2_AVAILABILITY_LIMIT,
+      },
+    },
+    {
+      family: 'legacy-open',
+      structuredQuery: {
+        from: [{ collectionId: 'equipmentRequests' }],
+        where: allOf(
+          base,
+          blockingStateFilter(LEGACY_BLOCKING_RENTAL_STATUSES),
+          anyOf(
+            stringField('requestMode', 'EQUAL', 'open_ended'),
+            stringField('rentalMode', 'EQUAL', 'open_ended'),
+          ),
+          stringField('createdAt', 'LESS_THAN', requestedEndBound),
+        ),
+        limit: V2_AVAILABILITY_LIMIT,
+      },
+    },
+  ];
+}
+async function rentalQueryFamily(env: Env, family: RentalAvailabilityFamily, structuredQuery: any, requested: { startAt: string; endAt: string | null }, transaction?: string) {
   if (firestoreOverride) {
-    const injected = firestoreOverride('__queries', 'equipmentRequests');
-    const matching = (Array.isArray(injected) ? injected : []).filter((item: any) => {
-      const data = item.data || item;
-      return data.equipmentId === equipmentId && (BLOCKING_RENTAL_STATUSES.includes(String(data.status)) || data.paymentState === 'paid');
-    });
-    return { rows: matching.slice(0, V2_AVAILABILITY_LIMIT).map((item: any) => ({ data: item.data || item, updateTime: item.updateTime, name: item.name })), exhausted: matching.length >= V2_AVAILABILITY_LIMIT };
+    const scoped = firestoreOverride('__queries', `equipmentRequests:${family}`);
+    const injected = scoped === undefined ? firestoreOverride('__queries', 'equipmentRequests') : scoped;
+    return (Array.isArray(injected) ? injected : []).filter((item: any) => {
+      const interval = activeInterval(item.data || item);
+      return interval ? intervalsOverlap(requested, interval) : false;
+    }).slice(0, V2_AVAILABILITY_LIMIT).map((item: any) => ({ data: item.data || item, updateTime: item.updateTime, name: item.name || item.id }));
   }
-  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
-    from: [{ collectionId: 'equipmentRequests' }],
-    where: { compositeFilter: { op: 'AND', filters: [
-      { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: equipmentId } } },
-      { compositeFilter: { op: 'OR', filters: [
-        { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: BLOCKING_RENTAL_STATUSES.map(stringValue => ({ stringValue })) } } } },
-        { fieldFilter: { field: { fieldPath: 'paymentState' }, op: 'EQUAL', value: { stringValue: 'paid' } } },
-      ] } },
-    ] } },
-    orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
-    limit: V2_AVAILABILITY_LIMIT,
-  }, ...(transaction ? { transaction } : {}) }) }) as any[] || [];
-  const documents = result.filter(row => row.document).map(row => row.document);
-  return {
-    rows: documents.map(document => ({ data: decode(document), updateTime: document.updateTime, name: document.name })),
-    exhausted: documents.length >= V2_AVAILABILITY_LIMIT,
-  };
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery, ...(transaction ? { transaction } : {}) }) }) as any[] || [];
+  return result.filter(row => row.document).map(row => ({ data: decode(row.document), updateTime: row.document.updateTime, name: row.document.name }));
+}
+async function rentalRowsForEquipment(env: Env, equipmentId: string, requested: { startAt: string; endAt: string | null }, transaction?: string): Promise<RentalRowsResult> {
+  let batches: Array<Array<{ data: any; updateTime?: string; name?: string }>>;
+  try {
+    batches = await Promise.all(availabilityQueriesForEquipment(equipmentId, requested).map(({ family, structuredQuery }) => rentalQueryFamily(env, family, structuredQuery, requested, transaction)));
+  } catch {
+    throw new Error('AVAILABILITY_UNAVAILABLE');
+  }
+  if (batches.some(batch => batch.length >= V2_AVAILABILITY_LIMIT)) return { rows: [], exhausted: true };
+  const rows = new Map<string, { data: any; updateTime?: string; name?: string }>();
+  for (const batch of batches) for (const row of batch) {
+    const key = String(row.name || `${row.data?.equipmentId || ''}:${row.data?.createdAt || ''}:${rows.size}`);
+    if (!rows.has(key)) rows.set(key, row);
+  }
+  return { rows: [...rows.values()].slice(0, V2_AVAILABILITY_LIMIT), exhausted: rows.size >= V2_AVAILABILITY_LIMIT };
 }
 async function assertV2Available(env: Env, equipmentId: string, requested: { startAt: string; endAt: string | null }, excludingRequestId?: string, transaction?: string) {
-  const result = await rentalRowsForEquipment(env, equipmentId, transaction);
+  const result = await rentalRowsForEquipment(env, equipmentId, requested, transaction);
   if (result.exhausted) throw new Error('AVAILABILITY_CAP_EXHAUSTED');
   const rows = result.rows;
   const conflict = rows.some(row => {
@@ -1516,6 +1591,7 @@ function v2Failure(error: unknown): { status: number; error: string; errorCode: 
   if (code === 'RATE_CHANGED') return { status: 409, error: 'Listing rate changed before locking', errorCode: code };
   if (code === 'ACTIVE_RENTAL_OVERLAP') return { status: 409, error: 'Equipment is unavailable for the full selected period.', errorCode: code };
   if (code === 'AVAILABILITY_CAP_EXHAUSTED') return { status: 503, error: 'Availability temporarily unavailable', errorCode: code };
+  if (code === 'AVAILABILITY_UNAVAILABLE') return { status: 503, error: 'Availability temporarily unavailable', errorCode: code };
   if (code === 'Requested start is in the past') return { status: 400, error: code, errorCode: 'PAST_START_TIME' };
   if (code === 'hourly rental is unavailable' || code === 'daily rental is unavailable') return { status: 409, error: code, errorCode: 'RENTAL_UNIT_UNAVAILABLE' };
   if (['Requested end must be after start', 'Rental duration must be positive', 'Daily rentals require market-midnight boundaries', 'Daily rental duration must be from 1 to 365 days'].includes(code)) {
@@ -1541,8 +1617,10 @@ async function estimateV2Request(req: Request, env: Env, u: User) {
   if (!equipment || equipment.ownerUid === u.uid || !canRentEquipment(u, equipment)) return out(env, req, { success: false, error: 'Listing unavailable', errorCode: 'LISTING_UNAVAILABLE' }, 409);
   const now = new Date().toISOString();
   try {
-    const estimate = await buildV2Estimate(env, input, equipment, now);
-    await assertV2Available(env, input.equipmentId, { startAt: input.requestedStartAt, endAt: input.requestedEndAt });
+    const [estimate] = await Promise.all([
+      buildV2Estimate(env, input, equipment, now),
+      assertV2Available(env, input.equipmentId, { startAt: input.requestedStartAt, endAt: input.requestedEndAt }),
+    ]);
     return out(env, req, { success: true, serverNow: now, estimate });
   } catch (error) {
     const failure = v2Failure(error);
@@ -1581,8 +1659,10 @@ async function createV2Request(body: any, req: Request, env: Env, u: User) {
   const id = `r_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
   try {
     const normalizedEquipment = v2EquipmentContext(equipment);
-    const estimate = await buildV2Estimate(env, input, normalizedEquipment, now);
-    await assertV2Available(env, input.equipmentId, { startAt: input.requestedStartAt, endAt: input.requestedEndAt });
+    const [estimate] = await Promise.all([
+      buildV2Estimate(env, input, normalizedEquipment, now),
+      assertV2Available(env, input.equipmentId, { startAt: input.requestedStartAt, endAt: input.requestedEndAt }),
+    ]);
     // For open-ended requests, lock rule/tax terms against one selected rate
     // unit. Usage amounts are deliberately absent until server completion.
     const lockedCommercial = estimate.commercial || await authoritativeCommercialSnapshotMinor(env, { providerUid: normalizedEquipment.ownerUid }, normalizedEquipment, estimate.rateAmountMinor, now);
@@ -1646,12 +1726,16 @@ async function createRequest(req: Request, env: Env, u: User) {
   if (!dateCheck.ok || !requestedRange.until || (mode === 'fixed_days' && Math.round((Date.parse(`${requestedRange.until}T00:00:00Z`) - Date.parse(`${requestedRange.from}T00:00:00Z`)) / 86400000) + 1 !== days)) return out(env, req, { success: false, error: 'Invalid rental dates' }, 400);
   const availabilityCheckResult = availabilityAllows(equipment.availability || { from: requestedRange.from }, requestedRange);
   if (!availabilityCheckResult.ok) return out(env, req, { success: false, error: availabilityCheckResult.error }, 409);
-  let existingRequests: RentalRowsResult = { rows: [], exhausted: false };
-  try { existingRequests = await rentalRowsForEquipment(env, equipmentId); }
-  catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_UNAVAILABLE' }, 503); }
-  if (existingRequests.exhausted) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
-  const overlap = existingRequests.rows.map(row => row.data).some(existing => hasActiveRental([existing]) && existing.startDate && String(existing.startDate) <= String(requestedRange.until || '9999-12-31') && String(requestedRange.from) <= String(existing.endDate || '9999-12-31'));
-  if (overlap) return out(env, req, { success: false, error: 'An active request or rental overlaps this period.', errorCode: 'ACTIVE_RENTAL_OVERLAP', details: { ar: 'يوجد طلب أو تأجير نشط يتعارض مع الفترة المحددة. اختر فترة أخرى.', en: 'An active request or rental overlaps this period. Choose different dates.' } }, 409);
+  const legacyRequestedInterval = {
+    startAt: `${requestedRange.from}T00:00:00.000Z`,
+    endAt: requestedRange.until ? new Date(Date.parse(`${requestedRange.until}T00:00:00.000Z`) + 86_400_000).toISOString() : null,
+  };
+  try { await assertV2Available(env, equipmentId, legacyRequestedInterval); }
+  catch (error) {
+    const code = error instanceof Error ? error.message : 'AVAILABILITY_UNAVAILABLE';
+    if (code === 'ACTIVE_RENTAL_OVERLAP') return out(env, req, { success: false, error: 'An active request or rental overlaps this period.', errorCode: code, details: { ar: 'يوجد طلب أو تأجير نشط يتعارض مع الفترة المحددة. اختر فترة أخرى.', en: 'An active request or rental overlaps this period. Choose different dates.' } }, 409);
+    return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: code === 'AVAILABILITY_CAP_EXHAUSTED' ? code : 'AVAILABILITY_UNAVAILABLE' }, 503);
+  }
   if (!Number.isFinite(amount) || amount <= 0 || (mode === 'fixed_days' && (!Number.isInteger(days) || days < 1 || days > 365))) return out(env, req, { success: false, error: 'Invalid request amount' }, 400);
   const id = `r_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
   let commercialSnapshot: CommercialSnapshot;
@@ -1765,15 +1849,16 @@ async function transitionV2Request(req: Request, env: Env, u: User, requestId: s
           await commitWrites(env, [requestWrite, fenceWrite, notification], transaction);
           break;
         } catch (error) {
-          if (error instanceof Error && (error.message === 'ACTIVE_RENTAL_OVERLAP' || error.message === 'AVAILABILITY_CAP_EXHAUSTED')) throw error;
+          if (error instanceof Error && ['ACTIVE_RENTAL_OVERLAP', 'AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE'].includes(error.message)) throw error;
           if (attempt === 3) throw error;
         }
       }
     } else await commitWrites(env, [requestWrite, notification]);
   } catch (error) {
     const code = error instanceof Error ? error.message : 'Request changed';
-    const knownCode = code === 'ACTIVE_RENTAL_OVERLAP' || code === 'AVAILABILITY_CAP_EXHAUSTED' ? code : 'REQUEST_CHANGED';
-    return out(env, req, { success: false, error: code === 'ACTIVE_RENTAL_OVERLAP' ? 'Equipment is unavailable for the full selected period.' : code === 'AVAILABILITY_CAP_EXHAUSTED' ? 'Availability temporarily unavailable' : 'Request changed', errorCode: knownCode }, code === 'AVAILABILITY_CAP_EXHAUSTED' ? 503 : 409);
+    const availabilityFailure = code === 'AVAILABILITY_CAP_EXHAUSTED' || code === 'AVAILABILITY_UNAVAILABLE';
+    const knownCode = code === 'ACTIVE_RENTAL_OVERLAP' || availabilityFailure ? code : 'REQUEST_CHANGED';
+    return out(env, req, { success: false, error: code === 'ACTIVE_RENTAL_OVERLAP' ? 'Equipment is unavailable for the full selected period.' : availabilityFailure ? 'Availability temporarily unavailable' : 'Request changed', errorCode: knownCode }, availabilityFailure ? 503 : 409);
   }
   const responseUpdates = decode({ fields: updates });
   if (responseUpdates.finalBaseAmountMinor !== undefined) responseUpdates.finalBaseAmountMinor = Number(responseUpdates.finalBaseAmountMinor);
@@ -1891,7 +1976,8 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
     try { await assertV2Available(env, String(r.equipmentId), legacyInterval, requestId); }
     catch (error) {
       const code = error instanceof Error ? error.message : '';
-      return out(env, req, { success: false, error: code === 'AVAILABILITY_CAP_EXHAUSTED' ? 'Availability temporarily unavailable' : 'Equipment is unavailable for the full selected period.', errorCode: code || 'ACTIVE_RENTAL_OVERLAP' }, code === 'AVAILABILITY_CAP_EXHAUSTED' ? 503 : 409);
+      const availabilityFailure = code === 'AVAILABILITY_CAP_EXHAUSTED' || code === 'AVAILABILITY_UNAVAILABLE';
+      return out(env, req, { success: false, error: availabilityFailure ? 'Availability temporarily unavailable' : 'Equipment is unavailable for the full selected period.', errorCode: code || 'ACTIVE_RENTAL_OVERLAP' }, availabilityFailure ? 503 : 409);
     }
     reservationWrites.push({ update: { name: fullName(env, fencePath), fields: { equipmentId: { stringValue: String(r.equipmentId) }, revision: { integerValue: String(Number(fence?.data?.revision || 0) + 1) }, requestId: { stringValue: requestId }, updatedAt: { timestampValue: now } } }, currentDocument: fence?.updateTime ? { updateTime: fence.updateTime } : { exists: false } });
   }
@@ -3240,7 +3326,7 @@ async function listingAvailability(req: Request, env: Env, u: User, id: string) 
   const listing = await getDoc(env, 'equipment', id);
   if (!listing || (listing.ownerUid !== u.uid && !isPublicRentableListing(listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
   let rows;
-  try { rows = await rentalRowsForEquipment(env, id); }
+  try { rows = await rentalRowsForEquipment(env, id, ALL_ACTIVE_RENTAL_INTERVAL); }
   catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_UNAVAILABLE' }, 503); }
   if (rows.exhausted) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
   const rentals = rows.rows.map(row => row.data).filter((x: any) => activeInterval(x));
@@ -3362,11 +3448,11 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
   if (raw.data.visibility === 'archived') return out(env, req, { success: false, error: 'Listing is archived' }, 409);
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing update' }, 400);
-  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 101 } }) });
-  if ((result || []).filter((x: any) => x.document).length >= 101) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
-  // Firestore may append a readTime-only terminal row to runQuery responses.
-  // It is not a document and must not turn a never-rented listing into history.
-  const rentals = (result || []).filter((x: any) => x.document).map((x: any) => decode(x.document));
+  let activeRows: RentalRowsResult;
+  try { activeRows = await rentalRowsForEquipment(env, id, ALL_ACTIVE_RENTAL_INTERVAL); }
+  catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_UNAVAILABLE' }, 503); }
+  if (activeRows.exhausted) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
+  const rentals = activeRows.rows.map(row => row.data);
   if (hasActiveRental(rentals)) return out(env, req, { success: false, error: 'LISTING_EDIT_LOCKED' }, 409);
   const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'category', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'dailyPrice', 'pricePerDay', 'pricingModelVersion', 'pricing', 'images', 'availability', 'isActive'];
   const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'adminHidden', 'createdAt', 'updatedAt'];
@@ -3413,13 +3499,30 @@ async function listingLifecycle(req: Request, env: Env, u: User, id: string, arc
   mutationStage(env, 'validation');
   const raw = await getRawDoc(env, 'equipment', id);
   if (!raw?.data || raw.data.ownerUid !== u.uid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
-  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 101 } }) });
-  if ((result || []).filter((x: any) => x.document).length >= 101) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
-  // Firestore may append a readTime-only terminal row to runQuery responses.
-  // Only actual request documents count as preserved rental history.
-  const rentals = (result || []).filter((x: any) => x.document).map((x: any) => decode(x.document));
+  let activeRows: RentalRowsResult;
+  try { activeRows = await rentalRowsForEquipment(env, id, ALL_ACTIVE_RENTAL_INTERVAL); }
+  catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_UNAVAILABLE' }, 503); }
+  if (activeRows.exhausted) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
+  const rentals = activeRows.rows.map(row => row.data);
   if (hasActiveRental(rentals)) return out(env, req, { success: false, error: 'LISTING_LIFECYCLE_LOCKED' }, 409);
-  const now = new Date().toISOString(), history = rentals.length > 0;
+  let history = archive;
+  if (!archive) {
+    try {
+      if (firestoreOverride) {
+        const injected = firestoreOverride('__queries', 'equipmentRequests:history');
+        const fallback = injected === undefined ? firestoreOverride('__queries', 'equipmentRequests') : injected;
+        history = Array.isArray(fallback) && fallback.some((item: any) => (item.data || item).equipmentId === id);
+      } else {
+        const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+          from: [{ collectionId: 'equipmentRequests' }],
+          where: stringField('equipmentId', 'EQUAL', id),
+          limit: 1,
+        } }) }) as any[] || [];
+        history = result.some(row => row.document);
+      }
+    } catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_UNAVAILABLE' }, 503); }
+  }
+  const now = new Date().toISOString();
   const writes: any[] = archive || history
     ? [{ update: { name: fullName(env, `equipment/${encodeURIComponent(id)}`), fields: { isActive: { booleanValue: false }, visibility: { stringValue: 'archived' }, archivedAt: { timestampValue: now }, archivedBy: { stringValue: u.uid }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['isActive', 'visibility', 'archivedAt', 'archivedBy', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } }]
     : [{ delete: fullName(env, `equipment/${encodeURIComponent(id)}`), currentDocument: { updateTime: raw.updateTime } }];
@@ -3442,7 +3545,8 @@ async function availabilityCheck(req: Request, env: Env, u: User, id: string) {
     } catch (error) {
       const code = error instanceof Error ? error.message : 'INVALID_INTERVAL';
       if (code === 'ACTIVE_RENTAL_OVERLAP') return out(env, req, { success: true, available: false, reason: code, serverNow: new Date().toISOString() });
-      return out(env, req, { success: false, error: code === 'AVAILABILITY_CAP_EXHAUSTED' ? 'Availability temporarily unavailable' : code, errorCode: code }, code === 'AVAILABILITY_CAP_EXHAUSTED' ? 503 : 400);
+      const availabilityFailure = code === 'AVAILABILITY_CAP_EXHAUSTED' || code === 'AVAILABILITY_UNAVAILABLE';
+      return out(env, req, { success: false, error: availabilityFailure ? 'Availability temporarily unavailable' : code, errorCode: code }, availabilityFailure ? 503 : 400);
     }
   }
   const requested = { from: String(body?.from || ''), until: body?.until === undefined ? undefined : String(body.until) };
@@ -3451,10 +3555,18 @@ async function availabilityCheck(req: Request, env: Env, u: User, id: string) {
   const availability = listing.availability || { from: requested.from };
   const base = availabilityAllows(availability, requested);
   if (!base.ok) return out(env, req, { success: true, available: false, reason: base.error });
-  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'equipmentRequests' }], where: { fieldFilter: { field: { fieldPath: 'equipmentId' }, op: 'EQUAL', value: { stringValue: id } } }, limit: 101 } }) });
-  if ((result || []).filter((x: any) => x.document).length >= 101) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
-  const conflict = (result || []).map((x: any) => decode(x.document || x)).some((r: any) => hasActiveRental([r]) && r.startDate && !(requested.until && String(r.startDate) > requested.until) && !(r.endDate && String(r.endDate) < requested.from));
-  return out(env, req, { success: true, available: !conflict, reason: conflict ? 'ACTIVE_RENTAL_OVERLAP' : null });
+  const requestedInterval = {
+    startAt: `${requested.from}T00:00:00.000Z`,
+    endAt: requested.until ? new Date(Date.parse(`${requested.until}T00:00:00.000Z`) + 86_400_000).toISOString() : null,
+  };
+  try {
+    await assertV2Available(env, id, requestedInterval);
+    return out(env, req, { success: true, available: true, reason: null });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : 'AVAILABILITY_UNAVAILABLE';
+    if (code === 'ACTIVE_RENTAL_OVERLAP') return out(env, req, { success: true, available: false, reason: code });
+    return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: code === 'AVAILABILITY_CAP_EXHAUSTED' ? code : 'AVAILABILITY_UNAVAILABLE' }, 503);
+  }
 }
 async function publicGatewayDiscovery(req: Request, env: Env, u: User) {
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({
@@ -4004,8 +4116,12 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     if (message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'Email verification is required before performing this action.', errorCode: message, verificationSubject: 'actor' }, 403);
     if (message === 'ADMIN_REQUIRED') return out(env, req, { success: false, error: 'Admin authorization required', errorCode: 'PERMISSION_DENIED' }, 403);
     if (message === 'AUTH_REQUIRED') return out(env, req, { success: false, error: 'Authentication required', errorCode: 'AUTH_REQUIRED' }, 401);
+     const profileRequired = message === 'PROFILE_REQUIRED' || message === 'ACCOUNT_PROVISIONING_INCOMPLETE';
      const forbidden = message === 'ADMIN_REQUIRED' || message === 'ACCOUNT_SUSPENDED' || message === 'ACCOUNT_DELETION_REQUESTED' || message === 'LISTING_UNAVAILABLE' || message.startsWith('TRUST_');
-     return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : message === 'ADMIN_REQUIRED' ? 'Admin authorization required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : message === 'ACCOUNT_DELETION_REQUESTED' ? 'Account deletion requested' : message === 'PROFILE_REQUIRED' ? 'Complete your account setup before continuing.' : message === 'LISTING_UNAVAILABLE' ? 'Listing unavailable' : message.startsWith('TRUST_') ? 'Identity verification required' : 'Internal service error', ...(message === 'PROFILE_REQUIRED' ? { errorCode: 'PROFILE_REQUIRED' } : {}) }, message === 'AUTH_REQUIRED' ? 401 : message === 'PROFILE_REQUIRED' ? 409 : forbidden ? 403 : 500);
+     const stableErrorCode = profileRequired ? 'PROFILE_REQUIRED'
+       : ['ACCOUNT_SUSPENDED', 'ACCOUNT_DELETION_REQUESTED', 'LISTING_UNAVAILABLE'].includes(message) ? message
+         : undefined;
+     return out(env, req, { success: false, error: message === 'AUTH_REQUIRED' ? 'Authentication required' : message === 'ADMIN_REQUIRED' ? 'Admin authorization required' : message === 'ACCOUNT_SUSPENDED' ? 'Account suspended' : message === 'ACCOUNT_DELETION_REQUESTED' ? 'Account deletion requested' : profileRequired ? 'Complete your account setup before continuing.' : message === 'LISTING_UNAVAILABLE' ? 'Listing unavailable' : message.startsWith('TRUST_') ? 'Identity verification required' : 'Internal service error', ...(stableErrorCode ? { errorCode: stableErrorCode } : {}) }, message === 'AUTH_REQUIRED' ? 401 : profileRequired ? 409 : forbidden ? 403 : 500);
 } }, async scheduled(_event: unknown, env: Env, executionCtx: { waitUntil(promise: Promise<unknown>): void }) {
   const requestEnv = { ...env, __executionCtx: executionCtx };
   executionCtx.waitUntil((async () => {

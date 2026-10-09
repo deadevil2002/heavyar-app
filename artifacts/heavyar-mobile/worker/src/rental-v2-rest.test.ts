@@ -52,45 +52,13 @@ function v2Request(overrides: Json = {}) {
 
 function queryFilter(body: Json) {
   const query = body.structuredQuery;
-  expect(query.from).toEqual([{ collectionId: 'equipmentRequests' }]);
-  expect(query.orderBy).toEqual([{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }]);
-  const filters = query.where?.compositeFilter?.filters;
-  expect(filters?.[0]).toEqual({
-    fieldFilter: {
-      field: { fieldPath: 'equipmentId' },
-      op: 'EQUAL',
-      value: { stringValue: 'eq_1' },
-    },
-  });
-  expect(filters?.[1]).toEqual({
-    compositeFilter: {
-      op: 'OR',
-      filters: [
-        {
-          fieldFilter: {
-            field: { fieldPath: 'status' },
-            op: 'IN',
-            value: {
-              arrayValue: {
-                values: ['pending', 'accepted', 'in_progress', 'completion_requested', 'payment_pending', 'paid']
-                  .map(stringValue => ({ stringValue })),
-              },
-            },
-          },
-        },
-        {
-          fieldFilter: {
-            field: { fieldPath: 'paymentState' },
-            op: 'EQUAL',
-            value: { stringValue: 'paid' },
-          },
-        },
-      ],
-    },
-  });
-  expect(filters).toHaveLength(2);
-  expect(query.limit).toBe(101);
-  return { limit: query.limit as number };
+  const expected = [
+    ...__test.availabilityQueriesForEquipment('eq_1', { startAt: START, endAt: END }),
+    ...__test.availabilityQueriesForEquipment('eq_1', { startAt: '2099-09-20T00:00:00.000Z', endAt: '2099-09-21T00:00:00.000Z' }),
+  ];
+  const match = expected.find(candidate => JSON.stringify(candidate.structuredQuery) === JSON.stringify(query));
+  expect(match).not.toBeUndefined();
+  return { family: match!.family, limit: query.limit as number };
 }
 
 class FirestoreRest {
@@ -264,8 +232,8 @@ describe('Rental V2 real Firestore REST contracts', () => {
     }
     expect(rest.documents.get('equipment/eq_1')?.fields.pricingModelVersion).toEqual({ integerValue: '2' });
     expect(rest.documents.get('commercialSettings/catalog')?.fields.revision).toEqual({ integerValue: '7' });
-    expect(rest.queryBodies).toHaveLength(1);
-    queryFilter(rest.queryBodies[0]);
+    expect(rest.queryBodies).toHaveLength(3);
+    expect(rest.queryBodies.map(body => queryFilter(body).family).sort()).toEqual(['legacy-fixed', 'legacy-open', 'v2']);
   });
 
   it('propagates the acceptance transaction to the native OR query, fence read, and commit', async () => {
@@ -276,9 +244,9 @@ describe('Rental V2 real Firestore REST contracts', () => {
 
     const response = await worker.fetch(transition('r_v2', 'accept'), rest.env);
     expect(response.status).toBe(200);
-    expect(rest.queryBodies).toHaveLength(1);
-    expect(rest.queryBodies[0].transaction).toBe('tx-1');
-    queryFilter(rest.queryBodies[0]);
+    expect(rest.queryBodies).toHaveLength(3);
+    expect(rest.queryBodies.every(body => body.transaction === 'tx-1')).toBe(true);
+    expect(rest.queryBodies.map(body => queryFilter(body).family).sort()).toEqual(['legacy-fixed', 'legacy-open', 'v2']);
     expect(rest.operations).toContain('document:equipmentBookingFences/eq_1:tx-1');
     expect(rest.commitBodies).toHaveLength(1);
     expect(rest.commitBodies[0].transaction).toBe('tx-1');
@@ -297,7 +265,8 @@ describe('Rental V2 real Firestore REST contracts', () => {
     let releaseFirstRound!: () => void;
     const firstRound = new Promise<void>(resolve => { releaseFirstRound = resolve; });
     rest.query = body => {
-      queryFilter(body);
+      const { family } = queryFilter(body);
+      if (family !== 'v2') return [];
       if (winner) {
         return [{ document: document(rest.project, `equipmentRequests/${winner}`, v2Request({ status: 'accepted' })) }];
       }
@@ -339,9 +308,10 @@ describe('Rental V2 real Firestore REST contracts', () => {
     const rest = new FirestoreRest();
     rest.put('equipmentRequests/r_budget', v2Request(), 'request-budget-v1');
     rest.query = body => {
-      queryFilter(body);
+      const { family } = queryFilter(body);
+      if (family !== 'v2') return [];
       return Array.from({ length: 101 }, (_, index) => ({
-        document: document(rest.project, `equipmentRequests/cap-${index}`, v2Request()),
+        document: document(rest.project, `equipmentRequests/cap-${index}`, v2Request({ status: 'accepted' })),
       }));
     };
     rest.install();
@@ -350,7 +320,7 @@ describe('Rental V2 real Firestore REST contracts', () => {
     const response = await worker.fetch(transition('r_budget', 'accept'), rest.env);
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ errorCode: 'AVAILABILITY_CAP_EXHAUSTED' });
-    expect(rest.queryBodies).toHaveLength(1);
+    expect(rest.queryBodies).toHaveLength(3);
     expect(rest.commitBodies).toHaveLength(0);
   });
 

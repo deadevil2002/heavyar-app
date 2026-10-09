@@ -31,7 +31,10 @@ const SAFE_ERROR_CODES = new Set([
   'VALIDATION_FAILED', 'CONFLICT', 'NOT_FOUND', 'SERVICE_TEMPORARILY_BUSY',
   'ASSET_INVALID', 'ASSET_NOT_OWNED', 'ASSET_SERVICE_UNAVAILABLE',
   'CLOUDINARY_UPLOAD_FAILED', 'CLOUDINARY_DELETE_FAILED', 'LISTING_COMMIT_FAILED',
-  'AVAILABILITY_CAP_EXHAUSTED', 'LISTING_UPDATE_CONFLICT', 'LISTING_LIFECYCLE_CONFLICT',
+  'ACTIVE_RENTAL_OVERLAP', 'AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE',
+  'CUSTOMER_ACCOUNT_REQUIRED', 'LISTING_UNAVAILABLE', 'LISTING_CHANGED', 'RENTAL_PRICING_UNAVAILABLE',
+  'INVALID_RENTAL_REQUEST', 'PAST_START_TIME', 'RENTAL_UNIT_UNAVAILABLE', 'INVALID_RENTAL_INTERVAL',
+  'LISTING_UPDATE_CONFLICT', 'LISTING_LIFECYCLE_CONFLICT',
   'INTERNAL_SERVICE_ERROR',
 ]);
 const SAFE_FIRESTORE_CODES = new Set([
@@ -41,6 +44,8 @@ const SAFE_FIRESTORE_CODES = new Set([
 ]);
 
 const ROUTES: Array<[RegExp, string]> = [
+  [/^\/api\/requests\/estimate$/, '/api/requests/estimate'],
+  [/^\/api\/requests$/, '/api/requests'],
   [/^\/api\/listings$/, '/api/listings'],
   [/^\/api\/listings\/[^/]+\/availability\/check$/, '/api/listings/:listingId/availability/check'],
   [/^\/api\/listings\/[^/]+\/availability$/, '/api/listings/:listingId/availability'],

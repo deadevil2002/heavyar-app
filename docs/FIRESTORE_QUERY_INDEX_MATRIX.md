@@ -47,12 +47,14 @@ Source: all non-test `collectionId` query-builder sites under `artifacts/heavyar
 | Q26 | `index.ts:949` | notificationDeliveries | status `== ticketed`, receiptPending `== true` | none | 100 | status+receiptPending | YES / READY | Expo receipt poll |
 | Q27 | `index.ts:1220` | regulatoryDocuments | ownerUid `==` | none | 50 | AUTO | YES / READY | verification documents |
 | Q28 | `index.ts:1250` | regulatoryExpiryQueue | expiresAt `<= now` | expiresAt ASC | 25 | AUTO | YES / READY | expiry scheduler |
-| Q29 | `index.ts:1484` | equipmentRequests | equipmentId `==` AND (status `IN` OR paymentState `== paid`) | `__name__` ASC | 101/transaction | equipmentId+status+startDate exists; OR branch relies on index merge | YES / READY in current production tests | Rental V2 availability |
+| Q29a | `index.ts:1471-1556` | equipmentRequests | V2: equipmentId `==`, pricingModelVersion `== 2`, status `IN` OR paymentState `== paid`, requestedStartAt `< end`, requestedEndAt `> start` OR null OR actualEndAt `> start` | none | 101/family/transaction | equipmentId+pricingModelVersion+status+actualEndAt+requestedEndAt+requestedStartAt; equipmentId+paymentState+pricingModelVersion+actualEndAt+requestedEndAt+requestedStartAt | YES / READY; empty production probe HTTP 200 | interval-bounded V2 availability |
+| Q29b | `index.ts:1471-1556` | equipmentRequests | legacy fixed: equipmentId `==`, status `IN` OR paymentState `== paid`, startDate `< end`, endDate `>= start day` OR actualEndAt `> start` | none | 101/family/transaction | equipmentId+status+actualEndAt+endDate+startDate; equipmentId+paymentState+actualEndAt+endDate+startDate | YES / READY; empty production probe HTTP 200 | interval-bounded legacy fixed availability |
+| Q29c | `index.ts:1471-1556` | equipmentRequests | legacy open: equipmentId `==`, status `IN` OR paymentState `== paid`, requestMode OR rentalMode `== open_ended`, createdAt `< end` | none | 101/family/transaction | four composites: equipmentId + status/paymentState + requestMode/rentalMode + createdAt | YES / READY; empty production probe HTTP 200 | bounded legacy open availability |
 | Q30 | `index.ts:2321` | payments | providerReference `==` | none | 2 | AUTO | YES / READY | Tap webhook lookup |
 | Q31 | `index.ts:3117` | dynamic temporary collections | expiresAt `<= now` | none | 50 | AUTO | YES / READY | compliance cleanup |
-| Q32 | `index.ts:3382` | equipmentRequests | equipmentId `==` | none | 101 | AUTO | YES / READY | listing update history |
-| Q33 | `index.ts:3433` | equipmentRequests | equipmentId `==` | none | 101 | AUTO | YES / READY | archive/unarchive history |
-| Q34 | `index.ts:3471` | equipmentRequests | equipmentId `==` | none | 101 | AUTO | YES / READY | public availability |
+| Q32 | `index.ts:3447` | equipmentRequests | reuses Q29a-c over the all-active interval | none | 101/family | Q29a-c | YES / READY | listing update active-rental guard |
+| Q33 | `index.ts:3498` | equipmentRequests | reuses Q29a-c; unarchive additionally probes equipmentId `==` with limit 1 | none | 101/family + 1 | Q29a-c; single-field auto index for history probe | YES / READY | archive/unarchive active-rental guard |
+| Q34 | `index.ts:3544` | equipmentRequests | reuses Q29a-c for the requested half-open interval | none | 101/family | Q29a-c | YES / READY | public availability |
 | Q35 | `index.ts:3478` | paymentGateways | none | none | 20 | AUTO | YES / READY | public safe gateway discovery |
 | Q36 | `index.ts:3556` | driverProfiles | admin/owner driver lookup predicate | bounded | bounded | AUTO | YES / READY | driver profile path |
 | Q37 | `index.ts:3683` | driverProfiles | active `== true` | `__name__` ASC | 100/cursor | AUTO | YES / READY | public driver discovery |

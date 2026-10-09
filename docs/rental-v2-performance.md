@@ -8,7 +8,7 @@ handler in-process for Rental V2 estimate and creation. It uses only determinist
 contact Firebase Auth, Firestore, Cloudflare, or a deployed Heavyar environment,
 and its fixture authorization string is not a credential.
 
-Run from the canonical `.local/early-access-app` root:
+Run from the repository root:
 
 ```sh
 bun scripts/load/rental-v2-performance.ts
@@ -56,40 +56,47 @@ by request creation:
 * `operations` is local adapter calls plus captured commits; it is not a billed
   Firestore-operation forecast.
 
-The Worker availability helper queries only blocking candidates with one native
-Firestore `runQuery`. Its structured filter combines equipment-ID equality with
-a native OR of `status IN` the six blocking statuses (`pending`, `accepted`,
-`in_progress`, `completion_requested`, `payment_pending`, and `paid`) or
-`paymentState == paid`. Results are ordered by document name and limited to 101
-actual documents per attempt. The production exact-shape probe is 200.
-Independent backend REST tests own that structured-query shape. This harness
-uses the helper's `__queries/equipmentRequests` adapter boundary, which
-represents the same single query invocation and applies the same
-active-status/paid filtering and 101-row slice in Worker code.
+Before DP-011, the availability helper made one `runQuery` by `equipmentId`
+plus blocking state and then scanned as many as 101 lifetime candidates in the
+Worker. The requested interval was absent from the query, so unrelated history
+could consume the entire cap.
+
+After DP-011, each availability attempt makes three parallel, bounded native
+query families and deduplicates their document IDs:
+
+* V2: `pricingModelVersion == 2`, blocking status or paid state,
+  `requestedStartAt < requestedEnd`, and a canonical end capable of extending
+  past `requestedStart`.
+* Legacy fixed: blocking status or paid state, `startDate < requestedEnd`, and
+  `endDate`/`actualEndAt` capable of extending past `requestedStart`.
+* Legacy open: blocking status or paid state, an open-ended mode, and
+  `createdAt < requestedEnd`.
+
+Each family is capped at 101. A query error, any family reaching 101, or the
+deduplicated union reaching 101 fails closed. The Worker rechecks every returned
+row with the canonical half-open interval predicate. Completed/cancelled rows
+outside these indexed blocking families are not fetched. Backend REST tests own
+the exact structured-query shapes and transaction propagation.
 
 The harness covers all important bounded result branches rather than only an
 empty happy path:
 
 | Scenario | Availability rows | Expected result | Why it exists |
 | --- | ---: | --- | --- |
-| `estimate-available` | 0 | 200 | Baseline successful estimate. |
-| `estimate-cap-exhausted` | 101 | 503 | Maximum fetched branch; proves truncation is not treated as availability. |
-| `create-available-max-scan` | 100 | 201 | Largest successful scan below the cap, plus actual counter/commit/write/verify capture. |
+| `estimate-available-0` | 0 | 200 | Baseline successful estimate. |
+| `estimate-non-overlap-1` | 1 | 200 | One returned row that does not overlap after canonical checking. |
+| `estimate-overlap-1` | 1 | 409 | Proven overlap. |
+| `estimate-overlap-25` | 25 | 409 | Bounded candidate scale. |
+| `estimate-overlap-50` | 50 | 409 | Bounded candidate scale. |
+| `estimate-overlap-100` | 100 | 409 | Largest successful candidate union below the cap. |
+| `estimate-cap-exhausted-101` | 101 | 503 | Proves truncation is not treated as availability. |
+| `create-available-0` | 0 | 201 | Captures counter, commit, writes, and listing-version verify. |
 
-The 100-row successful fixture uses `accepted` active candidates with intervals
-that do not overlap the requested interval. Thus it forces the full bounded
-active-candidate scan without fabricating a conflict. The 101-row fixture uses
-the same valid active-query semantics and fails closed before overlap scanning.
-`queryCalls: 1` in harness output corresponds to the single production
-`runQuery` for one availability attempt. Acceptance can retry its serialized
-transaction at most four times, so a maximally retried acceptance can perform
-up to four availability queries, each capped at 101 actual documents. Acceptance
-also has additional reads not represented by the estimate/create table,
-including its request/equipment authority reads and one equipment-fence
-document read per transaction attempt. Query-shape, query-failure, and
-commercial/auth correctness remain backend-suite responsibilities; this harness
-focuses on canonical Worker invocation timing and observable hook/capture
-budgets.
+`queryCalls: 3` corresponds to the three parallel production query families for
+one availability attempt. Acceptance can retry its serialized transaction at
+most four times, so a maximally retried acceptance can perform up to twelve
+family queries. Acceptance also has authority and equipment-fence reads not
+represented by the estimate/create table.
 
 ## Recorded local run
 
@@ -99,17 +106,19 @@ numbers are the JSON output of that run:
 
 | Scenario | Status | p50 wall ms | p95 wall ms | Direct reads | Query-family calls | Query documents | Logical reads | Counter reads | Commits | Writes | Verifies |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `estimate-available` | 200 | 0.337 | 0.840 | 3 | 1 | 0 | 3 | 0 | 0 | 0 | 0 |
-| `estimate-cap-exhausted` | 503 | 0.248 | 1.960 | 3 | 1 | 101 | 104 | 0 | 0 | 0 | 0 |
-| `create-available-max-scan` | 201 | 2.046 | 11.859 | 6 | 1 | 100 | 106 | 1 | 1 | 3 | 1 |
+| `estimate-available-0` | 200 | 0.293 | 1.026 | 3 | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
+| `estimate-non-overlap-1` | 200 | 0.233 | 0.283 | 3 | 3 | 1 | 4 | 0 | 0 | 0 | 0 |
+| `estimate-overlap-1` | 409 | 0.243 | 0.308 | 3 | 3 | 1 | 4 | 0 | 0 | 0 | 0 |
+| `estimate-overlap-25` | 409 | 0.411 | 0.474 | 3 | 3 | 25 | 28 | 0 | 0 | 0 | 0 |
+| `estimate-overlap-50` | 409 | 0.682 | 0.872 | 3 | 3 | 50 | 53 | 0 | 0 | 0 | 0 |
+| `estimate-overlap-100` | 409 | 1.152 | 1.546 | 3 | 3 | 100 | 103 | 0 | 0 | 0 | 0 |
+| `estimate-cap-exhausted-101` | 503 | 0.989 | 1.127 | 3 | 3 | 101 | 104 | 0 | 0 | 0 | 0 |
+| `create-available-0` | 201 | 0.438 | 0.680 | 5 | 3 | 0 | 5 | 1 | 1 | 3 | 1 |
 
-The measured min/max ranges were respectively 0.151/1.999 ms,
-0.069/6.521 ms, and 0.642/15.041 ms. All 25 calls in each scenario returned
-the expected status and identical request budgets.
-
-The observed query count maps directly to one native-union production
-`runQuery` attempt. The table covers estimate and creation, not acceptance's
-four-attempt transaction retry ceiling or its additional authority/fence reads.
+All 25 calls in every scenario returned the expected status and identical
+request budgets. The create direct-read budget fell from six to five because
+the canonical account document resolved during authentication is reused instead
+of being read again by the operational-access guard.
 
 As described above, these are local in-process wall timings. In particular,
 they exclude all actual Firestore/Auth/network latency, durable commit work,
