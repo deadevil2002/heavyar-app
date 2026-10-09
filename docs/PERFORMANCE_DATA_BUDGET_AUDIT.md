@@ -1,6 +1,6 @@
 # Heavyar performance and data-budget audit
 
-Date: 2026-10-10  
+Date: 2026-10-10
 Baseline: `ac296cafe4028fbeb5d3325c7b2c5e845620aea9`
 
 ## Evidence boundary

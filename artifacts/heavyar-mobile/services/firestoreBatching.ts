@@ -9,4 +9,3 @@ export function firestoreDocumentIdChunks(ids: string[]): string[][] {
   }
   return chunks;
 }
-

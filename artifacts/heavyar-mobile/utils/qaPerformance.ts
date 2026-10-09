@@ -14,4 +14,3 @@ export function qaPerformanceReport(): MobilePerformanceSnapshot | null {
   if (!mobilePerformance.isQaBuild() || !mobilePerformance.isEnabled()) return null;
   return mobilePerformance.snapshot();
 }
-
