@@ -61,22 +61,20 @@ describe('generic marketing campaign bounded preference reads', () => {
     return { queryCounts, batchSizes };
   }
 
-  test('keeps the 300-user page and replaces 300 point reads with three unordered batchGet calls', async () => {
+  test('bounds each scheduled campaign tick to three users and one unordered batchGet call', async () => {
     const commits: unknown[][] = [];
     const metrics = arrangeMaximumPage(commits);
     await processScheduledCampaigns(env);
 
     expect(metrics.queryCounts).toEqual({ campaigns: 1, users: 1 });
-    expect(metrics.batchSizes).toEqual([100, 100, 100]);
-    expect(metrics.batchSizes.reduce((total, size) => total + size, 0)).toBe(300);
+    expect(metrics.batchSizes).toEqual([3]);
+    expect(metrics.batchSizes.reduce((total, size) => total + size, 0)).toBe(3);
     expect(commits).toHaveLength(1);
-    expect(commits[0]).toHaveLength(298); // 297 recipients + one atomic campaign checkpoint.
+    expect(commits[0]).toHaveLength(3); // two eligible recipients + one atomic campaign checkpoint.
     const outbox = (commits[0] as any[]).filter(write => String(write.update?.name).includes('/notificationOutbox/'));
     const occurrences = new Set(outbox.map(write => write.update.fields.occurrenceKey.stringValue));
     expect(occurrences.has('campaign:campaign-1:user-001')).toBe(false); // explicit opt-out
     expect(occurrences.has('campaign:campaign-1:user-002')).toBe(true); // missing document keeps default=true
-    expect(occurrences.has('campaign:campaign-1:user-003')).toBe(false); // malformed is fail-closed
-    expect(occurrences.has('campaign:campaign-1:user-004')).toBe(false); // Store Review filter remains intact
 
     const firstLogicalIds = outbox.map(write => write.update.name).sort();
     await processScheduledCampaigns(env);

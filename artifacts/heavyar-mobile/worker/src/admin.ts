@@ -35,6 +35,12 @@ import {
 } from './admin-search';
 import { canTransitionComplaint, canTransitionIncident, canTransitionPrivacyRequest, canTransitionRefundCase, complaintServiceTargets, normalizeModerationReason, refundMayBeMarkedExecuted, REGULATORY_CATALOGUE, REGULATORY_CATALOG_VERSION, DRIVER_CREDENTIAL_FRAMEWORK } from './compliance';
 import { googleServiceAccountToken as googleToken } from './google-auth';
+import {
+  consumeScheduledSubrequest,
+  isScheduledBudgetDeferred,
+  scheduledExternalFetch,
+  scheduledRecoveryBudget,
+} from './scheduled-budget';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminUser = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; displayName?: string; authTime?: number; testInjected?: true };
@@ -131,7 +137,9 @@ const firestoreUrl = (env: Env, path: string) => `https://firestore.googleapis.c
 class FirestoreConflictError extends Error {}
 
 async function fs(env: Env, path: string, init: RequestInit = {}) {
-  const response = await quotaFetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${await googleToken(env)}`, 'Content-Type': 'application/json', ...(init.headers || {}) } });
+  const token = await googleToken(env);
+  consumeScheduledSubrequest(env.__scheduledBudget, 'firestore');
+  const response = await quotaFetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers || {}) } });
   if (response.status === 404 && path !== ':commit') return null;
   if (response.status === 403) throw new Error('Firestore permission denied');
   if (response.status === 409 || response.status === 412) throw new FirestoreConflictError('Concurrent update');
@@ -187,7 +195,8 @@ async function batchGetRawDocs(env: Env, references: BatchGetReference[]): Promi
       }
     }
     return found;
-  } catch {
+  } catch (error) {
+    if (isScheduledBudgetDeferred(error)) throw error;
     throw new AccountIntegrityStorageError();
   }
 }
@@ -299,12 +308,33 @@ async function reconcileResendProjection(env: Env, collection: 'emailVerificatio
   return null;
 }
 
-async function commit(env: Env, writes: unknown[]) {
+async function commit(env: Env, writes: unknown[], options: { recovery?: boolean } = {}) {
   secondaryStats.clear();
   if (commitOverride) { commitOverride.push(writes); return; }
-  const safeWrites = (writes as any[]).map(write => String(write?.update?.name || '').includes('/notificationOutbox/')
-    ? { ...write, currentDocument: undefined } : write);
-  await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes: safeWrites }) });
+  const requestEnv = options.recovery ? { ...env, __scheduledBudget: scheduledRecoveryBudget(env.__scheduledBudget) } : env;
+  const sourceWrites = writes as any[];
+  const outboxWrites = sourceWrites.filter(write => String(write?.update?.name || '').includes('/notificationOutbox/'));
+  const businessWrites = sourceWrites.filter(write => !String(write?.update?.name || '').includes('/notificationOutbox/'));
+  try {
+    await fs(requestEnv, ':commit', { method: 'POST', body: JSON.stringify({ writes: sourceWrites }) });
+  } catch (error) {
+    if (!(error instanceof FirestoreConflictError) || !outboxWrites.length) throw error;
+    const missing: any[] = [];
+    for (const write of outboxWrites) {
+      const id = decodeURIComponent(String(write.update.name).split('/').pop() || '');
+      const prior = await rawDoc(requestEnv, 'notificationOutbox', id);
+      const fields = write.update?.fields || {};
+      const matches = prior?.data
+        && prior.data.notificationId === fields.notificationId?.stringValue
+        && prior.data.occurrenceKey === fields.occurrenceKey?.stringValue
+        && prior.data.uid === fields.uid?.stringValue
+        && prior.data.event === fields.event?.stringValue;
+      if (!prior?.data) missing.push(write);
+      else if (!matches) throw error;
+    }
+    const retryWrites = [...businessWrites, ...missing];
+    if (retryWrites.length) await fs(requestEnv, ':commit', { method: 'POST', body: JSON.stringify({ writes: retryWrites }) });
+  }
 }
 
 type AdminCursor = { name: string; sortValue?: string | number | boolean | null; timestamp?: boolean };
@@ -1007,10 +1037,10 @@ async function claimSyncComplete(env: Env, uid: string, version = 1) {
   await commit(env, [{ update: { name: fullName(env, `staffClaimSync/${encodeURIComponent(`staffClaimSync:${uid}:${version}`)}`), fields: { status: jsonValue('completed'), completedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'completedAt'] } }]);
 }
 export async function processStaffClaimSync(env: Env) {
-  const rows = queryOverride ? queryOverride('staffClaimSync', '', 25).map((item) => ({ document: { name: item.name || '', updateTime: item.updateTime, fields: Object.fromEntries(Object.entries(item.data || {}).map(([key, value]) => [key, jsonValue(value)])) } })) : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+  const rows = queryOverride ? queryOverride('staffClaimSync', '', 1).slice(0, 1).map((item) => ({ document: { name: item.name || '', updateTime: item.updateTime, fields: Object.fromEntries(Object.entries(item.data || {}).map(([key, value]) => [key, jsonValue(value)])) } })) : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
     from: [{ collectionId: 'staffClaimSync' }],
     where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: jsonValue('pending') } },
-    orderBy: [{ field: { fieldPath: 'nextAttemptAt' }, direction: 'ASCENDING' }], limit: 25,
+    orderBy: [{ field: { fieldPath: 'nextAttemptAt' }, direction: 'ASCENDING' }], limit: 1,
   } }) }) as any[] || [];
   for (const row of rows.filter((x) => x.document)) {
     const job = decode(row.document), uid = String(job.uid || ''), attempts = Number(job.attempts || 0);
@@ -1050,7 +1080,8 @@ export async function processStaffClaimSync(env: Env) {
       const finalLock = await rawDoc(env, 'staffClaimSyncLocks', lockId);
       if (stable && finalLock?.data?.leaseToken === leaseToken) await commit(env, [{ delete: fullName(env, `staffClaimSyncLocks/${lockId}`), currentDocument: { updateTime: finalLock.updateTime } }]);
       if (!stable) throw new Error('Claim reconciliation exhausted');
-    } catch {
+    } catch (error) {
+      if (isScheduledBudgetDeferred(error)) throw error;
       const nextAttempts = attempts + 1, delay = Math.min(3600, 30 * (2 ** Math.min(nextAttempts, 7))), next = new Date(Date.now() + delay * 1000).toISOString();
       await commit(env, [{ update: { name: row.document.name, fields: { status: jsonValue('pending'), attempts: { integerValue: String(nextAttempts) }, nextAttemptAt: { timestampValue: next }, lastError: jsonValue('identity_sync_failed') } }, updateMask: { fieldPaths: ['status', 'attempts', 'nextAttemptAt', 'lastError'] }, currentDocument: { updateTime: row.document.updateTime } }, {
         update: { name: fullName(env, `adminAudit/claim-sync:${encodeURIComponent(uid)}:${nextAttempts}`), fields: { actorUid: jsonValue('system'), action: jsonValue('claim_sync_pending'), targetType: jsonValue('staff'), targetId: jsonValue(uid), reason: jsonValue('Identity claim synchronization retry scheduled'), timestamp: { timestampValue: new Date().toISOString() } } }, currentDocument: { exists: false },
@@ -1131,25 +1162,25 @@ async function emailVerificationReminder(req: Request, env: Env, user: AdminUser
   if (env.RESEND_API_KEY && resendSenderValid && env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
     try {
       const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
-      const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:sendOobCode`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', email, returnOobLink: true }) });
+      const response = await scheduledExternalFetch(env, 'identity_toolkit', `https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:sendOobCode`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', email, returnOobLink: true }) });
       const result: any = await response.json().catch(() => ({}));
       if (response.ok && typeof result.oobLink === 'string') {
         const language: 'ar' | 'en' = person.data.language === 'en' || person.data.preferredLanguage === 'en' ? 'en' : 'ar';
-        const sent = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: resendFrom, to: [email], subject: language === 'ar' ? 'وثّق بريدك الإلكتروني في Heavyar / Verify your Heavyar email' : 'Verify your Heavyar email / وثّق بريدك الإلكتروني في Heavyar', html: emailVerificationTemplate(result.oobLink, String(person.data.nameEn || person.data.nameAr || ''), env.RESEND_SUPPORT_EMAIL || 'support@mail.heavyar.com', language) }) });
+        const sent = await scheduledExternalFetch(env, 'resend', 'https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from: resendFrom, to: [email], subject: language === 'ar' ? 'وثّق بريدك الإلكتروني في Heavyar / Verify your Heavyar email' : 'Verify your Heavyar email / وثّق بريدك الإلكتروني في Heavyar', html: emailVerificationTemplate(result.oobLink, String(person.data.nameEn || person.data.nameAr || ''), env.RESEND_SUPPORT_EMAIL || 'support@mail.heavyar.com', language) }) });
          providerAccepted = sent.ok;
          if (sent.ok) providerMessageId = String((await sent.json().catch(() => ({})) as any)?.id || '');
          delivered = false; // provider acceptance is not delivery
         deliveryOutcome = sent.ok ? 'accepted' : sent.status === 401 || sent.status === 403 ? 'auth_failed' : sent.status === 429 ? 'rate_limited' : sent.status === 400 ? 'sender_rejected' : 'provider_error';
       }
-    } catch { delivered = false; }
+    } catch (error) { if (isScheduledBudgetDeferred(error)) throw error; delivered = false; }
   }
   if (!providerAccepted && env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
     try {
       const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
-      const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:sendOobCode`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', email }) });
+      const response = await scheduledExternalFetch(env, 'identity_toolkit', `https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:sendOobCode`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ requestType: 'VERIFY_EMAIL', email }) });
       delivered = response.ok;
       if (delivered) deliveryOutcome = 'firebase_accepted';
-    } catch { delivered = false; }
+    } catch (error) { if (isScheduledBudgetDeferred(error)) throw error; delivered = false; }
   }
   const nowIso = new Date(now).toISOString();
   const reconciled = providerAccepted ? await priorResendEvent(env, providerMessageId) : null;
@@ -1269,9 +1300,9 @@ async function bulkEmailVerificationReminder(req: Request, env: Env, user: Admin
 }
 
 export async function processEmailVerificationReminderJobs(env: Env) {
-  const query = { from: [{ collectionId: 'emailVerificationReminderJobs' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['queued', 'processing'].map(jsonValue) } } } }, limit: 5 };
+  const query = { from: [{ collectionId: 'emailVerificationReminderJobs' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['queued', 'processing'].map(jsonValue) } } } }, limit: 1 };
   const rows = queryOverride
-    ? queryOverride('emailVerificationReminderJobs', '', 5, query).slice(0, 5).map(row => ({ document: { name: row.name, updateTime: row.updateTime, fields: Object.fromEntries(Object.entries(row.data || {}).map(([key, value]) => [key, jsonValue(value)])) } }))
+    ? queryOverride('emailVerificationReminderJobs', '', 1, query).slice(0, 1).map(row => ({ document: { name: row.name, updateTime: row.updateTime, fields: Object.fromEntries(Object.entries(row.data || {}).map(([key, value]) => [key, jsonValue(value)])) } }))
     : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: query }) }) as any[] || [];
   for (const row of rows.filter((item: any) => item.document?.name && item.document?.updateTime)) {
     const jobId = String(row.document.name).split('/').pop() || '', job = decode(row.document);
@@ -1287,7 +1318,7 @@ export async function processEmailVerificationReminderJobs(env: Env) {
     const claimed = await rawDoc(env, 'emailVerificationReminderJobs', jobId);
     if (!claimed?.data || claimed.data.leaseToken !== leaseToken || !Array.isArray(claimed.data.uids)) continue;
     const cursor = Math.max(0, Number(claimed.data.cursor || 0));
-    const uids = claimed.data.uids.map(String), chunk = uids.slice(cursor, cursor + 5);
+    const uids = claimed.data.uids.map(String), chunk = uids.slice(cursor, cursor + 1);
     const counts = { targeted: uids.length, sent: 0, skippedVerified: 0, skippedCooldown: 0, skippedRestricted: 0, missing: 0, failed: 0, ...(claimed.data.counts || {}) };
     const storedRole = String(claimed.data.actorRole || '');
     const actor: AdminUser = { uid: String(claimed.data.actorUid || 'system'), admin: true,
@@ -1302,7 +1333,7 @@ export async function processEmailVerificationReminderJobs(env: Env) {
         else if (result?.status === 404) counts.missing++;
         else if (result?.status === 409) counts.skippedRestricted++;
         else counts.failed++;
-      } catch { counts.failed++; }
+      } catch (error) { if (isScheduledBudgetDeferred(error)) throw error; counts.failed++; }
     }
     const nextCursor = cursor + chunk.length, completed = nextCursor >= uids.length;
     const current = await rawDoc(env, 'emailVerificationReminderJobs', jobId);
@@ -1316,6 +1347,40 @@ export async function processEmailVerificationReminderJobs(env: Env) {
 }
 
 const deletionCollections = ['users', 'userProfiles', 'providerProfiles', 'driverProfiles', 'deviceTokens', 'notificationTokenOwners', 'notificationInstallations', 'notifications', 'notificationPreferences', 'notificationDeliveries', 'notificationOutbox', 'emailVerificationRateLimits', 'phoneAliases', 'phoneOwners', 'recoveryCodes', 'temporaryRecovery', 'verificationIndexes', 'verificationProfiles', 'verificationAttempts', 'regulatoryDocuments', 'regulatoryExpiryQueue', 'equipment', 'equipmentDrafts'];
+const deletionOwnedFields: Record<string, string[]> = {
+  userProfiles: ['uid', 'userUid'], providerProfiles: ['uid', 'userUid'], driverProfiles: ['uid', 'userUid'],
+  deviceTokens: ['uid', 'userUid'], notifications: ['uid', 'userUid'], notificationPreferences: ['uid', 'userUid'],
+  notificationTokenOwners: ['uid', 'userUid'], notificationInstallations: ['uid', 'userUid'],
+  notificationDeliveries: ['uid', 'userUid'], notificationOutbox: ['uid', 'userUid'], emailVerificationRateLimits: ['uid'],
+  phoneAliases: ['uid', 'userUid'], phoneOwners: ['uid', 'userUid'], recoveryCodes: ['uid', 'userUid'],
+  temporaryRecovery: ['uid', 'userUid'], verificationIndexes: ['uid', 'userUid'], equipment: ['ownerUid', 'uid'],
+  verificationProfiles: ['uid', 'userUid'], verificationAttempts: ['uid', 'userUid'], regulatoryDocuments: ['ownerUid'], regulatoryExpiryQueue: ['ownerUid'],
+  equipmentDrafts: ['ownerUid', 'uid'],
+};
+const DELETION_RECORDS_QUERY_PAGES_PER_TICK = 4;
+const DELETION_RECORDS_PAGE_SIZE = 100;
+const DELETION_RECORDS_MAX_DELETE_WRITES = DELETION_RECORDS_QUERY_PAGES_PER_TICK * DELETION_RECORDS_PAGE_SIZE;
+const DELETION_MEDIA_DELETES_PER_TICK = 4;
+type DeletionRecordsCursor = { collectionIndex: number; ownerFieldIndex: number; documentName?: string };
+
+function deletionFields(collection: string) {
+  return collection === 'users' ? ['__name__'] : (deletionOwnedFields[collection] || ['uid']);
+}
+function deletionRecordsCursor(value: unknown): DeletionRecordsCursor {
+  if (!value || typeof value !== 'object') return { collectionIndex: 0, ownerFieldIndex: 0 };
+  const candidate = value as Record<string, unknown>;
+  const collectionIndex = Number(candidate.collectionIndex), ownerFieldIndex = Number(candidate.ownerFieldIndex);
+  if (!Number.isInteger(collectionIndex) || collectionIndex < 0 || collectionIndex > deletionCollections.length) return { collectionIndex: 0, ownerFieldIndex: 0 };
+  if (collectionIndex === deletionCollections.length) return { collectionIndex, ownerFieldIndex: 0 };
+  if (!Number.isInteger(ownerFieldIndex) || ownerFieldIndex < 0 || ownerFieldIndex >= deletionFields(deletionCollections[collectionIndex]).length) return { collectionIndex: 0, ownerFieldIndex: 0 };
+  const documentName = typeof candidate.documentName === 'string' && candidate.documentName ? candidate.documentName : undefined;
+  return { collectionIndex, ownerFieldIndex, ...(documentName ? { documentName } : {}) };
+}
+function advanceDeletionRecordsCursor(cursor: DeletionRecordsCursor): DeletionRecordsCursor {
+  const fields = deletionFields(deletionCollections[cursor.collectionIndex]);
+  if (cursor.ownerFieldIndex + 1 < fields.length) return { collectionIndex: cursor.collectionIndex, ownerFieldIndex: cursor.ownerFieldIndex + 1 };
+  return { collectionIndex: cursor.collectionIndex + 1, ownerFieldIndex: 0 };
+}
 function deletionProtected(user: any) {
   return user?.bootstrap === true || user?.system === true || user?.service === true || user?.isOwner === true || user?.currentOwner === true || user?.isCurrentOwner === true || user?.isSuperAdmin === true ||
     user?.role === 'owner' || user?.role === 'super_admin' || user?.activeStaff === true || user?.staffActive === true;
@@ -1469,154 +1534,203 @@ async function processDeletionJob(env: Env, row: any) {
   const leaseOwner = crypto.randomUUID();
   try {
     await commit(env, [{ update: { name, fields: { status: jsonValue('processing'), leaseOwner: jsonValue(leaseOwner), leaseUntil: { timestampValue: new Date(now + 120000).toISOString() }, updatedAt: { timestampValue: new Date(now).toISOString() } } }, updateMask: { fieldPaths: ['status', 'leaseOwner', 'leaseUntil', 'updatedAt'] }, currentDocument: row.document.updateTime ? { updateTime: row.document.updateTime } : undefined }]);
-  } catch { return; }
-  const errors: string[] = Array.isArray(job.errors) ? job.errors : [], completed = new Set<string>(Array.isArray(job.completedStages) ? job.completedStages : []);
-  const stages = ['auth', 'media', 'historical', 'records'];
-  for (const stage of stages) {
-    if (completed.has(stage)) continue;
-    let stageMore = false;
-    let mediaCursorNext: string | undefined;
-    try {
-      await commit(env, [{ update: { name, fields: { leaseOwner: jsonValue(leaseOwner), leaseUntil: { timestampValue: new Date(Date.now() + 120000).toISOString() } } }, updateMask: { fieldPaths: ['leaseOwner', 'leaseUntil'] } }]);
-      if (stage === 'auth') {
-        const currentTarget = await rawDoc(env, 'users', uid);
-        if (!currentTarget?.data || await protectedDeletionTarget(env, { uid: String(job.actorUid || ''), admin: true, role: 'super_admin', permissionRole: 'owner' }, uid, currentTarget.data)) {
-          const summary = { status: 'skipped_protected', stage: 'auth', deleted: 0, anonymized: 0, retained: 0, media: 0 };
-           await commit(env, [{ update: { name, fields: { status: jsonValue('skipped_protected'), result: jsonValue(summary), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), initiatingActorUid: jsonValue(job.initiatingActorUid || job.actorUid || null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'result', 'leaseOwner', 'leaseUntil', 'initiatingActorUid', 'updatedAt'] } }, await auditWrite(env, { uid: 'system', admin: true, role: 'super_admin' }, 'user_deletion_target_terminal', 'user', uid, `deletion-skipped-protected:${uid}`, 'deletion target became protected', { initiatingActorUid: job.initiatingActorUid || job.actorUid }, summary)]);
-          return;
-        }
-        if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) throw new Error('auth_config_missing');
-        const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
-        const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:delete`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: uid }) });
-        const result: any = await response.json().catch(() => ({}));
-        const code = String(result?.error?.message || result?.error?.status || '');
-        if (!response.ok && !['EMAIL_NOT_FOUND', 'USER_NOT_FOUND'].includes(code)) throw new Error('auth_delete_failed');
-      }
-      if (stage === 'media') {
-        const ids: string[] = [], person = await rawDoc(env, 'users', uid);
-        if (typeof person?.data?.avatarPublicId === 'string') ids.push(person.data.avatarPublicId);
-        const equipmentQuery: any = { from: [{ collectionId: 'equipment' }], where: { fieldFilter: { field: { fieldPath: 'ownerUid' }, op: 'EQUAL', value: jsonValue(uid) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 100 };
-        if (job.mediaCursor) equipmentQuery.startAt = { values: [{ referenceValue: String(job.mediaCursor) }] };
-        const listed = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: equipmentQuery }) }) as any[] || [];
-        if (listed.length >= 100) stageMore = true;
-        mediaCursorNext = listed[listed.length - 1]?.document?.name;
-        const page = job.mediaCursor && listed[0]?.document?.name === job.mediaCursor ? listed.slice(1) : listed;
-        for (const item of page.filter((x: any) => x.document)) {
-          const listing = decode(item.document);
-          for (const image of Array.isArray(listing.images) ? listing.images : []) if (typeof image?.publicId === 'string') ids.push(image.publicId);
-        }
-        const ownedIds = [...new Set(ids)].filter(id => id.startsWith(`${env.CLOUDINARY_FOLDER || 'heavyar'}/${uid}/`));
-        if (!(env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET)) {
-          if (ownedIds.length) throw new Error('cloudinary_config_missing');
-        } else for (const publicId of ownedIds) {
-          const timestamp = String(Math.floor(Date.now() / 1000));
-          const digest = await crypto.subtle.digest('SHA-1', enc.encode(`public_id=${publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`));
-          const signature = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join('');
-          const form = new FormData(); form.append('public_id', publicId); form.append('timestamp', timestamp); form.append('api_key', env.CLOUDINARY_API_KEY); form.append('signature', signature);
-           const response = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`, { method: 'POST', body: form });
-           const result: any = await response.json().catch(() => ({}));
-           if (!response.ok || !['ok', 'not found'].includes(String(result.result || '').toLowerCase())) throw new Error(`media:${publicId}`);
-        }
-      }
-      if (stage === 'historical') {
-        const writes: any[] = [];
-        const historicalCursor: Record<string, string> = job.historicalCursor && typeof job.historicalCursor === 'object' ? job.historicalCursor : {};
-        const nextHistoricalCursor: Record<string, string> = { ...historicalCursor };
-        for (const collection of ['equipmentRequests', 'complaints', 'driverRequests', 'refunds', 'privacyRequests', 'incidents', 'policyAcceptances']) {
-          const historicalQuery: any = { from: [{ collectionId: collection }], where: { compositeFilter: { op: 'OR', filters: ['customerUid', 'providerUid', 'requesterUid', 'driverUid', 'reporterUid', 'uid'].map(field => ({ fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: jsonValue(uid) } })) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 100 };
-          if (historicalCursor[collection]) historicalQuery.startAt = { values: [{ referenceValue: historicalCursor[collection] }] };
-          const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: historicalQuery }) }) as any[] || [];
-          const page = historicalCursor[collection] && rows[0]?.document?.name === historicalCursor[collection] ? rows.slice(1) : rows;
-          if (rows.length >= 100) stageMore = true;
-          if (rows.length) nextHistoricalCursor[collection] = rows[rows.length - 1]?.document?.name;
-          for (const item of page.filter((x: any) => x.document)) {
-            const data = decode(item.document), fields: Record<string, any> = {};
-            const roles = [
-              ['customerUid', ['customer', 'customerPublic', 'customerSnapshot', 'customerProfile']],
-              ['providerUid', ['provider', 'providerPublic', 'providerSnapshot', 'providerProfile']],
-              ['requesterUid', ['requester', 'requesterPublic', 'requesterSnapshot', 'requesterProfile']],
-              ['driverUid', ['driver', 'driverPublic', 'driverSnapshot', 'driverProfile']],
-              ['reporterUid', ['reporter', 'reporterPublic', 'reporterSnapshot', 'reporterProfile']],
-              ['uid', []],
-            ] as const;
-            for (const [uidField, snapshots] of roles) {
-              if (data[uidField] !== uid) continue;
-              fields[uidField] = jsonValue('deleted-user');
-              for (const snapshot of snapshots) if (data[snapshot] !== undefined) fields[snapshot] = jsonValue({ deletedUser: true });
-            }
-            if (collection === 'privacyRequests' && data.details !== undefined) fields.details = jsonValue(null);
-            writes.push({ update: { name: item.document.name, fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: item.document.updateTime ? { updateTime: item.document.updateTime } : undefined });
-          }
-        }
-        const verificationQuery: any = { from: [{ collectionId: 'verificationEvents' },], where: { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: jsonValue(uid) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 100 };
-        if (historicalCursor.verificationEvents) verificationQuery.startAt = { values: [{ referenceValue: historicalCursor.verificationEvents }] };
-        const verificationEvents = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: verificationQuery }) }) as any[] || [];
-        const verificationPage = historicalCursor.verificationEvents && verificationEvents[0]?.document?.name === historicalCursor.verificationEvents ? verificationEvents.slice(1) : verificationEvents;
-        stageMore = stageMore || verificationEvents.length >= 100;
-        if (verificationEvents.length) nextHistoricalCursor.verificationEvents = verificationEvents[verificationEvents.length - 1]?.document?.name;
-        for (const item of verificationPage.filter((x: any) => x.document)) writes.push({ update: { name: item.document.name, fields: { uid: jsonValue('deleted-user'), subjectUid: jsonValue('deleted-user') } }, updateMask: { fieldPaths: ['uid', 'subjectUid'] }, currentDocument: item.document.updateTime ? { updateTime: item.document.updateTime } : undefined });
-        if (writes.length) await commit(env, writes.slice(0, 450));
-        if (stageMore) {
-          await commit(env, [{ update: { name, fields: { historicalCursor: jsonValue(nextHistoricalCursor) } }, updateMask: { fieldPaths: ['historicalCursor'] } }]);
-        }
-      }
-      if (stage === 'records') {
-        const writes: any[] = [];
-        const ownedFields: Record<string, string[]> = {
-          userProfiles: ['uid', 'userUid'], providerProfiles: ['uid', 'userUid'], driverProfiles: ['uid', 'userUid'],
-          deviceTokens: ['uid', 'userUid'], notifications: ['uid', 'userUid'], notificationPreferences: ['uid', 'userUid'],
-          notificationTokenOwners: ['uid', 'userUid'], notificationInstallations: ['uid', 'userUid'],
-          notificationDeliveries: ['uid', 'userUid'], notificationOutbox: ['uid', 'userUid'], emailVerificationRateLimits: ['uid'],
-          phoneAliases: ['uid', 'userUid'], phoneOwners: ['uid', 'userUid'], recoveryCodes: ['uid', 'userUid'],
-          temporaryRecovery: ['uid', 'userUid'], verificationIndexes: ['uid', 'userUid'], equipment: ['ownerUid', 'uid'],
-          verificationProfiles: ['uid', 'userUid'], verificationAttempts: ['uid', 'userUid'], regulatoryDocuments: ['ownerUid'], regulatoryExpiryQueue: ['ownerUid'],
-          equipmentDrafts: ['ownerUid', 'uid'], driverRequests: ['driverUid', 'requesterUid'],
-        };
-        for (const collection of deletionCollections) {
-          const fields = collection === 'users' ? ['__name__'] : (ownedFields[collection] || ['uid']);
-          for (const ownerField of fields) {
-            const raw = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where: { fieldFilter: { field: { fieldPath: ownerField }, op: 'EQUAL', value: ownerField === '__name__' ? { referenceValue: fullName(env, `${collection}/${uid}`) } : jsonValue(uid) } }, limit: 100 } }) }) as any[] || [];
-            for (const item of raw.filter((x: any) => x.document)) writes.push({ delete: item.document.name, currentDocument: item.document.updateTime ? { updateTime: item.document.updateTime } : undefined });
-            stageMore = stageMore || raw.length >= 100;
-          }
-        }
-        if (writes.length) await commit(env, writes.slice(0, 450));
-        stageMore = stageMore || writes.length >= 100;
-      }
-      if (stageMore) {
-        const cursor = stage === 'media' ? mediaCursorNext : undefined;
-        await commit(env, [{ update: { name, fields: { status: jsonValue('partially_completed'), stage: jsonValue(stage), ...(cursor ? { mediaCursor: jsonValue(cursor) } : {}), errors: jsonValue(errors), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'stage', ...(cursor ? ['mediaCursor'] : []), 'errors', 'leaseOwner', 'leaseUntil', 'updatedAt'] } }]);
+  } catch (error) {
+    if (isScheduledBudgetDeferred(error)) throw error;
+    return;
+  }
+  const errors: string[] = Array.isArray(job.errors) ? job.errors : [];
+  const completed = new Set<string>(Array.isArray(job.completedStages) ? job.completedStages : []);
+  const stage = ['auth', 'media', 'historical', 'records'].find(candidate => !completed.has(candidate));
+  if (!stage) return;
+  let stageMore = false;
+  let stageDeleted = 0, stageAnonymized = 0, stageMedia = 0;
+  let mediaCursorNext: Record<string, unknown> | undefined;
+  let historicalCursorNext: Record<string, string> | undefined;
+  let recordsCursorNext: DeletionRecordsCursor | undefined;
+  let progressWrite: any[] | undefined;
+  try {
+    if (stage === 'auth') {
+      const currentTarget = await rawDoc(env, 'users', uid);
+      if (!currentTarget?.data || await protectedDeletionTarget(env, { uid: String(job.actorUid || ''), admin: true, role: 'super_admin', permissionRole: 'owner' }, uid, currentTarget.data)) {
+        const summary = { status: 'skipped_protected', stage: 'auth', deleted: 0, anonymized: 0, retained: 0, media: 0 };
+        await commit(env, [{ update: { name, fields: { status: jsonValue('skipped_protected'), result: jsonValue(summary), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), initiatingActorUid: jsonValue(job.initiatingActorUid || job.actorUid || null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'result', 'leaseOwner', 'leaseUntil', 'initiatingActorUid', 'updatedAt'] } }, await auditWrite(env, { uid: 'system', admin: true, role: 'super_admin' }, 'user_deletion_target_terminal', 'user', uid, `deletion-skipped-protected:${uid}`, 'deletion target became protected', { initiatingActorUid: job.initiatingActorUid || job.actorUid }, summary)], { recovery: true });
         return;
       }
-      completed.add(stage);
-      const stageResult = stage === 'records' ? { deleted: 1, anonymized: 0, retained: 0, media: 0, errors: [] } : stage === 'historical' ? { deleted: 0, anonymized: 1, retained: 0, media: 0, errors: [] } : stage === 'media' ? { deleted: 0, anonymized: 0, retained: 0, media: 1, errors: [] } : { deleted: 0, anonymized: 0, retained: 0, media: 0, errors: [] };
-      await commit(env, [{ update: { name, fields: { status: jsonValue(stage === 'records' ? 'completed' : 'processing'), stage: jsonValue(stage), completedStages: jsonValue([...completed]), errors: jsonValue(errors), result: jsonValue(stageResult), ...(stage === 'records' ? { leaseOwner: jsonValue(null), leaseUntil: jsonValue(null) } : {}), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'stage', 'completedStages', 'errors', 'result', ...(stage === 'records' ? ['leaseOwner', 'leaseUntil'] : []), 'updatedAt'] } }]);
-    } catch (error) {
-      errors.push(`${stage}:${error instanceof Error ? error.message : 'failed'}`);
-      const attempts = Number(job.attempts || 0) + 1;
-      const status = attempts >= 5 ? 'failed' : 'partially_completed';
-       await commit(env, [{ update: { name, fields: { status: jsonValue(status), attempts: { integerValue: String(attempts) }, errors: jsonValue(errors), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), initiatingActorUid: jsonValue(job.initiatingActorUid || job.actorUid || null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'attempts', 'errors', 'leaseOwner', 'leaseUntil', 'initiatingActorUid', 'updatedAt'] } }, await auditWrite(env, { uid: 'system', admin: true, role: 'super_admin' }, 'user_deletion_target_terminal', 'user', uid, crypto.randomUUID(), 'deletion stage failed', { initiatingActorUid: job.initiatingActorUid || job.actorUid }, { status, stage, errors: errors.slice(-1) })]);
+      if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) throw new Error('auth_config_missing');
+      const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
+      const response = await scheduledExternalFetch(env, 'identity_toolkit', `https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/accounts:delete`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: uid }) });
+      const result: any = await response.json().catch(() => ({}));
+      const code = String(result?.error?.message || result?.error?.status || '');
+      if (!response.ok && !['EMAIL_NOT_FOUND', 'USER_NOT_FOUND'].includes(code)) throw new Error('auth_delete_failed');
+    }
+    if (stage === 'media') {
+      const legacyCursor = typeof job.mediaCursor === 'string' ? job.mediaCursor : undefined;
+      const priorCursor = job.mediaCursor && typeof job.mediaCursor === 'object' ? job.mediaCursor : {};
+      let avatarProcessed = legacyCursor ? true : priorCursor.avatarProcessed === true;
+      let equipmentDocumentName = legacyCursor || (typeof priorCursor.equipmentDocumentName === 'string' ? priorCursor.equipmentDocumentName : undefined);
+      let imageIndex = Number.isInteger(Number(priorCursor.imageIndex)) && Number(priorCursor.imageIndex) >= 0 ? Number(priorCursor.imageIndex) : 0;
+      const ids: string[] = [];
+      if (!avatarProcessed) {
+        const person = await rawDoc(env, 'users', uid);
+        if (typeof person?.data?.avatarPublicId === 'string') ids.push(person.data.avatarPublicId);
+        avatarProcessed = true;
+      }
+      const equipmentQuery: any = { from: [{ collectionId: 'equipment' }], where: { fieldFilter: { field: { fieldPath: 'ownerUid' }, op: 'EQUAL', value: jsonValue(uid) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 1 };
+      if (equipmentDocumentName) equipmentQuery.startAt = { before: imageIndex === 0 ? false : true, values: [{ referenceValue: equipmentDocumentName }] };
+      const listed = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: equipmentQuery }) }) as any[] || [];
+      const equipmentDocument = listed.find((item: any) => item.document)?.document;
+      if (equipmentDocument) {
+        const listing = decode(equipmentDocument);
+        const images = Array.isArray(listing.images) ? listing.images : [];
+        let index = equipmentDocumentName === equipmentDocument.name && imageIndex > 0 ? imageIndex : 0;
+        while (index < images.length && ids.length < DELETION_MEDIA_DELETES_PER_TICK) {
+          const publicId = images[index]?.publicId;
+          if (typeof publicId === 'string') ids.push(publicId);
+          index += 1;
+        }
+        equipmentDocumentName = equipmentDocument.name;
+        imageIndex = index < images.length ? index : 0;
+        stageMore = true;
+      }
+      const ownedIds = [...new Set(ids)].filter(id => id.startsWith(`${env.CLOUDINARY_FOLDER || 'heavyar'}/${uid}/`)).slice(0, DELETION_MEDIA_DELETES_PER_TICK);
+      if (!(env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET)) {
+        if (ownedIds.length) throw new Error('cloudinary_config_missing');
+      } else for (const publicId of ownedIds) {
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        const digest = await crypto.subtle.digest('SHA-1', enc.encode(`public_id=${publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`));
+        const signature = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join('');
+        const form = new FormData(); form.append('public_id', publicId); form.append('timestamp', timestamp); form.append('api_key', env.CLOUDINARY_API_KEY); form.append('signature', signature);
+        const response = await scheduledExternalFetch(env, 'cloudinary', `https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`, { method: 'POST', body: form });
+        const result: any = await response.json().catch(() => ({}));
+        if (!response.ok || !['ok', 'not found'].includes(String(result.result || '').toLowerCase())) throw new Error('media_delete_failed');
+        stageMedia += 1;
+      }
+      mediaCursorNext = { avatarProcessed, ...(equipmentDocumentName ? { equipmentDocumentName } : {}), imageIndex };
+    }
+    if (stage === 'historical') {
+      const writes: any[] = [];
+      const historicalCursor: Record<string, string> = job.historicalCursor && typeof job.historicalCursor === 'object' ? job.historicalCursor : {};
+      historicalCursorNext = { ...historicalCursor };
+      for (const collection of ['equipmentRequests', 'complaints', 'driverRequests', 'refunds', 'privacyRequests', 'incidents', 'policyAcceptances']) {
+        const historicalQuery: any = { from: [{ collectionId: collection }], where: { compositeFilter: { op: 'OR', filters: ['customerUid', 'providerUid', 'requesterUid', 'driverUid', 'reporterUid', 'uid'].map(field => ({ fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: jsonValue(uid) } })) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 40 };
+        if (historicalCursor[collection]) historicalQuery.startAt = { before: false, values: [{ referenceValue: historicalCursor[collection] }] };
+        const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: historicalQuery }) }) as any[] || [];
+        const page = rows.filter((item: any) => item.document);
+        if (page.length >= 40) stageMore = true;
+        if (page.length) historicalCursorNext[collection] = page[page.length - 1].document.name;
+        for (const item of page) {
+          const data = decode(item.document), fields: Record<string, any> = {};
+          const roles = [
+            ['customerUid', ['customer', 'customerPublic', 'customerSnapshot', 'customerProfile']],
+            ['providerUid', ['provider', 'providerPublic', 'providerSnapshot', 'providerProfile']],
+            ['requesterUid', ['requester', 'requesterPublic', 'requesterSnapshot', 'requesterProfile']],
+            ['driverUid', ['driver', 'driverPublic', 'driverSnapshot', 'driverProfile']],
+            ['reporterUid', ['reporter', 'reporterPublic', 'reporterSnapshot', 'reporterProfile']],
+            ['uid', []],
+          ] as const;
+          for (const [uidField, snapshots] of roles) {
+            if (data[uidField] !== uid) continue;
+            fields[uidField] = jsonValue('deleted-user');
+            for (const snapshot of snapshots) if (data[snapshot] !== undefined) fields[snapshot] = jsonValue({ deletedUser: true });
+          }
+          if (collection === 'privacyRequests' && data.details !== undefined) fields.details = jsonValue(null);
+          writes.push({ update: { name: item.document.name, fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: item.document.updateTime ? { updateTime: item.document.updateTime } : undefined });
+        }
+      }
+      const verificationQuery: any = { from: [{ collectionId: 'verificationEvents' }], where: { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: jsonValue(uid) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 40 };
+      if (historicalCursor.verificationEvents) verificationQuery.startAt = { before: false, values: [{ referenceValue: historicalCursor.verificationEvents }] };
+      const verificationEvents = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: verificationQuery }) }) as any[] || [];
+      const verificationPage = verificationEvents.filter((item: any) => item.document);
+      stageMore = stageMore || verificationPage.length >= 40;
+      if (verificationPage.length) historicalCursorNext.verificationEvents = verificationPage[verificationPage.length - 1].document.name;
+      for (const item of verificationPage) writes.push({ update: { name: item.document.name, fields: { uid: jsonValue('deleted-user'), subjectUid: jsonValue('deleted-user') } }, updateMask: { fieldPaths: ['uid', 'subjectUid'] }, currentDocument: item.document.updateTime ? { updateTime: item.document.updateTime } : undefined });
+      if (writes.length) await commit(env, writes);
+      stageAnonymized += writes.length;
+    }
+    if (stage === 'records') {
+      let cursor = deletionRecordsCursor(job.recordsCursor);
+      const deletes = new Map<string, any>();
+      for (let pageCount = 0; pageCount < DELETION_RECORDS_QUERY_PAGES_PER_TICK && cursor.collectionIndex < deletionCollections.length; pageCount++) {
+        const collection = deletionCollections[cursor.collectionIndex];
+        const ownerField = deletionFields(collection)[cursor.ownerFieldIndex];
+        const structuredQuery: any = {
+          from: [{ collectionId: collection }],
+          where: { fieldFilter: { field: { fieldPath: ownerField }, op: 'EQUAL', value: ownerField === '__name__' ? { referenceValue: fullName(env, `${collection}/${uid}`) } : jsonValue(uid) } },
+          orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+          limit: DELETION_RECORDS_PAGE_SIZE,
+        };
+        if (cursor.documentName) structuredQuery.startAt = { before: false, values: [{ referenceValue: cursor.documentName }] };
+        const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [];
+        const documents = rows.filter((item: any) => item.document).map((item: any) => item.document);
+        for (const document of documents) deletes.set(document.name, { delete: document.name, currentDocument: document.updateTime ? { updateTime: document.updateTime } : undefined });
+        if (documents.length >= DELETION_RECORDS_PAGE_SIZE) cursor = { collectionIndex: cursor.collectionIndex, ownerFieldIndex: cursor.ownerFieldIndex, documentName: documents[documents.length - 1].name };
+        else cursor = advanceDeletionRecordsCursor(cursor);
+      }
+      const writes = [...deletes.values()].slice(0, DELETION_RECORDS_MAX_DELETE_WRITES);
+      if (writes.length) await commit(env, writes);
+      stageDeleted += writes.length;
+      recordsCursorNext = cursor;
+      stageMore = cursor.collectionIndex < deletionCollections.length;
+    }
+    const priorResult = job.result && typeof job.result === 'object' ? job.result : {};
+    const result = {
+      deleted: Number(priorResult.deleted || 0) + stageDeleted,
+      anonymized: Number(priorResult.anonymized || 0) + stageAnonymized,
+      retained: Number(priorResult.retained || 0),
+      media: Number(priorResult.media || 0) + stageMedia,
+      errors,
+    };
+    if (!stageMore) completed.add(stage);
+    const terminal = !stageMore && stage === 'records';
+    const progressFields: Record<string, any> = {
+      status: jsonValue(terminal ? 'completed' : stageMore ? 'partially_completed' : 'processing'),
+      stage: jsonValue(stage), completedStages: jsonValue([...completed]), errors: jsonValue(errors), result: jsonValue(result),
+      leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), updatedAt: { timestampValue: new Date().toISOString() },
+    };
+    const progressPaths = ['status', 'stage', 'completedStages', 'errors', 'result', 'leaseOwner', 'leaseUntil', 'updatedAt'];
+    if (stage === 'media') { progressFields.mediaCursor = jsonValue(mediaCursorNext || null); progressPaths.push('mediaCursor'); }
+    if (stage === 'historical') { progressFields.historicalCursor = jsonValue(historicalCursorNext || {}); progressPaths.push('historicalCursor'); }
+    if (stage === 'records') { progressFields.recordsCursor = jsonValue(stageMore ? recordsCursorNext : null); progressPaths.push('recordsCursor'); }
+    progressWrite = [{ update: { name, fields: progressFields }, updateMask: { fieldPaths: progressPaths } }];
+    await commit(env, progressWrite, { recovery: true });
+  } catch (error) {
+    let stageError = error;
+    if (progressWrite) {
+      try {
+        await commit(env, progressWrite, { recovery: true });
+        return;
+      } catch (recoveryError) {
+        stageError = recoveryError;
+      }
+    }
+    if (isScheduledBudgetDeferred(stageError)) {
+      await commit(env, [{ update: { name, fields: { status: jsonValue('partially_completed'), stage: jsonValue(stage), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'stage', 'leaseOwner', 'leaseUntil', 'updatedAt'] } }], { recovery: true });
       return;
     }
+    errors.push(`${stage}:${stageError instanceof Error ? stageError.message : 'failed'}`);
+    const attempts = Number(job.attempts || 0) + 1;
+    const status = attempts >= 5 ? 'failed' : 'partially_completed';
+    await commit(env, [{ update: { name, fields: { status: jsonValue(status), attempts: { integerValue: String(attempts) }, errors: jsonValue(errors), leaseOwner: jsonValue(null), leaseUntil: jsonValue(null), initiatingActorUid: jsonValue(job.initiatingActorUid || job.actorUid || null), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'attempts', 'errors', 'leaseOwner', 'leaseUntil', 'initiatingActorUid', 'updatedAt'] } }, await auditWrite(env, { uid: 'system', admin: true, role: 'super_admin' }, 'user_deletion_target_terminal', 'user', uid, crypto.randomUUID(), 'deletion stage failed', { initiatingActorUid: job.initiatingActorUid || job.actorUid }, { status, stage, errors: errors.slice(-1) })], { recovery: true });
   }
 }
 export async function processDeletionJobs(env: Env) {
-  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'deletionRequests' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['pending', 'queued', 'processing', 'partially_completed'].map(jsonValue) } } } }, limit: 10 } }) }) as any[] || [];
-  for (const row of rows.filter((x: any) => x.document)) await processDeletionJob(env, row);
-  const parents = new Set<string>();
-  for (const row of rows.filter((x: any) => x.document)) { const parent = decode(row.document).parentJobId; if (parent) parents.add(String(parent)); }
-  for (const parent of parents) {
-    const job = await rawDoc(env, 'deletionJobs', parent);
-    if (!job?.data) continue;
-    const children = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'deletionRequests' }], where: { fieldFilter: { field: { fieldPath: 'parentJobId' }, op: 'EQUAL', value: jsonValue(parent) } }, limit: 100 } }) }) as any[] || [];
-    const decoded = children.filter((x: any) => x.document).map((x: any) => decode(x.document)), total = Number(job.data.total || decoded.length), completed = decoded.filter((x: any) => ['completed', 'skipped_protected'].includes(x.status)).length, failed = decoded.filter((x: any) => x.status === 'failed').length;
-    const status = completed === total ? 'completed' : failed ? 'partially_completed' : 'processing';
-    const summaries = decoded.map((x: any) => x.result || {});
-    const result = { completed, failed, total, deleted: summaries.reduce((n: number, x: any) => n + Number(x.deleted || 0), 0), anonymized: summaries.reduce((n: number, x: any) => n + Number(x.anonymized || 0), 0), retained: summaries.reduce((n: number, x: any) => n + Number(x.retained || 0), 0), media: summaries.reduce((n: number, x: any) => n + Number(x.media || 0), 0), errors: summaries.flatMap((x: any) => x.errors || []) };
-    const writes: any[] = [{ update: { name: fullName(env, `deletionJobs/${encodeURIComponent(parent)}`), fields: { status: jsonValue(status), completed: { integerValue: String(completed) }, result: jsonValue(result), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'completed', 'result', 'updatedAt'] } }];
-     if (job.data.status !== status && ['completed', 'partially_completed'].includes(status)) writes.push(await auditWrite(env, { uid: 'system', admin: true, role: 'super_admin' }, 'user_deletion_job_terminal', 'deletionJob', parent, `deletion-terminal:${parent}:${status}`, 'deletion job terminal result', { initiatingActorUid: job.data.initiatingActorUid || job.data.actorUid }, { status, initiatingActorUid: job.data.initiatingActorUid || job.data.actorUid, ...result }));
-    await commit(env, writes);
-  }
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'deletionRequests' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['pending', 'queued', 'processing', 'partially_completed'].map(jsonValue) } } } }, limit: 1 } }) }) as any[] || [];
+  const row = rows.find((item: any) => item.document);
+  if (!row) return;
+  const parent = String(decode(row.document).parentJobId || '');
+  await processDeletionJob(env, row);
+  if (!parent) return;
+  const job = await rawDoc(env, 'deletionJobs', parent);
+  if (!job?.data) return;
+  const children = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'deletionRequests' }], where: { fieldFilter: { field: { fieldPath: 'parentJobId' }, op: 'EQUAL', value: jsonValue(parent) } }, limit: 100 } }) }) as any[] || [];
+  const decoded = children.filter((item: any) => item.document).map((item: any) => decode(item.document));
+  const total = Number(job.data.total || decoded.length), completedCount = decoded.filter((item: any) => ['completed', 'skipped_protected'].includes(item.status)).length, failed = decoded.filter((item: any) => item.status === 'failed').length;
+  const status = completedCount === total ? 'completed' : failed ? 'partially_completed' : 'processing';
+  const summaries = decoded.map((item: any) => item.result || {});
+  const result = { completed: completedCount, failed, total, deleted: summaries.reduce((count: number, item: any) => count + Number(item.deleted || 0), 0), anonymized: summaries.reduce((count: number, item: any) => count + Number(item.anonymized || 0), 0), retained: summaries.reduce((count: number, item: any) => count + Number(item.retained || 0), 0), media: summaries.reduce((count: number, item: any) => count + Number(item.media || 0), 0), errors: summaries.flatMap((item: any) => item.errors || []) };
+  const writes: any[] = [{ update: { name: fullName(env, `deletionJobs/${encodeURIComponent(parent)}`), fields: { status: jsonValue(status), completed: { integerValue: String(completedCount) }, result: jsonValue(result), updatedAt: { timestampValue: new Date().toISOString() } } }, updateMask: { fieldPaths: ['status', 'completed', 'result', 'updatedAt'] } }];
+  if (job.data.status !== status && ['completed', 'partially_completed'].includes(status)) writes.push(await auditWrite(env, { uid: 'system', admin: true, role: 'super_admin' }, 'user_deletion_job_terminal', 'deletionJob', parent, `deletion-terminal:${parent}:${status}`, 'deletion job terminal result', { initiatingActorUid: job.data.initiatingActorUid || job.data.actorUid }, { status, initiatingActorUid: job.data.initiatingActorUid || job.data.actorUid, ...result }));
+  await commit(env, writes);
 }
 const COUNTRY_CONTRACTS: Record<string, { nameEn: string; nameAr: string; dialCode: string; nativeCurrency: string; enabled: boolean }> = {
   SA: { nameEn: 'Saudi Arabia', nameAr: 'المملكة العربية السعودية', dialCode: '+966', nativeCurrency: 'SAR', enabled: true },
@@ -2067,8 +2181,9 @@ export async function processScheduledCampaigns(env: Env) {
   const reportFailure = (stage: string) => console.warn('campaign_processor_failed', { processor: 'generic_marketing', stage });
   let campaigns: RawDoc[];
   try {
-    campaigns = await queryDocuments('campaigns', { from: [{ collectionId: 'campaigns' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['scheduled', 'processing'].map(jsonValue) } } } }, limit: 10 }, 10);
-  } catch {
+    campaigns = await queryDocuments('campaigns', { from: [{ collectionId: 'campaigns' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'IN', value: { arrayValue: { values: ['scheduled', 'processing'].map(jsonValue) } } } }, limit: 1 }, 1);
+  } catch (error) {
+    if (isScheduledBudgetDeferred(error)) throw error;
     reportFailure('campaign_query_unavailable');
     return;
   }
@@ -2080,8 +2195,8 @@ export async function processScheduledCampaigns(env: Env) {
     const custom = { titleAr: campaign.titleAr || campaign.title, titleEn: campaign.titleEn || campaign.title, bodyAr: campaign.bodyAr || campaign.message, bodyEn: campaign.bodyEn || campaign.message, imageUrl: campaign.imageUrl, deepLink: campaign.deepLink };
     let stage = 'recipient_query_unavailable';
     try {
-      const users = await queryDocuments('users', { from: [{ collectionId: 'users' }], orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 301, ...(campaign.recipientCursor ? { startAt: { before: false, values: [{ referenceValue: campaign.recipientCursor }] } } : {}) }, 301);
-      const page = users.slice(0, 300), userIds = page.map(user => String(user.name).split('/').pop() || '');
+      const users = await queryDocuments('users', { from: [{ collectionId: 'users' }], orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 4, ...(campaign.recipientCursor ? { startAt: { before: false, values: [{ referenceValue: campaign.recipientCursor }] } } : {}) }, 4);
+      const page = users.slice(0, 3), userIds = page.map(user => String(user.name).split('/').pop() || '');
       stage = 'preference_batch_unavailable';
       const prefDocs = await batchGetRawDocsInChunks(env, userIds.map(id => ({ collection: 'notificationPreferences', id })));
       const defaultMarketing = defaultNotificationPreferences().marketing === true;
@@ -2092,11 +2207,12 @@ export async function processScheduledCampaigns(env: Env) {
       const recipients = campaignRecipients(page.map((user, index) => ({ uid: userIds[index], ...user.data, marketingOptOut: optedOut.has(userIds[index]) })) as any, campaign.filter || { audience: 'all' });
       stage = 'notification_build_unavailable';
       const writes: any[] = await Promise.all(recipients.map((uid) => notificationWrite(fullName.bind(null, env), uid, 'campaign_message' as any, now, id, `campaign:${id}:${uid}`, custom)));
-      const last = page[page.length - 1]?.name, done = users.length <= 300;
+      const last = page[page.length - 1]?.name, done = users.length <= 3;
       writes.push({ update: { name: campaignDocument.name, fields: { status: jsonValue(done ? 'sent' : 'processing'), recipientCursor: last ? jsonValue(last) : { nullValue: null }, chunkId: jsonValue(`${id}:${last || 'complete'}`), recipientCount: { integerValue: String(Number(campaign.recipientCount || 0) + recipients.length), ...(done ? {} : {}) }, ...(done ? { sentAt: { timestampValue: now } } : {}) } }, updateMask: { fieldPaths: ['status', 'recipientCursor', 'chunkId', 'recipientCount', ...(done ? ['sentAt'] : [])] }, currentDocument: { updateTime: campaignDocument.updateTime } });
       stage = 'campaign_commit_unavailable';
       await commit(env, writes);
     } catch (error) {
+      if (isScheduledBudgetDeferred(error)) throw error;
       reportFailure(error instanceof FirestoreConflictError ? 'campaign_commit_conflict' : stage);
       // Retry on the next scheduled tick; deterministic outbox ids make retry safe.
     }
@@ -2153,7 +2269,7 @@ async function cleanupVerificationRetention(req: Request, env: Env, user: AdminU
 async function identityClaims(env: Env, uid: string, signal?: AbortSignal) {
   const token = await googleToken(env, 'https://www.googleapis.com/auth/identitytoolkit');
   const endpoint = `https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID || '')}/accounts:lookup`;
-  const response = await fetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: [uid] }), signal });
+  const response = await scheduledExternalFetch(env, 'identity_toolkit', endpoint, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: [uid] }), signal });
   if (!response.ok) throw new Error('Identity service unavailable');
   const record = (await response.json() as any).users?.[0];
   let claims: Record<string, unknown> = {};
@@ -2205,7 +2321,7 @@ async function setRole(env: Env, actor: AdminUser, targetUid: string, role: Staf
   delete claims.role;
   delete claims.heavyarRole;
   if (role) { claims.role = role; claims.heavyarRole = role; claims.admin = true; }
-  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID || '')}/accounts:batchUpdate`, { method: 'POST', headers: { Authorization: `Bearer ${current.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: [targetUid], customAttributes: JSON.stringify(claims) }), signal: controller.signal });
+  const response = await scheduledExternalFetch(env, 'identity_toolkit', `https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID || '')}/accounts:batchUpdate`, { method: 'POST', headers: { Authorization: `Bearer ${current.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ localId: [targetUid], customAttributes: JSON.stringify(claims) }), signal: controller.signal });
   if (!response.ok) throw new Error('Identity service unavailable');
   return { role, previousRole: current.claims.heavyarRole || current.claims.role || null };
   } finally { clearTimeout(timer); }

@@ -288,7 +288,7 @@ describe('admin authorization and operational boundary', () => {
     expect(preview.eligible).toBe(0);
   });
 
-  test('deletion lease refresh uses a sibling update mask before stage work', async () => {
+  test('deletion lease acquisition and terminal release use sibling update masks', async () => {
     const originalFetch = globalThis.fetch;
     const commits: any[][] = [];
     let userRead = false;
@@ -316,17 +316,21 @@ describe('admin authorization and operational boundary', () => {
     try {
       await expect(processDeletionJobs(testEnv)).resolves.toBeUndefined();
       const acquisition = commits[0][0];
-      const refresh = commits[1][0];
+      const terminal = commits[1][0];
       expect(acquisition.update.fields.status.stringValue).toBe('processing');
-      expect(refresh.update.updateMask).toBeUndefined();
-      expect(refresh.updateMask.fieldPaths).toEqual(['leaseOwner', 'leaseUntil']);
+      expect(acquisition.update.updateMask).toBeUndefined();
+      expect(acquisition.updateMask.fieldPaths).toEqual(['status', 'leaseOwner', 'leaseUntil', 'updatedAt']);
+      expect(terminal.update.updateMask).toBeUndefined();
+      expect(terminal.updateMask.fieldPaths).toContain('leaseOwner');
+      expect(terminal.updateMask.fieldPaths).toContain('leaseUntil');
+      expect(terminal.update.fields.leaseOwner.nullValue).toBeNull();
       expect(userRead).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
     }
   });
 
-  test('deletion lease refresh failure is durably recovered without an uncaught scheduled error', async () => {
+  test('deletion stage failure is durably recovered without an uncaught scheduled error', async () => {
     const originalFetch = globalThis.fetch;
     const originalConsoleError = console.error;
     const commits: any[][] = [];
@@ -338,10 +342,6 @@ describe('admin authorization and operational boundary', () => {
       if (url.includes(':commit')) {
         const writes = JSON.parse(String(init?.body || '{}')).writes || [];
         commits.push(writes);
-        const refresh = writes[0]?.updateMask?.fieldPaths;
-        if (Array.isArray(refresh) && refresh.length === 2 && refresh[0] === 'leaseOwner' && refresh[1] === 'leaseUntil') {
-          return new Response(JSON.stringify({ error: { status: 'INVALID_ARGUMENT' } }), { status: 400 });
-        }
         return new Response('{}', { status: 200 });
       }
       if (url.includes(':runQuery')) {
@@ -351,6 +351,8 @@ describe('admin authorization and operational boundary', () => {
         }
         return new Response('[]', { status: 200 });
       }
+      if (url.includes('/documents/users/target')) return new Response(JSON.stringify(firestoreDocument('users/target', { role: 'customer' })), { status: 200 });
+      if (url.includes('accounts:delete')) return new Response(JSON.stringify({ error: { message: 'INTERNAL_ERROR' } }), { status: 500 });
       return new Response('{}', { status: 404 });
     }) as typeof fetch;
     console.error = (...args: unknown[]) => { schedulerErrors.push(args.map(String).join(' ')); };
@@ -361,7 +363,7 @@ describe('admin authorization and operational boundary', () => {
       await expect(scheduledWork!).resolves.toBeUndefined();
       const recovery = commits.flat().find(write => write.update?.fields?.attempts?.integerValue === '1');
       expect(recovery.update.fields.status.stringValue).toBe('partially_completed');
-      expect(recovery.update.fields.errors.arrayValue.values[0].stringValue).toBe('auth:Firestore unavailable');
+      expect(recovery.update.fields.errors.arrayValue.values[0].stringValue).toBe('auth:auth_delete_failed');
       expect(recovery.update.fields.leaseOwner.nullValue).toBeNull();
       expect(recovery.update.fields.leaseUntil.nullValue).toBeNull();
       expect(schedulerErrors).toEqual([]);
@@ -404,7 +406,7 @@ describe('admin authorization and operational boundary', () => {
     }
   });
 
-  test('deletion historical verification events advance a durable cursor beyond the first 100', async () => {
+  test('deletion historical verification events advance a durable cursor beyond the first bounded page', async () => {
     const originalFetch = globalThis.fetch;
     const commits: string[] = [];
     const eventNames = Array.from({ length: 101 }, (_, i) => `projects/p/databases/(default)/documents/verificationEvents/e-${String(i).padStart(3, '0')}`);
@@ -435,14 +437,14 @@ describe('admin authorization and operational boundary', () => {
       }
       if (url.includes('/documents/users/target')) return new Response(JSON.stringify(document('users/target', { role: 'user' })), { status: 200 });
       if (url.includes('/documents/deletionJobs/parent')) return new Response(JSON.stringify(document('deletionJobs/parent', { status: 'processing', total: 1 })), { status: 200 });
-      if (url.includes('/documents/deletionRequests/user%3Atarget')) return new Response(JSON.stringify(document('deletionRequests/user:target', { uid: 'target', parentJobId: 'parent', status: requestStatus, stage: 'historical', actorUid: 'owner', completedStages: ['auth'], historicalCursor: cursor ? { verificationEvents: cursor } : {} })), { status: 200 });
+      if (url.includes('/documents/deletionRequests/user%3Atarget')) return new Response(JSON.stringify(document('deletionRequests/user:target', { uid: 'target', parentJobId: 'parent', status: requestStatus, stage: 'historical', actorUid: 'owner', completedStages: ['auth', 'media'], historicalCursor: cursor ? { verificationEvents: cursor } : {} })), { status: 200 });
       if (url.includes(':runQuery')) {
         const body = JSON.parse(String(init?.body || '{}')), query = body.structuredQuery || {}, collection = query.from?.[0]?.collectionId;
-        if (collection === 'deletionRequests') return new Response(JSON.stringify([{ document: document('deletionRequests/user:target', { uid: 'target', parentJobId: 'parent', status: 'partially_completed', stage: 'historical', actorUid: 'owner', completedStages: ['auth'], historicalCursor: cursor ? { verificationEvents: cursor } : {} }) }]), { status: 200 });
+        if (collection === 'deletionRequests') return new Response(JSON.stringify([{ document: document('deletionRequests/user:target', { uid: 'target', parentJobId: 'parent', status: 'partially_completed', stage: 'historical', actorUid: 'owner', completedStages: ['auth', 'media'], historicalCursor: cursor ? { verificationEvents: cursor } : {} }) }]), { status: 200 });
         if (collection === 'verificationEvents') {
           const start = query.startAt?.values?.[0]?.referenceValue;
-          const index = start ? Math.max(0, eventNames.indexOf(start)) : 0;
-          return new Response(JSON.stringify(eventNames.slice(index, index + 100).map(name => ({ document: document(name, { uid: 'target' }) }))), { status: 200 });
+          const index = start ? Math.max(0, eventNames.indexOf(start) + (query.startAt?.before === false ? 1 : 0)) : 0;
+          return new Response(JSON.stringify(eventNames.slice(index, index + 40).map(name => ({ document: document(name, { uid: 'target' }) }))), { status: 200 });
         }
         return new Response('[]', { status: 200 });
       }
@@ -454,7 +456,7 @@ describe('admin authorization and operational boundary', () => {
       await processDeletionJobs(testEnv);
       expect(commits.filter(name => name.endsWith('/e-000')).length).toBe(1);
       expect(commits.some(name => name.endsWith('/e-100'))).toBe(true);
-      expect(requestStatus).toBe('completed');
+      expect(requestStatus).toBe('processing');
     } finally {
       globalThis.fetch = originalFetch;
     }

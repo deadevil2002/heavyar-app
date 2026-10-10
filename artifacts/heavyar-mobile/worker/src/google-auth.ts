@@ -1,7 +1,10 @@
+import { consumeScheduledSubrequest, isScheduledBudgetDeferred, type ScheduledBudgetView } from './scheduled-budget';
+
 export type GoogleServiceAccountEnv = {
   FIREBASE_PROJECT_ID?: string;
   FIREBASE_CLIENT_EMAIL?: string;
   FIREBASE_PRIVATE_KEY?: string;
+  __scheduledBudget?: ScheduledBudgetView;
 };
 
 type CachedToken = { token: string; expiresAt: number };
@@ -58,6 +61,7 @@ async function exchangeToken(env: GoogleServiceAccountEnv, scope: string): Promi
       privateKey,
       encoder.encode(`${header}.${payload}`),
     ))}`;
+    consumeScheduledSubrequest(env.__scheduledBudget, 'google_oauth');
     const response = await oauthFetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -72,6 +76,7 @@ async function exchangeToken(env: GoogleServiceAccountEnv, scope: string): Promi
       : MAX_TOKEN_LIFETIME_SECONDS;
     return { token: result.access_token, expiresAt: Date.now() + lifetimeSeconds * 1_000 };
   } catch (error) {
+    if (isScheduledBudgetDeferred(error)) throw error;
     if (error instanceof GoogleServiceAccountTokenError) throw error;
     throw new GoogleServiceAccountTokenError();
   }

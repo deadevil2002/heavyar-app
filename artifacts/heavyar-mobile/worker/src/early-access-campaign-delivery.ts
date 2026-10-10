@@ -331,7 +331,7 @@ export async function campaignProgress(store: EarlyAccessStore, campaignId: stri
 }
 
 export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send: (to: string, subject: string, html: string, key: string, text?: string) => Promise<{ delivered: boolean; messageId?: string }>, now = Date.now()) {
-  const campaigns = await store.query(EA.campaigns, { from: [{ collectionId: EA.campaigns }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: { stringValue: 'queued' } } }, limit: 5 });
+  const campaigns = await store.query(EA.campaigns, { from: [{ collectionId: EA.campaigns }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: { stringValue: 'queued' } } }, limit: 1 });
   let processed = 0;
   for (const campaign of campaigns) {
     const id = String(campaign.name || '').split('/').pop()!, rows = await store.query(EA.deliveries, {
@@ -352,7 +352,7 @@ export async function processEarlyAccessCampaigns(store: EarlyAccessStore, send:
       isSelected(row) &&
       (row.data.deliveryStatus === 'queued' || !ownerQa && row.data.deliveryStatus === 'failed' && row.data.retryEligible === true) &&
       (!row.data.leaseUntil || Date.parse(row.data.leaseUntil) <= now) &&
-      (!row.data.nextAttemptAt || Date.parse(row.data.nextAttemptAt) <= now)).slice(0, 50);
+      (!row.data.nextAttemptAt || Date.parse(row.data.nextAttemptAt) <= now)).slice(0, 1);
     for (const recipient of recipients) {
       const rid = String(recipient.name || '').split('/').pop()!, attempt = Number(recipient.data.attempts || 0) + 1;
       if (recipient.data.suppressionReason) continue;

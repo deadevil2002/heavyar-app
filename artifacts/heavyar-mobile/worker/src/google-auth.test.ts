@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { __googleAuthTest, googleServiceAccountToken } from './google-auth';
+import { consumeScheduledSubrequest, createScheduledGlobalBudget, createScheduledProcessorBudget, ScheduledBudgetDeferredError } from './scheduled-budget';
 
 let privateKey = '';
 const env = () => ({
@@ -82,5 +83,20 @@ describe('Google service-account token transport', () => {
     expect(__googleAuthTest.inFlightSize()).toBe(0);
     expect(await googleServiceAccountToken(env())).toBe('recovered-token');
     expect(exchanges).toBe(2);
+  });
+
+  test('counts a cache-miss OAuth exchange and preserves normal scheduled deferral', async () => {
+    let exchanges = 0;
+    __googleAuthTest.setFetch(async () => {
+      exchanges += 1;
+      return Response.json({ access_token: 'must-not-run', expires_in: 3600 });
+    });
+    const budget = createScheduledProcessorBudget(createScheduledGlobalBudget(), 'processRegulatoryExpiry');
+    while (budget.state.workUsed < budget.workLimit) consumeScheduledSubrequest(budget, 'firestore');
+    let deferred: unknown;
+    try { await googleServiceAccountToken({ ...env(), __scheduledBudget: budget }); } catch (error) { deferred = error; }
+    expect(deferred instanceof ScheduledBudgetDeferredError).toBe(true);
+    expect(exchanges).toBe(0);
+    expect(budget.state.lastKind).toBe('google_oauth');
   });
 });

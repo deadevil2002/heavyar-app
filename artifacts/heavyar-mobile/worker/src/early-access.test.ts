@@ -191,14 +191,15 @@ describe('Early Access privacy and races', () => {
     expect(m.audit).toHaveLength(auditCountAfterFirstPost);
   });
 
-  test('scheduler sends at most 50 per tick and resumes without premature completion', async () => {
+  test('scheduler sends one recipient per bounded tick and resumes without premature completion', async () => {
     const m = memoryStore();
     m.put(EA.campaigns, 'batch-campaign', { status: 'queued', subjectAr: 'عرض', subjectEn: 'Offer', bodyAr: 'نص', bodyEn: 'Body' });
     for (let i = 0; i < 60; i++) m.put(EA.deliveries, `batch-${i}`, { campaignId: 'batch-campaign', email: `batch-${i}@example.com`, language: 'en', deliveryStatus: 'queued', attempts: 0, createdAt: `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z` });
-    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(50);
-    expect(m.sent).toHaveLength(50);
+    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(1);
+    expect(m.sent).toHaveLength(1);
     expect(m.docs.get(`${EA.campaigns}/batch-campaign`)!.data.status).toBe('queued');
-    expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(10);
+    for (let tick = 1; tick < 60; tick++) expect((await processEarlyAccessCampaigns(m.store, m.store.send)).processed).toBe(1);
+    expect(m.sent).toHaveLength(60);
     expect(m.docs.get(`${EA.campaigns}/batch-campaign`)!.data.status).toBe('sent');
   });
 
@@ -574,11 +575,11 @@ describe('Early Access privacy and races', () => {
     await handleEarlyAccessPublic(request(`/api/early-access/unsubscribe?token=${m.token('unsubscribe')}`), m.store);
     expect(JSON.stringify(m.docs.get(`${EA.subscribers}/${id}`))).toBe(before);
   });
-  test('retention reads one page of twenty and rechecks fresh state', async () => {
+  test('retention reads one page of five and rechecks fresh state', async () => {
     const m = memoryStore();
     m.put(EA.subscribers, 'old', { email: 'old@example.com', createdAt: '2020-01-01', retentionAt: '2021-01-01' });
     await retainEarlyAccess(m.store);
-    expect(m.queries.length).toBe(1); expect(m.queries[0].limit).toBe(20);
+    expect(m.queries.length).toBe(1); expect(m.queries[0].limit).toBe(5);
     expect(m.docs.get(`${EA.subscribers}/old`)!.data.status).toBe('anonymized');
   });
   test('retention does zero daytime IO and only one daily leased query across racing isolates', async () => {

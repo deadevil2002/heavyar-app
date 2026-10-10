@@ -26,7 +26,7 @@ export async function retainEarlyAccess(store: EarlyAccessStore, now = Date.now(
   const rows = await store.query(EA.subscribers, {
     from: [{ collectionId: EA.subscribers }],
     where: { fieldFilter: { field: { fieldPath: 'retentionAt' }, op: 'LESS_THAN_OR_EQUAL', value: { timestampValue: new Date(now).toISOString() } } },
-    orderBy: [{ field: { fieldPath: 'retentionAt' }, direction: 'ASCENDING' }], limit: 20,
+    orderBy: [{ field: { fieldPath: 'retentionAt' }, direction: 'ASCENDING' }], limit: 5,
   });
   let anonymized = 0;
   for (const row of rows) {

@@ -20,6 +20,16 @@ import { reserveCloudinaryUploadQuota as reserveCloudinaryUploadQuotaAttempt, ty
 import { evaluateCapabilities, isSaudiTruckRentalWithoutDriver, validateRegulatoryDocumentSubmission, type RegulatoryDocument } from './regulatory';
 import { CURRENT_POLICY_ACCEPTANCE_MODE, INCIDENT_TYPES, LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED, LEGACY_POLICY_ACCEPTANCE_MODE, PRIVACY_REQUEST_TYPES, acceptanceIsCurrent, complaintServiceTargets, policyAcceptanceState, regulatoryDecision, requiredPolicyVersions, safeUserExport, validatePolicyAcceptance } from './compliance';
 import { googleServiceAccountToken as googleToken } from './google-auth';
+import {
+  consumeScheduledSubrequest,
+  createScheduledGlobalBudget,
+  createScheduledProcessorBudget,
+  isScheduledBudgetDeferred,
+  rotatedScheduledProcessors,
+  scheduledExternalFetch,
+  type ScheduledBudgetView,
+  type ScheduledProcessorName,
+} from './scheduled-budget';
 
 interface KVNamespace { get(key: string, type?: 'json'): Promise<any>; put(key: string, value: string, options?: { expirationTtl: number }): Promise<void>; delete(key: string): Promise<void>; }
 export interface Env {
@@ -37,6 +47,7 @@ export interface Env {
   CF_VERSION_METADATA?: { id?: string; tag?: string };
   __executionCtx?: { waitUntil(promise: Promise<unknown>): void };
   __diagnostics?: MutationDiagnostics;
+  __scheduledBudget?: ScheduledBudgetView;
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
@@ -201,15 +212,44 @@ function firestoreUrl(env: Env, path: string) {
 }
 async function commitWrites(env: Env, writes: unknown[], transaction?: string) {
   if (capturedCommits) { capturedCommits.push(writes); return; }
-  const sourceWrites = (writes as any[]).map(write => String(write?.update?.name || '').includes('/notificationOutbox/')
-    ? { ...write, currentDocument: undefined } : write);
+  const sourceWrites = writes as any[];
+  const outboxWrites = sourceWrites.filter(write => String(write?.update?.name || '').includes('/notificationOutbox/'));
   const businessWrites = sourceWrites.filter(write => !String(write?.update?.name || '').includes('/notificationOutbox/'));
   let r: any = true;
-  try { r = sourceWrites.length ? await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes: sourceWrites, ...(transaction ? { transaction } : {}) }) }) : true; }
-  catch (error) { if (businessWrites.length) throw error; return; }
+  let committedOutboxWrites = outboxWrites;
+  try {
+    r = sourceWrites.length ? await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes: sourceWrites, ...(transaction ? { transaction } : {}) }) }) : true;
+  } catch (error) {
+    if (!(error instanceof FirestorePreconditionError) || !outboxWrites.length) {
+      if (businessWrites.length) throw error;
+      return;
+    }
+    const references = outboxWrites.map(write => ({
+      collection: 'notificationOutbox',
+      id: decodeURIComponent(String(write.update.name).split('/').pop() || ''),
+    }));
+    const existing = await batchGetRawDocs(env, references);
+    const missing: any[] = [];
+    for (const write of outboxWrites) {
+      const id = decodeURIComponent(String(write.update.name).split('/').pop() || '');
+      const prior = existing.get(`notificationOutbox/${id}`)?.data;
+      const fields = write.update?.fields || {};
+      const matches = prior
+        && prior.notificationId === fields.notificationId?.stringValue
+        && prior.occurrenceKey === fields.occurrenceKey?.stringValue
+        && prior.uid === fields.uid?.stringValue
+        && prior.event === fields.event?.stringValue;
+      if (!prior) missing.push(write);
+      else if (!matches) throw error;
+    }
+    const retryWrites = [...businessWrites, ...missing];
+    r = retryWrites.length ? await fs(env, ':commit', { method: 'POST', body: JSON.stringify({ writes: retryWrites, ...(transaction ? { transaction } : {}) }) }) : true;
+    committedOutboxWrites = missing;
+  }
   if (!r) err('Firestore commit failed');
   // Outbox processing is request-scoped and never changes the source result.
-  for (const write of sourceWrites) {
+  // Scheduled work leaves pending occurrences to the bounded outbox processor.
+  for (const write of env.__scheduledBudget ? [] : committedOutboxWrites) {
     const fields = write?.update?.fields, name = String(write?.update?.name || '');
     if (fields?.notificationId?.stringValue && name.includes('/notificationOutbox/')) {
       env.__executionCtx?.waitUntil(processNotificationOutbox(env, fields));
@@ -234,7 +274,9 @@ async function fs(env: Env, path: string, init?: RequestInit): Promise<any> {
   }
   let r: Response;
   try {
-    r = await quotaFetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${await googleToken(env)}`, 'Content-Type': 'application/json', ...(init?.headers || {}) } });
+    const token = await googleToken(env);
+    consumeScheduledSubrequest(env.__scheduledBudget, 'firestore');
+    r = await quotaFetch(firestoreUrl(env, path), { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init?.headers || {}) } });
   } catch (error) {
     if (diagnostics && isQuotaError(error)) diagnostics.quota.exhausted = true;
     if (diagnostics && !diagnostics.firestoreFailure) diagnostics.firestoreFailure = { operation, status: 0 };
@@ -686,10 +728,10 @@ function notificationCursor(value: string | null) {
 function nextNotificationCursor(orderValue: unknown, id: string) {
   return b64u(enc.encode(JSON.stringify({ orderValue, id })));
 }
-async function notificationDevices(env: Env, uid: string) {
+async function notificationDevices(env: Env, uid: string, limit = 100) {
   const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
     from: [{ collectionId: 'deviceTokens' }], where: { fieldFilter: { field: { fieldPath: 'uid' }, op: 'EQUAL', value: { stringValue: uid } } },
-    limit: 100,
+    limit,
   } }) });
   const candidates = await Promise.all((result || []).map(async (x: any) => {
     const value: any = { name: x.document?.name, ...decode(x.document || x) };
@@ -922,11 +964,11 @@ async function deliverNotificationPush(env: Env, uid: string, notificationId: st
     const preferences = await getDoc(env, 'notificationPreferences', uid);
     const category = String(fields.category?.stringValue || 'security') as NotificationCategory;
     if (!isCriticalCategory(category) && preferences?.[category] === false) return;
-    const devices = (await notificationDevices(env, uid)).filter((device: any) => !onlyTokenHash || device.tokenHash === onlyTokenHash);
+    const devices = (await notificationDevices(env, uid, env.__scheduledBudget ? 2 : 100)).filter((device: any) => !onlyTokenHash || device.tokenHash === onlyTokenHash);
     const batches = [];
     for (let i = 0; i < devices.length; i += 100) batches.push(devices.slice(i, i + 100));
     for (const batch of batches.slice(0, 2)) {
-      const response = await fetch('https://exp.host/--/api/v2/push/send', {
+      const response = await scheduledExternalFetch(env, 'push_provider', 'https://exp.host/--/api/v2/push/send', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(batch.map((device: any) => ({ to: device.token, title: fields.titleEn?.stringValue, body: fields.bodyEn?.stringValue, data: {
           notificationId, category,
@@ -952,7 +994,7 @@ async function deliverNotificationPush(env: Env, uid: string, notificationId: st
 }
 async function processPendingNotificationOutbox(env: Env) {
   try {
-    const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'notificationOutbox' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: { stringValue: 'pending' } } }, orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' }], limit: 100 } }) }) as any[] || [];
+    const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'notificationOutbox' }], where: { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: { stringValue: 'pending' } } }, orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' }], limit: 1 } }) }) as any[] || [];
     for (const row of rows) {
       const fields = row.document?.fields || {};
       if (fields.status?.stringValue === 'pending' && fields.notificationId) await processNotificationOutbox(env, fields);
@@ -966,7 +1008,7 @@ async function retryDueNotificationDeliveries(env: Env) {
       from: [{ collectionId: 'notificationDeliveries' }], where: { compositeFilter: { op: 'AND', filters: [
         { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: { stringValue: 'retryable' } } },
         { fieldFilter: { field: { fieldPath: 'nextAttemptAt' }, op: 'LESS_THAN_OR_EQUAL', value: { timestampValue: now } } },
-      ] } }, limit: 100,
+      ] } }, limit: 1,
     } }) }) as any[] || [];
     for (const row of rows) {
       const delivery = decode(row.document || row), attempts = Number(delivery.attempts || 1);
@@ -978,7 +1020,7 @@ async function retryDueNotificationDeliveries(env: Env) {
       const installation = tokenDoc?.data?.installationId && await getDoc(env, 'notificationInstallations', await hashedId(String(tokenDoc.data.installationId)));
       if (!tokenDoc?.data?.token || owner?.uid !== delivery.uid || owner?.active !== true || installation?.uid !== delivery.uid || installation?.tokenId !== delivery.tokenHash) continue;
       const action = inbox.data.action && typeof inbox.data.action === 'object' ? inbox.data.action : {};
-      const push = await fetch('https://exp.host/--/api/v2/push/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify([{ to: tokenDoc.data.token, title: String(inbox.data.titleEn || ''), body: String(inbox.data.bodyEn || ''), data: { notificationId: delivery.notificationId, action: String(action.type || 'profile'), subjectId: String(action.subjectId || '') } }]) });
+      const push = await scheduledExternalFetch(env, 'push_provider', 'https://exp.host/--/api/v2/push/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify([{ to: tokenDoc.data.token, title: String(inbox.data.titleEn || ''), body: String(inbox.data.bodyEn || ''), data: { notificationId: delivery.notificationId, action: String(action.type || 'profile'), subjectId: String(action.subjectId || '') } }]) });
       const ticket = (await push.json().catch(() => ({})) as any)?.data?.[0] || {}, nextAt = new Date(Date.now() + Math.min(3600000, 60000 * (2 ** attempts))).toISOString();
       const fields = { status: { stringValue: ticket.status === 'ok' ? 'ticketed' : 'retryable' }, ticketId: { stringValue: String(ticket.id || '') }, receiptPending: { booleanValue: ticket.status === 'ok' }, attempts: { integerValue: String(attempts + 1) }, nextAttemptAt: { timestampValue: nextAt }, updatedAt: { timestampValue: new Date().toISOString() } };
       try { await compareAndSwap(env, String(row.document?.name || '').split('/documents/')[1], row.document.updateTime, fields); } catch { continue; }
@@ -993,11 +1035,11 @@ async function pollNotificationReceipts(env: Env) {
         { fieldFilter: { field: { fieldPath: 'status' }, op: 'EQUAL', value: { stringValue: 'ticketed' } } },
         { fieldFilter: { field: { fieldPath: 'receiptPending' }, op: 'EQUAL', value: { booleanValue: true } } },
       ] } },
-      limit: 100,
+      limit: 10,
     } }) }) as any[] || [];
     const ids = rows.map(row => decode(row.document || row).ticketId).filter((id: string) => id);
     if (!ids.length) return;
-    const response = await fetch('https://exp.host/--/api/v2/push/getReceipts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+    const response = await scheduledExternalFetch(env, 'push_provider', 'https://exp.host/--/api/v2/push/getReceipts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
     const data = await response.json().catch(() => ({})) as any;
     const receipts = data?.data || {};
     for (const row of rows) {
@@ -1288,17 +1330,17 @@ async function submitRegulatoryDocument(req: Request, env: Env, u: User) {
   await commitWrites(env, writes);
   return out(env, req, { success: true, document: safeRegulatoryDocument(document) }, 201);
 }
-async function processRegulatoryExpiry(env: Env) {
+export async function processRegulatoryExpiry(env: Env) {
   const now = new Date().toISOString();
   const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
     from: [{ collectionId: 'regulatoryExpiryQueue' }], where: { fieldFilter: { field: { fieldPath: 'expiresAt' }, op: 'LESS_THAN_OR_EQUAL', value: { timestampValue: now } } },
-    orderBy: [{ field: { fieldPath: 'expiresAt' }, direction: 'ASCENDING' }], limit: 25,
+    orderBy: [{ field: { fieldPath: 'expiresAt' }, direction: 'ASCENDING' }], limit: 3,
   } }) }) as any[] || [];
   const queued = rows.filter(item => item?.document?.name && item?.document?.fields).map(row => ({ row, queueId: String(row.document.name).split('/').pop()!, queue: decode(row.document) }));
   const documents = await batchGetRawDocs(env, queued.map(item => ({ collection: 'regulatoryDocuments', id: String(item.queue.documentId || item.queueId) })));
   for (const { row, queueId, queue } of queued) {
     const documentId = String(queue.documentId || queueId), raw = documents.get(`regulatoryDocuments/${documentId}`);
-    const writes: any[] = [{ delete: fullName(env, `regulatoryExpiryQueue/${queueId}`) }];
+    const writes: any[] = [{ delete: fullName(env, `regulatoryExpiryQueue/${queueId}`), currentDocument: row.document.updateTime ? { updateTime: row.document.updateTime } : undefined }];
     if (raw && !['EXPIRED', 'REVOKED', 'REJECTED'].includes(String(raw.data.reviewStatus || ''))) {
       writes.unshift({ update: { name: fullName(env, `regulatoryDocuments/${encodeURIComponent(String(queue.documentId || queueId))}`), fields: { reviewStatus: { stringValue: 'EXPIRED' }, expiredAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['reviewStatus', 'expiredAt', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } });
       writes.push(await notificationWrite(fullName.bind(null, env), String(raw.data.ownerUid), 'verification_expired', now, String(queue.documentId || queueId), `regulatory-expired:${queueId}`));
@@ -2875,7 +2917,7 @@ async function resendSenderReady(env: Env) {
 }
 export async function sendResend(env: Env, to: string, subject: string, html: string, idempotencyKey?: string, text?: string): Promise<EmailDeliveryResult> {
   if (!await resendSenderReady(env)) return { delivered: false, provider: 'none', outcome: resendLastOutcome };
-  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) }, body: JSON.stringify({ from: resendFrom(env), to: [to], subject, html, ...(text ? { text } : {}) }) });
+  const response = await scheduledExternalFetch(env, 'resend', 'https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) }, body: JSON.stringify({ from: resendFrom(env), to: [to], subject, html, ...(text ? { text } : {}) }) });
   const result: any = await response.json().catch(() => null);
   resendLastOutcome = response.ok ? 'accepted' : response.status === 401 || response.status === 403 ? 'auth_failed' : response.status === 429 ? 'rate_limited' : response.status === 400 && /sender|domain|from/i.test(String(result?.name || result?.message || '')) ? 'sender_rejected' : 'provider_error';
   resendLastDeliverySucceeded = response.ok;
@@ -4263,8 +4305,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
   const requestEnv = { ...env, __executionCtx: executionCtx };
   executionCtx.waitUntil((async () => {
     let processorFailed = false;
-    // Sequence processors so exhaustion in one prevents the next scan. Existing
-    // per-record leases/idempotency remain unchanged; future ticks can recover.
+    const globalBudget = createScheduledGlobalBudget();
     const processors = [
       ['processPendingNotificationOutbox', processPendingNotificationOutbox],
       ['processScheduledCampaigns', processScheduledCampaigns],
@@ -4278,11 +4319,14 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       ['processEarlyAccessRetention', processEarlyAccessRetention],
       ['processTemporaryComplianceCleanup', processTemporaryComplianceCleanup],
     ] as const;
-    for (const [processorName, processor] of processors) {
+    const scheduledTime = Number((_event as { scheduledTime?: unknown } | null)?.scheduledTime || 0);
+    for (const [processorName, processor] of rotatedScheduledProcessors(processors, scheduledTime)) {
       if (quotaBlocked()) break;
-      try { await processor(requestEnv); }
+      const budget = createScheduledProcessorBudget(globalBudget, processorName as ScheduledProcessorName);
+      try { await processor({ ...requestEnv, __scheduledBudget: budget }); }
       catch (error) {
         if (isQuotaError(error)) break;
+        if (isScheduledBudgetDeferred(error)) continue;
         processorFailed = true;
         const candidateCode = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
         const candidateClass = error instanceof Error ? error.name : '';
@@ -4291,6 +4335,12 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
           processor: processorName,
           ...(candidateCode && /^[A-Z0-9_]{1,64}$/.test(candidateCode) ? { errorCode: candidateCode } : {}),
           errorClass: /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(candidateClass) ? candidateClass : error instanceof Error ? 'Error' : 'UnknownError',
+        }));
+      } finally {
+        if (budget.state.deferred) console.info(JSON.stringify({
+          event: 'scheduled_processor_deferred',
+          processor: processorName,
+          reason: 'SUBREQUEST_BUDGET_DEFERRED',
         }));
       }
     }
