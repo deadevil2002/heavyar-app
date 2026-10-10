@@ -12,6 +12,26 @@ const request = (path: string, body?: unknown, headers: Record<string, string> =
   });
 const putRequest = (path: string, body: unknown, headers: Record<string, string> = {}) =>
   new Request(`https://worker.test${path}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+const firestoreField = (value: any): any => Array.isArray(value)
+  ? { arrayValue: { values: value.map(firestoreField) } }
+  : value && typeof value === 'object'
+    ? { mapValue: { fields: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, firestoreField(item)])) } }
+    : typeof value === 'string'
+      ? { stringValue: value }
+      : typeof value === 'boolean'
+        ? { booleanValue: value }
+        : { integerValue: String(value) };
+const firestoreDocument = (name: string, data: any, updateTime = '2026-10-10T00:00:00.000Z') => ({
+  name: `projects/p/databases/(default)/documents/${name}`,
+  updateTime,
+  fields: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, firestoreField(value)])),
+});
+async function firestoreWorkerEnv(clientEmail: string) {
+  const keyPair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']) as CryptoKeyPair;
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey));
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${btoa(String.fromCharCode(...pkcs8)).match(/.{1,64}/g)!.join('\n')}\n-----END PRIVATE KEY-----`;
+  return { ...env, FIREBASE_PROJECT_ID: 'p', FIREBASE_CLIENT_EMAIL: clientEmail, FIREBASE_PRIVATE_KEY: privateKey } as Env;
+}
 
 describe('admin authorization and operational boundary', () => {
   beforeEach(() => {
@@ -266,6 +286,122 @@ describe('admin authorization and operational boundary', () => {
     const preview = await handleAdmin(request('/api/admin/email-verification/reminders/preview', { uids: ['reserved'] }), env, admin) as any;
     expect(preview.cooldown).toBe(1);
     expect(preview.eligible).toBe(0);
+  });
+
+  test('deletion lease refresh uses a sibling update mask before stage work', async () => {
+    const originalFetch = globalThis.fetch;
+    const commits: any[][] = [];
+    let userRead = false;
+    const testEnv = await firestoreWorkerEnv('lease-shape@example.test');
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) return new Response(JSON.stringify({ access_token: 'token' }), { status: 200 });
+      if (url.includes(':commit')) {
+        commits.push(JSON.parse(String(init?.body || '{}')).writes || []);
+        return new Response('{}', { status: 200 });
+      }
+      if (url.includes(':runQuery')) {
+        const query = JSON.parse(String(init?.body || '{}')).structuredQuery || {};
+        if (query.from?.[0]?.collectionId === 'deletionRequests') {
+          return new Response(JSON.stringify([{ document: firestoreDocument('deletionRequests/user:target', { uid: 'target', status: 'queued', stage: 'auth', actorUid: 'owner', completedStages: [], errors: [] }) }]), { status: 200 });
+        }
+        return new Response('[]', { status: 200 });
+      }
+      if (url.includes('/documents/users/target')) {
+        userRead = true;
+        return new Response('{}', { status: 404 });
+      }
+      return new Response('{}', { status: 404 });
+    }) as typeof fetch;
+    try {
+      await expect(processDeletionJobs(testEnv)).resolves.toBeUndefined();
+      const acquisition = commits[0][0];
+      const refresh = commits[1][0];
+      expect(acquisition.update.fields.status.stringValue).toBe('processing');
+      expect(refresh.update.updateMask).toBeUndefined();
+      expect(refresh.updateMask.fieldPaths).toEqual(['leaseOwner', 'leaseUntil']);
+      expect(userRead).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('deletion lease refresh failure is durably recovered without an uncaught scheduled error', async () => {
+    const originalFetch = globalThis.fetch;
+    const originalConsoleError = console.error;
+    const commits: any[][] = [];
+    const schedulerErrors: string[] = [];
+    const testEnv = await firestoreWorkerEnv('lease-recovery@example.test');
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) return new Response(JSON.stringify({ access_token: 'token' }), { status: 200 });
+      if (url.includes(':commit')) {
+        const writes = JSON.parse(String(init?.body || '{}')).writes || [];
+        commits.push(writes);
+        const refresh = writes[0]?.updateMask?.fieldPaths;
+        if (Array.isArray(refresh) && refresh.length === 2 && refresh[0] === 'leaseOwner' && refresh[1] === 'leaseUntil') {
+          return new Response(JSON.stringify({ error: { status: 'INVALID_ARGUMENT' } }), { status: 400 });
+        }
+        return new Response('{}', { status: 200 });
+      }
+      if (url.includes(':runQuery')) {
+        const query = JSON.parse(String(init?.body || '{}')).structuredQuery || {};
+        if (query.from?.[0]?.collectionId === 'deletionRequests') {
+          return new Response(JSON.stringify([{ document: firestoreDocument('deletionRequests/user:target', { uid: 'target', status: 'queued', stage: 'auth', actorUid: 'owner', completedStages: [], errors: [] }) }]), { status: 200 });
+        }
+        return new Response('[]', { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    }) as typeof fetch;
+    console.error = (...args: unknown[]) => { schedulerErrors.push(args.map(String).join(' ')); };
+    try {
+      let scheduledWork: Promise<unknown> | undefined;
+      await worker.scheduled(undefined, testEnv, { waitUntil(promise) { scheduledWork = promise; } });
+      expect(scheduledWork === undefined).toBe(false);
+      await expect(scheduledWork!).resolves.toBeUndefined();
+      const recovery = commits.flat().find(write => write.update?.fields?.attempts?.integerValue === '1');
+      expect(recovery.update.fields.status.stringValue).toBe('partially_completed');
+      expect(recovery.update.fields.errors.arrayValue.values[0].stringValue).toBe('auth:Firestore unavailable');
+      expect(recovery.update.fields.leaseOwner.nullValue).toBeNull();
+      expect(recovery.update.fields.leaseUntil.nullValue).toBeNull();
+      expect(schedulerErrors).toEqual([]);
+    } finally {
+      console.error = originalConsoleError;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('scheduled diagnostics name a failed processor safely and continue later processors', async () => {
+    const originalFetch = globalThis.fetch;
+    const originalConsoleError = console.error;
+    const schedulerErrors: string[] = [];
+    let deletionProcessorReached = false;
+    const testEnv = await firestoreWorkerEnv('scheduled-diagnostics@example.test');
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) return new Response(JSON.stringify({ access_token: 'token' }), { status: 200 });
+      if (url.includes(':runQuery')) {
+        const query = JSON.parse(String(init?.body || '{}')).structuredQuery || {};
+        const collection = query.from?.[0]?.collectionId;
+        if (collection === 'staffClaimSync') return new Response(JSON.stringify({ error: { status: 'INTERNAL' } }), { status: 500 });
+        if (collection === 'deletionRequests') deletionProcessorReached = true;
+        return new Response('[]', { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    }) as typeof fetch;
+    console.error = (...args: unknown[]) => { schedulerErrors.push(args.map(String).join(' ')); };
+    try {
+      let scheduledWork: Promise<unknown> | undefined;
+      await worker.scheduled(undefined, testEnv, { waitUntil(promise) { scheduledWork = promise; } });
+      expect(scheduledWork === undefined).toBe(false);
+      await expect(scheduledWork!).rejects.toThrow('Scheduled maintenance temporarily unavailable.');
+      expect(deletionProcessorReached).toBe(true);
+      expect(schedulerErrors).toHaveLength(1);
+      expect(JSON.parse(schedulerErrors[0])).toEqual({ event: 'scheduled_processor_failed', processor: 'processStaffClaimSync', errorClass: 'Error' });
+    } finally {
+      console.error = originalConsoleError;
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test('deletion historical verification events advance a durable cursor beyond the first 100', async () => {

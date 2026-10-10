@@ -1300,7 +1300,7 @@ async function processRegulatoryExpiry(env: Env) {
     const documentId = String(queue.documentId || queueId), raw = documents.get(`regulatoryDocuments/${documentId}`);
     const writes: any[] = [{ delete: fullName(env, `regulatoryExpiryQueue/${queueId}`) }];
     if (raw && !['EXPIRED', 'REVOKED', 'REJECTED'].includes(String(raw.data.reviewStatus || ''))) {
-      writes.unshift({ update: { name: fullName(env, `regulatoryDocuments/${encodeURIComponent(String(queue.documentId || queueId))}`), fields: { reviewStatus: { stringValue: 'EXPIRED' }, expiredAt: { timestampValue: now }, updatedAt: { timestampValue: now } }, updateMask: { fieldPaths: ['reviewStatus', 'expiredAt', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } } });
+      writes.unshift({ update: { name: fullName(env, `regulatoryDocuments/${encodeURIComponent(String(queue.documentId || queueId))}`), fields: { reviewStatus: { stringValue: 'EXPIRED' }, expiredAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['reviewStatus', 'expiredAt', 'updatedAt'] }, currentDocument: { updateTime: raw.updateTime } });
       writes.push(await notificationWrite(fullName.bind(null, env), String(raw.data.ownerUid), 'verification_expired', now, String(queue.documentId || queueId), `regulatory-expired:${queueId}`));
     }
     await commitWrites(env, writes);
@@ -4265,11 +4265,34 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     let processorFailed = false;
     // Sequence processors so exhaustion in one prevents the next scan. Existing
     // per-record leases/idempotency remain unchanged; future ticks can recover.
-    for (const processor of [processPendingNotificationOutbox, processScheduledCampaigns, processScheduledEarlyAccessCampaigns, processEmailVerificationReminderJobs,
-      processStaffClaimSync, processDeletionJobs, processRegulatoryExpiry, retryDueNotificationDeliveries, pollNotificationReceipts, processEarlyAccessRetention, processTemporaryComplianceCleanup]) {
+    const processors = [
+      ['processPendingNotificationOutbox', processPendingNotificationOutbox],
+      ['processScheduledCampaigns', processScheduledCampaigns],
+      ['processScheduledEarlyAccessCampaigns', processScheduledEarlyAccessCampaigns],
+      ['processEmailVerificationReminderJobs', processEmailVerificationReminderJobs],
+      ['processStaffClaimSync', processStaffClaimSync],
+      ['processDeletionJobs', processDeletionJobs],
+      ['processRegulatoryExpiry', processRegulatoryExpiry],
+      ['retryDueNotificationDeliveries', retryDueNotificationDeliveries],
+      ['pollNotificationReceipts', pollNotificationReceipts],
+      ['processEarlyAccessRetention', processEarlyAccessRetention],
+      ['processTemporaryComplianceCleanup', processTemporaryComplianceCleanup],
+    ] as const;
+    for (const [processorName, processor] of processors) {
       if (quotaBlocked()) break;
       try { await processor(requestEnv); }
-      catch (error) { if (isQuotaError(error)) break; processorFailed = true; }
+      catch (error) {
+        if (isQuotaError(error)) break;
+        processorFailed = true;
+        const candidateCode = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+        const candidateClass = error instanceof Error ? error.name : '';
+        console.error(JSON.stringify({
+          event: 'scheduled_processor_failed',
+          processor: processorName,
+          ...(candidateCode && /^[A-Z0-9_]{1,64}$/.test(candidateCode) ? { errorCode: candidateCode } : {}),
+          errorClass: /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(candidateClass) ? candidateClass : error instanceof Error ? 'Error' : 'UnknownError',
+        }));
+      }
     }
     if (processorFailed) throw new Error('Scheduled maintenance temporarily unavailable.');
   })());

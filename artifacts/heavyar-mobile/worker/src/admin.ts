@@ -1476,8 +1476,8 @@ async function processDeletionJob(env: Env, row: any) {
     if (completed.has(stage)) continue;
     let stageMore = false;
     let mediaCursorNext: string | undefined;
-    await commit(env, [{ update: { name, fields: { leaseOwner: jsonValue(leaseOwner), leaseUntil: { timestampValue: new Date(Date.now() + 120000).toISOString() } }, updateMask: { fieldPaths: ['leaseOwner', 'leaseUntil'] } } }]);
     try {
+      await commit(env, [{ update: { name, fields: { leaseOwner: jsonValue(leaseOwner), leaseUntil: { timestampValue: new Date(Date.now() + 120000).toISOString() } } }, updateMask: { fieldPaths: ['leaseOwner', 'leaseUntil'] } }]);
       if (stage === 'auth') {
         const currentTarget = await rawDoc(env, 'users', uid);
         if (!currentTarget?.data || await protectedDeletionTarget(env, { uid: String(job.actorUid || ''), admin: true, role: 'super_admin', permissionRole: 'owner' }, uid, currentTarget.data)) {
