@@ -21,7 +21,9 @@ describe('mobile data-flow architecture guardrails', () => {
       expect(source).not.toContain('fetch(`${WORKER_BASE_URL}');
     }
     const publicSearch = read('../services/equipmentSearchService.ts');
-    expect(publicSearch).toContain('setTimeout(() => controller.abort(), 15_000)');
+    expect(publicSearch).toContain('EQUIPMENT_REQUEST_TIMEOUT_MS = 15_000');
+    expect(publicSearch).toContain("reject(new Error('EQUIPMENT_REQUEST_TIMEOUT'))");
+    expect(publicSearch).toContain('controller.abort()');
     expect(publicSearch).toContain("'worker.api.equipment.search'");
     expect(publicSearch).toContain("'worker.api.equipment.detail'");
     expect(publicSearch).toContain('trackNetwork(label');

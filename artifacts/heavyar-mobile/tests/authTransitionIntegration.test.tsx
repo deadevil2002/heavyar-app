@@ -177,6 +177,7 @@ describe('AuthContext canonical session transitions', () => {
     await act(async () => { expect(await loginResult).toBeInstanceOf(Error); });
     expect(auth.sessionReady).toBe(true);
     expect(auth.isAuthenticated).toBe(false);
+    expect(auth.identityEmail).toBeNull();
   });
 
   it('keeps cold restore blocked until the persisted identity is canonical', async () => {

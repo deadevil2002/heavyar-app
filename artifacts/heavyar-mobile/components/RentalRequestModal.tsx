@@ -30,6 +30,12 @@ type Props = {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+function qaRentalSubmitBlocked(equipmentId: string): boolean {
+  if (process.env.EXPO_PUBLIC_HEAVYAR_QA_READ_ONLY !== '1') return false;
+  const allowedFixture = process.env.EXPO_PUBLIC_HEAVYAR_QA_MUTATION_EQUIPMENT_ID?.trim();
+  return !allowedFixture || allowedFixture !== equipmentId;
+}
+
 export default function RentalRequestModal({ visible, equipment, onClose, onSubmit }: Props) {
   const { isRTL, language, t } = useLanguage();
   const pricing = useMemo(() => listingPricing(equipment), [equipment]);
@@ -46,6 +52,7 @@ export default function RentalRequestModal({ visible, equipment, onClose, onSubm
   const [estimating, setEstimating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const qaSubmitBlocked = qaRentalSubmitBlocked(equipment.id);
 
   useEffect(() => {
     setEstimate(null);
@@ -109,7 +116,7 @@ export default function RentalRequestModal({ visible, equipment, onClose, onSubm
   };
 
   const submit = async () => {
-    if (!estimate || submitting) return;
+    if (!estimate || submitting || qaSubmitBlocked) return;
     try {
       setSubmitting(true);
       await onSubmit(input());
@@ -185,8 +192,17 @@ export default function RentalRequestModal({ visible, equipment, onClose, onSubm
             </ScrollView>
             <View style={[styles.footer, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
               <Pressable style={styles.secondary} onPress={estimate ? () => setEstimate(null) : onClose}><Text style={styles.secondaryText}>{estimate ? (language === 'ar' ? 'تعديل' : 'Edit') : t('cancel')}</Text></Pressable>
-              <Pressable style={[styles.primary, (estimating || submitting) && styles.disabled]} onPress={estimate ? submit : requestEstimate} disabled={estimating || submitting}>
-                {(estimating || submitting) ? <ActivityIndicator color={Colors.primary} /> : <Text style={styles.primaryText}>{estimate ? t('submit_request') : t('review_estimate')}</Text>}
+              <Pressable
+                accessibilityLabel={estimate && qaSubmitBlocked ? 'QA read-only: rental submission disabled' : undefined}
+                style={[styles.primary, (estimating || submitting || (estimate && qaSubmitBlocked)) && styles.disabled]}
+                onPress={estimate ? submit : requestEstimate}
+                disabled={estimating || submitting || (estimate !== null && qaSubmitBlocked)}
+              >
+                {(estimating || submitting) ? <ActivityIndicator color={Colors.primary} /> : <Text style={styles.primaryText}>
+                  {estimate && qaSubmitBlocked
+                    ? (language === 'ar' ? 'QA للقراءة فقط' : 'QA read-only')
+                    : estimate ? t('submit_request') : t('review_estimate')}
+                </Text>}
               </Pressable>
             </View>
           </View>

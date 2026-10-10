@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchPublicEquipmentById } from '../services/equipmentSearchService';
+import { EQUIPMENT_REQUEST_TIMEOUT_MS, fetchPublicEquipmentById } from '../services/equipmentSearchService';
 import { invalidatePublicEquipment } from '../services/discoveryInvalidation';
 
 describe('public equipment detail transport', () => {
   afterEach(() => {
     invalidatePublicEquipment();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -70,6 +71,16 @@ describe('public equipment detail transport', () => {
     await expect(fetchPublicEquipmentById('retry-id')).rejects.toThrow('EQUIPMENT_DETAIL_UNAVAILABLE');
     await expect(fetchPublicEquipmentById('retry-id')).resolves.toMatchObject({ id: 'retry-id' });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects at the local deadline even when native fetch ignores abort', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => undefined)));
+
+    const request = fetchPublicEquipmentById('timeout-id');
+    const rejection = expect(request).rejects.toThrow('EQUIPMENT_REQUEST_TIMEOUT');
+    await vi.advanceTimersByTimeAsync(EQUIPMENT_REQUEST_TIMEOUT_MS);
+    await rejection;
   });
 
   it('clears cached public detail when listing mutations invalidate discovery', async () => {

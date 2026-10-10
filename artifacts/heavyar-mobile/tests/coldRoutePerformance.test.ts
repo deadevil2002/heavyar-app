@@ -59,6 +59,15 @@ describe('cold route code prewarm', () => {
     expect(requestsSource).not.toContain("import('@/services/firestoreService')");
     expect(requestsSource).not.toMatch(/import\s*\{[^}]*subscribeToUserRequests[^}]*\}\s*from\s*['"]@\/services\/firestoreService/);
   });
+
+  it('bounds the initial request listener and does not report cached-module age as route latency', () => {
+    const requestsSource = source('app/(tabs)/requests/index.tsx');
+    const routePerformanceSource = source('utils/routePerformance.ts');
+
+    expect(requestsSource).toContain('INITIAL_REQUESTS_TIMEOUT_MS = 15_000');
+    expect(requestsSource).toContain("new Error('REQUESTS_TIMEOUT')");
+    expect(routePerformanceSource).not.toContain('module_ready_before_press');
+  });
 });
 
 describe('request detail ephemeral snapshot', () => {

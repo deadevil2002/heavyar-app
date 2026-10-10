@@ -181,6 +181,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
           if (isStale()) { abandonMeasurement(); return; }
           setUser(null);
           setIsAuthenticated(false);
+          setIdentityEmail(null);
           await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
           if (isStale()) { abandonMeasurement(); return; }
           setAuthError('SESSION_EXPIRED');

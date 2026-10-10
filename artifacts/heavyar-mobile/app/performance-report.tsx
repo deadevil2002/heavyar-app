@@ -33,7 +33,7 @@ export default function PerformanceReportScreen() {
           <Text style={styles.heading}>{isRTL ? 'أبطأ العمليات' : 'Slowest operations'}</Text>
           {durations.slice(0, 20).map(metric => <View key={`${metric.kind}:${metric.label}`} style={styles.row}>
             <Text style={styles.label}>{metric.label}</Text>
-            <Text style={styles.value}>p50 {Math.round(metric.p50DurationMs || 0)} ms · p95 {Math.round(metric.p95DurationMs || 0)} ms · n={metric.count}</Text>
+            <Text style={styles.value}>p50 {Math.round(metric.p50DurationMs || 0)} ms · p95 {Math.round(metric.p95DurationMs || 0)} ms · max {Math.round(metric.maxDurationMs || 0)} ms · n={metric.count}</Text>
           </View>)}
           <Text style={styles.heading}>{isRTL ? 'أكبر استجابات JSON' : 'Largest JSON responses'}</Text>
           {sizes.slice(0, 20).map(metric => <View key={`${metric.label}:${metric.status}`} style={styles.row}>

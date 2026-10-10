@@ -68,7 +68,11 @@ vi.mock('../utils/mobilePerformance', () => ({ mobilePerformance: {
 } }));
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(async () => { if (root) await act(async () => root!.unmount()); root = undefined; });
+afterEach(async () => {
+  if (root) await act(async () => root!.unmount());
+  root = undefined;
+  vi.useRealTimers();
+});
 const settleDeferredSubscription = () => act(async () => {
   await new Promise(resolve => setTimeout(resolve, 160));
 });
@@ -107,4 +111,29 @@ it('surfaces a real Firestore listener error, retries subscription preserving ro
   await act(async () => root!.unmount()); root = undefined;
   expect(last.stop).toHaveBeenCalledTimes(1);
   expect(() => last.error(new Error('after unmount'))).not.toThrow();
+});
+
+it('ends silent initial loading at the watchdog bound and replaces the listener once on retry', async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  vi.useFakeTimers();
+  state.listeners = []; state.uid = 'provider-timeout';
+  const host = document.createElement('div');
+  root = createRoot(host);
+
+  await act(async () => root!.render(<Requests />));
+  await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+  expect(state.listeners).toHaveLength(1);
+  const first = state.listeners[0];
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBeTruthy();
+
+  const retry = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Retry')!;
+  await act(async () => retry.click());
+  await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+  expect(first.stop).toHaveBeenCalledTimes(1);
+  expect(state.listeners).toHaveLength(2);
+
+  await act(async () => state.listeners[1].next({ items: [], cursor: null, hasMore: false }));
+  expect(host.querySelector('[role="alert"]')).toBeNull();
 });

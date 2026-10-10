@@ -21,7 +21,7 @@ const clock = (): number => typeof performance !== 'undefined' && typeof perform
   : Date.now();
 
 const traces = new Map<MeasuredRoute, RouteTrace>();
-const moduleEvaluations = new Map<MeasuredRoute, { durationMs: number; completedAtMs: number }>();
+const moduleEvaluations = new Map<MeasuredRoute, { durationMs: number }>();
 
 /** Begins one privacy-safe route trace. A newer press supersedes an unfinished trace. */
 export function startRoutePress(route: MeasuredRoute): void {
@@ -42,10 +42,6 @@ export function startRoutePress(route: MeasuredRoute): void {
   const moduleEvaluation = moduleEvaluations.get(route);
   if (moduleEvaluation) {
     mobilePerformance.recordOperationDuration(`route.${route}.module_eval_cached`, moduleEvaluation.durationMs);
-    mobilePerformance.recordOperationDuration(
-      `route.${route}.module_ready_before_press`,
-      Math.max(0, clock() - moduleEvaluation.completedAtMs),
-    );
   } else {
     mobilePerformance.recordOperationDuration(`route.${route}.module_not_ready_at_press`, 0);
   }
@@ -83,7 +79,7 @@ export function startRouteModuleEvaluation(route: MeasuredRoute): OperationMeasu
       if (!active) return undefined;
       active = false;
       const durationMs = Math.max(0, clock() - startedAtMs);
-      moduleEvaluations.set(route, { durationMs, completedAtMs: clock() });
+      moduleEvaluations.set(route, { durationMs });
       measurement.complete(failed);
       return durationMs;
     },

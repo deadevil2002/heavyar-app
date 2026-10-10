@@ -18,6 +18,7 @@ import { markRouteStage, startRouteModuleEvaluation } from '@/utils/routePerform
 
 const requestsModuleEvaluation = startRouteModuleEvaluation('requests');
 const DriverRequestsSection = React.lazy(() => import('@/components/DriverRequestsSection'));
+const INITIAL_REQUESTS_TIMEOUT_MS = 15_000;
 
 export default function RequestsScreen() {
   markRouteStage('requests', 'component_first_execute');
@@ -125,11 +126,19 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
     let firstFrame = 0;
     let secondFrame = 0;
     let dataTimer: ReturnType<typeof setTimeout> | undefined;
+    let initialDataTimer: ReturnType<typeof setTimeout> | undefined;
     let dataInteraction: { cancel(): void } | undefined;
     const startData = () => void import('@/services/requestRealtimeService').then(service => {
       if (!active || identityRef.current !== identity) return;
+      initialDataTimer = setTimeout(() => {
+        if (!active || identityRef.current !== identity) return;
+        setInitialDataPending(false);
+        setLoadError(safeErrorMessage(new Error('REQUESTS_TIMEOUT'), isRTL ? 'ar' : 'en'));
+        markRouteStage('requests', 'fresh_data_complete');
+      }, INITIAL_REQUESTS_TIMEOUT_MS);
       unsubscribe = service.subscribeToRequestPage(currentUid, requestPerspective, (page) => {
         if (!active || identityRef.current !== identity) return;
+        if (initialDataTimer) clearTimeout(initialDataTimer);
         setLoadError('');
         setInitialDataPending(false);
         markRouteStage('requests', 'data_available');
@@ -152,6 +161,7 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
         }).catch(error => { if (active && identityRef.current === identity) setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en')); });
       }, error => {
         if (active && identityRef.current === identity) {
+          if (initialDataTimer) clearTimeout(initialDataTimer);
           setInitialDataPending(false);
           setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en'));
           markRouteStage('requests', 'fresh_data_complete');
@@ -159,6 +169,7 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
       });
     }).catch(error => {
       if (active && identityRef.current === identity) {
+        if (initialDataTimer) clearTimeout(initialDataTimer);
         setInitialDataPending(false);
         setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en'));
         markRouteStage('requests', 'fresh_data_complete');
@@ -177,6 +188,7 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
       cancelAnimationFrame(secondFrame);
       dataInteraction?.cancel();
       if (dataTimer) clearTimeout(dataTimer);
+      if (initialDataTimer) clearTimeout(initialDataTimer);
       unsubscribe();
     };
   }, [currentUid, requestPerspective, identity, subscriptionAttempt]);

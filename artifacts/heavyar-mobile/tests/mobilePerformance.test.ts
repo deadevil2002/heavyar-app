@@ -69,6 +69,24 @@ describe('mobilePerformance', () => {
     );
   });
 
+  it('does not let work started before reset contaminate the new sample window', async () => {
+    let finishNetwork!: (value: string) => void;
+    let finishFirestore!: (value: string) => void;
+    const network = trackNetwork('equipment.search', () => new Promise(resolve => { finishNetwork = resolve; }));
+    const firestore = trackFirestoreRead('requests.page', () => new Promise(resolve => { finishFirestore = resolve; }));
+    await Promise.resolve();
+
+    resetMobilePerformance();
+    finishNetwork('network-ok');
+    finishFirestore('firestore-ok');
+    await expect(network).resolves.toBe('network-ok');
+    await expect(firestore).resolves.toBe('firestore-ok');
+
+    const snapshot = snapshotMobilePerformance();
+    expect(snapshot.metrics.find(item => item.label === 'equipment.search')).toBeUndefined();
+    expect(snapshot.metrics.find(item => item.label === 'requests.page')).toBeUndefined();
+  });
+
   it('captures privacy-safe data-boundary percentiles and lifecycle counters', async () => {
     vi.useFakeTimers();
     const first = trackFirestoreRead('requests.page', async () => { await new Promise(resolve => setTimeout(resolve, 10)); return 1; });

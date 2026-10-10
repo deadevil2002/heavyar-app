@@ -18,8 +18,10 @@ describe('rental booking interaction network contract', () => {
   });
 
   it('locks estimate/create presses and issues one create request from the detail handler', () => {
-    expect(modal).toContain('if (!estimate || submitting) return;');
-    expect(modal).toContain('disabled={estimating || submitting}');
+    expect(modal).toContain('if (!estimate || submitting || qaSubmitBlocked) return;');
+    expect(modal).toContain("process.env.EXPO_PUBLIC_HEAVYAR_QA_READ_ONLY !== '1'");
+    expect(modal).toContain('EXPO_PUBLIC_HEAVYAR_QA_MUTATION_EQUIPMENT_ID');
+    expect(modal).toContain('disabled={estimating || submitting || (estimate !== null && qaSubmitBlocked)}');
     expect(modal).toContain('onPress={estimate ? submit : requestEstimate}');
     expect(detail.match(/createRentalRequest\(/g)).toHaveLength(1);
     expect(detail).toContain('await createRentalRequest(draft);');

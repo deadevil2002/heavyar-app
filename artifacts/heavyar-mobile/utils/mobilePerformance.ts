@@ -98,6 +98,7 @@ type MutableMetric = MobilePerformanceMetric;
 
 interface PerformanceState {
   enabled: boolean;
+  generation: number;
   sink?: (event: MobilePerformanceEvent) => void;
   maxEvents: number;
   startedAtMs: number;
@@ -127,6 +128,7 @@ const clock = (): number =>
 
 const state: PerformanceState = {
   enabled: false,
+  generation: 0,
   maxEvents: 200,
   startedAtMs: 0,
   metrics: new Map(),
@@ -313,10 +315,11 @@ export function markCancellation(label: string): void { record('cancellation', l
 
 export function trackFirestoreRead<T>(label: string, operation: () => Promise<T>): Promise<T> {
   if (!state.enabled) return operation();
+  const generation = state.generation;
   const startedAt = clock();
   return Promise.resolve().then(operation).then(
-    value => { record('firestore_read', label, { durationMs: clock() - startedAt }); return value; },
-    error => { record('firestore_read', label, { durationMs: clock() - startedAt, failed: true }); throw error; },
+    value => { if (generation === state.generation) record('firestore_read', label, { durationMs: clock() - startedAt }); return value; },
+    error => { if (generation === state.generation) record('firestore_read', label, { durationMs: clock() - startedAt, failed: true }); throw error; },
   );
 }
 
@@ -339,6 +342,7 @@ export function trackNetwork<T>(
   if (!state.enabled) return operation();
 
   const normalizedLabel = safeLabel(label);
+  const generation = state.generation;
   const startedAt = clock();
   record('network', normalizedLabel, { phase: 'start' });
 
@@ -357,7 +361,7 @@ export function trackNetwork<T>(
 
   return Promise.resolve(result).then(
     (value) => {
-      record('network', normalizedLabel, {
+      if (generation === state.generation) record('network', normalizedLabel, {
         durationMs: clock() - startedAt,
         phase: 'complete',
         increment: false,
@@ -365,7 +369,7 @@ export function trackNetwork<T>(
       return value;
     },
     (error: unknown) => {
-      record('network', normalizedLabel, {
+      if (generation === state.generation) record('network', normalizedLabel, {
         durationMs: clock() - startedAt,
         failed: true,
         phase: 'complete',
@@ -379,12 +383,13 @@ export function trackNetwork<T>(
 export function startOperation(label: string): OperationMeasurement {
   if (!state.enabled) return NOOP_OPERATION;
   const normalizedLabel = safeLabel(label);
+  const generation = state.generation;
   const startedAt = clock();
   let active = true;
   record('operation', normalizedLabel, { phase: 'start' });
   return {
     complete: (failed = false) => {
-      if (!active || !state.enabled) return undefined;
+      if (!active || !state.enabled || generation !== state.generation) return undefined;
       active = false;
       const durationMs = Math.max(0, clock() - startedAt);
       record('operation', normalizedLabel, {
@@ -425,6 +430,7 @@ export function startPressToVisible(
   if (!state.enabled) return NOOP_PRESS;
 
   const normalizedLabel = safeLabel(label);
+  const generation = state.generation;
   const startedAt = clock();
   let active = true;
   emit({
@@ -436,7 +442,7 @@ export function startPressToVisible(
 
   return {
     visible: () => {
-      if (!active || !state.enabled) return undefined;
+      if (!active || !state.enabled || generation !== state.generation) return undefined;
       active = false;
       const durationMs = Math.max(0, clock() - startedAt);
       record('press_to_visible', normalizedLabel, {
@@ -459,12 +465,13 @@ export function startEventLoopLagMonitor(
   const intervalMs = Math.max(16, options.intervalMs ?? 250);
   const thresholdMs = Math.max(0, options.thresholdMs ?? 50);
   const label = safeLabel(options.label ?? 'js_event_loop');
+  const generation = state.generation;
   let expectedAt = clock() + intervalMs;
   const timer = setInterval(() => {
     const now = clock();
     const lagMs = Math.max(0, now - expectedAt);
     expectedAt = now + intervalMs;
-    if (state.enabled && lagMs >= thresholdMs) {
+    if (state.enabled && generation === state.generation && lagMs >= thresholdMs) {
       record('event_loop_lag', label, { durationMs: lagMs });
     }
   }, intervalMs);
@@ -512,6 +519,7 @@ export function snapshotMobilePerformance(): MobilePerformanceSnapshot {
 
 export function resetMobilePerformance(): void {
   if (!DEVELOPMENT_BUILD) return;
+  state.generation += 1;
   state.metrics.clear();
   state.events.length = 0;
   state.durations.clear();

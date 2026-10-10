@@ -6,22 +6,36 @@ import { subscribePublicEquipmentInvalidation } from './discoveryInvalidation';
 
 const EQUIPMENT_DETAIL_STALE_MS = 2 * 60_000;
 const MAX_EQUIPMENT_DETAIL_CACHE_ENTRIES = 50;
+export const EQUIPMENT_REQUEST_TIMEOUT_MS = 15_000;
 const detailCache = new Map<string, { equipment: Equipment | null; expiresAt: number }>();
 const detailInflight = new Map<string, Promise<Equipment | null>>();
 let detailCacheGeneration = 0;
 
 async function publicRequest<T>(path: string, signal?: AbortSignal): Promise<T> {
   const controller = new AbortController();
-  const abort = () => controller.abort();
-  signal?.addEventListener('abort', abort, { once: true });
-  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let abort: () => void = () => undefined;
+  let timedOut = false;
   try {
     const label = path.startsWith('/api/equipment/search?id=')
       ? 'worker.api.equipment.detail'
       : 'worker.api.equipment.search';
-    const exchange = await mobilePerformance.trackNetwork(label, async () => {
-      const response = await fetch(`${WORKER_BASE_URL}${path}`, { signal: controller.signal });
-      return { response, text: await mobilePerformance.readResponseText(response, label) };
+    const exchange = await new Promise<{ response: Response; text: string }>((resolve, reject) => {
+      abort = () => {
+        controller.abort();
+        reject(new Error('EQUIPMENT_REQUEST_CANCELLED'));
+      };
+      if (signal?.aborted) { abort(); return; }
+      signal?.addEventListener('abort', abort, { once: true });
+      timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        reject(new Error('EQUIPMENT_REQUEST_TIMEOUT'));
+      }, EQUIPMENT_REQUEST_TIMEOUT_MS);
+      mobilePerformance.trackNetwork(label, async () => {
+        const response = await fetch(`${WORKER_BASE_URL}${path}`, { signal: controller.signal });
+        return { response, text: await mobilePerformance.readResponseText(response, label) };
+      }).then(resolve, reject);
     });
     const { response } = exchange;
     let body: (T & { success?: boolean; errorCode?: string }) | null = null;
@@ -34,7 +48,7 @@ async function publicRequest<T>(path: string, signal?: AbortSignal): Promise<T> 
     return body;
   } catch (error) {
     if (signal?.aborted) mobilePerformance.markCancellation('worker.api.equipment.search');
-    else if (controller.signal.aborted) mobilePerformance.markTimeout('worker.api.equipment.search');
+    else if (timedOut) mobilePerformance.markTimeout('worker.api.equipment.search');
     throw error;
   } finally {
     clearTimeout(timeout);
