@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.heavyar.app",
-      "buildNumber": "3",
+      "buildNumber": "4",
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Heavyar uses your photo library when you choose an image for equipment or your profile.",
