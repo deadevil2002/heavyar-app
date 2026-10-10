@@ -128,14 +128,14 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
     let dataTimer: ReturnType<typeof setTimeout> | undefined;
     let initialDataTimer: ReturnType<typeof setTimeout> | undefined;
     let dataInteraction: { cancel(): void } | undefined;
+    initialDataTimer = setTimeout(() => {
+      if (!active || identityRef.current !== identity) return;
+      setInitialDataPending(false);
+      setLoadError(safeErrorMessage(new Error('REQUESTS_TIMEOUT'), isRTL ? 'ar' : 'en'));
+      markRouteStage('requests', 'fresh_data_complete');
+    }, INITIAL_REQUESTS_TIMEOUT_MS);
     const startData = () => void import('@/services/requestRealtimeService').then(service => {
       if (!active || identityRef.current !== identity) return;
-      initialDataTimer = setTimeout(() => {
-        if (!active || identityRef.current !== identity) return;
-        setInitialDataPending(false);
-        setLoadError(safeErrorMessage(new Error('REQUESTS_TIMEOUT'), isRTL ? 'ar' : 'en'));
-        markRouteStage('requests', 'fresh_data_complete');
-      }, INITIAL_REQUESTS_TIMEOUT_MS);
       unsubscribe = service.subscribeToRequestPage(currentUid, requestPerspective, (page) => {
         if (!active || identityRef.current !== identity) return;
         if (initialDataTimer) clearTimeout(initialDataTimer);

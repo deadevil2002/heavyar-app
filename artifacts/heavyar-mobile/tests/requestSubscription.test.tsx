@@ -6,6 +6,8 @@ import Requests from '../app/(tabs)/requests/index';
 const state = vi.hoisted(() => ({
   uid: 'provider-a',
   listeners: [] as { next: (snapshot: any) => void; error: (error: Error) => void; stop: ReturnType<typeof vi.fn> }[],
+  deferInteractions: false,
+  interactionCallbacks: [] as (() => void)[],
 }));
 vi.mock('firebase/firestore', async importOriginal => ({
   ...await importOriginal<typeof import('firebase/firestore')>(),
@@ -36,7 +38,11 @@ vi.mock('react-native', () => ({
   Text: ({ children, accessibilityRole }: any) => <span role={accessibilityRole}>{children}</span>,
   Pressable: ({ children, onPress }: any) => <button onClick={onPress}>{children}</button>,
   ActivityIndicator: () => null,
-  InteractionManager: { runAfterInteractions: (callback: () => void) => { callback(); return { cancel: vi.fn() }; } },
+  InteractionManager: { runAfterInteractions: (callback: () => void) => {
+    if (state.deferInteractions) state.interactionCallbacks.push(callback);
+    else callback();
+    return { cancel: vi.fn() };
+  } },
   FlatList: ({ data, renderItem, ListHeaderComponent, ListEmptyComponent }: any) => <div>
     {ListHeaderComponent}{data.length ? data.map((item: any) => <div key={item.id}>{renderItem({ item })}</div>) : ListEmptyComponent}
   </div>,
@@ -71,6 +77,8 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = undefined;
+  state.deferInteractions = false;
+  state.interactionCallbacks = [];
   vi.useRealTimers();
 });
 const settleDeferredSubscription = () => act(async () => {
@@ -136,4 +144,21 @@ it('ends silent initial loading at the watchdog bound and replaces the listener 
 
   await act(async () => state.listeners[1].next({ items: [], cursor: null, hasMore: false }));
   expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('starts the watchdog before deferred interaction work can subscribe', async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  vi.useFakeTimers();
+  state.listeners = [];
+  state.uid = 'provider-deferred';
+  state.deferInteractions = true;
+  const host = document.createElement('div');
+  root = createRoot(host);
+
+  await act(async () => root!.render(<Requests />));
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+
+  expect(state.listeners).toHaveLength(0);
+  expect(state.interactionCallbacks).toHaveLength(1);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBeTruthy();
 });
