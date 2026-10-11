@@ -52,6 +52,11 @@ export interface Env {
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save';
+type AuthenticatedMutationRateLimitDecision =
+  | { status: 'allowed' }
+  | { status: 'limited'; retryAfterSeconds: number }
+  | { status: 'unavailable' };
 let authOverride: TestUser | undefined;
 let firestoreOverride: ((collection: string, id: string) => any) | undefined;
 let assetOwnedOverride: boolean | undefined;
@@ -68,10 +73,11 @@ let phoneLoginLimiterOverride: ((phoneHash: string, ipHash: string) => Promise<b
 let publicDriverLimiterOverride: ((scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) | undefined;
 let capturedDriverQueries: any[] | undefined;
 let publicEquipmentLimiterOverride: ((ipHash: string) => Promise<boolean | null>) | undefined;
+let authenticatedMutationLimiterOverride: ((uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) | undefined;
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
 const paymentCreateInflight = new Map<string, Promise<Response>>();
-  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationWindows.clear(); }, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
+  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -112,6 +118,51 @@ function out(env: Env, req: Request, value: unknown, status = 200) {
       firestoreDurationMs: diagnostics.firestoreDurationMs,
     }));
   }
+  return response;
+}
+const LISTING_JSON_LIMIT_BYTES = 256 * 1024;
+const DRIVER_PROFILE_JSON_LIMIT_BYTES = 64 * 1024;
+function declaredJsonPayloadTooLarge(req: Request, maxBytes: number) {
+  const value = req.headers.get('Content-Length');
+  return value !== null && /^\d+$/.test(value) && Number(value) > maxBytes;
+}
+async function readBoundedJson(req: Request, maxBytes: number): Promise<{ status: 'ok'; value: unknown } | { status: 'invalid' | 'too_large' }> {
+  if (declaredJsonPayloadTooLarge(req, maxBytes)) return { status: 'too_large' };
+  if (!req.body) return { status: 'invalid' };
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return { status: 'too_large' };
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return { status: 'invalid' };
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  try { return { status: 'ok', value: JSON.parse(new TextDecoder().decode(bytes)) }; }
+  catch { return { status: 'invalid' }; }
+}
+function payloadTooLargeResponse(req: Request, env: Env) {
+  return out(env, req, { success: false, error: 'Request payload too large', errorCode: 'PAYLOAD_TOO_LARGE' }, 413);
+}
+function authenticatedMutationRateLimitResponse(req: Request, env: Env, decision: AuthenticatedMutationRateLimitDecision, message: string) {
+  if (decision.status === 'unavailable') return out(env, req, { success: false, error: 'Rate limit service unavailable', errorCode: 'RATE_LIMIT_UNAVAILABLE' }, 503);
+  if (decision.status !== 'limited') return undefined;
+  const response = out(env, req, { success: false, error: message, errorCode: 'RATE_LIMITED' }, 429);
+  response.headers.set('Retry-After', String(decision.retryAfterSeconds));
+  const exposed = new Set((response.headers.get('Access-Control-Expose-Headers') || '').split(',').map(value => value.trim()).filter(Boolean));
+  exposed.add('Retry-After');
+  response.headers.set('Access-Control-Expose-Headers', [...exposed].join(', '));
   return response;
 }
 function mutationStage(env: Env, stage: MutationStage) {
@@ -523,22 +574,68 @@ async function publicEquipmentRateLimit(req: Request, env: Env): Promise<boolean
   return null;
 }
 
-const authenticatedMutationWindows = new Map<string, { startedAt: number; count: number }>();
-async function allowAuthenticatedMutation(uid: string, scope: 'listing_create' | 'driver_profile_save'): Promise<boolean> {
-  const now = Date.now(), windowMs = scope === 'listing_create' ? 10 * 60_000 : 60_000, limit = scope === 'listing_create' ? 10 : 30;
-  const key = `${scope}:${await hashedId(uid)}`;
-  if (authenticatedMutationWindows.size >= 5000) {
-    for (const [key, value] of authenticatedMutationWindows) if (now - value.startedAt >= 10 * 60_000) authenticatedMutationWindows.delete(key);
-    if (authenticatedMutationWindows.size >= 5000 && !authenticatedMutationWindows.has(key)) return false;
+async function allowAuthenticatedMutation(env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs = Date.now()): Promise<AuthenticatedMutationRateLimitDecision> {
+  if (authenticatedMutationLimiterOverride) return authenticatedMutationLimiterOverride(uid, scope);
+  // Existing unit-test storage adapters do not model REST transactions. They
+  // remain explicitly test-only; Production always uses the transaction below.
+  if (firestoreOverride || firestoreWrites || capturedCommits) return { status: 'allowed' };
+  if (!Number.isFinite(nowMs) || !env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) return { status: 'unavailable' };
+  const windowMs = scope === 'listing_create' ? 10 * 60_000 : 60_000;
+  const limit = scope === 'listing_create' ? 10 : 30;
+  const id = await hashedId(`authenticated-mutation:${scope}:${uid}`);
+  // Reuse the existing temporary rate-limit collection so its bounded expiry
+  // cleanup continues without a new collection, index, binding, or Cron path.
+  const path = `authRecoveryRateLimits/${id}`;
+  const name = fullName(env, path);
+
+  try {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      if (!transaction) return { status: 'unavailable' };
+      const prior = await transactionDocument(env, path, transaction);
+      const count = Number(prior?.data?.count ?? 0);
+      const startedAt = prior ? Date.parse(String(prior.data.startedAt || '')) : nowMs;
+      const expiresAt = prior ? Date.parse(String(prior.data.expiresAt || '')) : nowMs + windowMs;
+      const validPrior = !prior || prior.data.kind === 'authenticated_mutation'
+        && prior.data.scope === scope
+        && Number.isSafeInteger(count) && count >= 0
+        && Number.isFinite(startedAt) && Number.isFinite(expiresAt)
+        && expiresAt - startedAt === windowMs;
+      if (!validPrior) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        return { status: 'unavailable' };
+      }
+      if (prior && nowMs < expiresAt && count >= limit) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        return { status: 'limited', retryAfterSeconds: Math.max(1, Math.ceil((expiresAt - nowMs) / 1000)) };
+      }
+      const reset = !prior || nowMs >= expiresAt;
+      const nextStartedAt = reset ? nowMs : startedAt;
+      const nextExpiresAt = reset ? nowMs + windowMs : expiresAt;
+      const fields = {
+        kind: { stringValue: 'authenticated_mutation' },
+        scope: { stringValue: scope },
+        count: { integerValue: String(reset ? 1 : count + 1) },
+        startedAt: { timestampValue: new Date(nextStartedAt).toISOString() },
+        expiresAt: { timestampValue: new Date(nextExpiresAt).toISOString() },
+        updatedAt: { timestampValue: new Date(nowMs).toISOString() },
+      };
+      const write = {
+        update: { name, fields },
+        ...(prior ? { updateMask: { fieldPaths: Object.keys(fields) } } : {}),
+        currentDocument: prior?.updateTime ? { updateTime: prior.updateTime } : { exists: false },
+      };
+      try {
+        await commitWrites(env, [write], transaction);
+        return { status: 'allowed' };
+      } catch (error) {
+        if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+      }
+    }
+  } catch {
+    return { status: 'unavailable' };
   }
-  const prior = authenticatedMutationWindows.get(key);
-  if (!prior || now - prior.startedAt >= windowMs) {
-    authenticatedMutationWindows.set(key, { startedAt: now, count: 1 });
-    return true;
-  }
-  if (prior.count >= limit) return false;
-  prior.count += 1;
-  return true;
+  return { status: 'unavailable' };
 }
 export type GccCountryCode = 'SA' | 'AE' | 'KW' | 'QA' | 'BH' | 'OM';
 export const GCC_COUNTRIES: Readonly<Record<GccCountryCode, {
@@ -3581,8 +3678,12 @@ async function equipmentSearch(req: Request, env: Env) {
   return out(env, req, result.body, result.status);
 }
 async function listingCreate(req: Request, env: Env, u: User) {
+  if (declaredJsonPayloadTooLarge(req, LISTING_JSON_LIMIT_BYTES)) return payloadTooLargeResponse(req, env);
+  mutationStage(env, 'quota');
+  const rateLimit = await allowAuthenticatedMutation(env, u.uid, 'listing_create');
+  const rateLimitResponse = authenticatedMutationRateLimitResponse(req, env, rateLimit, 'Too many listing submissions');
+  if (rateLimitResponse) return rateLimitResponse;
   mutationStage(env, 'validation');
-  if (!await allowAuthenticatedMutation(u.uid, 'listing_create')) return out(env, req, { success: false, error: 'Too many listing submissions', errorCode: 'RATE_LIMITED' }, 429);
   try { await enforceEmailVerified(env, u, 'listing'); } catch (error) { if (error instanceof Error && error.message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403); throw error; }
   const profile = u.accountProfile || await getDoc(env, 'users', u.uid);
   // Publication eligibility is account/onboarding policy, not identity
@@ -3599,7 +3700,9 @@ async function listingCreate(req: Request, env: Env, u: User) {
       || profile.accountStatus === 'restricted'
       || isSecuritySuspended(profile)
       || !onboardingComplete) return out(env, req, { success: false, error: 'Provider onboarding required' }, 403);
-  const body: any = await req.json().catch(() => null);
+  const parsedBody = await readBoundedJson(req, LISTING_JSON_LIMIT_BYTES);
+  if (parsedBody.status === 'too_large') return payloadTooLargeResponse(req, env);
+  const body: any = parsedBody.status === 'ok' ? parsedBody.value : null;
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing' }, 400);
   // Currency fields are accepted for compatibility with the current Add form,
   // but ignored: country configuration remains authoritative for stored price.
@@ -3898,13 +4001,20 @@ async function ownerDriverProfile(env: Env, uid: string, profile: any) {
 }
 
 async function driverProfile(req: Request, env: Env, u: User) {
+  if (req.method !== 'GET' && declaredJsonPayloadTooLarge(req, DRIVER_PROFILE_JSON_LIMIT_BYTES)) return payloadTooLargeResponse(req, env);
   if (req.method !== 'GET') mutationStage(env, 'validation');
   const id = u.uid, raw = u.roleProfileRaw === undefined ? await getRawDoc(env, 'driverProfiles', id) : u.roleProfileRaw;
   const account = u.accountProfile || await getDoc(env, 'users', id);
   if (!u.admin && account?.role !== 'driver') return out(env, req, { success: false, error: 'Driver profile unavailable for this account' }, 403);
   if (req.method === 'GET') return out(env, req, { success: true, profile: raw ? await ownerDriverProfile(env, id, raw.data) : null });
-  if (!await allowAuthenticatedMutation(u.uid, 'driver_profile_save')) return out(env, req, { success: false, error: 'Too many profile updates', errorCode: 'RATE_LIMITED' }, 429);
-  const body: any = await req.json().catch(() => null);
+  mutationStage(env, 'quota');
+  const rateLimit = await allowAuthenticatedMutation(env, u.uid, 'driver_profile_save');
+  const rateLimitResponse = authenticatedMutationRateLimitResponse(req, env, rateLimit, 'Too many profile updates');
+  if (rateLimitResponse) return rateLimitResponse;
+  mutationStage(env, 'validation');
+  const parsedBody = await readBoundedJson(req, DRIVER_PROFILE_JSON_LIMIT_BYTES);
+  if (parsedBody.status === 'too_large') return payloadTooLargeResponse(req, env);
+  const body: any = parsedBody.status === 'ok' ? parsedBody.value : null;
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid driver profile' }, 400);
   if (raw && ['suspended', 'rejected'].includes(String(raw.data.moderationStatus)) && !u.admin) return out(env, req, { success: false, error: 'DRIVER_MODERATION_LOCKED' }, 403);
   const allowed = ['displayName', 'photoUrl', 'countryCode', 'region', 'city', 'equipmentTypes', 'yearsExperience', 'description', 'availabilityStatus', 'availableFrom', 'availableUntil'];

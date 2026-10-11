@@ -32,7 +32,7 @@
 ### Next prioritized work — NOT YET authorized for implementation
 
 1. **P1-B Admin MFA — DECLINED BY OWNER**: keep the existing Firebase email/password-only Admin authentication. Identity Platform and Cloudflare Access are **NOT REQUESTED**; the remaining password-only authentication risk is accepted by Owner. Do not propose MFA again without a new Owner request.
-2. **NEXT: P1 durable abuse protection / rate limiting**: per-UID mutation limits, consistent 429/Retry-After, body limits, Cloudflare Free-tier cost and processor budgets.
+2. **NEXT: deploy focused P1 durable mutation rate limiting — SOURCE READY; NOT DEPLOYED**: listing creation (`10/10 minutes/UID`) and driver-profile saves (`30/minute/UID`) now use hashed-identity Firestore transactions with bounded conflict retries, stable 429/Retry-After, fail-closed 503, existing expiry cleanup, and route-scoped 256 KiB/64 KiB JSON limits. Focused plus Admin/P1-A/payment/Cron regressions 223/223 and Worker TypeScript PASS. Broader high-cost mutation coverage remains a separate scoped decision.
 3. **P1 operational assurance**: CI/Rules/secret scanning, alert destinations, budgets, backup and tested restore (runtime details unverified).
 4. **P2 scalability and physical QA**: DP-010 driver discovery; DP-016 deletion-preview fan-in; DP-012 unseen counts; DP-013 Admin polling; DP-017 aggregate cache; Android p50/p95, uploads, response sizes. See `docs/SCALABILITY_RISK_REGISTER.md` selectively.
 5. **Release**: actual Store tracks/installations not verified. New Mobile source changes require separate approved Android/iOS release and physical regression.
