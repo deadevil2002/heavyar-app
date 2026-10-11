@@ -6,15 +6,15 @@
 
 ## Live checkpoint — 2026-10-11 (read first; CURRENT STATUS)
 
-> This is the sole current-state ledger. Subsequent sections retain historical detail and can contain older version/test figures. Code/config is technical authority. Production evidence here is based on the owner's Codex verification reports, not independent Cloudflare/Firebase console access by ChatGPT. **Source commits are not deployments.**
+> This is the sole current-state ledger. Subsequent sections retain historical detail and can contain older version/test figures. Code/config is technical authority. Production evidence here is based on authenticated Codex CLI/API verification. **Source commits are not deployments.**
 
 ### Verified identity and release boundaries
 
 | Surface | Current state |
 |---|---|
-| Repo | `deadevil2002/heavyar-app`, `main`, local `C:/Heavyar-Last-2027/heavyar-app`; last functional source baseline `c60258ff47df174a60d35c2a0b6bcb0b37b9fb6b` |
+| Repo | `deadevil2002/heavyar-app`, `main`, local `C:/Heavyar-Last-2027/heavyar-app`; last functional source baseline `b8c01916af2d8188700b737b12cebc533c76ad32` |
 | Firebase | `heavyar-app`; deployed Security Rules `05fe0a47-f2d5-49c3-9871-3ee01edadd60` (Codex verified) |
-| Cloudflare | Account `e43da79a0ea995c11c90e7819fb0c6e6`, Worker `heavyar-api`, directory-bound Wrangler profile **`heavyar`**; live version `fc1103dc-b473-4630-8900-f6c366c375d8` (Codex verified) |
+| Cloudflare | Account `e43da79a0ea995c11c90e7819fb0c6e6`, Worker `heavyar-api`, directory-bound Wrangler profile **`heavyar`**; live version `0f353a6c-1c0f-4074-8c9f-59db3ca78121` from source `b8c01916af2d8188700b737b12cebc533c76ad32` (Codex verified) |
 | Mobile | Source version `1.1.1`, Android versionCode `4`, iOS buildNumber `4`; post-P0 source cleanup **not known distributed via Store** |
 | Users | Owner confirmed zero real registered customers as of 2026-10-11; QA/Review accounts may exist; Production ratings count `0` (read-only Codex check) |
 
@@ -22,11 +22,11 @@
 
 | Phase | Evidence | Current result |
 |---|---|---|
-| Cron Free-tier incident | Worker source `3ff31f52a8bd521c586dc863aaa15090cea83a91`, active `fc1103dc-b473-4630-8900-f6c366c375d8`, 7 cycles in 30 minutes 2026-10-11, 0 new subrequest/INVALID_ARGUMENT/scheduled exceptions, HTTP healthy. No due Regulatory item, so live duplicate notification was not exercised | **PRODUCTION CLOSED** |
+| Cron Free-tier incident | Worker source `3ff31f52a8bd521c586dc863aaa15090cea83a91` was verified under version `fc1103dc-b473-4630-8900-f6c366c375d8` for 7 cycles in 30 minutes with 0 new subrequest/INVALID_ARGUMENT/scheduled exceptions. P1-A deployment preserved `*/5`; version `0f353a6c-1c0f-4074-8c9f-59db3ca78121` completed the observed 2026-10-11 17:55:25Z cycle `Ok` with HTTP healthy. No due Regulatory item, so live duplicate notification was not exercised | **PRODUCTION CLOSED** |
 | P0 equipment privacy | `92eea23415955a95bcbc222b95c28d25cc1e1b83`; raw equipment Firestore reads owner-only; public uses sanitized Worker. Production anonymous read 403. Rules `eacbbd11-7403-483b-8b56-695bc2db08ea` superseded by latest without weakening P0 | **PRODUCTION CLOSED** |
 | Mobile permission cleanup | `ed41458acef8bcf1e870b2b04ccb8328a2bb5ce0`; 0 non-owner equipment reads, snapshots/placeholders preserve historical values. 449/449 Mobile, 43/43 discovery, 15/15 Rules, 44/44 focused Worker, typechecks PASS | **SOURCE CLOSED; NO VERIFIED MOBILE RELEASE** |
 | P1 rating uniqueness | `c60258ff47df174a60d35c2a0b6bcb0b37b9fb6b`; canonical `requestId__auth.uid`, 19/19 Rules, 2/2 Worker+Rules, 15/15 rating Mobile; concurrency and forged ID denied. 9/9 Auth UID formats compatible; 0 Production ratings | **PRODUCTION CLOSED**; Rules `05fe0a47-f2d5-49c3-9871-3ee01edadd60`. Live rating write not exercised |
-| P1 Admin auth assurance / P1-A | 2026-10-11 audit verified Firebase MFA disabled, 0 enrolled factors and one active Owner. This source commit makes live `staffMembers.active == true` + authoritative role mandatory for every privileged bypass, rejects disabled/revoked Firebase sessions through bounded Auth lookup (60-second maximum successful-cache window), and fail-closes Auth outages. 586/586 Worker and both TypeScript checks PASS | **P1-A SOURCE CLOSED; NOT DEPLOYED**. MFA enforcement remains **OPEN** |
+| P1 Admin auth assurance / P1-A | Source `b8c01916af2d8188700b737b12cebc533c76ad32`, deployed Worker `0f353a6c-1c0f-4074-8c9f-59db3ca78121`. Live `staffMembers.active == true` + authoritative role is mandatory for privileged bypasses; disabled/revoked Firebase sessions are rejected through bounded Auth lookup (60-second maximum successful-cache window), and Auth outages fail closed. Owner staff/Auth preflight and authenticated read-only Owner smoke PASS; health and sanitized public equipment APIs returned 200; missing/forged Admin credentials returned 401; binding parity and Cron health PASS. 586/586 Worker previously PASS, deployment-focused 23/23 and Worker TypeScript PASS | **P1-A PRODUCTION CLOSED**. Firebase MFA remains disabled and **OPEN** for P1-B |
 | Other previously completed phases | P1 Account Integrity; P2-A/B/C search and campaign batching; Rental V2 overlap and request performance improvements | **KEEP CLOSED**; read related source/registries only when necessary |
 
 ### Next prioritized work — NOT YET authorized for implementation
