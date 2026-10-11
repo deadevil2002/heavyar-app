@@ -2,7 +2,52 @@
 
 ## Current date
 
-2026-10-10 (Asia/Riyadh).
+2026-10-11 (Asia/Riyadh).
+
+## Live checkpoint — 2026-10-11 (read first; CURRENT STATUS)
+
+> This is the sole current-state ledger. Subsequent sections retain historical detail and can contain older version/test figures. Code/config is technical authority. Production evidence here is based on the owner's Codex verification reports, not independent Cloudflare/Firebase console access by ChatGPT. **Source commits are not deployments.**
+
+### Verified identity and release boundaries
+
+| Surface | Current state |
+|---|---|
+| Repo | `deadevil2002/heavyar-app`, `main`, local `C:/Heavyar-Last-2027/heavyar-app`; last functional source baseline `c60258ff47df174a60d35c2a0b6bcb0b37b9fb6b` |
+| Firebase | `heavyar-app`; deployed Security Rules `05fe0a47-f2d5-49c3-9871-3ee01edadd60` (Codex verified) |
+| Cloudflare | Account `e43da79a0ea995c11c90e7819fb0c6e6`, Worker `heavyar-api`, directory-bound Wrangler profile **`heavyar`**; live version `fc1103dc-b473-4630-8900-f6c366c375d8` (Codex verified) |
+| Mobile | Source version `1.1.1`, Android versionCode `4`, iOS buildNumber `4`; post-P0 source cleanup **not known distributed via Store** |
+| Users | Owner confirmed zero real registered customers as of 2026-10-11; QA/Review accounts may exist; Production ratings count `0` (read-only Codex check) |
+
+### Completed phases — do not reopen without fresh regression evidence
+
+| Phase | Evidence | Current result |
+|---|---|---|
+| Cron Free-tier incident | Worker source `3ff31f52a8bd521c586dc863aaa15090cea83a91`, active `fc1103dc-b473-4630-8900-f6c366c375d8`, 7 cycles in 30 minutes 2026-10-11, 0 new subrequest/INVALID_ARGUMENT/scheduled exceptions, HTTP healthy. No due Regulatory item, so live duplicate notification was not exercised | **PRODUCTION CLOSED** |
+| P0 equipment privacy | `92eea23415955a95bcbc222b95c28d25cc1e1b83`; raw equipment Firestore reads owner-only; public uses sanitized Worker. Production anonymous read 403. Rules `eacbbd11-7403-483b-8b56-695bc2db08ea` superseded by latest without weakening P0 | **PRODUCTION CLOSED** |
+| Mobile permission cleanup | `ed41458acef8bcf1e870b2b04ccb8328a2bb5ce0`; 0 non-owner equipment reads, snapshots/placeholders preserve historical values. 449/449 Mobile, 43/43 discovery, 15/15 Rules, 44/44 focused Worker, typechecks PASS | **SOURCE CLOSED; NO VERIFIED MOBILE RELEASE** |
+| P1 rating uniqueness | `c60258ff47df174a60d35c2a0b6bcb0b37b9fb6b`; canonical `requestId__auth.uid`, 19/19 Rules, 2/2 Worker+Rules, 15/15 rating Mobile; concurrency and forged ID denied. 9/9 Auth UID formats compatible; 0 Production ratings | **PRODUCTION CLOSED**; Rules `05fe0a47-f2d5-49c3-9871-3ee01edadd60`. Live rating write not exercised |
+| Other previously completed phases | P1 Account Integrity; P2-A/B/C search and campaign batching; Rental V2 overlap and request performance improvements | **KEEP CLOSED**; read related source/registries only when necessary |
+
+### Next prioritized work — NOT YET authorized for implementation
+
+1. **NEXT: P1 Admin MFA assurance (read-only)**: inspect actual Firebase/Admin runtime enforcement, enrollment, challenge/recovery; do not infer missing runtime policy from absent source code.
+2. **P1 durable abuse protection**: per-UID mutation limits, consistent 429/Retry-After, body limits, Cloudflare Free-tier cost and processor budgets.
+3. **P1 operational assurance**: CI/Rules/secret scanning, alert destinations, budgets, backup and tested restore (runtime details unverified).
+4. **P2 scalability and physical QA**: DP-010 driver discovery; DP-016 deletion-preview fan-in; DP-012 unseen counts; DP-013 Admin polling; DP-017 aggregate cache; Android p50/p95, uploads, response sizes. See `docs/SCALABILITY_RISK_REGISTER.md` selectively.
+5. **Release**: actual Store tracks/installations not verified. New Mobile source changes require separate approved Android/iOS release and physical regression.
+
+### Non-negotiable product/security decisions
+
+- Auth via Firebase; Worker authoritative for payments, pricing, protected mutations and sanitized public projection. Firestore equipment reads owner-only. Participant chat/request realtime is bounded; no N+1 listing hydration, account-crossing stale state or trust in caches for authority.
+- Tap remains **TEST**; fee **10% provider-paid**, future **20% draft only**. Split settlement and automated refunds are not enabled; historical financial/commercial snapshots are immutable.
+- Retain and anonymize rental/driver request evidence for **7 years after closure**. No unapproved Production mutation, regulatory sends, secret or identity changes.
+- Never commit/push/build/deploy without the owner's explicit approval for that exact operation and fresh repo/account/project preflight.
+
+### Mandatory low-token status maintenance
+
+- **Start:** `AGENTS.md` + **this checkpoint only**. Inspect targeted code/tests, not entire logs/files. Open `HANDOFF.md`, `COMPLIANCE.md`, `DEPLOYMENT.md`, `docs/mobile-data-flow.md` only if scope requires. Reuse verified evidence; never re-audit completed phases by habit.
+- **Finish any material phase:** update **changed facts only** in this checkpoint (date, SHA, source-only vs live state, test results, blocker, single next action). Do not append transcript/repeated data or create another status file.
+- Include status delta in the **same authorized implementation commit**. For read-only phases or no commit authorization, output a short proposed delta without modifying Git. For separate Production deployment, record confirmed live evidence in the next explicitly authorized doc update. Mark unknown facts `UNVERIFIED`.
 
 ## Source baseline
 
@@ -13,7 +58,7 @@
 | Mobile root | `artifacts/heavyar-mobile` |
 | Admin root | `artifacts/heavyar-admin` |
 | Worker root | `artifacts/heavyar-mobile/worker` |
-| Handoff baseline | The Git commit containing this document and `HANDOFF.md` |
+| Last functional source baseline | `c60258ff47df174a60d35c2a0b6bcb0b37b9fb6b`; subsequent docs-only commits do not imply deployed code |
 
 The committed GitHub baseline includes the approved authentication recovery/performance, coherent mobile data-flow, bounded-operation, account-switch safety, request N+1 removal, cold-route responsiveness, and end-to-end performance observability/data-budget work. A GitHub commit or push is source synchronization only and does not mean any release surface was deployed.
 
@@ -21,10 +66,11 @@ The committed GitHub baseline includes the approved authentication recovery/perf
 
 | Surface | Source state | Deployed Production state |
 |---|---|---|
-| Mobile | Source includes privacy-safe QA performance mode, response-size instrumentation, deterministic read/request budgets, and the approved N+1/listener/payment safeguards | No EAS build, APK, AAB, or store submission was produced from this batch; a new internal build is required for physical QA measurements |
-| Worker/API | Source includes privacy-safe timing diagnostics, explicit Firestore read/query counters, bounded batching, payment concurrency protection, and durable background verification-reminder jobs | Deployed from commit `39c70b880d46818eb87e976f8da0bd21336b9585`; current Worker version `0cb28a33-490a-45a4-a155-bf08351124b8`; public market-config smoke check returned HTTP 200 |
+| Mobile | Post-P0 cleanup at `ed41458acef8bcf1e870b2b04ccb8328a2bb5ce0` removes all non-owner equipment read attempts | No corresponding Mobile Store release verified; Git sync is not app distribution |
+| Worker/API | Cron-safe source `3ff31f52a8bd521c586dc863aaa15090cea83a91` | Active version `fc1103dc-b473-4630-8900-f6c366c375d8` reported healthy with 7 clean cycles over 30 minutes on 2026-10-11 |
 | Admin | Source includes the queued verification-reminder UX required by the durable background job contract | No Admin/Firebase Hosting deployment was performed for this batch |
 | Website | Canonical content remains in separate repository `deadevil2002/heavyar-website` | Privacy commit `90fba5348b77a1631f93cbeb42334cafa24406d9` and support-route commit `65fb49deefe977834d95838d73f6b72033a86390` are deployed; public `/privacy`, `/support`, and `/en/support` return HTTP 200 |
+| Firestore Rules | P0 owner-only raw equipment; P1 canonical rating IDs in source commit `c60258ff47df174a60d35c2a0b6bcb0b37b9fb6b` | Latest deployed Ruleset `05fe0a47-f2d5-49c3-9871-3ee01edadd60` reported source-identical |
 | Production data | No business-data mutation in this freeze/sync phase | Unchanged |
 
 ## Current mobile version
@@ -151,7 +197,7 @@ The detailed source audit and deterministic budgets are recorded in `docs/PERFOR
 
 ## Validation status
 
-Performance observability/data-budget gate on 2026-10-10:
+Performance observability/data-budget gate on 2026-10-10 (**historical; use Live checkpoint for current versions and tests**):
 
 | Check | Result |
 |---|---|
@@ -169,7 +215,7 @@ Performance observability/data-budget gate on 2026-10-10:
 | Production data modified | NO |
 | Tap payment created | NO |
 | EAS/mobile build | NO |
-| Worker Production deployment | PASS — version `0cb28a33-490a-45a4-a155-bf08351124b8`; required binding inventory preserved 16/16; public smoke HTTP 200 |
+| Worker Production deployment (2026-10-10 historical snapshot) | PASS then — version `0cb28a33-490a-45a4-a155-bf08351124b8`, superseded by active version in Live checkpoint |
 | Mobile/Admin deployment for this batch | NO |
 
 ## Permanent safety memory
@@ -184,4 +230,4 @@ Performance observability/data-budget gate on 2026-10-10:
 
 ## Next recommended phase
 
-Proceed to P2-D / targeted performance remediation based on measured evidence. First collect the missing physical QA measurements in a separately authorized new internal Android build; do not infer Production latency or payload rankings from emulator/unit-test data. Keep Tap in TEST and the 20% commission rule in draft.
+**Next is P1 Admin MFA assurance, read-only first.** Then P1 abuse protection and operations evidence. P2-D/real-device performance follows; see Live checkpoint above. Tap stays TEST and 20% remains draft.

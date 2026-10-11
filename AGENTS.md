@@ -44,12 +44,20 @@ Never place passwords, private keys, service-account keys, access/OAuth tokens, 
 
 ## Project handoff / required reading
 
-For a new human or AI contributor, read `HANDOFF.md`, `CURRENT_STATE.md`, and
-`docs/mobile-data-flow.md` after this file. `HANDOFF.md` is the practical entry
-point; `CURRENT_STATE.md` records volatile verified status; the data-flow
-document defines client/backend ownership and reconciliation rules.
+Read **only the `Live checkpoint` at the start of `CURRENT_STATE.md`** after
+this file. Other docs, including `HANDOFF.md` and `docs/mobile-data-flow.md`,
+are detailed, optional context; load them only for relevant tasks. Code/config
+and proven runtime evidence outrank historical notes.
 
 Code and configuration are authoritative. If documentation conflicts with them, report the mismatch and update documentation only after verification.
+
+## Canonical status ledger and token-efficient execution
+
+- `CURRENT_STATE.md` -> `Live checkpoint` is the **only** volatile status ledger. Do not create competing progress Markdown files. `AGENTS.md` contains permanent rules; `HANDOFF.md` retains historical context.
+- At task start, read this file and the live checkpoint; inspect only relevant source/tests/doc sections. No whole-file/log dumps, repetitive audits or unrelated refactors.
+- At material phase completion, update only changed status/date, code SHA, source-only vs Production artifact ID, verified tests, unresolved blockers and one next action in the checkpoint.
+- Include status update in the **same owner-authorized commit** as implementation. Read-only tasks or tasks without commit authorization must return a concise suggested status delta, without any repo mutation. After Production deployment, record separately verified live status in the next approved documentation update.
+- No automatic Git push, builds or deployments; follow explicit owner scope. Preserve existing work. Mark unverified state clearly and never infer a Production deployment from a source commit.
 
 ## HEAVYAR Permanent Product Rules
 
@@ -69,6 +77,6 @@ If compliance is uncertain, report the uncertainty, identify what needs official
 ### Token-efficient reading
 
 - Always read `AGENTS.md` first.
-- Read `CURRENT_STATE.md` for current implementation/status.
+- Read only the `Live checkpoint` in `CURRENT_STATE.md` for current status; the rest is scope-specific history.
 - Read `PROJECT_CONTEXT.md` only when architecture or broader project context is needed.
 - Read `COMPLIANCE.md`, `DEPLOYMENT.md`, or `PRODUCT_ROADMAP.md` only when the task touches their respective compliance, release, or product-planning scopes.

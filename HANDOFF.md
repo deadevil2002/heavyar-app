@@ -2,18 +2,11 @@
 
 ## Start Here
 
-Read in this order:
-
-1. `AGENTS.md`
-2. `HANDOFF.md`
-3. `CURRENT_STATE.md`
-4. `PROJECT_CONTEXT.md`
-5. `docs/mobile-data-flow.md`
-6. `DEPLOYMENT.md`
-7. `COMPLIANCE.md`
-8. `PRODUCT_ROADMAP.md`
-
-Code and configuration are authoritative. Never infer deployment status from a Git commit.
+Read `AGENTS.md`, followed by the `Live checkpoint` at the top of
+`CURRENT_STATE.md`. Read this historical handoff or any additional
+architecture/compliance/deployment files **only when the current task needs**
+their detail. Code/config and verified runtime evidence take precedence.
+Never infer a Production deployment from a Git commit.
 
 ## Account Deletion Release Behavior
 
@@ -115,4 +108,4 @@ Earlier Production deployments described in `CURRENT_STATE.md` remain separate h
 
 ## Recommended Next Step
 
-Run the real Android Guest/Customer/Provider/Driver regression matrix in an authorized Development Build, including remote-push validation and production-like performance profiling. Keep Tap in TEST and the 20% rule in draft until separately approved.
+Refer to the `CURRENT_STATE.md` Live checkpoint for the active next phase. Android real-device role-matrix/remote-push/performance QA remains an outstanding separately authorized release gate. Keep Tap TEST and the 20% rule draft.
