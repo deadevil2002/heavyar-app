@@ -51,7 +51,7 @@ Code and configuration are authoritative. Never infer deployment status from a G
 - The separate `heavyar-website` privacy policy and permanent App Store support routes are committed and deployed: privacy `90fba5348b77a1631f93cbeb42334cafa24406d9`, support `65fb49deefe977834d95838d73f6b72033a86390`. Public `/privacy`, `/support`, and `/en/support` return HTTP 200.
 - Removed Push registration and secondary work from the canonical login critical path.
 - Added auth-policy deduplication, bounded operations, cancellation, and stale-account guards.
-- Removed Rental V2 listing hydration/N+1 reads while retaining isolated legacy compatibility.
+- Removed all non-owner request listing hydration/N+1 reads; legacy requests missing display snapshots now use safe placeholders.
 - Added explicit listener ownership and stale-response protection for request detail and chat.
 - Added controlled Worker driver-row concurrency while preserving ordering.
 - Added privacy-safe performance instrumentation and route-stage measurement.

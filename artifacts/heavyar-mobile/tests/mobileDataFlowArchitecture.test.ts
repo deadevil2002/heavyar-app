@@ -5,13 +5,19 @@ import path from 'node:path';
 const read = (relative: string) => fs.readFileSync(path.resolve(__dirname, relative), 'utf8');
 
 describe('mobile data-flow architecture guardrails', () => {
-  it('hydrates listings only for legacy requests without immutable snapshots', () => {
-    const source = read('../services/requestRealtimeService.ts');
+  it('uses immutable request snapshots and safe placeholders without listing hydration', () => {
+    const requestService = read('../services/requestRealtimeService.ts');
     const screen = read('../app/(tabs)/requests/index.tsx');
-    expect(source).toContain('requestEquipmentIdsNeedingHydration');
-    expect(source).toContain('request.equipmentSnapshot');
-    expect(screen.match(/requestEquipmentIdsNeedingHydration\(page\.items\)/g)).toHaveLength(3);
-    expect(screen).not.toContain('fetchRequestEquipmentByIds(page.items.map');
+    const card = read('../components/RequestCard.tsx');
+    const detail = read('../app/request/[id].tsx');
+    expect(requestService).not.toContain("collection(getFirebaseDb(), 'equipment')");
+    expect(requestService).not.toContain('fetchRequestEquipment');
+    expect(screen).not.toContain('fetchRequestEquipment');
+    expect(card).toContain('request.equipmentSnapshot');
+    expect(card).toContain("t('equipment_no_longer_available')");
+    expect(detail).toContain('request.equipmentSnapshot');
+    expect(detail).toContain("t('equipment_no_longer_available')");
+    expect(detail).not.toContain('pricePerDay: request.pricePerDay');
   });
 
   it('uses the bounded identity-aware Worker boundary for sensitive services', () => {
@@ -30,14 +36,16 @@ describe('mobile data-flow architecture guardrails', () => {
     expect(publicSearch).toContain('readResponseText(response, label)');
   });
 
-  it('guards async request and chat enrichment after account or route teardown', () => {
-    for (const file of ['../app/request/[id].tsx', '../app/chat/[requestId].tsx']) {
-      const source = read(file);
-      expect(source).toContain('let active = true');
-      expect(source).toContain('active = false;');
-      expect(source).toMatch(/(?:unsub|unsubscribe)\(\)/);
-      expect(source).toContain('if (!active) return');
-    }
+  it('cleans up request and chat realtime listeners after route teardown', () => {
+    const detail = read('../app/request/[id].tsx');
+    expect(detail).toContain('let active = true');
+    expect(detail).toContain('active = false;');
+    expect(detail).toContain('unsubscribe();');
+    expect(detail).toContain('if (!active) return');
+
+    const chat = read('../app/chat/[requestId].tsx');
+    expect(chat).toContain('const unsub = subscribeToRequest(requestId, setRequest)');
+    expect(chat).toContain('return () => unsub();');
   });
 
   it('keeps driver-request enrichment ordered with bounded concurrency', () => {

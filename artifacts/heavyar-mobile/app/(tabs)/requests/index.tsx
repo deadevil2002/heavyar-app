@@ -9,7 +9,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import type { RequestFirestoreCursor } from '@/services/requestRealtimeService';
 import RequestCard from '@/components/RequestCard';
 import EmptyState from '@/components/EmptyState';
-import type { Equipment, EquipmentRequest } from '@/types';
+import type { EquipmentRequest } from '@/types';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import { driverRequestsAllowed, requestSections, resolveRequestSection } from '@/services/requestSections';
 import { safeErrorMessage } from '@/services/errorMessages';
@@ -74,7 +74,6 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
   const { user } = useAuth();
   const router = useRouter();
   const [requests, setRequests] = useState<EquipmentRequest[]>([]);
-  const [equipmentById, setEquipmentById] = useState<Map<string, Equipment>>(new Map());
   const [cursor, setCursor] = useState<RequestFirestoreCursor | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -107,7 +106,6 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
     if (subscriptionIdentity.current !== identity) {
       subscriptionIdentity.current = identity;
       setRequests([]);
-      setEquipmentById(new Map());
       setCursor(null);
       setHasMore(false);
       setHasOlderPages(false);
@@ -155,10 +153,6 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
           setCursor(page.cursor);
           setHasMore(page.hasMore);
         }
-        void service.fetchRequestEquipmentByIds(service.requestEquipmentIdsNeedingHydration(page.items)).then((equipment) => {
-          if (!active || identityRef.current !== identity) return;
-          setEquipmentById(previous => new Map([...previous, ...equipment]));
-        }).catch(error => { if (active && identityRef.current === identity) setLoadError(safeErrorMessage(error, isRTL ? 'ar' : 'en')); });
       }, error => {
         if (active && identityRef.current === identity) {
           if (initialDataTimer) clearTimeout(initialDataTimer);
@@ -194,8 +188,8 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
   }, [currentUid, requestPerspective, identity, subscriptionAttempt]);
 
   const renderItem = useCallback(({ item }: { item: EquipmentRequest }) => (
-    <RequestCard request={item} equipment={equipmentById.get(item.equipmentId)} />
-  ), [equipmentById]);
+    <RequestCard request={item} />
+  ), []);
 
   const loadMore = useCallback(async () => {
     if (!cursor || !hasMore || loadingMore) return;
@@ -203,9 +197,7 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
     try {
       const service = await import('@/services/requestRealtimeService');
       const page = await service.fetchRequestPage(currentUid, requestPerspective, cursor);
-      const equipment = await service.fetchRequestEquipmentByIds(service.requestEquipmentIdsNeedingHydration(page.items));
       if (!mounted.current || identityRef.current !== identity) return;
-      setEquipmentById(previous => new Map([...previous, ...equipment]));
       setRequests(previous => {
         const seen = new Set(previous.map(item => item.id));
         return [...previous, ...page.items.filter(item => !seen.has(item.id))];
@@ -236,10 +228,8 @@ function EquipmentRequestsSection({ activeOnly = false }: { activeOnly?: boolean
     try {
       const service = await import('@/services/requestRealtimeService');
       const page = await service.fetchRequestPage(currentUid, requestPerspective);
-      const equipment = await service.fetchRequestEquipmentByIds(service.requestEquipmentIdsNeedingHydration(page.items));
       if (!mounted.current) return;
       setRequests(page.items);
-      setEquipmentById(equipment);
       setCursor(page.cursor);
       setHasMore(page.hasMore);
       firstPageCursorRef.current = page.cursor;

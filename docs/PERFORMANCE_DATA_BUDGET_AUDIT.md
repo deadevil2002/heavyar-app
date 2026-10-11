@@ -70,9 +70,9 @@ Market data is stale after 30 minutes; inventory and unread count are stale afte
 ### Requests initial page
 
 - Request listener query: 1 query, at most 20 request documents.
-- Legacy-only equipment hydration: one exact-document-ID `IN` query for a normal page, at most 20 equipment documents.
-- V2 rows with valid immutable equipment snapshots require no listing hydration.
-- Worst mixed/legacy page: **2 query operations / 40 logical documents**.
+- Request rows render their immutable equipment snapshots and never hydrate the current listing.
+- Legacy rows without a display snapshot degrade to the existing unavailable-equipment placeholder.
+- Page cap: **1 query operation / 20 logical documents**.
 
 ### Rental estimate
 
@@ -104,7 +104,7 @@ Total `onSnapshot` call sites: **5**. All five return cleanup, all collection li
 
 ### Batched/fixed
 
-- Requests equipment hydration: per-ID `getDoc` calls replaced with exact-key `documentId IN` chunks of at most 30.
+- Requests equipment hydration was removed; request rows render immutable snapshots and never read the current listing.
 - Worker notification device owner/installation checks: bounded BatchGet.
 - Account deletion device owner/installation checks: bounded BatchGet.
 - Legacy reservation cancellation/rejection: date point reads replaced with BatchGet chunks of 100.
@@ -122,7 +122,7 @@ Total `onSnapshot` call sites: **5**. All five return cleanup, all collection li
 - Resend webhook lookup: fixed three-collection fan-out, each limited to 20.
 - Expo push delivery: external-provider batches of at most 100, at most two batches per delivery pass.
 - Campaign, Early Access campaign, notification, compliance cleanup, regulatory expiry, staff claim, deletion, and reminder processors: background, lease/CAS protected, and per-tick bounded.
-- Bulk email-verification reminders: durable job; at most 5 jobs are scanned and 5 recipients are processed per job/tick. Provider acceptance is necessarily per recipient.
+- Bulk email-verification reminders: durable job; one job is scanned and one recipient is processed per processor invocation. Provider acceptance is necessarily per recipient.
 - Admin driver global-search fallback: at most one exact profile point read under a source-document budget.
 - Admin status overview fan-out: fixed status families with per-query limits, not data-driven unbounded iteration.
 - Legacy listing migration audit history: one bounded history query per listing (page max 50, history max 50) because each listing requires a fail-closed governance proof.
@@ -141,12 +141,11 @@ AST-based deterministic audit of Production TypeScript source:
   - explicit `limit`: 61
   - aggregate-only without document pagination: 2
   - unsafe: 0
-- Direct mobile collection query shapes: **16**
+- Direct mobile collection query shapes: **14**
   - direct `limit`: 13
   - bounded spread-supplied limit: 1
-  - exact-key `documentId IN` batch: 2
   - unsafe: 0
-- Combined: **79 bounded/justified of 79; unsafe 0**.
+- Combined: **77 bounded/justified of 77; unsafe 0**.
 
 Paged user-facing lists use stable document/name or created-time cursor semantics. Point document reads and aggregate queries are not given meaningless pagination.
 

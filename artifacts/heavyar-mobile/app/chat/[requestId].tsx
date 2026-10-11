@@ -7,15 +7,13 @@ import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import {
-  fetchEquipmentById,
   fetchOlderMessages,
   FirestoreCursor,
   sendMessage,
   subscribeToMessages,
   subscribeToRequest,
-  tryBackfillRequestPublicSnapshots,
 } from '@/services/firestoreService';
-import { EquipmentRequest, ChatMessage, PublicUserSnapshot } from '@/types';
+import { EquipmentRequest, ChatMessage } from '@/types';
 import { useBlockedUsers } from '@/services/blockedUsers';
 
 export default function ChatScreen() {
@@ -31,7 +29,6 @@ export default function ChatScreen() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const olderMessagesRef = useRef<ChatMessage[]>([]);
   const loadedOlderRef = useRef(false);
-  const enrichedEquipmentIdRef = useRef<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const pendingSendRef = useRef<{ text: string; operation: { id: string; createdAtMs: number } } | null>(null);
   const sendingRef = useRef(false);
@@ -43,8 +40,10 @@ export default function ChatScreen() {
   const otherUserName = useMemo(() => {
     if (!request) return '';
     const other = request.customerUid === currentUid ? request.providerPublic : request.customerPublic;
-    return other ? localizedText(other.nameAr, other.nameEn) : '';
-  }, [currentUid, localizedText, request]);
+    const snapshotName = other ? localizedText(other.nameAr, other.nameEn) : '';
+    if (snapshotName) return snapshotName;
+    return t(request.customerUid === currentUid ? 'provider' : 'customer');
+  }, [currentUid, localizedText, request, t]);
 
   const otherUid = request ? (request.customerUid === currentUid ? request.providerUid : request.customerUid) : '';
   const { isBlocked, unblock } = useBlockedUsers(currentUid);
@@ -62,47 +61,9 @@ export default function ChatScreen() {
 
   useEffect(() => {
     if (!requestId) return;
-    let active = true;
-    enrichedEquipmentIdRef.current = null;
-    const unsub = subscribeToRequest(requestId, async (req) => {
-      if (!active) return;
-      setRequest(req);
-      if (req && user) {
-        const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
-        if (currentUid === req.customerUid && !req.customerPublic) {
-          updates.customerPublic = {
-            uid: user.uid,
-            nameAr: user.nameAr,
-            nameEn: user.nameEn,
-            avatar: user.avatar,
-          };
-        }
-        if (currentUid === req.providerUid && !req.providerPublic) {
-          updates.providerPublic = {
-            uid: user.uid,
-            nameAr: user.nameAr,
-            nameEn: user.nameEn,
-            avatar: user.avatar,
-          };
-        }
-        if (!req.providerPublic && enrichedEquipmentIdRef.current !== req.equipmentId) {
-          enrichedEquipmentIdRef.current = req.equipmentId;
-          try {
-            const eq = await fetchEquipmentById(req.equipmentId);
-            if (!active) return;
-            if (eq?.ownerPublic && eq.ownerUid === req.providerUid) {
-              updates.providerPublic = eq.ownerPublic;
-            }
-          } catch {}
-        }
-        if ((updates.customerPublic || updates.providerPublic) && req.id) {
-          if (!active) return;
-          void tryBackfillRequestPublicSnapshots(req.id, updates);
-        }
-      }
-    });
-    return () => { active = false; unsub(); };
-  }, [requestId, currentUid, user]);
+    const unsub = subscribeToRequest(requestId, setRequest);
+    return () => unsub();
+  }, [requestId]);
 
   useEffect(() => {
     if (!requestId) return;

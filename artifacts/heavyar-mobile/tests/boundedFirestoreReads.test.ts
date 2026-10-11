@@ -19,7 +19,7 @@ describe('bounded Firestore read paths', () => {
   });
 
   it.each([
-    ['async function fetchEquipmentByOwner', 'async function fetchEquipmentByIds'],
+    ['async function fetchEquipmentByOwner', 'async function createEquipment'],
     ['async function fetchUserRequests', 'async function fetchRequestById'],
     ['function subscribeToUserRequests', 'function subscribeToMessages'],
     ['function subscribeToMessages', 'async function fetchOlderMessages'],
@@ -33,19 +33,24 @@ describe('bounded Firestore read paths', () => {
     expect(body).toContain('limit(');
   });
 
-  it('isolates request equipment hydration and keeps unavailable listings private', () => {
-    const batch = requestService.split('export async function fetchRequestEquipmentByIds(')[1]
-      .split('export async function fetchRequestById(')[0];
-    expect(batch).toContain('Promise.allSettled');
-    expect(batch).toContain('firestoreDocumentIdChunks(ids)');
-    expect(batch).toContain("where(documentId(), 'in', chunk)");
-    expect(batch).not.toContain('uniqueIds.map(async id');
-    expect(batch).toContain("result.status !== 'fulfilled'");
+  it('renders request snapshots without non-owner listing hydration', () => {
+    const requestList = source('../app/(tabs)/requests/index.tsx');
+    const requestDetail = source('../app/request/[id].tsx');
+    const chat = source('../app/chat/[requestId].tsx');
+    const payment = source('../app/payment/[requestId].tsx');
+    expect(requestService).not.toContain("collection(getFirebaseDb(), 'equipment')");
+    expect(requestService).not.toContain('fetchRequestEquipment');
+    expect(service).not.toContain('fetchEquipmentByIds');
+    expect(service).not.toContain('equipmentIdsNeedingRequestHydration');
     expect(service).toContain('equipmentSnapshot: parseEquipmentRequestSnapshot');
-    expect(source('../components/RequestCard.tsx')).not.toContain('fetchEquipmentById');
-    expect(source('../app/(tabs)/requests/index.tsx')).toContain('fetchRequestEquipmentByIds');
+    expect(requestList).not.toContain('fetchRequestEquipment');
+    expect(requestDetail).not.toContain('fetchRequestEquipment');
+    expect(chat).not.toContain('fetchEquipmentById');
+    expect(payment).not.toContain('fetchEquipmentById');
+    expect(source('../components/RequestCard.tsx')).toContain('request.equipmentSnapshot');
     expect(source('../components/RequestCard.tsx')).toContain("t('equipment_no_longer_available')");
-    expect(source('../app/request/[id].tsx')).toContain("t('equipment_no_longer_available')");
+    expect(requestDetail).toContain('request.equipmentSnapshot');
+    expect(requestDetail).toContain("t('equipment_no_longer_available')");
   });
 
   it('exposes pagination controls rather than silently truncating screens', () => {
@@ -55,15 +60,21 @@ describe('bounded Firestore read paths', () => {
     expect(source('../app/chat/[requestId].tsx')).toContain('Load older messages');
   });
 
-  it('bounds the rating duplicate fallback, uses a deterministic id, and avoids repeated listener enrichment reads', () => {
+  it('bounds the rating duplicate fallback and uses a deterministic id', () => {
     const rating = implementation('async function submitRating', 'async function fetchRatingsForUser');
     expect(rating).toContain("where('requestId', '==', data.requestId),");
     expect(rating).toContain('limit(10)');
     expect(rating).toContain('const ratingId = `${data.requestId}__${data.fromUid}`');
     expect(rating).toContain("setDoc(doc(db, 'ratings', ratingId)");
     expect(rating).not.toContain("addDoc(collection(db, 'ratings')");
-    expect(source('../app/request/[id].tsx')).toContain('fetchedEquipmentIdRef.current !== req.equipmentId');
-    expect(source('../app/chat/[requestId].tsx')).toContain('enrichedEquipmentIdRef.current !== req.equipmentId');
+  });
+
+  it('does not attempt client-side authority-field backfills', () => {
+    expect(service).not.toContain('tryBackfillEquipmentOwnerPublic');
+    expect(service).not.toContain('tryBackfillRequestPublicSnapshots');
+    expect(source('../app/equipment/[id].tsx')).not.toContain('tryBackfillEquipmentOwnerPublic');
+    expect(source('../app/chat/[requestId].tsx')).not.toContain('tryBackfillRequestPublicSnapshots');
+    expect(source('../app/payment/[requestId].tsx')).not.toContain('tryBackfillRequestPublicSnapshots');
   });
 
   it('uses deterministic chat operation ids and preserves them across ambiguous retries', () => {

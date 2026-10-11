@@ -4,7 +4,7 @@ import { Image } from 'expo-image';
 import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
-import { EquipmentRequest, Equipment } from '@/types';
+import { EquipmentRequest } from '@/types';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 import StatusBadge from './StatusBadge';
@@ -15,10 +15,9 @@ import { startRoutePress } from '@/utils/routePerformance';
 
 interface RequestCardProps {
   request: EquipmentRequest;
-  equipment?: Equipment | null;
 }
 
-export default React.memo(function RequestCard({ request, equipment = null }: RequestCardProps) {
+export default React.memo(function RequestCard({ request }: RequestCardProps) {
   const { isRTL, t, localizedText } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
@@ -28,12 +27,10 @@ export default React.memo(function RequestCard({ request, equipment = null }: Re
     router.push(`/request/${request.id}`);
   }, [request, router, user?.uid]);
 
-  const title = equipment
-    ? localizedText(equipment.titleAr, equipment.titleEn)
-    : request.equipmentSnapshot
-      ? localizedText(request.equipmentSnapshot.titleAr, request.equipmentSnapshot.titleEn)
-      : t('equipment_no_longer_available');
-  const imageUrl = equipment ? getFirstImageUrl(equipment.images) : getFirstImageUrl(request.equipmentSnapshot?.images || []);
+  const title = request.equipmentSnapshot
+    ? localizedText(request.equipmentSnapshot.titleAr, request.equipmentSnapshot.titleEn)
+    : t('equipment_no_longer_available');
+  const imageUrl = getFirstImageUrl(request.equipmentSnapshot?.images || []);
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
   const requestMode = request.pricingModelVersion === 2 ? request.rentalMode : (request.requestMode || 'fixed_days');
   const isOpenEnded = requestMode === 'open_ended';

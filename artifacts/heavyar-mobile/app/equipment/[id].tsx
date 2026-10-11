@@ -8,7 +8,7 @@ import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories, mockCities } from '@/mocks/categories';
-import { fetchEquipmentByOwnerId, tryBackfillEquipmentOwnerPublic } from '@/services/firestoreService';
+import { fetchEquipmentByOwnerId } from '@/services/firestoreService';
 import { Equipment } from '@/types';
 import { getImageUrl } from '@/utils/imageHelpers';
 import AppDialog from '@/components/AppDialog';
@@ -66,18 +66,6 @@ export default function EquipmentDetailScreen() {
     void load();
     return () => { mounted = false; };
   }, [detailKey, fallbackOwnerUid, id, authLoading, publicAllowed]);
-
-  useEffect(() => {
-    if (!equipment || !currentUser) return;
-    if (equipment.ownerPublic) return;
-    if (currentUser.uid !== equipment.ownerUid) return;
-    void tryBackfillEquipmentOwnerPublic(equipment.id, {
-      uid: currentUser.uid,
-      nameAr: currentUser.nameAr,
-      nameEn: currentUser.nameEn,
-      avatar: currentUser.avatar,
-    });
-  }, [currentUser, equipment]);
 
   const categoryObj = equipment ? mockCategories.find(c => c.id === equipment.category) : null;
   const cityObj = equipment ? mockCities.find(c => c.id === equipment.city) : null;

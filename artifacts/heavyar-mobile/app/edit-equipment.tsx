@@ -18,7 +18,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { mockCategories } from '@/mocks/categories';
 import { saudiRegions, getCitiesByRegion, findCityById, findRegionByCityId } from '@/mocks/saudiRegions';
-import { fetchEquipmentById } from '@/services/firestoreService';
+import { fetchEquipmentByOwnerId } from '@/services/firestoreService';
 import { uploadMultipleImages, deleteCloudinaryImage } from '@/services/cloudinaryService';
 import { getImageUrl } from '@/utils/imageHelpers';
 import { Equipment, EquipmentImage } from '@/types';
@@ -86,18 +86,12 @@ export default function EditEquipmentScreen() {
   useEffect(() => {
     let mounted = true;
     const load = async () => {
-      if (!id) return;
+      if (!id || !user?.uid) return;
       try {
-        const eq = await fetchEquipmentById(id);
+        const eq = await fetchEquipmentByOwnerId(id, user.uid);
         if (!mounted) return;
         if (!eq) {
           showDialog(t('error_title'), t('load_failed'), [
-            { text: t('confirm'), style: 'default', onPress: () => router.back() },
-          ]);
-          return;
-        }
-        if (user && eq.ownerUid !== user.uid) {
-          showDialog(t('error_title'), t('error_generic_message'), [
             { text: t('confirm'), style: 'default', onPress: () => router.back() },
           ]);
           return;
@@ -141,7 +135,7 @@ export default function EditEquipmentScreen() {
     };
     void load();
     return () => { mounted = false; };
-  }, [id, user, t, router, showDialog]);
+  }, [id, user?.uid, t, router, showDialog]);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 

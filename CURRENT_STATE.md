@@ -46,8 +46,8 @@ The mobile data-flow architecture is **COHERENT WITH JUSTIFIED MIXED PATHS**. Th
 - Authenticated Worker requests are time-bounded, cancellation-aware, and UID-guarded before and after token, fetch, and decode boundaries.
 - Worker mutations remain authoritative. Equipment request/detail state reconciles through bounded Firestore realtime listeners.
 - Public discovery uses React Query over the Worker projection with scoped keys, stale windows, pagination, cancellation, and targeted invalidation.
-- Rental V2 request rows consume immutable equipment snapshots and perform zero current-listing hydration reads. Legacy requests may use isolated compatibility hydration.
-- Request detail/chat enrichment cannot commit after route teardown or account switch.
+- Request rows and details consume immutable equipment/participant snapshots and perform zero current-listing hydration reads. Legacy requests missing display snapshots use safe placeholders.
+- Request detail and chat listeners are cleaned up on route teardown; no client-side snapshot backfill is attempted.
 - Old-account cached queries, snapshots, callbacks, and responses cannot populate a new account.
 - Driver-request Worker enrichment uses controlled concurrency of five and preserves result order.
 
@@ -94,12 +94,12 @@ The detailed source audit and deterministic budgets are recorded in `docs/PERFOR
 - QA performance reporting is explicitly gated by `EXPO_PUBLIC_HEAVYAR_QA_PERFORMANCE`; it records static operation labels, durations, status, and exact UTF-8 JSON byte counts only. It excludes UIDs, emails, names, request/equipment identifiers, search text, and payload bodies.
 - Physical internal-build latency percentiles and representative Production JSON rankings remain **UNVERIFIED**. No emulator timing or deterministic fixture size is presented as Google Play/Production evidence.
 - Exact deterministic cold-Home budgets are: Customer `6` HTTP requests, `11` Firestore query operations, and `16 + N` logical document reads (`N <= 41`, maximum `57`); Provider `5` / `8` / `14`; Driver `5` / `9` / `15`; Guest `3` / `5` / `10 + N` (maximum `51`). Stable mounted warm Home is `0` / `0` / `0` within cache/stale windows.
-- Request first-page budget is at most `2` Firestore queries and `40` logical document reads. Successful Rental V2 estimate/create budgets are respectively at most `6`/`303` and `8`/`305`.
+- Request first-page budget is at most `1` Firestore query and `20` logical document reads; request rows render immutable snapshots and do not hydrate current equipment listings. Successful Rental V2 estimate/create budgets are respectively at most `6`/`303` and `8`/`305`.
 - Five mobile `onSnapshot` listener shapes are inventoried; every subscription has route/effect cleanup and account-switch protection. No listener leak remains.
-- Across Mobile, Worker, and Admin there are `79` collection-query shapes: `74` explicitly limited, `1` bounded spread, `2` exact-key `IN` queries, and `2` aggregate-only queries. Unsafe unbounded collection queries: `0`.
+- Across Mobile, Worker, and Admin there are `77` collection-query shapes: `74` explicitly limited, `1` bounded spread, and `2` aggregate-only queries. Unsafe unbounded collection queries: `0`.
 - All avoidable audited N+1 patterns were removed or batched. Remaining looped I/O is limited to bounded CAS/lease/transaction work, fixed query families, background processors, and bounded external-provider batches where per-item semantics are required.
 - Payment creation remains synchronous because checkout requires the Tap result. Mobile double-tap protection, Worker same-isolate coalescing, durable Firestore/Tap idempotency, and two-way/five-way concurrency regressions pass.
-- Bulk verification reminders use durable bounded background jobs (`5` jobs and `5` recipients per tick); interactive verification/password-reset paths remain synchronous where provider acceptance is part of the response contract.
+- Bulk verification reminders use durable bounded background jobs (one job and one recipient per processor invocation); interactive verification/password-reset paths remain synchronous where provider acceptance is part of the response contract.
 - Firestore is in `me-central2`; the Worker runs on Cloudflare's global edge. Physical Worker-to-Firestore p50/p95 is unverified pending an authorized QA measurement run.
 - Image uploads still follow App → Worker → Cloudinary. A signed direct-upload design is recommended for a later separately authorized migration; no upload-path migration occurred in this phase.
 

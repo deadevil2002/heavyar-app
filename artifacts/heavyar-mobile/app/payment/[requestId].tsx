@@ -6,14 +6,10 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import {
-  fetchRequestById,
-  fetchEquipmentById,
-  tryBackfillRequestPublicSnapshots,
-} from '@/services/firestoreService';
+import { fetchRequestById } from '@/services/firestoreService';
 import { createPayment, verifyPayment } from '@/services/paymentService';
 import type { PaymentLifecycleStatus, PaymentQuote } from '@/services/paymentService';
-import { EquipmentRequest, PublicUserSnapshot } from '@/types';
+import { EquipmentRequest } from '@/types';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { getCheckoutGateways, type CheckoutGateway } from '@/services/workerClient';
@@ -46,36 +42,6 @@ export default function PaymentScreen() {
       if (!requestId) return;
       try {
         const req = await fetchRequestById(requestId);
-        if (req && user) {
-          const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
-          if (user.uid === req.customerUid && !req.customerPublic) {
-            updates.customerPublic = {
-              uid: user.uid,
-              nameAr: user.nameAr,
-              nameEn: user.nameEn,
-              avatar: user.avatar,
-            };
-          }
-          if (user.uid === req.providerUid && !req.providerPublic) {
-            updates.providerPublic = {
-              uid: user.uid,
-              nameAr: user.nameAr,
-              nameEn: user.nameEn,
-              avatar: user.avatar,
-            };
-          }
-          if (!req.providerPublic) {
-            try {
-              const eq = await fetchEquipmentById(req.equipmentId);
-              if (eq?.ownerPublic && eq.ownerUid === req.providerUid) {
-                updates.providerPublic = eq.ownerPublic;
-              }
-            } catch {}
-          }
-          if ((updates.customerPublic || updates.providerPublic) && req.id) {
-            void tryBackfillRequestPublicSnapshots(req.id, updates);
-          }
-        }
         if (mounted) {
           setRequest(req);
           setLoading(false);
@@ -86,7 +52,7 @@ export default function PaymentScreen() {
     };
     void load();
     return () => { mounted = false; };
-  }, [requestId, user]);
+  }, [requestId]);
 
   useEffect(() => {
     let mounted = true;

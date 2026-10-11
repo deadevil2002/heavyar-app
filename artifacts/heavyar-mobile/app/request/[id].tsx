@@ -7,7 +7,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
-import type { Equipment, EquipmentRequest, PublicUserSnapshot, RentalSummary } from '@/types';
+import type { EquipmentRequest, PublicUserSnapshot, RentalSummary } from '@/types';
 import StatusBadge from '@/components/StatusBadge';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
@@ -35,7 +35,6 @@ export default function RequestDetailScreen() {
   }
   const initialSnapshot = initialSnapshotRef.current;
   const [request, setRequest] = useState<EquipmentRequest | null>(initialSnapshot);
-  const [equipment, setEquipment] = useState<Equipment | null>(null);
   const [otherUserPublic, setOtherUserPublic] = useState<PublicUserSnapshot | null>(() => {
     if (!initialSnapshot) return null;
     return initialSnapshot.providerUid === currentUid
@@ -47,9 +46,7 @@ export default function RequestDetailScreen() {
   const [cancelReason, setCancelReason] = useState('');
   const [_loading, setLoading] = useState<boolean>(!initialSnapshot);
   const [loadFailed, setLoadFailed] = useState(false);
-  const equipmentRef = useRef<Equipment | null>(null);
   const serverClockRef = useRef<{ serverNowMs: number; monotonicAtSync: number } | null>(null);
-  const fetchedEquipmentIdRef = useRef<string | null>(null);
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
@@ -66,60 +63,25 @@ export default function RequestDetailScreen() {
   useEffect(() => {
     if (!id) return;
     let active = true;
-    equipmentRef.current = null;
-    fetchedEquipmentIdRef.current = null;
     let unsubscribe: () => void = () => {};
     let firstFrame = 0;
     let secondFrame = 0;
     let dataTimer: ReturnType<typeof setTimeout> | undefined;
     const startData = () => void import('@/services/requestRealtimeService').then(service => {
       if (!active) return;
-      unsubscribe = service.subscribeToRequestDetail(id, async (req) => {
+      unsubscribe = service.subscribeToRequestDetail(id, (req) => {
         if (!active) return;
         setRequest(req);
         setLoadFailed(false);
         if (req) {
           markRouteStage('request_detail', 'data_available');
           markRouteStage('request_detail', 'fresh_data_complete');
-          try {
-            let eq = equipmentRef.current;
-            if (fetchedEquipmentIdRef.current !== req.equipmentId) {
-              fetchedEquipmentIdRef.current = req.equipmentId;
-              eq = await service.fetchRequestEquipmentById(req.equipmentId);
-              if (!active) return;
-              equipmentRef.current = eq;
-              setEquipment(eq);
-            }
-            const updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot } = {};
-
-          if (user && currentUid === req.customerUid && !req.customerPublic) {
-            updates.customerPublic = {
-              uid: user.uid,
-              nameAr: user.nameAr,
-              nameEn: user.nameEn,
-              avatar: user.avatar,
-            };
-          }
-
-          if (user && currentUid === req.providerUid && !req.providerPublic) {
-            updates.providerPublic = {
-              uid: user.uid,
-              nameAr: user.nameAr,
-              nameEn: user.nameEn,
-              avatar: user.avatar,
-            };
-          }
-
-          if (!req.providerPublic && eq?.ownerPublic && eq.ownerUid === req.providerUid) {
-            updates.providerPublic = eq.ownerPublic;
-          }
-
-            const effectiveCustomer = req.customerPublic || updates.customerPublic || null;
-            const effectiveProvider = req.providerPublic || updates.providerPublic || null;
-            const other = req.providerUid === currentUid ? effectiveCustomer : effectiveProvider;
-            setOtherUserPublic(other);
-          } catch (e) {
-          }
+          const other = req.providerUid === currentUid
+            ? req.customerPublic || null
+            : req.providerPublic || null;
+          setOtherUserPublic(other);
+        } else {
+          setOtherUserPublic(null);
         }
         if (active) setLoading(false);
       });
@@ -141,7 +103,7 @@ export default function RequestDetailScreen() {
       if (dataTimer) clearTimeout(dataTimer);
       unsubscribe();
     };
-  }, [id, currentUid, user]);
+  }, [id, currentUid]);
 
   useEffect(() => {
     if (!id || request?.pricingModelVersion !== 2) return;
@@ -192,30 +154,13 @@ export default function RequestDetailScreen() {
   }
 
   const isProvider = request.providerUid === currentUid;
-  const displayEquipment = equipment || {
-    id: request.equipmentId,
-    ownerUid: request.providerUid,
-    titleAr: request.equipmentSnapshot?.titleAr || t('equipment_no_longer_available'),
-    titleEn: request.equipmentSnapshot?.titleEn || t('equipment_no_longer_available'),
-    descriptionAr: '',
-    descriptionEn: '',
-    category: request.equipmentSnapshot?.category || '',
-    customCategory: '',
-    region: '',
-    city: '',
-    customCity: '',
-    district: '',
-    location: { lat: 0, lng: 0 },
-    pricePerDay: request.pricePerDay || 0,
-    images: request.equipmentSnapshot?.images || [],
-    availability: true,
-    isActive: false,
-    createdAt: '',
-    updatedAt: '',
-  } as Equipment;
-  const title = localizedText(displayEquipment.titleAr, displayEquipment.titleEn);
+  const title = request.equipmentSnapshot
+    ? localizedText(request.equipmentSnapshot.titleAr, request.equipmentSnapshot.titleEn)
+    : t('equipment_no_longer_available');
+  const equipmentImages = request.equipmentSnapshot?.images || [];
   const otherUser = otherUserPublic;
-  const otherUserName = otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '';
+  const otherUserName = (otherUser ? localizedText(otherUser.nameAr, otherUser.nameEn) : '')
+    || t(isProvider ? 'customer' : 'provider');
   const requestMode = request.requestMode || 'fixed_days';
   const isOpenEnded = requestMode === 'open_ended';
   const isV2 = request.pricingModelVersion === 2;
@@ -297,7 +242,7 @@ export default function RequestDetailScreen() {
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <View style={[styles.equipmentRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-            <Image source={{ uri: getFirstImageUrl(displayEquipment.images) }} style={styles.equipmentImage} contentFit="cover" />
+            <Image source={{ uri: getFirstImageUrl(equipmentImages) }} style={styles.equipmentImage} contentFit="cover" />
             <View style={[styles.equipmentInfo, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
               <Text style={[styles.equipmentTitle, { textAlign: isRTL ? 'right' : 'left' }]} numberOfLines={2}>{title}</Text>
               <StatusBadge status={request.status} />

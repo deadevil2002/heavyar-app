@@ -1,44 +1,15 @@
 import {
-  collection, doc, documentId, getDoc, getDocs, limit, onSnapshot, orderBy, query, startAfter, where,
+  collection, doc, documentId, getDocs, limit, onSnapshot, orderBy, query, startAfter, where,
   type DocumentData, type QueryDocumentSnapshot, type Unsubscribe,
 } from 'firebase/firestore';
 import { getFirebaseDb } from './firebaseConfig';
-import type { Equipment, EquipmentRequest } from '@/types';
+import type { EquipmentRequest } from '@/types';
 import { mobilePerformance } from '@/utils/mobilePerformance';
-import { parseFirestoreEquipment, parseFirestoreRequest } from './requestFirestoreCodec';
-import { firestoreDocumentIdChunks } from './firestoreBatching';
+import { parseFirestoreRequest } from './requestFirestoreCodec';
 
 export const REQUESTS_PAGE_SIZE = 20;
 export type RequestFirestoreCursor = QueryDocumentSnapshot<DocumentData>;
 export interface RequestFirestorePage<T> { items: T[]; cursor: RequestFirestoreCursor | null; hasMore: boolean }
-
-export async function fetchRequestEquipmentById(id: string): Promise<Equipment | null> {
-  const snapshot = await mobilePerformance.trackFirestoreRead('firestore.get-doc', () => getDoc(doc(getFirebaseDb(), 'equipment', id)));
-  return snapshot.exists() ? parseFirestoreEquipment(snapshot.id, snapshot.data() as Record<string, unknown>) : null;
-}
-
-export async function fetchRequestEquipmentByIds(ids: string[]): Promise<Map<string, Equipment>> {
-  const equipment = new Map<string, Equipment>();
-  const results = await Promise.allSettled(firestoreDocumentIdChunks(ids).map(chunk =>
-    mobilePerformance.trackFirestoreRead('firestore.get-docs', () => getDocs(query(
-      collection(getFirebaseDb(), 'equipment'), where(documentId(), 'in', chunk),
-    ))),
-  ));
-  for (const result of results) {
-    if (result.status !== 'fulfilled') continue;
-    for (const snapshot of result.value.docs) {
-      equipment.set(snapshot.id, parseFirestoreEquipment(snapshot.id, snapshot.data() as Record<string, unknown>));
-    }
-  }
-  return equipment;
-}
-
-export function requestEquipmentIdsNeedingHydration(requests: EquipmentRequest[]): string[] {
-  return [...new Set(requests.filter(request => {
-    const snapshot = request.equipmentSnapshot;
-    return !snapshot || typeof snapshot.titleAr !== 'string' || typeof snapshot.titleEn !== 'string' || !Array.isArray(snapshot.images);
-  }).map(request => request.equipmentId).filter(Boolean))];
-}
 
 export async function fetchRequestPage(uid: string, role: 'customer' | 'provider', cursor?: RequestFirestoreCursor | null): Promise<RequestFirestorePage<EquipmentRequest>> {
   const field = role === 'customer' ? 'customerUid' : 'providerUid';

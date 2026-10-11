@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath, URL } from 'node:url';
 import * as ts from 'typescript';
-import { FIRESTORE_IN_QUERY_MAX, firestoreDocumentIdChunks } from '../services/firestoreBatching';
 import { configureMobilePerformance, readMeasuredResponseText, resetMobilePerformance, snapshotMobilePerformance } from '../utils/mobilePerformance';
 
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -32,18 +31,6 @@ describe('deterministic performance/data budgets', () => {
     expect(budgets.guestCold.clientDocs + budgets.guestCold.workerDocs).toBe(51);
   });
 
-  it('batches a normal 20-item Requests page into one legal Firestore IN query', () => {
-    const chunks = firestoreDocumentIdChunks(Array.from({ length: 20 }, (_, index) => `equipment-${index}`));
-    expect(FIRESTORE_IN_QUERY_MAX).toBe(30);
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toHaveLength(20);
-  });
-
-  it('deduplicates, rejects path-like IDs, and chunks larger bounded hydration inputs', () => {
-    const ids = [...Array.from({ length: 65 }, (_, index) => `equipment-${index}`), 'equipment-1', 'bad/path', ''];
-    expect(firestoreDocumentIdChunks(ids).map(chunk => chunk.length)).toEqual([30, 30, 5]);
-  });
-
   it('keeps Home network dependencies explicit and cache-bounded', () => {
     const discovery = source('../contexts/DiscoveryContext.tsx');
     const unread = source('../hooks/useNotificationUnread.ts');
@@ -66,9 +53,9 @@ describe('deterministic performance/data budgets', () => {
     const requestService = source('../services/requestRealtimeService.ts');
     const worker = source('../worker/src/index.ts');
     expect(requestService).toContain('REQUESTS_PAGE_SIZE = 20');
-    expect(requestService).toContain("where(documentId(), 'in', chunk)");
-    const requestsInitial = { queries: 2, requestDocs: 20, legacyEquipmentDocs: 20 };
-    expect(requestsInitial.requestDocs + requestsInitial.legacyEquipmentDocs).toBe(40);
+    expect(requestService).not.toContain("collection(getFirebaseDb(), 'equipment')");
+    const requestsInitial = { queries: 1, requestDocs: 20, equipmentDocs: 0 };
+    expect(requestsInitial.requestDocs + requestsInitial.equipmentDocs).toBe(20);
 
     expect(worker).toContain('const V2_AVAILABILITY_LIMIT = 101');
     expect(worker).toContain('batches.some(batch => batch.length >= V2_AVAILABILITY_LIMIT)');
@@ -89,9 +76,12 @@ describe('deterministic performance/data budgets', () => {
   it('queues bulk verification email and bounds each scheduled processor pass', () => {
     const admin = source('../worker/src/admin.ts');
     expect(admin).toContain("status: 'queued', uids: ids, cursor: 0");
-    expect(admin).toContain("collectionId: 'emailVerificationReminderJobs'");
-    expect(admin).toContain('limit: 5');
-    expect(admin).toContain('uids.slice(cursor, cursor + 5)');
+    const processor = admin.split('export async function processEmailVerificationReminderJobs(')[1]
+      .split('const deletionCollections =')[0];
+    expect(processor).toContain("collectionId: 'emailVerificationReminderJobs'");
+    expect(processor).toContain('limit: 1');
+    expect(processor).toContain("queryOverride('emailVerificationReminderJobs', '', 1, query).slice(0, 1)");
+    expect(processor).toContain('uids.slice(cursor, cursor + 1)');
     const bulk = admin.split('async function bulkEmailVerificationReminder(')[1]
       .split('export async function processEmailVerificationReminderJobs(')[0];
     expect(bulk).not.toContain('await emailVerificationReminder(');
@@ -103,7 +93,7 @@ describe('deterministic performance/data budgets', () => {
     const worker = source('../worker/src/index.ts');
     const admin = source('../worker/src/admin.ts');
     expect(requests).not.toMatch(/ids\.map\([^)]*getDoc/s);
-    expect(requests).toContain("where(documentId(), 'in', chunk)");
+    expect(requests).not.toContain("collection(getFirebaseDb(), 'equipment')");
     expect(worker).not.toContain("Promise.all([getDoc(env, 'users', r.customerUid), getDoc(env, 'users', r.providerUid)])");
     expect(worker).toContain("batchGetRawDocs(env, reservationDates.map(date => ({");
     const reminderSummary = admin.split('async function reminderSummary(')[1]
@@ -155,7 +145,7 @@ describe('deterministic performance/data budgets', () => {
     expect(shapes.filter(shape => !shape.limited && !shape.aggregate)).toEqual([]);
   });
 
-  it('keeps all 16 direct mobile collection queries bounded or exact-key IN batches', () => {
+  it('keeps all 14 direct mobile collection queries bounded', () => {
     const shapes: Array<{ limited: boolean; boundedSpread: boolean; exactKeyBatch: boolean }> = [];
     for (const relativePath of ['../services/firestoreService.ts', '../services/requestRealtimeService.ts']) {
       const text = source(relativePath);
@@ -173,10 +163,10 @@ describe('deterministic performance/data budgets', () => {
       };
       visit(tree);
     }
-    expect(shapes).toHaveLength(16);
+    expect(shapes).toHaveLength(14);
     expect(shapes.filter(shape => shape.limited)).toHaveLength(13);
     expect(shapes.filter(shape => shape.boundedSpread)).toHaveLength(1);
-    expect(shapes.filter(shape => !shape.limited && shape.exactKeyBatch)).toHaveLength(2);
+    expect(shapes.filter(shape => !shape.limited && shape.exactKeyBatch)).toHaveLength(0);
     expect(shapes.filter(shape => !shape.limited && !shape.boundedSpread && !shape.exactKeyBatch)).toEqual([]);
   });
 

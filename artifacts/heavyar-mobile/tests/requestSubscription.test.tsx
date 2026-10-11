@@ -20,18 +20,12 @@ vi.mock('firebase/firestore', async importOriginal => ({
 }));
 vi.mock('../services/firebaseConfig', () => ({ getFirebaseDb: () => ({}), getFirebaseAuth: () => ({}) }));
 vi.mock('../services/cloudinaryService', () => ({ deleteMultipleCloudinaryImages: vi.fn() }));
-vi.mock('../services/firestoreService', async importOriginal => ({
-  ...await importOriginal<typeof import('../services/firestoreService')>(),
-  fetchEquipmentByIds: async () => new Map(),
-}));
 vi.mock('@/services/requestRealtimeService', () => ({
   subscribeToRequestPage: (_uid: string, _role: string, next: (page: any) => void, error: (error: Error) => void) => {
     const stop = vi.fn();
     state.listeners.push({ next, error, stop });
     return stop;
   },
-  fetchRequestEquipmentByIds: async () => new Map(),
-  requestEquipmentIdsNeedingHydration: () => [],
 }));
 vi.mock('react-native', () => ({
   View: ({ children }: any) => <div>{children}</div>,

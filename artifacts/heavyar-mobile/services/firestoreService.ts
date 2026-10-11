@@ -4,7 +4,6 @@ import {
   getDoc as firebaseGetDoc,
   getDocs as firebaseGetDocs,
   setDoc,
-  updateDoc,
   deleteDoc,
   query,
   where,
@@ -22,7 +21,7 @@ import {
 import { getFirebaseAuth, getFirebaseDb } from './firebaseConfig';
 import { Equipment, EquipmentImage, EquipmentRequest, EquipmentRequestSnapshot, ChatMessage, Rating, User, Invoice, PublicUserSnapshot, ListingPricingV2 } from '@/types';
 import { deleteMultipleCloudinaryImages } from './cloudinaryService';
-import { extractPublicIds, getRemovedImages } from '@/utils/imageHelpers';
+import { getRemovedImages } from '@/utils/imageHelpers';
 import { WORKER_BASE_URL } from '@/constants/worker';
 import { listingCountryCode } from './locationHierarchy';
 import {
@@ -33,7 +32,6 @@ import {
 } from './rentalV2';
 import { request as boundedWorkerRequest } from './workerClient';
 import { mobilePerformance } from '@/utils/mobilePerformance';
-import { firestoreDocumentIdChunks } from './firestoreBatching';
 
 const loggedIndexFallbacks = new Set<string>();
 
@@ -114,16 +112,6 @@ function parsePublicUserSnapshot(raw: unknown, fallbackUid?: string): PublicUser
     nameEn: (obj.nameEn as string) || '',
     avatar: (obj.avatar as string) || '',
   };
-}
-
-function sanitizePublicUserSnapshot(snapshot: PublicUserSnapshot): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    uid: snapshot.uid,
-    nameAr: snapshot.nameAr,
-    nameEn: snapshot.nameEn,
-    avatar: snapshot.avatar,
-  };
-  return out;
 }
 
 function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
@@ -308,15 +296,6 @@ function parseRating(id: string, data: Record<string, unknown>): Rating {
   };
 }
 
-export async function fetchEquipmentById(id: string): Promise<Equipment | null> {
-  const db = getFirebaseDb();
-  const snap = await getDoc(doc(db, 'equipment', id));
-  if (snap.exists()) {
-    return parseEquipment(snap.id, snap.data() as Record<string, unknown>);
-  }
-  return null;
-}
-
 export async function fetchEquipmentByOwnerId(id: string, ownerUid: string): Promise<Equipment | null> {
   if (!/^[A-Za-z0-9_-]{1,150}$/.test(id) || !ownerUid) return null;
   const db = getFirebaseDb();
@@ -350,30 +329,6 @@ export async function fetchEquipmentByOwner(
     cursor: snap.docs.at(-1) || null,
     hasMore: snap.size === size,
   };
-}
-
-export async function fetchEquipmentByIds(ids: string[]): Promise<Map<string, Equipment>> {
-  const equipment = new Map<string, Equipment>();
-  // Missing/deleted listings are omitted by the bounded IN query. Chunk
-  // failures remain isolated without issuing one network request per ID.
-  const results = await Promise.allSettled(firestoreDocumentIdChunks(ids).map(chunk =>
-    getDocs(query(collection(getFirebaseDb(), 'equipment'), where(documentId(), 'in', chunk))),
-  ));
-  for (const result of results) {
-    if (result.status !== 'fulfilled') continue;
-    for (const snapshot of result.value.docs) {
-      equipment.set(snapshot.id, parseEquipment(snapshot.id, snapshot.data() as Record<string, unknown>));
-    }
-  }
-  return equipment;
-}
-
-/** V2 snapshots are immutable display data; only legacy requests need listing hydration. */
-export function equipmentIdsNeedingRequestHydration(requests: EquipmentRequest[]): string[] {
-  return [...new Set(requests.filter(request => {
-    const snapshot = request.equipmentSnapshot;
-    return !snapshot || typeof snapshot.titleAr !== 'string' || typeof snapshot.titleEn !== 'string' || !Array.isArray(snapshot.images);
-  }).map(request => request.equipmentId).filter(Boolean))];
 }
 
 export async function createEquipment(data: Omit<Equipment, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
@@ -423,30 +378,6 @@ export async function updateEquipment(id: string, updates: Partial<Equipment>): 
   });
 }
 
-export async function tryBackfillEquipmentOwnerPublic(equipmentId: string, ownerPublic: PublicUserSnapshot): Promise<void> {
-  const db = getFirebaseDb();
-  try {
-    await updateDoc(doc(db, 'equipment', equipmentId), {
-      ownerPublic: sanitizePublicUserSnapshot(ownerPublic),
-      updatedAt: serverTimestamp(),
-    });
-  } catch {}
-}
-
-export async function tryBackfillRequestPublicSnapshots(
-  requestId: string,
-  updates: { customerPublic?: PublicUserSnapshot; providerPublic?: PublicUserSnapshot }
-): Promise<void> {
-  const db = getFirebaseDb();
-  try {
-    await updateDoc(doc(db, 'equipmentRequests', requestId), {
-      ...(updates.customerPublic ? { customerPublic: sanitizePublicUserSnapshot(updates.customerPublic) } : {}),
-      ...(updates.providerPublic ? { providerPublic: sanitizePublicUserSnapshot(updates.providerPublic) } : {}),
-      updatedAt: serverTimestamp(),
-    });
-  } catch {}
-}
-
 export async function updateEquipmentWithImageCleanup(
   id: string,
   updates: Partial<Equipment>,
@@ -459,20 +390,6 @@ export async function updateEquipmentWithImageCleanup(
     return;
   }
   await updateEquipment(id, updates);
-}
-
-export async function deleteEquipmentWithCleanup(id: string): Promise<void> {
-  const db = getFirebaseDb();
-  let publicIds: string[] = [];
-  const snap = await getDoc(doc(db, 'equipment', id));
-  if (snap.exists()) {
-    const data = snap.data() as Record<string, unknown>;
-    const images = parseImages(data.images);
-    publicIds = extractPublicIds(images);
-  }
-
-  await boundedWorkerRequest(`/api/listings/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (publicIds.length > 0) await deleteMultipleCloudinaryImages(publicIds);
 }
 
 export async function deleteEquipment(id: string): Promise<void> {

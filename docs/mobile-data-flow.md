@@ -38,7 +38,7 @@ This document records the production ownership and client reconciliation rules. 
 - Data tied to an account must carry the UID in its query key or compare a captured identity before committing state. Teardown must invalidate in-flight callbacks.
 - Realtime feeds are bounded: requests 20, messages 50. A component owns exactly one subscription and returns its unsubscribe function.
 - Public inventory is cached for 2 minutes; market configuration for 30 minutes. Focus/resume refresh only when stale. No unconditional focus refetch.
-- Request cards use immutable `equipmentSnapshot`. Listing hydration is a compatibility fallback only for legacy requests missing that snapshot.
+- Request cards and details use immutable `equipmentSnapshot`; legacy requests missing it use safe placeholders and never hydrate from the current listing.
 - Pagination is cursor-based and deduplicates IDs. Never fetch unbounded collections.
 - Each mutation chooses one reconciliation strategy: canonical response, targeted invalidation, or realtime—not all three without a documented reason.
 - Independent safe reads may run concurrently; fan-out must be bounded (default 2 for uploads and 5 for Worker row enrichment).

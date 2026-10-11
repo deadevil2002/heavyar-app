@@ -1,6 +1,5 @@
 import { Timestamp } from 'firebase/firestore';
-import type { Equipment, EquipmentImage, EquipmentRequest, EquipmentRequestSnapshot, ListingPricingV2, PublicUserSnapshot } from '@/types';
-import { listingCountryCode } from './locationHierarchy';
+import type { EquipmentImage, EquipmentRequest, EquipmentRequestSnapshot, PublicUserSnapshot } from '@/types';
 import {
   decodeCommercialSnapshot,
   decodeFinalRentalSnapshot,
@@ -39,46 +38,6 @@ export function parseFirestorePublicUser(raw: unknown, fallbackUid?: string): Pu
     nameAr: (object.nameAr as string) || '',
     nameEn: (object.nameEn as string) || '',
     avatar: (object.avatar as string) || '',
-  };
-}
-
-export function serializeFirestorePublicUser(snapshot: PublicUserSnapshot): Record<string, unknown> {
-  return { uid: snapshot.uid, nameAr: snapshot.nameAr, nameEn: snapshot.nameEn, avatar: snapshot.avatar };
-}
-
-export function parseFirestoreEquipment(id: string, data: Record<string, unknown>): Equipment {
-  const ownerUid = (data.ownerUid as string) || '';
-  return {
-    id,
-    publicEquipmentNumber: typeof data.publicEquipmentNumber === 'string' ? data.publicEquipmentNumber : undefined,
-    ownerUid,
-    ownerPublic: parseFirestorePublicUser(data.ownerPublic, ownerUid),
-    titleAr: (data.titleAr as string) || '', titleEn: (data.titleEn as string) || '',
-    descriptionAr: (data.descriptionAr as string) || '', descriptionEn: (data.descriptionEn as string) || '',
-    category: (data.category as string) || '', customCategory: (data.customCategory as string) || '',
-    region: (data.region as string) || '', city: (data.city as string) || '', customCity: (data.customCity as string) || '',
-    district: (data.district as string) || '', location: (data.location as { lat: number; lng: number }) || { lat: 0, lng: 0 },
-    pricePerDay: (data.pricePerDay as number) || 0,
-    countryCode: listingCountryCode({
-      countryCode: typeof data.countryCode === 'string' ? data.countryCode : undefined,
-      region: typeof data.region === 'string' ? data.region : undefined,
-      city: typeof data.city === 'string' ? data.city : undefined,
-    }) as Equipment['countryCode'],
-    nativeCurrency: typeof data.nativeCurrency === 'string' ? data.nativeCurrency : (typeof data.currency === 'string' ? data.currency : 'SAR'),
-    nativePricePerDay: typeof data.nativePricePerDay === 'number' ? data.nativePricePerDay : ((data.pricePerDay as number) || 0),
-    pricingModelVersion: data.pricingModelVersion === 2 ? 2 : undefined,
-    pricing: data.pricingModelVersion === 2 && data.pricing && typeof data.pricing === 'object' ? data.pricing as ListingPricingV2 : undefined,
-    marketTimezone: typeof data.marketTimezone === 'string' ? data.marketTimezone : undefined,
-    displayCurrency: typeof data.displayCurrency === 'string' ? data.displayCurrency : undefined,
-    displayPricePerDay: typeof data.displayPricePerDay === 'number' ? data.displayPricePerDay : undefined,
-    displayRate: typeof data.displayRate === 'number' ? data.displayRate : undefined,
-    displayRateTimestamp: firestoreValueToISOString(data.displayRateTimestamp),
-    images: parseFirestoreImages(data.images), availability: (data.availability as boolean) ?? true,
-    isActive: data.isActive === true,
-    visibility: data.visibility === 'visible' || data.visibility === 'hidden' || data.visibility === 'archived' ? data.visibility : undefined,
-    moderationStatus: data.moderationStatus === 'pending_review' || data.moderationStatus === 'approved'
-      || data.moderationStatus === 'rejected' || data.moderationStatus === 'suspended' ? data.moderationStatus : undefined,
-    createdAt: firestoreValueToISOString(data.createdAt), updatedAt: firestoreValueToISOString(data.updatedAt),
   };
 }
 
