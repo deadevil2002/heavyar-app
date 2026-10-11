@@ -2664,7 +2664,7 @@ export async function requireAdmin(u: AdminUser, env?: Env) {
 // marker or cache staff privileges across requests.
 function authorizeResolvedAdmin(u: AdminUser, staff: RawDoc | null | undefined) {
   if (staff !== undefined && !u.testInjected) {
-    if (!staff?.data || staff.data.active === false || staff.data.status === 'suspended') throw new Error('ADMIN_REQUIRED');
+    if (!staff?.data || staff.data.active !== true || staff.data.status === 'suspended') throw new Error('ADMIN_REQUIRED');
     const authoritative = normalizeStaffRole(staff.data.role);
     if (!authoritative || (staff.data.roleVersion !== undefined && Number(staff.data.roleVersion) < 1)) throw new Error('ADMIN_REQUIRED');
     u.permissionRole = authoritative;

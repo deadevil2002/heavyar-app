@@ -361,7 +361,9 @@ describe('Rental V2 real Firestore REST contracts', () => {
       return Response.json({ error: { status: 'FAILED_PRECONDITION' } }, { status: 409 });
     };
     rest.install();
-    __test.setAuth({ uid: 'provider', admin: true, emailVerified: true });
+    // This is an ordinary provider transition. Do not rely on an incomplete
+    // synthetic Admin claim to bypass the production authorization boundary.
+    __test.setAuth({ uid: 'provider', admin: false, emailVerified: true });
 
     const response = await worker.fetch(transition('r_v1', 'accept'), rest.env);
     expect(response.status).toBe(409);

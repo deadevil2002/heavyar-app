@@ -1,10 +1,10 @@
 import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, normalizeTapEnvironment, tapCredentials, tapCustomerFromAccount, type PaymentQuote, type PaymentState, type TapEnvironment } from './payment';
 import { calculateCommercial, majorToMinor, minorToMajor, resolveRule, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
-import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, processEmailVerificationReminderJobs, type AdminRole } from './admin';
+import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, processEmailVerificationReminderJobs, requireAdmin, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
 import { notificationInboxItem, notificationInboxOrder, notificationUnreadOrder } from './notification-inbox';
-import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry } from './completion';
+import { availabilityAllows, hasActiveRental, publicDriverProfile, transitionDriverRequest, validateDateRange, gatewayRegistry, hasPermission, normalizeStaffRole } from './completion';
 import { driverEligibility } from './driver-eligibility';
 import { PUBLIC_IDENTIFIER_COUNTER_IDS, PUBLIC_IDENTIFIER_FIELDS, formatPublicIdentifier, type PublicIdentifierKind } from './public-identifiers';
 import { isPublicRentableListing, legacyProviderReady, listingVisibilityForOwnerActive, requiresListingRereview } from './moderation';
@@ -20,6 +20,7 @@ import { reserveCloudinaryUploadQuota as reserveCloudinaryUploadQuotaAttempt, ty
 import { evaluateCapabilities, isSaudiTruckRentalWithoutDriver, validateRegulatoryDocumentSubmission, type RegulatoryDocument } from './regulatory';
 import { CURRENT_POLICY_ACCEPTANCE_MODE, INCIDENT_TYPES, LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED, LEGACY_POLICY_ACCEPTANCE_MODE, PRIVACY_REQUEST_TYPES, acceptanceIsCurrent, complaintServiceTargets, policyAcceptanceState, regulatoryDecision, requiredPolicyVersions, safeUserExport, validatePolicyAcceptance } from './compliance';
 import { googleServiceAccountToken as googleToken } from './google-auth';
+import { assertActivePrivilegedSession, PrivilegedAuthUnavailableError, PrivilegedSessionRevokedError } from './privileged-session';
 import {
   consumeScheduledSubrequest,
   createScheduledGlobalBudget,
@@ -167,7 +168,19 @@ async function auth(req: Request, env: Env): Promise<User> {
 }
 async function authenticatedUser(req: Request, env: Env, allowAccountManagement = false): Promise<User> {
   const user = await auth(req, env);
-  if (user.admin || allowAccountManagement) return user;
+  if (user.admin) {
+    // Custom claims are only a routing hint. Staff authority is resolved live
+    // for every privileged request, then Firebase Auth state is checked with a
+    // short bounded cache for disabled/revoked sessions.
+    await requireAdmin(user, env);
+    await assertActivePrivilegedSession(env, user);
+    // Outside /api/admin, the legacy `admin` flag means a marketplace
+    // operational bypass. Keep it only for authoritative roles that actually
+    // carry that permission; other active staff continue without a bypass.
+    user.admin = hasPermission(normalizeStaffRole(user.permissionRole || user.role), 'operations.manage');
+    return user;
+  }
+  if (allowAccountManagement) return user;
   // Test authentication is intentionally injectable; preserve unit tests that
   // exercise downstream validation without a Firestore fixture.
   if (authOverride && !firestoreOverride) return user;
@@ -184,6 +197,11 @@ async function authenticatedUser(req: Request, env: Env, allowAccountManagement 
   if (isOperationallyBlocked(profile)) {
     err(profile.accountStatus === 'deletion_requested' ? 'ACCOUNT_DELETION_REQUESTED' : 'ACCOUNT_SUSPENDED');
   }
+  return user;
+}
+async function activeFirebaseUser(req: Request, env: Env): Promise<User> {
+  const user = await auth(req, env);
+  await assertActivePrivilegedSession(env, user);
   return user;
 }
 export async function listFirebaseAuthIdentities(env: Env, limit = 50, pageToken?: string) {
@@ -4195,7 +4213,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       const driverRequestMatch = path.match(/^\/api\/drivers\/requests\/([^/]+)$/);
       if (driverRequestMatch && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env), decodeURIComponent(driverRequestMatch[1]));
        if (path === '/api/staff/invitations/accept' && req.method === 'POST') {
-         const result = await acceptStaffInvitation(req, env, await authenticatedUser(req, env));
+         const result = await acceptStaffInvitation(req, env, await activeFirebaseUser(req, env));
          const status = typeof result === 'object' && result && typeof (result as any).status === 'number' ? Number((result as any).status) : 200;
          if (status !== 200) { const { status: _status, ...body } = result as any; return out(env, req, body, status); }
          return out(env, req, result);
@@ -4229,7 +4247,10 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
      if (path === '/api/create-payment' && req.method === 'POST') return await create(req, env, await authenticatedUser(req, env));
      if (path === '/api/verify-payment' && req.method === 'POST') return await verify(req, env, await authenticatedUser(req, env));
     if (path.startsWith('/api/admin/')) {
-       const user = await auth(req, env);
+       // Admin handlers still resolve live staff authority themselves. This
+       // directory check additionally rejects disabled/revoked Firebase users
+       // and protects the narrowly scoped invitation/bootstrap exceptions.
+       const user = await activeFirebaseUser(req, env);
        const document = await handleAdminDocument(req, env, user);
        if (document) {
          const body = new Uint8Array(document.body.length);
@@ -4290,6 +4311,12 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
     }
     if (e instanceof AdminDocumentUnavailableError) {
       return out(env, req, { success: false, error: e.message, code: e.code }, e.status);
+    }
+    if (e instanceof PrivilegedSessionRevokedError) {
+      return out(env, req, { success: false, error: e.message, errorCode: e.code }, 401);
+    }
+    if (e instanceof PrivilegedAuthUnavailableError) {
+      return out(env, req, { success: false, error: e.message, errorCode: e.code }, 503);
     }
     const message = e instanceof Error ? e.message : '';
     if (message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'Email verification is required before performing this action.', errorCode: message, verificationSubject: 'actor' }, 403);
