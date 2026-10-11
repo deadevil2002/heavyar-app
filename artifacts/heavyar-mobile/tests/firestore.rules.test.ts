@@ -66,6 +66,14 @@ async function seed() {
     await setDoc(doc(db, 'equipment/equipment-2'), {
       ownerUid: 'provider-2', pricePerDay: 100, isActive: true, visibility: 'visible', moderationStatus: 'approved', createdAt: new Date(), updatedAt: new Date(),
     });
+    await setDoc(doc(db, 'equipment/store-review-account-purpose'), {
+      ownerUid: 'provider-2', accountPurpose: 'store_review', pricePerDay: 100,
+      isActive: true, visibility: 'visible', moderationStatus: 'approved', createdAt: new Date(), updatedAt: new Date(),
+    });
+    await setDoc(doc(db, 'equipment/store-review-moderation-reason'), {
+      ownerUid: 'provider-2', moderationReason: 'store_review_qa_only', pricePerDay: 100,
+      isActive: true, visibility: 'visible', moderationStatus: 'approved', createdAt: new Date(), updatedAt: new Date(),
+    });
     await setDoc(doc(db, 'equipment/hidden-listing'), {
       ownerUid: 'provider-1', pricePerDay: 100, isActive: false, moderationStatus: 'hidden',
       createdAt: new Date(), updatedAt: new Date(),
@@ -109,7 +117,7 @@ beforeEach(async () => {
 afterAll(async () => env?.cleanup());
 
 describe('Firestore authorization baseline', () => {
-  it('allows rule-constrained equipment enrichment batches and rejects an ID-only batch query', async () => {
+  it('denies non-owner equipment queries and preserves owner-scoped pagination', async () => {
     const provider = authed('provider-1');
     const customer = authed('customer-1');
     const ids = ['equipment-1', 'equipment-2', 'hidden-listing'];
@@ -118,7 +126,7 @@ describe('Firestore authorization baseline', () => {
       where(documentId(), 'in', ids),
       limit(30)
     )));
-    const publicResults = await assertSucceeds(getDocs(query(
+    await assertFails(getDocs(query(
       collection(provider, 'equipment'),
       where('isActive', '==', true),
       where('visibility', '==', 'visible'),
@@ -128,16 +136,21 @@ describe('Firestore authorization baseline', () => {
       orderBy(documentId(), 'desc'),
       limit(30)
     )));
-    expect(publicResults.docs.map(item => item.id).sort()).toEqual(['equipment-1', 'equipment-2']);
-    const ownerResults = await assertSucceeds(getDocs(query(
+    const ownerExact = await assertSucceeds(getDocs(query(
       collection(provider, 'equipment'),
       where('ownerUid', '==', 'provider-1'),
-      where(documentId(), 'in', ids),
+      where(documentId(), '==', 'equipment-1'),
+      limit(1)
+    )));
+    expect(ownerExact.docs.map(item => item.id)).toEqual(['equipment-1']);
+    const ownerPage = await assertSucceeds(getDocs(query(
+      collection(provider, 'equipment'),
+      where('ownerUid', '==', 'provider-1'),
       orderBy('createdAt', 'desc'),
       orderBy(documentId(), 'desc'),
-      limit(30)
+      limit(20)
     )));
-    expect(ownerResults.docs.map(item => item.id).sort()).toEqual(['equipment-1', 'hidden-listing']);
+    expect(ownerPage.docs.map(item => item.id).sort()).toEqual(['equipment-1', 'hidden-listing']);
   });
 
   it('denies all direct Early Access reads, queries and writes, even privileged Firebase claims', async () => {
@@ -182,7 +195,7 @@ describe('Firestore authorization baseline', () => {
       availability: true, isActive: true, createdAt: new Date(), updatedAt: new Date(),
     }));
     await assertFails(updateDoc(doc(provider, 'equipment/equipment-1'), { titleEn: 'client mutation', updatedAt: serverTimestamp() }));
-    await assertSucceeds(getDoc(doc(authed('customer-1'), 'equipment/equipment-1')));
+    await assertFails(getDoc(doc(authed('customer-1'), 'equipment/equipment-1')));
     await assertFails(setDoc(doc(authed('customer-1'), 'equipmentRequests/new-request'), {
       ...request, customerPublic: { uid: 'customer-1', nameAr: 'Customer', nameEn: 'Customer', avatar: '' },
       providerPublic: { uid: 'provider-1', nameAr: 'Provider', nameEn: 'Provider', avatar: '' },
@@ -199,7 +212,7 @@ describe('Firestore authorization baseline', () => {
     }));
   });
 
-  it('exposes only explicitly approved visible equipment and never exposes identifier counters', async () => {
+  it('denies anonymous and authenticated non-owner equipment reads while preserving owner reads', async () => {
     await env.withSecurityRulesDisabled(async (context) => {
       const db = asModularFirestore(context.firestore());
       await setDoc(doc(db, 'equipment/pending-review'), {
@@ -208,7 +221,24 @@ describe('Firestore authorization baseline', () => {
       });
       await setDoc(doc(db, 'publicIdentifierCounters/requests'), { nextSequence: 9 });
     });
-    await assertSucceeds(getDoc(doc(authed('customer-1'), 'equipment/equipment-1')));
+    const anonymous = asModularFirestore(env.unauthenticatedContext().firestore());
+    await assertFails(getDoc(doc(anonymous, 'equipment/equipment-1')));
+    await assertFails(getDocs(query(
+      collection(anonymous, 'equipment'),
+      where('isActive', '==', true),
+      where('visibility', '==', 'visible'),
+      where('moderationStatus', '==', 'approved'),
+      orderBy('createdAt', 'desc'),
+      limit(20)
+    )));
+    await assertFails(getDoc(doc(authed('customer-1'), 'equipment/equipment-1')));
+    await assertFails(getDoc(doc(authed('provider-1'), 'equipment/equipment-2')));
+    await assertFails(getDoc(doc(authed('customer-1'), 'equipment/store-review-account-purpose')));
+    await assertFails(getDoc(doc(authed('customer-1'), 'equipment/store-review-moderation-reason')));
+    await assertSucceeds(getDoc(doc(authed('provider-1'), 'equipment/equipment-1')));
+    await assertSucceeds(getDoc(doc(authed('provider-1'), 'equipment/hidden-listing')));
+    await assertSucceeds(getDoc(doc(authed('provider-2'), 'equipment/store-review-account-purpose')));
+    await assertSucceeds(getDoc(doc(authed('provider-2'), 'equipment/store-review-moderation-reason')));
     await assertFails(getDoc(doc(authed('customer-1'), 'equipment/pending-review')));
     await assertSucceeds(getDoc(doc(authed('provider-1'), 'equipment/pending-review')));
     await assertFails(getDoc(doc(authed('customer-1'), 'publicIdentifierCounters/requests')));

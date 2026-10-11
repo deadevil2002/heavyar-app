@@ -100,11 +100,11 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Only intentionally public, active listings are readable. Owners may
-    // edit listing content, but never transfer ownership or alter timestamps.
+    // Raw listing documents contain owner and moderation fields. Public and
+    // Store Review reads use the Worker's minimized projections; Firestore
+    // exposes raw equipment documents only to their authenticated owner.
     match /equipment/{equipmentId} {
-      allow read: if publicListing(resource.data) ||
-        (signedIn() && resource.data.ownerUid == request.auth.uid);
+      allow read: if signedIn() && resource.data.ownerUid == request.auth.uid;
        allow create: if false
         && request.resource.data.ownerUid == request.auth.uid
         && notSuspended(request.auth.uid)
