@@ -2,7 +2,7 @@
   "expo": {
     "name": "Heavyar",
     "slug": "heavyar",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "heavyar",
@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.heavyar.app",
-      "buildNumber": "4",
+      "buildNumber": "5",
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Heavyar uses your photo library when you choose an image for equipment or your profile.",
@@ -29,7 +29,7 @@
         "backgroundColor": "#001A45"
       },
       "package": "com.heavyar.app",
-      "versionCode": 4,
+      "versionCode": 5,
       "googleServicesFile": "./google-services.json",
       "permissions": [
         "android.permission.POST_NOTIFICATIONS"
