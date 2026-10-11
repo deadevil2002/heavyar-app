@@ -289,10 +289,98 @@ describe('Firestore authorization baseline', () => {
     await assertFails(setDoc(doc(authed('provider-1'), 'equipmentRequests/request-1/messages/moderated'), {
       requestId: 'request-1', senderUid: 'provider-1', text: 'blocked', createdAt: new Date(), read: false,
     }));
-    await assertFails(setDoc(doc(authed('customer-1'), 'ratings/rating-moderated'), {
+    await assertFails(setDoc(doc(authed('customer-1'), 'ratings/closed__customer-1'), {
       requestId: 'closed', fromUid: 'customer-1', toUid: 'provider-1', equipmentId: 'equipment-1',
       stars: 5, comment: 'blocked', createdAt: new Date(),
     }));
+  });
+
+  it('accepts one canonical rating from each request participant and keeps ratings readable and immutable', async () => {
+    const customer = authed('customer-1');
+    const provider = authed('provider-1');
+    const customerRating = {
+      requestId: 'closed', fromUid: 'customer-1', toUid: 'provider-1', equipmentId: 'equipment-1',
+      stars: 5, comment: 'customer rating', createdAt: new Date(),
+    };
+    const providerRating = {
+      requestId: 'closed', fromUid: 'provider-1', toUid: 'customer-1', equipmentId: 'equipment-1',
+      stars: 4, comment: 'provider rating', createdAt: new Date(),
+    };
+
+    const customerRef = doc(customer, 'ratings/closed__customer-1');
+    const providerRef = doc(provider, 'ratings/closed__provider-1');
+    await assertSucceeds(setDoc(customerRef, customerRating));
+    await assertSucceeds(setDoc(providerRef, providerRating));
+    await assertSucceeds(getDoc(customerRef));
+    await assertSucceeds(getDoc(doc(customer, 'ratings/closed__provider-1')));
+    await assertFails(updateDoc(customerRef, { stars: 1 }));
+    await assertFails(deleteDoc(providerRef));
+  });
+
+  it('denies duplicate and concurrent attempts for the same request actor', async () => {
+    const customer = authed('customer-1');
+    const rating = {
+      requestId: 'closed', fromUid: 'customer-1', toUid: 'provider-1', equipmentId: 'equipment-1',
+      stars: 5, comment: 'one logical rating', createdAt: new Date(),
+    };
+    const ratingRef = doc(customer, 'ratings/closed__customer-1');
+    await assertSucceeds(setDoc(ratingRef, rating));
+    await assertFails(setDoc(ratingRef, rating));
+
+    await env.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(asModularFirestore(context.firestore()), 'equipmentRequests/closed-concurrent'), {
+        ...request, status: 'completed',
+      });
+    });
+    const concurrentRating = { ...rating, requestId: 'closed-concurrent' };
+    const concurrentRef = doc(customer, 'ratings/closed-concurrent__customer-1');
+    const results = await Promise.allSettled([
+      setDoc(concurrentRef, concurrentRating),
+      setDoc(concurrentRef, concurrentRating),
+    ]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+    const stored = await assertSucceeds(getDocs(query(
+      collection(customer, 'ratings'),
+      where('requestId', '==', 'closed-concurrent'),
+      where('fromUid', '==', 'customer-1'),
+    )));
+    expect(stored.size).toBe(1);
+  });
+
+  it('denies noncanonical, forged, unauthorized, mismatched, and incomplete-request ratings', async () => {
+    const rating = {
+      requestId: 'closed', fromUid: 'customer-1', toUid: 'provider-1', equipmentId: 'equipment-1',
+      stars: 5, comment: 'rating', createdAt: new Date(),
+    };
+    const customer = authed('customer-1');
+
+    await assertFails(setDoc(doc(customer, 'ratings/arbitrary-rating-id'), rating));
+    await assertFails(setDoc(doc(customer, 'ratings/closed__customer-1'), { ...rating, fromUid: 'provider-1' }));
+    await assertFails(setDoc(doc(authed('outsider'), 'ratings/closed__outsider'), {
+      ...rating, fromUid: 'outsider',
+    }));
+    await assertFails(setDoc(doc(customer, 'ratings/closed__customer-1'), { ...rating, toUid: 'outsider' }));
+    await assertFails(setDoc(doc(customer, 'ratings/closed__customer-1'), { ...rating, equipmentId: 'equipment-2' }));
+    await assertFails(setDoc(doc(customer, 'ratings/request-1__customer-1'), {
+      ...rating, requestId: 'request-1',
+    }));
+  });
+
+  it('rejects ambiguous rating identifier components while preserving legacy rating reads', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = asModularFirestore(context.firestore());
+      await setDoc(doc(db, 'equipmentRequests/closed__ambiguous'), { ...request, status: 'completed' });
+      await setDoc(doc(db, 'ratings/legacy-arbitrary-id'), {
+        requestId: 'closed', fromUid: 'customer-1', toUid: 'provider-1', equipmentId: 'equipment-1',
+        stars: 5, comment: 'legacy', createdAt: new Date(),
+      });
+    });
+    await assertFails(setDoc(doc(authed('customer-1'), 'ratings/closed__ambiguous__customer-1'), {
+      requestId: 'closed__ambiguous', fromUid: 'customer-1', toUid: 'provider-1', equipmentId: 'equipment-1',
+      stars: 5, comment: 'ambiguous', createdAt: new Date(),
+    }));
+    await assertSucceeds(getDoc(doc(authed('customer-1'), 'ratings/legacy-arbitrary-id')));
   });
 
   it('makes chat operation IDs idempotent while keeping different messages separate and outsiders blocked', async () => {
@@ -329,7 +417,7 @@ describe('Firestore authorization baseline', () => {
     await assertFails(setDoc(doc(customer, 'equipmentRequests/request-1/messages/deletion'), {
       requestId: 'request-1', senderUid: 'customer-1', text: 'blocked', createdAt: new Date(), read: false,
     }));
-    await assertFails(setDoc(doc(customer, 'ratings/deletion-rating'), {
+    await assertFails(setDoc(doc(customer, 'ratings/closed__customer-1'), {
       requestId: 'closed', fromUid: 'customer-1', toUid: 'provider-1', equipmentId: 'equipment-1',
       stars: 5, comment: 'blocked', createdAt: new Date(),
     }));

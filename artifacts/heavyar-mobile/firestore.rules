@@ -48,6 +48,15 @@ service cloud.firestore {
         && data.visibility == 'visible'
         && data.moderationStatus == 'approved';
     }
+    // Rating document IDs concatenate requestId and actor UID with `__`.
+    // Requiring non-empty, bounded identifier segments separated by at most
+    // one underscore keeps that delimiter unambiguous and collision-safe.
+    function canonicalRatingIdPart(value) {
+      return value is string
+        && value.size() >= 1
+        && value.size() <= 150
+        && value.matches('^[A-Za-z0-9-]+(_[A-Za-z0-9-]+)*$');
+    }
     // This mirrors the server's conservative request gate. The policy is
     // backend-owned; absent/disabled policy intentionally preserves existing
     // marketplace flows. Direct client writes cannot bypass an enabled policy.
@@ -270,6 +279,9 @@ service cloud.firestore {
     match /ratings/{ratingId} {
       allow read: if signedIn();
       allow create: if signedIn()
+        && canonicalRatingIdPart(request.resource.data.requestId)
+        && canonicalRatingIdPart(request.auth.uid)
+        && ratingId == request.resource.data.requestId + '__' + request.auth.uid
         && request.resource.data.fromUid == request.auth.uid
         && notSuspended(request.auth.uid)
         && request.resource.data.stars is int
