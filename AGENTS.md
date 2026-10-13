@@ -26,6 +26,8 @@ Before any task that can mutate files or external systems, verify:
 
 Fail closed if these checks do not identify HEAVYAR. Never switch automatically to a nearby repository or act from shell history, cached context, another terminal, or similarly named files.
 
+If an authorized provider CLI session is missing or expired, use only that provider's supported interactive browser login with explicit user participation. Afterward, verify the authenticated account and exact existing resource before continuing. Never silently switch accounts, create replacement infrastructure, expose credentials, generate CI tokens, or bypass identity checks.
+
 ## Mutation safety
 
 Never automatically commit, push, deploy, run EAS production builds, change Firebase data/Auth/rules, change Cloudflare bindings/secrets or DNS, alter payment configuration, rotate credentials, or create/delete Production users. The user must explicitly request the exact action. Re-run identity verification immediately before any destructive or Production action.
