@@ -55,6 +55,7 @@ const SAFE_ERROR_CODES = new Set([
   'ORGANIZATION_CAPABILITY_REQUIRED', 'ORGANIZATION_OWNER_REQUIRED', 'MEMBERSHIP_UPDATE_CONFLICT', 'ORGANIZATION_AUTHORIZATION_CHANGED',
   'INVALID_MEMBERSHIP_UPDATE', 'INVALID_EQUIPMENT_UPDATE', 'EQUIPMENT_UPDATE_CONFLICT',
   'BOOKING_OPERATION_NOT_DELEGABLE', 'INVALID_BOOKING_OPERATION',
+  'INVALID_OPERATOR_REQUEST', 'INVALID_OPERATOR_SEARCH', 'OPERATOR_DISCOVERY_UNAVAILABLE',
   'INTERNAL_SERVICE_ERROR',
 ]);
 const SAFE_FIRESTORE_CODES = new Set([
@@ -76,6 +77,7 @@ const ROUTES: Array<[RegExp, string]> = [
   [/^\/api\/listings\/[^/]+\/archive$/, '/api/listings/:listingId/archive'],
   [/^\/api\/listings\/[^/]+$/, '/api/listings/:listingId'],
   [/^\/api\/drivers\/profile$/, '/api/drivers/profile'],
+  [/^\/api\/operator-requests\/prepare$/, '/api/operator-requests/prepare'],
   [/^\/api\/organizations\/[^/]+\/members\/[^/]+\/capabilities$/, '/api/organizations/:organizationId/members/:memberId/capabilities'],
   [/^\/api\/organizations\/[^/]+\/members\/[^/]+\/revoke$/, '/api/organizations/:organizationId/members/:memberId/revoke'],
   [/^\/api\/organizations\/[^/]+\/equipment\/[^/]+\/metadata$/, '/api/organizations/:organizationId/equipment/:equipmentId/metadata'],

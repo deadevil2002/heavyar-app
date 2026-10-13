@@ -13,6 +13,7 @@ import { loadEquipmentView, saveEquipmentView, type EquipmentView } from '@/serv
 
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import DriverSearchTab from '@/components/DriverSearchTab';
+import OperatorSearchTab from '@/components/OperatorSearchTab';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import { useAuth } from '@/contexts/AuthContext';
 import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
@@ -45,10 +46,11 @@ function MarketplaceSearch() {
   const { text: query, changeText: setQuery, commitText, draftFilters, beginFilters, changeFilter, commitFilters, resetAll } = useDiscoveryDraft(discovery);
   const [showFilters, setShowFilters] = useState<boolean>(false);
   const [view, setView] = useState<EquipmentView>('list');
-  const [mode, setMode] = useState<'equipment' | 'drivers'>('equipment');
+  const [mode, setMode] = useState<'equipment' | 'drivers' | 'operators'>('equipment');
 
   useEffect(() => {
     if (params.mode === 'drivers') setMode('drivers');
+    else if (params.mode === 'operators') setMode('operators');
     else if (params.mode === 'equipment') setMode('equipment');
   }, [params.mode]);
 
@@ -82,6 +84,10 @@ function MarketplaceSearch() {
           <HeavyarSegment height={40} minH={40} accessibilityRole="button" selected={mode === 'drivers'}
             onPress={() => { setMode('drivers'); router.setParams({ mode: 'drivers' }); }}>
             <HeavyarSegmentText selected={mode === 'drivers'}>{isRTL ? 'السائقون' : 'Drivers'}</HeavyarSegmentText>
+          </HeavyarSegment>
+          <HeavyarSegment height={40} minH={40} accessibilityRole="button" selected={mode === 'operators'}
+            onPress={() => { setMode('operators'); router.setParams({ mode: 'operators' }); }}>
+            <HeavyarSegmentText selected={mode === 'operators'}>{isRTL ? 'المشغّلون' : 'Operators'}</HeavyarSegmentText>
           </HeavyarSegment>
         </HeavyarSegmentedControl>
 
@@ -151,7 +157,7 @@ function MarketplaceSearch() {
             <Pressable accessibilityRole="button" onPress={refresh} style={styles.clearButton}><Text style={styles.clearText}>{t('discovery_retry')}</Text></Pressable>
           </View> : <EmptyState title={hasFilters ? t('no_results') : t('no_equipment')} />}
         />
-        </>) : <DriverSearchTab />}
+        </>) : mode === 'drivers' ? <DriverSearchTab /> : <OperatorSearchTab />}
       </SafeAreaView>
     </View>
   );

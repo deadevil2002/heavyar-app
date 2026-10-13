@@ -71,6 +71,7 @@ function RootLayoutNav() {
       <Stack.Screen name="invoices" options={{ headerShown: false }} />
       <Stack.Screen name="performance-report" options={{ headerShown: false }} />
       <Stack.Screen name="company-team" options={{ headerShown: false }} />
+      <Stack.Screen name="operator-request-prepare" options={{ headerShown: false }} />
     </Stack>
   );
 }

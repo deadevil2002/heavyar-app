@@ -130,6 +130,7 @@ describe('canonical mobile public discovery', () => {
     expect(source('../app/(tabs)/(home)/index.tsx')).toContain("router.push('/(tabs)/search?mode=equipment')");
     expect(source('../app/(tabs)/search/index.tsx')).toContain("router.setParams({ mode: 'equipment' })");
     expect(source('../app/(tabs)/search/index.tsx')).toContain("router.setParams({ mode: 'drivers' })");
+    expect(source('../app/(tabs)/search/index.tsx')).toContain("router.setParams({ mode: 'operators' })");
   });
   it('uses bounded Worker discovery instead of direct public Firestore collection reads', () => {
     const service = source('../services/firestoreService.ts');
@@ -146,6 +147,18 @@ describe('canonical mobile public discovery', () => {
     expect(driverSearch).not.toContain('setInterval');
     expect(driverSearch).toContain('DRIVER_SEARCH_STALE_MS');
     expect(driverSearch).toContain('onRefresh');
+  });
+  it('keeps operator discovery fail-closed, bounded, wrapped, and account-switch safe', () => {
+    const tab = source('../components/OperatorSearchTab.tsx');
+    expect(tab).toContain('regulatory approval');
+    expect(tab).toContain('flexWrap="wrap"');
+    expect(tab).toContain('LatestRequestGuard');
+    expect(tab).toContain('auth.user?.uid');
+    expect(tab).not.toContain('setInterval');
+    const prepare = source('../app/operator-request-prepare.tsx');
+    expect(prepare).toContain('No request was sent');
+    expect(prepare).toContain('auth.user.uid, active.signal');
+    expect(prepare).not.toContain('createDriverRequest');
   });
   it('keeps horizontal Home scrolling but hides web and native indicators', () => {
     const home = source('../app/(tabs)/(home)/index.tsx');

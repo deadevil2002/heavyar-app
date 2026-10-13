@@ -51,6 +51,15 @@ import {
   type ServiceProfileKind,
 } from './service-profile';
 import {
+  OPERATOR_DISCOVERY_ACTIVATION,
+  operatorCursor,
+  operatorDiscoveryQuery,
+  parseOperatorRequestInput,
+  parseOperatorSearch,
+  prepareOperatorRequest,
+  publicOperatorProjection,
+} from './operator-marketplace';
+import {
   consumeScheduledSubrequest,
   createScheduledGlobalBudget,
   createScheduledProcessorBudget,
@@ -81,7 +90,7 @@ export interface Env {
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; accountProfileRaw?: { data: any; updateTime?: string } | null; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
-type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service';
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare';
 type AuthenticatedMutationRateLimitDecision =
   | { status: 'allowed' }
   | { status: 'limited'; retryAfterSeconds: number }
@@ -99,14 +108,17 @@ let refreshTokenRevokeOverride: ((env: Env, uid: string) => Promise<void>) | und
 let passwordVerifierOverride: ((email: string, password: string) => Promise<{ localId?: string }>) | undefined;
 let customTokenOverride: ((uid: string) => Promise<string>) | undefined;
 let phoneLoginLimiterOverride: ((phoneHash: string, ipHash: string) => Promise<boolean | null>) | undefined;
-let publicDriverLimiterOverride: ((scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) | undefined;
+type PublicDiscoveryRateLimitScope = 'search' | 'detail' | 'operator_search';
+let publicDriverLimiterOverride: ((scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) | undefined;
 let capturedDriverQueries: any[] | undefined;
+let capturedOperatorQueries: any[] | undefined;
+let operatorDiscoveryActivationOverride: boolean | undefined;
 let publicEquipmentLimiterOverride: ((ipHash: string) => Promise<boolean | null>) | undefined;
 let authenticatedMutationLimiterOverride: ((uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) | undefined;
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
 const paymentCreateInflight = new Map<string, Promise<Response>>();
-  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: 'search' | 'detail', ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
+  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -545,13 +557,13 @@ async function reconcileResendWebhookProjection(env: Env, collection: 'emailVeri
 }
 async function hashedId(value: string): Promise<string> { return b64u(await crypto.subtle.digest('SHA-256', enc.encode(value))); }
 
-async function publicDriverRateLimit(req: Request, env: Env, scope: 'search' | 'detail'): Promise<boolean | null> {
+async function publicDriverRateLimit(req: Request, env: Env, scope: PublicDiscoveryRateLimitScope): Promise<boolean | null> {
   const address = (req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For')?.split(',')[0] || 'unknown').trim().slice(0, 128);
   const bucket = Math.floor(Date.now() / 60000), ipHash = await hashedId(`public-driver-ip:${address}`);
   if (publicDriverLimiterOverride) return publicDriverLimiterOverride(scope, ipHash);
   if (firestoreOverride) return true;
   if (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) return null;
-  const key = await hashedId(`${scope}:${ipHash}:${bucket}`), name = fullName(env, `publicDriverRateLimits/${key}`), limit = scope === 'search' ? 60 : 120;
+  const key = await hashedId(`${scope}:${ipHash}:${bucket}`), name = fullName(env, `publicDriverRateLimits/${key}`), limit = scope === 'detail' ? 120 : 60;
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const transaction = await beginTransaction(env);
@@ -620,6 +632,7 @@ async function allowAuthenticatedMutation(env: Env, uid: string, scope: Authenti
     organization_equipment: { windowMs: 60_000, limit: 30 },
     organization_booking: { windowMs: 60_000, limit: 30 },
     organization_service: { windowMs: 60_000, limit: 20 },
+    operator_request_prepare: { windowMs: 60_000, limit: 20 },
   };
   const { windowMs, limit } = policy[scope];
   const id = await hashedId(`authenticated-mutation:${scope}:${uid}`);
@@ -5211,6 +5224,90 @@ async function ownerDriverProfile(env: Env, uid: string, profile: any) {
   return { ...publicDriverProfile({ ...profile, id }), active: profile.active === true, moderationStatus: String(profile.moderationStatus || 'pending_review') };
 }
 
+async function operatorDiscoveryRows(env: Env, structuredQuery: any): Promise<Array<{ id: string; data: any }>> {
+  capturedOperatorQueries?.push(structuredQuery);
+  if (firestoreOverride) {
+    const injected = firestoreOverride('__queries', 'operatorDiscoveryProfiles');
+    const facet = structuredQuery?.where?.fieldFilter?.value?.stringValue;
+    let rows = (Array.isArray(injected) ? injected : [])
+      .map((item: any) => ({ id: String(item.id || item.name?.split('/').pop() || ''), data: item.data || item }))
+      .filter((item: any) => Array.isArray(item.data.discoveryFacets) && item.data.discoveryFacets.includes(facet))
+      .sort((a: any, b: any) => String(a.data.sortKey || '').localeCompare(String(b.data.sortKey || '')) || a.id.localeCompare(b.id));
+    const start = structuredQuery?.startAt?.values;
+    if (Array.isArray(start) && start.length === 2) {
+      const cursorSort = String(start[0]?.stringValue || '');
+      const cursorId = decodeURIComponent(String(start[1]?.referenceValue || '').split('/').pop() || '');
+      rows = rows.filter((row: any) => String(row.data.sortKey || '').localeCompare(cursorSort) > 0 ||
+        String(row.data.sortKey || '') === cursorSort && row.id.localeCompare(cursorId) > 0);
+    }
+    return rows.slice(0, Number(structuredQuery.limit || 21));
+  }
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [];
+  return result.filter((item: any) => item.document).map((item: any) => ({
+    id: decodeURIComponent(String(item.document.name).split('/').pop() || ''),
+    data: decode(item.document),
+  }));
+}
+
+async function operatorSearch(req: Request, env: Env) {
+  const filters = parseOperatorSearch(new URL(req.url));
+  if (!filters) return out(env, req, { success: false, error: 'Invalid operator search filter', errorCode: 'INVALID_OPERATOR_SEARCH' }, 400);
+  // M2-D2 intentionally prepares the contract without activating a regulated
+  // marketplace. Only tests can open this gate to exercise eligible fixtures.
+  if (operatorDiscoveryActivationOverride !== true) return out(env, req, {
+    success: true,
+    activation: { enabled: false, reason: OPERATOR_DISCOVERY_ACTIVATION },
+    operators: [],
+    nextCursor: null,
+  });
+  const rate = await publicDriverRateLimit(req, env, 'operator_search');
+  if (rate === null) return out(env, req, { success: false, error: 'Operator discovery temporarily unavailable', errorCode: 'OPERATOR_DISCOVERY_UNAVAILABLE' }, 503);
+  if (!rate) {
+    const response = out(env, req, { success: false, error: 'Too many requests', errorCode: 'RATE_LIMITED' }, 429);
+    response.headers.set('Retry-After', '60');
+    response.headers.set('Access-Control-Expose-Headers', 'X-Request-ID, Retry-After');
+    return response;
+  }
+  const market = await countrySettings(env, filters.countryCode);
+  if (!market.enabled || !market.marketplaceAvailable) return out(env, req, {
+    success: true, activation: { enabled: true }, operators: [], nextCursor: null,
+  });
+  const query = operatorDiscoveryQuery(String(env.FIREBASE_PROJECT_ID || ''), filters);
+  const rows = await operatorDiscoveryRows(env, query);
+  const pageRows = rows.slice(0, filters.limit);
+  const operators = pageRows.map(row => publicOperatorProjection(row.id, row.data)).filter(Boolean);
+  const last = pageRows[pageRows.length - 1];
+  let nextCursor: string | null = null;
+  if (rows.length > filters.limit && last) {
+    try { nextCursor = operatorCursor(String(last.data.sortKey || ''), last.id); }
+    catch { nextCursor = null; }
+  }
+  return out(env, req, { success: true, activation: { enabled: true }, operators, nextCursor });
+}
+
+async function operatorRequestPrepare(req: Request, env: Env, user: User) {
+  const maxBytes = 32 * 1024;
+  if (declaredJsonPayloadTooLarge(req, maxBytes)) return payloadTooLargeResponse(req, env);
+  const account = user.accountProfile || await getDoc(env, 'users', user.uid);
+  const completeness = evaluateCanonicalCompleteness({ uid: user.uid, email: user.email }, account);
+  if (!account || account.role !== 'customer' || isStoreReviewAccount(account) || isOperationallyBlocked(account) || account.isActive === false ||
+      account.accountStatus !== undefined && account.accountStatus !== 'active' || completeness.state !== 'authenticated_complete') {
+    return out(env, req, { success: false, error: 'Active customer account required', errorCode: 'CUSTOMER_ACCOUNT_REQUIRED' }, 403);
+  }
+  if (!await emailEligible(env, account.emailVerified ?? user.emailVerified, 'rental')) return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403);
+  mutationStage(env, 'quota');
+  const rateLimit = await allowAuthenticatedMutation(env, user.uid, 'operator_request_prepare');
+  const limited = authenticatedMutationRateLimitResponse(req, env, rateLimit, 'Too many operator request preparations');
+  if (limited) return limited;
+  mutationStage(env, 'validation');
+  const parsed = await readBoundedJson(req, maxBytes);
+  if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+  const input = parsed.status === 'ok' ? parseOperatorRequestInput(parsed.value) : null;
+  if (!input) return out(env, req, { success: false, error: 'Invalid operator request requirements', errorCode: 'INVALID_OPERATOR_REQUEST' }, 400);
+  mutationStage(env, 'response');
+  return out(env, req, { success: true, request: prepareOperatorRequest(input) });
+}
+
 async function driverProfile(req: Request, env: Env, u: User) {
   if (req.method !== 'GET' && declaredJsonPayloadTooLarge(req, DRIVER_PROFILE_JSON_LIMIT_BYTES)) return payloadTooLargeResponse(req, env);
   if (req.method !== 'GET') mutationStage(env, 'validation');
@@ -5528,6 +5625,8 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       if (path === '/api/checkout/gateways' && req.method === 'GET') return await publicGatewayDiscovery(req, env, await authenticatedUser(req, env));
        if (path === '/api/drivers/profile' && (req.method === 'GET' || req.method === 'PUT')) return await driverProfile(req, env, await authenticatedUser(req, env));
        if (path === '/api/drivers/search' && req.method === 'GET') return await driverSearch(req, env);
+       if (path === '/api/operators/search' && req.method === 'GET') return await operatorSearch(req, env);
+       if (path === '/api/operator-requests/prepare' && req.method === 'POST') return await operatorRequestPrepare(req, env, await authenticatedUser(req, env));
        const publicDriverMatch = path.match(/^\/api\/drivers\/public\/([^/]+)$/);
        if (publicDriverMatch && req.method === 'GET') return await publicDriverDetail(req, env, decodeURIComponent(publicDriverMatch[1]));
        if (path === '/api/drivers/requests' && req.method === 'GET') return await driverRequestList(req, env, await authenticatedUser(req, env));

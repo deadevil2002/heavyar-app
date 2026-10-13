@@ -610,6 +610,7 @@ describe('Firestore authorization baseline', () => {
     const paths = [
       'operatorProfiles/driver-1', 'transporterProfiles/driver-1',
       'organizationOperatorProfiles/org_fixture', 'organizationTransporterProfiles/org_fixture',
+      'operatorDiscoveryProfiles/operator_fixture', 'operatorRequests/request_fixture',
       'serviceProfileAudit/audit_fixture',
     ];
     await env.withSecurityRulesDisabled(async (context) => {

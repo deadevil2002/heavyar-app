@@ -45,6 +45,7 @@ vi.mock('../components/CategoryCard', () => ({ default: () => null }));
 vi.mock('../components/AppDialog', () => ({ default: () => null }));
 vi.mock('../components/EmptyState', () => ({ default: ({ title }: any) => <span>{title}</span> }));
 vi.mock('../components/DriverSearchTab', () => ({ default: () => <span>Driver search feature</span> }));
+vi.mock('../components/OperatorSearchTab', () => ({ default: () => <span>Operator search foundation</span> }));
 vi.mock('../services/equipmentViewPreference', () => ({ loadEquipmentView: vi.fn(), saveEquipmentView: vi.fn() }));
 let root: ReturnType<typeof createRoot>;
 let host: HTMLDivElement;

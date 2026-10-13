@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "operatorDiscoveryProfiles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "discoveryFacets", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "sortKey", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "earlyAccessSubscribers",
       "queryScope": "COLLECTION",
       "fields": [
