@@ -605,4 +605,25 @@ describe('Firestore authorization baseline', () => {
     const anon = asModularFirestore(env.unauthenticatedContext().firestore());
     await assertFails(getDoc(doc(anon, 'organizations/org_fixture')));
   });
+
+  it('keeps individual and organization service-profile drafts Worker-only', async () => {
+    const paths = [
+      'operatorProfiles/driver-1', 'transporterProfiles/driver-1',
+      'organizationOperatorProfiles/org_fixture', 'organizationTransporterProfiles/org_fixture',
+      'serviceProfileAudit/audit_fixture',
+    ];
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = asModularFirestore(context.firestore());
+      for (const path of paths) await setDoc(doc(db, path), { profileState: 'draft', discoverable: false });
+    });
+    for (const uid of ['driver-1', 'provider-1', 'outsider']) {
+      const db = authed(uid);
+      for (const path of paths) {
+        await assertFails(getDoc(doc(db, path)));
+        await assertFails(setDoc(doc(db, path), { discoverable: true, verificationState: 'verified' }));
+      }
+    }
+    const anon = asModularFirestore(env.unauthenticatedContext().firestore());
+    for (const path of paths) await assertFails(getDoc(doc(anon, path)));
+  });
 });

@@ -42,6 +42,8 @@ describe('organization security model', () => {
     expect(organizationMemberCan({ role: 'employee', status: 'active', capabilities: ['equipment.manage'] }, 'equipment.view')).toBe(true);
     expect(organizationMemberCan({ role: 'employee', status: 'active', capabilities: ['bookings.respond'] }, 'bookings.view')).toBe(true);
     expect(organizationMemberCan({ role: 'employee', status: 'active', capabilities: ['bookings.respond'] }, 'bookings.operate')).toBe(false);
+    expect(organizationMemberCan({ role: 'employee', status: 'active', capabilities: ['operators.manage'] }, 'operators.manage')).toBe(true);
+    expect(organizationMemberCan({ role: 'employee', status: 'active', capabilities: ['transport.manage'] }, 'operators.manage')).toBe(false);
     expect(organizationMemberCan({ role: 'employee', status: 'revoked', capabilities: ['equipment.view'] }, 'equipment.view')).toBe(false);
     expect(organizationMemberCan({ role: 'owner', status: 'active', capabilities: [] }, 'bookings.view')).toBe(true);
   });

@@ -43,6 +43,14 @@ import {
   type OrganizationCapability,
 } from './organization';
 import {
+  isEligibleIndividualServiceAccount,
+  parseServiceProfileDraft,
+  serviceProfileCollection,
+  serviceProfileProjection,
+  type ServiceProfileDraft,
+  type ServiceProfileKind,
+} from './service-profile';
+import {
   consumeScheduledSubrequest,
   createScheduledGlobalBudget,
   createScheduledProcessorBudget,
@@ -73,7 +81,7 @@ export interface Env {
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; accountProfileRaw?: { data: any; updateTime?: string } | null; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
-type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking';
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service';
 type AuthenticatedMutationRateLimitDecision =
   | { status: 'allowed' }
   | { status: 'limited'; retryAfterSeconds: number }
@@ -605,11 +613,13 @@ async function allowAuthenticatedMutation(env: Env, uid: string, scope: Authenti
   const policy: Record<AuthenticatedMutationScope, { windowMs: number; limit: number }> = {
     listing_create: { windowMs: 10 * 60_000, limit: 10 },
     driver_profile_save: { windowMs: 60_000, limit: 30 },
+    service_profile_save: { windowMs: 60_000, limit: 20 },
     organization_provision: { windowMs: 60 * 60_000, limit: 3 },
     organization_invite: { windowMs: 10 * 60_000, limit: 10 },
     organization_membership: { windowMs: 10 * 60_000, limit: 20 },
     organization_equipment: { windowMs: 60_000, limit: 30 },
     organization_booking: { windowMs: 60_000, limit: 30 },
+    organization_service: { windowMs: 60_000, limit: 20 },
   };
   const { windowMs, limit } = policy[scope];
   const id = await hashedId(`authenticated-mutation:${scope}:${uid}`);
@@ -4729,6 +4739,129 @@ async function organizationBookingTransition(req: Request, env: Env, user: User,
   if (limited) return limited;
   return transitionRequest(req, env, user, requestId, body, { access, actorMemberId: access.membershipId, capability });
 }
+
+const SERVICE_PROFILE_JSON_LIMIT_BYTES = 32 * 1024;
+
+function serviceProfileError(req: Request, env: Env, errorCode: string, status: number) {
+  return out(env, req, { success: false, error: 'Service profile request could not be completed', errorCode }, status);
+}
+
+function validExpectedRevision(value: unknown): value is string | null {
+  return value === null || typeof value === 'string' && value.length > 0 && value.length <= 200;
+}
+
+function serviceProfileValue(
+  kind: ServiceProfileKind,
+  principal: { type: 'individual'; uid: string; accountPurpose: string } | { type: 'organization'; organizationId: string; ownerUid: string; accountPurpose: string },
+  draft: ServiceProfileDraft,
+  prior: Record<string, unknown> | undefined,
+) {
+  const now = new Date().toISOString();
+  return {
+    ...(principal.type === 'individual'
+      ? { principalType: 'individual', ownerUid: principal.uid }
+      : { principalType: 'organization', organizationId: principal.organizationId, ownerUid: principal.ownerUid }),
+    accountPurpose: principal.accountPurpose,
+    requestedCapability: kind,
+    profileState: 'draft',
+    moderationState: 'not_submitted',
+    verificationState: 'unverified',
+    discoverable: false,
+    canReceiveRequests: false,
+    draft,
+    createdAt: typeof prior?.createdAt === 'string' ? prior.createdAt : now,
+    updatedAt: now,
+  };
+}
+
+async function personalServiceProfiles(req: Request, env: Env, user: User, kind?: ServiceProfileKind) {
+  if (req.method !== 'GET' && declaredJsonPayloadTooLarge(req, SERVICE_PROFILE_JSON_LIMIT_BYTES)) return payloadTooLargeResponse(req, env);
+  const accountRaw = user.accountProfileRaw || await getRawDoc(env, 'users', user.uid);
+  const driverRaw = user.roleProfileRaw || await getRawDoc(env, 'driverProfiles', user.uid);
+  if (!isEligibleIndividualServiceAccount(accountRaw?.data || user.accountProfile, driverRaw?.data)) {
+    return serviceProfileError(req, env, 'SERVICE_PROFILE_ACCOUNT_INELIGIBLE', 403);
+  }
+  if (req.method === 'GET') {
+    const [operatorRaw, transporterRaw] = await Promise.all([
+      getRawDoc(env, serviceProfileCollection('operator'), user.uid),
+      getRawDoc(env, serviceProfileCollection('transporter'), user.uid),
+    ]);
+    return out(env, req, {
+      success: true,
+      profiles: {
+        operator: operatorRaw ? serviceProfileProjection('operator', operatorRaw.data, operatorRaw.updateTime) : null,
+        transporter: transporterRaw ? serviceProfileProjection('transporter', transporterRaw.data, transporterRaw.updateTime) : null,
+      },
+    });
+  }
+  if (!kind || req.method !== 'PUT') return serviceProfileError(req, env, 'SERVICE_PROFILE_METHOD_NOT_ALLOWED', 405);
+  const limit = await allowAuthenticatedMutation(env, user.uid, 'service_profile_save');
+  const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many service profile updates');
+  if (limited) return limited;
+  const parsed = await readBoundedJson(req, SERVICE_PROFILE_JSON_LIMIT_BYTES);
+  if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+  const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value)
+    ? parsed.value as Record<string, unknown>
+    : null;
+  if (!body || !Object.keys(body).every(key => ['expectedRevision', 'draft'].includes(key)) || !validExpectedRevision(body.expectedRevision)) {
+    return serviceProfileError(req, env, 'SERVICE_PROFILE_INVALID', 400);
+  }
+  const draft = parseServiceProfileDraft(kind, body.draft);
+  if (!draft) return serviceProfileError(req, env, 'SERVICE_PROFILE_INVALID', 400);
+  const transaction = await beginTransaction(env);
+  const liveAccount = transaction
+    ? await transactionDocument(env, `users/${encodeURIComponent(user.uid)}`, transaction)
+    : await getRawDoc(env, 'users', user.uid);
+  const liveDriver = transaction
+    ? await transactionDocument(env, `driverProfiles/${encodeURIComponent(user.uid)}`, transaction)
+    : await getRawDoc(env, 'driverProfiles', user.uid);
+  if (!liveAccount || !liveDriver || !isEligibleIndividualServiceAccount(liveAccount.data, liveDriver.data)) return serviceProfileError(req, env, 'SERVICE_PROFILE_ACCOUNT_INELIGIBLE', 403);
+  const collection = serviceProfileCollection(kind), path = `${collection}/${encodeURIComponent(user.uid)}`;
+  const prior = transaction ? await transactionDocument(env, path, transaction) : await getRawDoc(env, collection, user.uid);
+  if (prior ? body.expectedRevision !== prior.updateTime : body.expectedRevision !== null) return serviceProfileError(req, env, 'SERVICE_PROFILE_CONFLICT', 409);
+  const value = serviceProfileValue(kind, { type: 'individual', uid: user.uid, accountPurpose: organizationAccountPurpose(liveAccount.data) }, draft, prior?.data);
+  const auditId = await hashedId(`service-profile-audit:${user.uid}:${kind}:${value.updatedAt}:${crypto.randomUUID()}`);
+  const writes = [
+    organizationWrite(path, env, value, prior?.updateTime),
+    organizationWrite(`serviceProfileAudit/spaudit_${auditId}`, env, { principalType: 'individual', ownerUid: user.uid, actorUid: user.uid, action: `${kind}_draft_saved`, createdAt: value.updatedAt }),
+  ];
+  try { await commitWrites(env, writes, transaction); }
+  catch { return serviceProfileError(req, env, 'SERVICE_PROFILE_CONFLICT', 409); }
+  return out(env, req, { success: true, profile: serviceProfileProjection(kind, value, null), refreshRequired: true });
+}
+
+async function organizationServiceProfile(req: Request, env: Env, user: User, organizationId: string, kind: ServiceProfileKind) {
+  if (req.method !== 'GET' && declaredJsonPayloadTooLarge(req, SERVICE_PROFILE_JSON_LIMIT_BYTES)) return payloadTooLargeResponse(req, env);
+  const capability: OrganizationCapability = kind === 'operator' ? 'operators.manage' : 'transport.manage';
+  const access = await organizationAccess(env, user, organizationId, capability);
+  if (!access) return organizationError(req, env, 'ORGANIZATION_CAPABILITY_REQUIRED', 403);
+  const collection = serviceProfileCollection(kind, true), path = `${collection}/${organizationId}`;
+  const prior = await getRawDoc(env, collection, organizationId);
+  if (req.method === 'GET') return out(env, req, { success: true, profile: prior ? serviceProfileProjection(kind, prior.data, prior.updateTime) : null });
+  if (req.method !== 'PUT') return organizationError(req, env, 'ORGANIZATION_SERVICE_METHOD_NOT_ALLOWED', 405);
+  const limit = await allowAuthenticatedMutation(env, user.uid, 'organization_service');
+  const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many organization service profile updates');
+  if (limited) return limited;
+  const body = await organizationBody(req);
+  if (body === 'too_large') return payloadTooLargeResponse(req, env);
+  if (!body || !Object.keys(body).every(key => ['expectedRevision', 'draft'].includes(key)) || !validExpectedRevision(body.expectedRevision)) {
+    return organizationError(req, env, 'INVALID_ORGANIZATION_SERVICE_PROFILE', 400);
+  }
+  const draft = parseServiceProfileDraft(kind, body.draft);
+  if (!draft) return organizationError(req, env, 'INVALID_ORGANIZATION_SERVICE_PROFILE', 400);
+  if (prior ? body.expectedRevision !== prior.updateTime : body.expectedRevision !== null) return organizationError(req, env, 'ORGANIZATION_SERVICE_PROFILE_CONFLICT', 409);
+  const value = serviceProfileValue(kind, {
+    type: 'organization', organizationId, ownerUid: String(access.organization.ownerUid), accountPurpose: String(access.organization.accountPurpose || 'standard'),
+  }, draft, prior?.data);
+  const writes = [
+    organizationWrite(path, env, value, prior?.updateTime),
+    ...organizationAuthorizationVerifies(env, access),
+    await organizationAuditWrite(env, organizationId, access.membershipId, user.uid, access.organization.ownerUid, `${kind}_draft_saved`, organizationId),
+  ];
+  try { await commitWrites(env, writes); }
+  catch { return organizationError(req, env, 'ORGANIZATION_SERVICE_PROFILE_CONFLICT', 409); }
+  return out(env, req, { success: true, profile: serviceProfileProjection(kind, value, null), refreshRequired: true });
+}
 async function reviewEquipmentDetail(req: Request, env: Env, u: User, id: string) {
   const equipment = await getDoc(env, 'equipment', id);
   const account = u.accountProfile || await getDoc(env, 'users', u.uid);
@@ -5401,6 +5534,9 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       if (path === '/api/drivers/requests' && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env));
       const driverRequestMatch = path.match(/^\/api\/drivers\/requests\/([^/]+)$/);
       if (driverRequestMatch && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env), decodeURIComponent(driverRequestMatch[1]));
+      if (path === '/api/service-profiles' && req.method === 'GET') return await personalServiceProfiles(req, env, await authenticatedUser(req, env));
+      const serviceProfileMatch = path.match(/^\/api\/service-profiles\/(operator|transporter)$/);
+      if (serviceProfileMatch && req.method === 'PUT') return await personalServiceProfiles(req, env, await authenticatedUser(req, env), serviceProfileMatch[1] as ServiceProfileKind);
       if (path === '/api/organizations' && (req.method === 'GET' || req.method === 'POST')) return await organizationIndex(req, env, await authenticatedUser(req, env));
       if (path === '/api/organization-invitations/accept' && req.method === 'POST') return await organizationAcceptInvitation(req, env, await authenticatedUser(req, env));
       const organizationMembersMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/members$/);
@@ -5421,6 +5557,8 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       if (organizationEquipmentAvailabilityMatch && req.method === 'PATCH') return await organizationEquipmentAvailability(req, env, await authenticatedUser(req, env), organizationEquipmentAvailabilityMatch[1], organizationEquipmentAvailabilityMatch[2]);
       const organizationBookingTransitionMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/bookings\/([A-Za-z0-9_-]{1,128})\/transition$/);
       if (organizationBookingTransitionMatch && req.method === 'POST') return await organizationBookingTransition(req, env, await authenticatedUser(req, env), organizationBookingTransitionMatch[1], organizationBookingTransitionMatch[2]);
+      const organizationServiceProfileMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/service-profiles\/(operator|transporter)$/);
+      if (organizationServiceProfileMatch && (req.method === 'GET' || req.method === 'PUT')) return await organizationServiceProfile(req, env, await authenticatedUser(req, env), organizationServiceProfileMatch[1], organizationServiceProfileMatch[2] as ServiceProfileKind);
        if (path === '/api/staff/invitations/accept' && req.method === 'POST') {
          const result = await acceptStaffInvitation(req, env, await activeFirebaseUser(req, env));
          const status = typeof result === 'object' && result && typeof (result as any).status === 'number' ? Number((result as any).status) : 200;

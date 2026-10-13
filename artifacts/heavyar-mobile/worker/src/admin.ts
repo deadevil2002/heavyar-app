@@ -1346,9 +1346,10 @@ export async function processEmailVerificationReminderJobs(env: Env) {
   }
 }
 
-const deletionCollections = ['users', 'userProfiles', 'providerProfiles', 'driverProfiles', 'deviceTokens', 'notificationTokenOwners', 'notificationInstallations', 'notifications', 'notificationPreferences', 'notificationDeliveries', 'notificationOutbox', 'emailVerificationRateLimits', 'phoneAliases', 'phoneOwners', 'recoveryCodes', 'temporaryRecovery', 'verificationIndexes', 'verificationProfiles', 'verificationAttempts', 'regulatoryDocuments', 'regulatoryExpiryQueue', 'equipment', 'equipmentDrafts'];
+const deletionCollections = ['users', 'userProfiles', 'providerProfiles', 'driverProfiles', 'operatorProfiles', 'transporterProfiles', 'serviceProfileAudit', 'deviceTokens', 'notificationTokenOwners', 'notificationInstallations', 'notifications', 'notificationPreferences', 'notificationDeliveries', 'notificationOutbox', 'emailVerificationRateLimits', 'phoneAliases', 'phoneOwners', 'recoveryCodes', 'temporaryRecovery', 'verificationIndexes', 'verificationProfiles', 'verificationAttempts', 'regulatoryDocuments', 'regulatoryExpiryQueue', 'equipment', 'equipmentDrafts'];
 const deletionOwnedFields: Record<string, string[]> = {
   userProfiles: ['uid', 'userUid'], providerProfiles: ['uid', 'userUid'], driverProfiles: ['uid', 'userUid'],
+  operatorProfiles: ['ownerUid'], transporterProfiles: ['ownerUid'], serviceProfileAudit: ['ownerUid', 'actorUid'],
   deviceTokens: ['uid', 'userUid'], notifications: ['uid', 'userUid'], notificationPreferences: ['uid', 'userUid'],
   notificationTokenOwners: ['uid', 'userUid'], notificationInstallations: ['uid', 'userUid'],
   notificationDeliveries: ['uid', 'userUid'], notificationOutbox: ['uid', 'userUid'], emailVerificationRateLimits: ['uid'],

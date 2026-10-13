@@ -24,10 +24,13 @@ describe('company team mobile contract', () => {
     expect(profile).toContain("route: '/company-team'");
   });
 
-  it('surfaces only the narrow M2-C2 capabilities and keeps protected actions outside delegation', () => {
+  it('surfaces narrow M2-C2 and draft-only M2-D1 capabilities while protected actions stay outside delegation', () => {
     expect(screen).toContain("'equipment.manage'");
     expect(screen).toContain("'bookings.respond'");
     expect(screen).toContain("'bookings.operate'");
+    expect(screen).toContain("'operators.manage'");
+    expect(screen).toContain("'transport.manage'");
+    expect(screen).toContain("pathname: '/service-profile'");
     expect(screen).toContain('Pricing, payments, precise location, publication, deletion, signing and ownership transfer remain outside delegation.');
     expect(screen).toContain('updateOrganizationMemberCapabilities');
     expect(screen).toContain('transitionOrganizationBooking');

@@ -1,6 +1,6 @@
 import { request } from './workerClient';
 
-export type OrganizationCapability = 'equipment.view' | 'equipment.manage' | 'bookings.view' | 'bookings.respond' | 'bookings.operate';
+export type OrganizationCapability = 'equipment.view' | 'equipment.manage' | 'bookings.view' | 'bookings.respond' | 'bookings.operate' | 'operators.manage' | 'transport.manage';
 export type OrganizationSummary = {
   id: string;
   displayName: string;
@@ -65,9 +65,9 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function capabilities(value: unknown): OrganizationCapability[] {
-  if (!Array.isArray(value) || value.length > 5) throw new Error('ORGANIZATION_RESPONSE_INVALID');
+  if (!Array.isArray(value) || value.length > 7) throw new Error('ORGANIZATION_RESPONSE_INVALID');
   const result = [...new Set(value)];
-  if (!result.every(item => ['equipment.view', 'equipment.manage', 'bookings.view', 'bookings.respond', 'bookings.operate'].includes(String(item)))) throw new Error('ORGANIZATION_RESPONSE_INVALID');
+  if (!result.every(item => ['equipment.view', 'equipment.manage', 'bookings.view', 'bookings.respond', 'bookings.operate', 'operators.manage', 'transport.manage'].includes(String(item)))) throw new Error('ORGANIZATION_RESPONSE_INVALID');
   return result as OrganizationCapability[];
 }
 

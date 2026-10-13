@@ -119,7 +119,11 @@ describe('bounded deletion records processing', () => {
       }
       expect(shapeDocuments.has('users|__name__')).toBe(true);
       expect(shapeDocuments.has('userProfiles|uid')).toBe(true);
-      expect(shapeDocuments.size).toBe(42);
+      expect(shapeDocuments.has('operatorProfiles|ownerUid')).toBe(true);
+      expect(shapeDocuments.has('transporterProfiles|ownerUid')).toBe(true);
+      expect(shapeDocuments.has('serviceProfileAudit|ownerUid')).toBe(true);
+      expect(shapeDocuments.has('serviceProfileAudit|actorUid')).toBe(true);
+      expect(shapeDocuments.size).toBe(46);
     } finally {
       globalThis.fetch = originalFetch;
     }

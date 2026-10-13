@@ -211,6 +211,42 @@ describe('company organization API security', () => {
     expect([...store.documents.entries()].some(([path, record]) => path.startsWith('organizationAudit/') && store.data(path)?.actorUid === ownerUid && store.data(path)?.ownerUid === ownerUid)).toBe(true);
   });
 
+  test('organization operator and transport drafts are capability-scoped, private, and fail closed on revocation', async () => {
+    const store = firestoreHarness(); globalThis.fetch = store.fetch;
+    store.put(`organizations/${organizationId}`, { ownerUid, status: 'active', accountPurpose: 'standard', displayName: 'Owner Company' });
+    store.put(`organizationMemberships/${employeeMemberId}`, { organizationId, uid: employeeUid, role: 'employee', status: 'active', capabilities: ['operators.manage', 'transport.manage'], accountPurpose: 'standard' });
+    setEmployee();
+    const operatorDraft = {
+      equipmentCategories: ['excavators'], yearsExperience: 7,
+      serviceArea: { countryCode: 'SA', region: 'riyadh', city: 'riyadh' }, availability: 'available',
+      declarations: [{ kind: 'qualification', title: 'Declared qualification' }], description: 'Draft only',
+    };
+    const created = await call(`/api/organizations/${organizationId}/service-profiles/operator`, 'PUT', { expectedRevision: null, draft: operatorDraft });
+    expect(created.status).toBe(200);
+    expect(store.data(`organizationOperatorProfiles/${organizationId}`)).toMatchObject({
+      organizationId, ownerUid, profileState: 'draft', verificationState: 'unverified', discoverable: false, canReceiveRequests: false,
+    });
+    expect(JSON.stringify(await (await call(`/api/organizations/${organizationId}/service-profiles/operator`)).json())).not.toContain('actorUid');
+    expect((await call(`/api/organizations/${organizationId}/service-profiles/operator`, 'PUT', { expectedRevision: store.documents.get(`organizationOperatorProfiles/${organizationId}`)!.updateTime, draft: { ...operatorDraft, verificationState: 'verified' } })).status).toBe(400);
+
+    const transportDraft = {
+      vehicleCategory: 'lowbed', vehicleType: 'Lowbed', capacityKg: 50_000,
+      dimensionsMm: { length: 12_000, width: 3_000, height: 4_000 },
+      serviceArea: { countryCode: 'SA', region: 'riyadh', city: 'riyadh' }, availability: 'offline', declarations: [], description: '',
+    };
+    expect((await call(`/api/organizations/${organizationId}/service-profiles/transporter`, 'PUT', { expectedRevision: null, draft: { ...transportDraft, capacityKg: 9.5 } })).status).toBe(400);
+    const otherOrgId = `org_${digest('organization-owner:other-owner')}`;
+    store.put(`organizations/${otherOrgId}`, { ownerUid: 'other-owner', status: 'active', accountPurpose: 'standard' });
+    expect((await call(`/api/organizations/${otherOrgId}/service-profiles/operator`)).status).toBe(403);
+
+    const revision = store.documents.get(`organizationOperatorProfiles/${organizationId}`)!.updateTime;
+    store.beforeNextCommit(() => store.put(`organizationMemberships/${employeeMemberId}`, { organizationId, uid: employeeUid, role: 'employee', status: 'revoked', capabilities: [], accountPurpose: 'standard' }));
+    const revoked = await call(`/api/organizations/${organizationId}/service-profiles/operator`, 'PUT', { expectedRevision: revision, draft: { ...operatorDraft, description: 'Must not commit' } });
+    expect(revoked.status).toBe(409);
+    expect(store.data(`organizationOperatorProfiles/${organizationId}`)?.draft.description).toBe('Draft only');
+    expect([...store.documents.keys()].some(path => path.startsWith('payments/') || path.startsWith('staffMembers/'))).toBe(false);
+  });
+
   test('delegated equipment metadata is allowlisted and concurrent revocation aborts the write', async () => {
     const store = firestoreHarness(); globalThis.fetch = store.fetch;
     store.put(`organizations/${organizationId}`, { ownerUid, status: 'active', accountPurpose: 'standard', displayName: 'Owner Company' });

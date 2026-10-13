@@ -14,6 +14,7 @@ describe('organization runtime response boundaries', () => {
   it('accepts only bounded organization, membership and invitation projections', () => {
     expect(decodeOrganizationSummary({ id: orgId, displayName: 'Heavy Co', verificationStatus: 'unverified', legalAuthorityVerified: false, memberRole: 'owner', capabilities: [] }).memberRole).toBe('owner');
     expect(decodeOrganizationMember({ id: memberId, displayName: 'Employee', role: 'employee', status: 'active', capabilities: ['equipment.manage'], revision: 'revision-1' }).capabilities).toEqual(['equipment.manage']);
+    expect(decodeOrganizationMember({ id: memberId, displayName: 'Employee', role: 'employee', status: 'active', capabilities: ['operators.manage', 'transport.manage'], revision: 'revision-2' }).capabilities).toEqual(['operators.manage', 'transport.manage']);
     expect(decodeOrganizationInvitation({ id: inviteId, emailHint: 'p***@example.com', status: 'pending', capabilities: ['bookings.view'] }).status).toBe('pending');
   });
 

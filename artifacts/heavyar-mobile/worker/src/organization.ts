@@ -4,6 +4,8 @@ export const ORGANIZATION_CAPABILITIES = [
   'bookings.view',
   'bookings.respond',
   'bookings.operate',
+  'operators.manage',
+  'transport.manage',
 ] as const;
 
 export type OrganizationCapability = (typeof ORGANIZATION_CAPABILITIES)[number];

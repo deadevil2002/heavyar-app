@@ -447,6 +447,23 @@ service cloud.firestore {
     match /driverRequests/{requestId} {
       allow read, write: if false;
     }
+    // Operator/transporter declarations are private Worker-owned drafts. They
+    // are never a public discovery or verification surface.
+    match /operatorProfiles/{uid} {
+      allow read, write: if false;
+    }
+    match /transporterProfiles/{uid} {
+      allow read, write: if false;
+    }
+    match /organizationOperatorProfiles/{organizationId} {
+      allow read, write: if false;
+    }
+    match /organizationTransporterProfiles/{organizationId} {
+      allow read, write: if false;
+    }
+    match /serviceProfileAudit/{auditId} {
+      allow read, write: if false;
+    }
     match /campaigns/{campaignId} {
       allow read, write: if false;
     }

@@ -28,6 +28,10 @@ Fail closed if these checks do not identify HEAVYAR. Never switch automatically 
 
 If an authorized provider CLI session is missing or expired, use only that provider's supported interactive browser login with explicit user participation. Afterward, verify the authenticated account and exact existing resource before continuing. Never silently switch accounts, create replacement infrastructure, expose credentials, generate CI tokens, or bypass identity checks.
 
+## Concurrent Project / Backend Isolation Guard
+
+The Owner develops **HEAVYAR** and **TABBAKHEEN** concurrently; they are independent projects. Before every push, deployment, Firebase/Cloudflare operation, Expo/EAS action, database/configuration mutation, or credential operation, reverify the repository plus the actually authenticated account/profile and exact target project/resource, and require Owner approval for that exact operation and target. A commit or push never authorizes a backend deployment. Never reuse another project's directory, credentials, remembered account, environment variables, target, or resource identifiers; never switch environments or trigger deployment/migration automatically. From the Heavyar workspace, do not access or modify Tabbakheen. Stop and report any ambiguity or mismatch instead of guessing.
+
 ## Mutation safety
 
 Never automatically commit, push, deploy, run EAS production builds, change Firebase data/Auth/rules, change Cloudflare bindings/secrets or DNS, alter payment configuration, rotate credentials, or create/delete Production users. The user must explicitly request the exact action. Re-run identity verification immediately before any destructive or Production action.
