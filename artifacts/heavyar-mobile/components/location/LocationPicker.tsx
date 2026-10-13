@@ -26,7 +26,7 @@ export default function LocationPicker({ value, onConfirm, language, instruction
     setStatus(value ? 'confirmed' : 'idle');
   }, [value]);
 
-  const useDevice = async () => {
+  const requestDeviceLocation = async () => {
     setLocating(true);
     const result = await requestForegroundDeviceLocation();
     setLocating(false);
@@ -81,7 +81,7 @@ export default function LocationPicker({ value, onConfirm, language, instruction
         </Text>
       ) : null}
       <View style={[styles.actions, { flexDirection: rtl ? 'row-reverse' : 'row' }]}>
-        <Pressable style={styles.secondary} onPress={() => void useDevice()} disabled={locating} accessibilityRole="button">
+        <Pressable style={styles.secondary} onPress={() => void requestDeviceLocation()} disabled={locating} accessibilityRole="button">
           {locating ? <ActivityIndicator size="small" color={Colors.gold} /> : <Crosshair size={18} color={Colors.gold} />}
           <Text style={styles.secondaryText}>{rtl ? 'استخدم موقعي' : 'Use my location'}</Text>
         </Pressable>

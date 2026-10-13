@@ -33,6 +33,7 @@ import {
 } from '@/services/listingPricing';
 import LocationPicker from '@/components/location/LocationPicker';
 import type { PreciseLocation } from '@/services/location';
+import EquipmentAvailabilityManager from '@/components/equipment/EquipmentAvailabilityManager';
 
 export default function EditEquipmentScreen() {
   const { isRTL, language, t, localizedText } = useLanguage();
@@ -65,10 +66,6 @@ export default function EditEquipmentScreen() {
     dailyEnabled: true,
     dailyAmount: '',
   });
-  const [availabilityFrom, setAvailabilityFrom] = useState<string>('');
-  const [availabilityUntil, setAvailabilityUntil] = useState<string>('');
-  const [temporarilyUnavailable, setTemporarilyUnavailable] = useState<boolean>(false);
-
   const [existingImages, setExistingImages] = useState<EquipmentImage[]>([]);
   const [newImageUris, setNewImageUris] = useState<string[]>([]);
 
@@ -119,13 +116,6 @@ export default function EditEquipmentScreen() {
         setDistrict(eq.district);
         setLocation(eq.location || null);
         setPricingInput(pricingInputFromListing(eq as unknown as import('@/services/listingPricing').ListingPricingSource));
-        if (typeof eq.availability === 'object' && eq.availability) {
-          setAvailabilityFrom(eq.availability.from || '');
-          setAvailabilityUntil(eq.availability.until || '');
-          setTemporarilyUnavailable(eq.availability.temporarilyUnavailable === true);
-        } else {
-          setAvailabilityFrom(new Date().toISOString().slice(0, 10));
-        }
         setExistingImages([...eq.images]);
       } catch (e) {
         if (mounted) {
@@ -203,11 +193,6 @@ export default function EditEquipmentScreen() {
       showDialog(t('validation_error'), t('validation_images_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(availabilityFrom) || (availabilityUntil && !/^\d{4}-\d{2}-\d{2}$/.test(availabilityUntil)) || (availabilityUntil && availabilityUntil < availabilityFrom)) {
-      showDialog(t('validation_error'), t('availability_invalid'), [{ text: t('ok'), style: 'default' }]);
-      return;
-    }
-
     setSaving(true);
     let uploadedNewImages: EquipmentImage[] = [];
     try {
@@ -242,7 +227,6 @@ export default function EditEquipmentScreen() {
         pricing: pricingResult.pricing,
         images: finalImages,
         isActive: originalEquipment.isActive,
-        availability: { from: availabilityFrom, ...(availabilityUntil ? { until: availabilityUntil } : {}), temporarilyUnavailable },
       });
       const finalPublicIds = new Set(finalImages.map(image => typeof image === 'string' ? '' : image.publicId));
       await Promise.all(oldImages
@@ -268,7 +252,7 @@ export default function EditEquipmentScreen() {
       setSaving(false);
       setUploadProgress('');
     }
-  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, location, pricingInput, existingImages, newImageUris, oldImages, availabilityFrom, availabilityUntil, temporarilyUnavailable, t, router, showDialog, isRTL]);
+  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, location, pricingInput, existingImages, newImageUris, oldImages, t, router, showDialog, isRTL]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 
@@ -358,15 +342,6 @@ export default function EditEquipmentScreen() {
                 placeholder={t('title_ar')}
                 placeholderTextColor={Colors.textMuted}
               />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={[styles.label, { textAlign: isRTL ? 'right' : 'left' }]}>{t('availability_dates')}</Text>
-              <TextInput style={[styles.textInput, { textAlign: isRTL ? 'right' : 'left' }]} value={availabilityFrom} onChangeText={setAvailabilityFrom} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.textMuted} />
-              <TextInput style={[styles.textInput, { textAlign: isRTL ? 'right' : 'left' }]} value={availabilityUntil} onChangeText={setAvailabilityUntil} placeholder={t('availability_until_optional')} placeholderTextColor={Colors.textMuted} />
-              <Pressable style={[styles.picker, { flexDirection: isRTL ? 'row-reverse' : 'row' }]} onPress={() => setTemporarilyUnavailable(v => !v)}>
-                <Text style={styles.pickerText}>{temporarilyUnavailable ? t('temporarily_unavailable') : t('available')}</Text>
-              </Pressable>
             </View>
 
             <View style={styles.inputGroup}>
@@ -543,6 +518,14 @@ export default function EditEquipmentScreen() {
               isRTL={isRTL}
               disabled={saving}
             />
+
+            {originalEquipment && <EquipmentAvailabilityManager
+              countryCode={originalEquipment.countryCode}
+              isRTL={isRTL}
+              language={language}
+              listingId={id}
+              marketTimezone={originalEquipment.marketTimezone}
+            />}
 
             <Pressable
               style={[styles.saveButton, saving && styles.saveButtonDisabled]}

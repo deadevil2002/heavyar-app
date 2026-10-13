@@ -200,6 +200,7 @@ describe('Provider form to Worker V2 listing contract', () => {
       nativeCurrency: _nativeCurrency,
       displayCurrency: _displayCurrency,
       location: _location,
+      availability: _availability,
       ...editPayload
     } = addShape;
     const response = await worker.fetch(request('/api/listings/legacy-1', 'PATCH', {
@@ -216,6 +217,22 @@ describe('Provider form to Worker V2 listing contract', () => {
     expect(writes[0].fields.pricing.mapValue.fields.daily.mapValue.fields.amountMinor.doubleValue).toBe(100000);
     expect(writes.some(write => write.path.startsWith('equipmentRequests/'))).toBe(false);
     expect(legacyListing).toMatchObject({ pricePerDay: 900, nativePricePerDay: 900 });
+  });
+
+  it('requires availability changes to use the dedicated CAS endpoint', async () => {
+    installProviderFixture((collection, id) => {
+      if (collection === 'equipment' && id === 'eq-availability') return {
+        ownerUid: provider.uid, countryCode: 'SA', nativeCurrency: 'SAR', isActive: true,
+        visibility: 'visible', moderationStatus: 'approved', availability: { from: '2099-01-01' },
+      };
+      if (collection === '__queries') return [];
+      return null;
+    });
+    const response = await worker.fetch(request('/api/listings/eq-availability', 'PATCH', {
+      availability: { from: '2099-01-01', blocked: [{ from: '2099-03-01', until: '2099-03-02' }] },
+    }), env());
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: 'Unsupported listing field' });
   });
 
   it('keeps V2 pricing in the public marketplace projection', async () => {

@@ -39,6 +39,7 @@ export type ListingAvailabilityPolicy = {
 };
 export type ListingAvailabilityCalendar = {
   listingId: string;
+  revision: string;
   serverNow: string;
   window: { from: string; until: string };
   availability: ListingAvailabilityPolicy;
@@ -100,7 +101,8 @@ export function decodeListingAvailabilityCalendar(raw: unknown, expectedListingI
   const value = record(raw);
   const availability = record(value?.availability);
   const window = decodeAvailabilityDateRange(value?.window);
-  if (!value || value.success !== true || typeof value.listingId !== 'string' || (expectedListingId && value.listingId !== expectedListingId)
+  if (!value || value.success !== true || typeof value.listingId !== 'string' || typeof value.revision !== 'string' || !value.revision
+    || (expectedListingId && value.listingId !== expectedListingId)
     || !isoString(value.serverNow) || !window?.until || !availability || !calendarDateString(availability.from)
     || (availability.until !== undefined && !calendarDateString(availability.until))
     || (availability.until && availability.until < availability.from)
@@ -119,6 +121,7 @@ export function decodeListingAvailabilityCalendar(raw: unknown, expectedListingI
   if (activeRentals.some(item => !item)) throw new Error('INVALID_AVAILABILITY_RESPONSE');
   return {
     listingId: value.listingId,
+    revision: value.revision,
     serverNow: value.serverNow,
     window: { from: window.from, until: window.until },
     availability: {

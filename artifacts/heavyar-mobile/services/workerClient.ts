@@ -6,7 +6,7 @@ import { sanitizeCreateListingPayload, sanitizeListingPayload } from './listingP
 import { driverRequestActions } from './driverRequestContract';
 import type { GccCountryCode } from '@/constants/gcc';
 import { invalidatePublicEquipment } from './discoveryInvalidation';
-import type { RentalEstimate, RentalSummary } from '@/types';
+import type { RentalEstimate, RentalExtension, RentalExtensionEstimate, RentalSummary } from '@/types';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import {
   buildRentalRequestPayload,
@@ -17,6 +17,7 @@ import {
   type RentalRequestInput,
   type ListingAvailabilityCalendar,
 } from './rentalV2';
+import { decodeRentalExtension, decodeRentalExtensionEstimate } from './rentalExtension';
 export { driverRequestActions } from './driverRequestContract';
 
 export type AvailabilityRange = { from: string; until?: string };
@@ -212,6 +213,19 @@ export async function getListingAvailability(id: string, window: { from: string;
   return decodeListingAvailabilityCalendar(raw, id);
 }
 
+export async function updateListingAvailability(
+  id: string,
+  availability: ListingAvailability,
+  expectedRevision: string,
+) {
+  const result = await request<{ success: true; listingId: string; availability: ListingAvailability; serverNow: string }>(
+    `/api/listings/${encodeURIComponent(id)}/availability`,
+    { method: 'PATCH', body: JSON.stringify({ availability, expectedRevision }) },
+  );
+  invalidatePublicEquipment();
+  return result;
+}
+
 export function setListingControls(id: string, action: 'hide' | 'show' | 'archive' | 'delete') {
   if (action === 'hide') return updateListing(id, { isActive: false });
   if (action === 'show') return updateListing(id, { isActive: true });
@@ -286,6 +300,55 @@ export function transitionRentalRequest(
       body: JSON.stringify({ action, ...(reason?.trim() ? { reason: reason.trim() } : {}) }),
     },
   );
+}
+
+function validRentalExtension(raw: unknown): RentalExtension {
+  const decoded = decodeRentalExtension(raw);
+  if (!decoded) throw new WorkerError('Invalid rental extension response', 502, 'INVALID_EXTENSION_RESPONSE');
+  return decoded;
+}
+
+export async function estimateRentalExtension(requestId: string, proposedEndAt: string): Promise<RentalExtensionEstimate> {
+  const result = await request<{ success: true; estimate: unknown }>(
+    `/api/requests/${encodeURIComponent(requestId)}/extensions/estimate`,
+    { method: 'POST', body: JSON.stringify({ proposedEndAt }) },
+  );
+  const decoded = decodeRentalExtensionEstimate(result.estimate);
+  if (!decoded) throw new WorkerError('Invalid rental extension estimate', 502, 'INVALID_EXTENSION_RESPONSE');
+  return decoded;
+}
+
+export async function createRentalExtension(
+  requestId: string,
+  proposedEndAt: string,
+  expectedAdditionalBaseAmountMinor: number,
+): Promise<RentalExtension> {
+  const result = await request<{ success: true; extension: unknown }>(
+    `/api/requests/${encodeURIComponent(requestId)}/extensions`,
+    { method: 'POST', body: JSON.stringify({ proposedEndAt, expectedAdditionalBaseAmountMinor }) },
+  );
+  return validRentalExtension(result.extension);
+}
+
+export async function getRentalExtension(requestId: string, signal?: AbortSignal): Promise<RentalExtension | null> {
+  const result = await request<{ success: true; extension: unknown | null }>(
+    `/api/requests/${encodeURIComponent(requestId)}/extensions`,
+    { signal },
+  );
+  if (result.extension === null) return null;
+  return validRentalExtension(result.extension);
+}
+
+export async function reviewRentalExtension(
+  requestId: string,
+  extensionId: string,
+  action: 'approve' | 'decline',
+): Promise<RentalExtension> {
+  const result = await request<{ success: true; extension: unknown; extensionConfirmed: false }>(
+    `/api/requests/${encodeURIComponent(requestId)}/extensions/${encodeURIComponent(extensionId)}/${action}`,
+    { method: 'POST', body: '{}' },
+  );
+  return validRentalExtension(result.extension);
 }
 
 export type CheckoutGateway = {

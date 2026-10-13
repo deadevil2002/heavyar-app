@@ -479,6 +479,27 @@ describe('Firestore authorization baseline', () => {
     await assertFails(setDoc(doc(db, 'heavyarConfig/pricing'), { platformFeeRate: 0.1 }));
   });
 
+  it('keeps rental extensions and expiry reminder jobs Worker-authoritative', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = asModularFirestore(context.firestore());
+      await setDoc(doc(db, 'rentalExtensions/ext_fixture00000001'), {
+        requestId: 'request-1', customerUid: 'customer-1', providerUid: 'provider-1',
+        status: 'pending_provider', paymentActivation: 'blocked_unverified',
+      });
+      await setDoc(doc(db, 'rentalExpiryReminderJobs/request-1'), {
+        requestId: 'request-1', customerUid: 'customer-1', providerUid: 'provider-1',
+        dueAt: new Date(),
+      });
+    });
+    for (const uid of ['customer-1', 'provider-1', 'outsider']) {
+      const db = authed(uid);
+      await assertFails(getDoc(doc(db, 'rentalExtensions/ext_fixture00000001')));
+      await assertFails(setDoc(doc(db, 'rentalExtensions/ext_forged000000000'), { requestId: 'request-1' }));
+      await assertFails(getDoc(doc(db, 'rentalExpiryReminderJobs/request-1')));
+      await assertFails(setDoc(doc(db, 'rentalExpiryReminderJobs/forged'), { requestId: 'request-1' }));
+    }
+  });
+
   it('prevents a direct provider acceptance from bypassing an enabled identity policy', async () => {
     await env.withSecurityRulesDisabled(async (context) => {
       await setDoc(doc(asModularFirestore(context.firestore()), 'verificationPolicies/default'), {

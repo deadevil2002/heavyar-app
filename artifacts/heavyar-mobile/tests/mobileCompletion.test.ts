@@ -35,11 +35,13 @@ describe('mobile completion contracts', () => {
   });
 
   it('excludes privileged listing fields from create and edit payloads', () => {
-    const payload = sanitizeListingPayload({ titleAr: 'معدة', images: [], ownerUid: 'attacker', isActive: true, moderationStatus: 'active', createdAt: 'bad' });
+    const availability = { from: '2099-01-01', blocked: [] };
+    const payload = sanitizeListingPayload({ titleAr: 'معدة', images: [], availability, ownerUid: 'attacker', isActive: true, moderationStatus: 'active', createdAt: 'bad' });
     expect(payload).toEqual({ titleAr: 'معدة', images: [], isActive: true });
     expect(payload).not.toHaveProperty('ownerUid');
     expect(payload).not.toHaveProperty('moderationStatus');
-    expect(sanitizeCreateListingPayload({ titleAr: 'معدة', isActive: true })).toEqual({ titleAr: 'معدة' });
+    expect(payload).not.toHaveProperty('availability');
+    expect(sanitizeCreateListingPayload({ titleAr: 'معدة', availability, isActive: true })).toEqual({ titleAr: 'معدة', availability });
   });
 
   it('only exposes driver accept/decline and requester close actions', async () => {

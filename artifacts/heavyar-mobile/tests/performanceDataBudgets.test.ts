@@ -116,7 +116,7 @@ describe('deterministic performance/data budgets', () => {
     configureMobilePerformance({ enabled: false });
   });
 
-  it('keeps all 63 Worker collection query shapes bounded or aggregate-only', () => {
+  it('keeps all 64 Worker collection query shapes bounded or aggregate-only', () => {
     const directory = fileURLToPath(new URL('../worker/src/', import.meta.url));
     const files = readdirSync(directory).filter(file => file.endsWith('.ts') && !file.includes('.test.') && file !== 'bun-test.d.ts');
     const shapes: Array<{ file: string; limited: boolean; aggregate: boolean }> = [];
@@ -139,8 +139,8 @@ describe('deterministic performance/data budgets', () => {
       };
       visit(tree);
     }
-    expect(shapes).toHaveLength(63);
-    expect(shapes.filter(shape => shape.limited)).toHaveLength(61);
+    expect(shapes).toHaveLength(64);
+    expect(shapes.filter(shape => shape.limited)).toHaveLength(62);
     expect(shapes.filter(shape => !shape.limited && shape.aggregate)).toHaveLength(2);
     expect(shapes.filter(shape => !shape.limited && !shape.aggregate)).toEqual([]);
   });

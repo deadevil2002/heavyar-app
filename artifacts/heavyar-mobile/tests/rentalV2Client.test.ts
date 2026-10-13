@@ -181,6 +181,7 @@ describe('rental V2 client contract', () => {
     const calendar = decodeListingAvailabilityCalendar({
       success: true,
       listingId: 'eq_1',
+      revision: '2026-09-19T08:59:59.000000Z',
       serverNow: '2026-09-19T09:00:00.000Z',
       window: { from: '2026-09-19', until: '2027-09-20' },
       availability: {

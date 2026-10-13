@@ -5,7 +5,9 @@ export type NotificationCategory = typeof NOTIFICATION_CATEGORIES[number];
 export type NotificationEvent =
   | 'rental_request_created' | 'rental_accepted' | 'rental_rejected'
   | 'rental_cancelled' | 'rental_starting' | 'completion_requested'
-  | 'rental_completed' | 'payment_pending' | 'payment_confirmed'
+  | 'rental_completed' | 'rental_extension_requested' | 'rental_extension_approved'
+  | 'rental_extension_declined' | 'rental_expiry_reminder'
+  | 'payment_pending' | 'payment_confirmed'
   | 'payment_failed' | 'refund_updated' | 'verification_required'
   | 'verification_pending' | 'verification_completed' | 'manual_review_required'
   | 'verification_rejected' | 'verification_expired' | 'complaint_received'
@@ -28,6 +30,10 @@ const copy: Record<NotificationEvent, [string, string]> = {
   rental_starting: ['بدأ موعد التأجير', 'Rental is starting'],
   completion_requested: ['تم طلب إتمام التأجير', 'Completion requested'],
   rental_completed: ['اكتمل التأجير', 'Rental completed'],
+  rental_extension_requested: ['طلب تمديد جديد', 'New rental extension request'],
+  rental_extension_approved: ['تمت الموافقة المبدئية على التمديد', 'Extension approved in principle'],
+  rental_extension_declined: ['تم رفض طلب التمديد', 'Extension request declined'],
+  rental_expiry_reminder: ['اقترب موعد انتهاء التأجير', 'Rental end time is approaching'],
   payment_pending: ['الدفع قيد المعالجة', 'Payment pending'],
   payment_confirmed: ['تم تأكيد الدفع', 'Payment confirmed'],
   payment_failed: ['تعذر إتمام الدفع', 'Payment failed'],

@@ -278,3 +278,49 @@ transaction. V1 acceptance writes the same fence and retains its date
 reservation documents, preventing cross-version races. Firestore Rules are not
 changed or deployed in this phase; direct clients should not be granted write
 authority over snapshots, actual timestamps, fences, or final commercial data.
+
+## Owner availability maintenance (M2-B source contract)
+
+Owner-authored availability changes use the dedicated authenticated endpoint:
+
+`PATCH /api/listings/:id/availability`
+
+The payload contains the complete validated policy and the exact `revision`
+returned by the aggregate calendar. New blocked ranges are future-only,
+closed, non-overlapping, limited to 60 ranges and 90 days per range. The
+transaction revalidates every committed active rental, compare-and-swaps both
+the listing and the shared equipment booking fence, and fails closed on query
+cap/external failure. Therefore an acceptance and a maintenance change cannot
+both commit from stale state. Temporary pause affects only new commitments; it
+does not invalidate an existing committed rental. Generic listing edits cannot
+write `availability` and cannot bypass this boundary.
+
+## Fixed-rental extensions (M2-B source contract)
+
+Only the customer on an accepted/in-progress fixed V2 request can estimate and
+create an extension. Only that request's provider can approve or decline it.
+The additional amount is recomputed from the original immutable minor-unit
+rate and locked commercial rule. Creation and provider review revalidate the
+additional half-open interval against listing maintenance and all committed
+rentals inside a transaction. One request-level pending pointer plus document
+CAS prevents duplicate/concurrent logical extensions.
+
+Provider approval records `awaiting_payment_integration`; it does **not**
+change `requestedEndAt`, write a confirmed booking interval, or claim payment
+success. `paymentActivation` remains `blocked_unverified` until a separately
+approved Tap additional-payment/split flow can verify payment and atomically
+revalidate/commit the extended interval. Historical open-ended/V1 requests are
+not eligible and remain readable through their existing compatibility paths.
+
+## Rental expiry reminders (M2-B source contract)
+
+Acceptance creates one deterministic request-scoped reminder job atomically
+with the request and booking fence. Long rentals (48 hours or more) use a
+24-hour lead. The provisional short-rental lead is one quarter of duration,
+clamped to 15–60 minutes. Server time is authoritative. The `*/5` scheduler
+processes at most three oldest due jobs per execution opportunity (up to 36
+jobs/hour), batches their request reads, and remains within its eight-request
+work budget even on a cold token exchange. Each job is rechecked against the
+current request/end/participants, uses deterministic outbox occurrences for
+the two participants, and is deleted in the same commit. Cancelled, completed,
+superseded, malformed, and stale jobs produce no participant notification.

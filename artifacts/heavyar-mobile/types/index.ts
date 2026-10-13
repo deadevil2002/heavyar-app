@@ -98,6 +98,30 @@ export interface RentalSummary {
   serverNow?: string;
 }
 
+export type RentalExtensionStatus = 'pending_provider' | 'awaiting_payment_integration' | 'declined' | 'expired';
+
+export interface RentalExtension {
+  id: string;
+  requestId: string;
+  status: RentalExtensionStatus;
+  originalEndAt: string;
+  proposedEndAt: string;
+  additionalDurationMinutes: number;
+  additionalBillableUnits: number;
+  additionalBaseAmountMinor: number;
+  currency: string;
+  currencyDecimals: number;
+  rateUnit: RentalRateUnit;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+  paymentActivation: 'blocked_unverified';
+}
+
+export interface RentalExtensionEstimate extends Omit<RentalExtension, 'id' | 'requestId' | 'status' | 'createdAt' | 'updatedAt'> {
+  commercial: CommercialSnapshot;
+}
+
 export interface PublicUserSnapshot {
   uid: string;
   nameAr: string;

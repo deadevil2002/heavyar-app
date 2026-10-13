@@ -18,6 +18,7 @@ import { mobilePerformance } from '@/utils/mobilePerformance';
 import { getRequestNavigationSnapshot } from '@/services/requestNavigationSnapshot';
 import { markRouteStage, startRouteModuleEvaluation } from '@/utils/routePerformance';
 import LocationPreview from '@/components/location/LocationPreview';
+import RentalExtensionCard from '@/components/rental/RentalExtensionCard';
 
 const requestDetailModuleEvaluation = startRouteModuleEvaluation('request_detail');
 
@@ -273,6 +274,8 @@ export default function RequestDetailScreen() {
                  : (isOpenEnded ? t('until_work_completion') : `${days || 0} ${t('days')}`)}
             </Text>
           </View>
+
+          <RentalExtensionCard currentUid={currentUid} isRTL={isRTL} language={language} request={request} />
 
           {request.workSiteLocation ? (
             <View style={styles.card}>

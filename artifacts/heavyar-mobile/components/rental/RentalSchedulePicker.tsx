@@ -33,6 +33,7 @@ type Props = {
   onEndDate: (value: string) => void;
   onStartTime: (value: string) => void;
   onEndTime: (value: string) => void;
+  purpose?: 'rental' | 'maintenance';
 };
 
 const DayButton = styled(Button, {
@@ -106,6 +107,7 @@ function TimeControl({ value, onChange, label, isRTL }: { value: string; onChang
 }
 
 export default function RentalSchedulePicker(props: Props) {
+  const isMaintenance = props.purpose === 'maintenance';
   const initial = props.startDate ? new Date(`${props.startDate}T00:00:00Z`) : new Date();
   const [visibleMonth, setVisibleMonth] = useState(new Date(Date.UTC(initial.getUTCFullYear(), initial.getUTCMonth(), 1)));
   const locale = props.language === 'ar' ? 'ar-SA' : 'en-GB';
@@ -128,7 +130,9 @@ export default function RentalSchedulePicker(props: Props) {
   const stateFor = (date: string): AvailabilityCalendarState => props.calendar ? availabilityStateForDate(props.calendar, date, props.offsetMinutes) : 'temporarily_unavailable';
   const conflictsAsEnd = (date: string): boolean => {
     if (!selectingEnd || !props.calendar) return false;
-    const normalizedEnd = props.mode === 'daily' && date <= props.startDate ? addCalendarDays(props.startDate, 1) : date;
+    const normalizedEnd = isMaintenance
+      ? addCalendarDays(date < props.startDate ? props.startDate : date, 1)
+      : props.mode === 'daily' && date <= props.startDate ? addCalendarDays(props.startDate, 1) : date;
     try {
       const startAt = props.mode === 'daily'
         ? marketDateToUtc(props.startDate, props.offsetMinutes)
@@ -151,7 +155,9 @@ export default function RentalSchedulePicker(props: Props) {
       props.onEndDate('');
       return;
     }
-    props.onEndDate(props.mode === 'daily' && date <= props.startDate ? addCalendarDays(props.startDate, 1) : date);
+    props.onEndDate(isMaintenance
+      ? (date < props.startDate ? props.startDate : date)
+      : props.mode === 'daily' && date <= props.startDate ? addCalendarDays(props.startDate, 1) : date);
   };
   const shiftMonth = (delta: number) => setVisibleMonth(new Date(Date.UTC(year, month + delta, 1)));
   const monthKey = dateKey(year, month, 1);
@@ -160,7 +166,9 @@ export default function RentalSchedulePicker(props: Props) {
   const nextDisabled = nextMonth >= maximum;
   const ArrowPrevious = props.isRTL ? ChevronRight : ChevronLeft;
   const ArrowNext = props.isRTL ? ChevronLeft : ChevronRight;
-  const selectedDays = props.mode === 'daily' && props.startDate && props.endDate ? calendarDayCount(props.startDate, props.endDate) : 0;
+  const selectedDays = props.mode === 'daily' && props.startDate && props.endDate
+    ? calendarDayCount(props.startDate, isMaintenance ? addCalendarDays(props.endDate, 1) : props.endDate)
+    : 0;
 
   if (props.loading) {
     return <HeavyarSurface accessibilityLabel={props.language === 'ar' ? 'جارٍ تحميل تقويم التوفر' : 'Loading availability calendar'} items="center" density="comfortable" gap="$sm"><ActivityIndicator color={Colors.gold} /><Text color="$colorMuted">{props.language === 'ar' ? 'جارٍ التحقق من المواعيد المتاحة…' : 'Checking available dates…'}</Text></HeavyarSurface>;
@@ -214,10 +222,14 @@ export default function RentalSchedulePicker(props: Props) {
           </HeavyarBadge>
         ))}
       </XStack>
-      <Text color="$colorMuted" fontSize={12} lineHeight={18} style={{ textAlign: props.isRTL ? 'right' : 'left' }}>{props.language === 'ar' ? 'اختر تاريخ البدء ثم تاريخ الانتهاء. التحقق النهائي يتم عند التقدير والإرسال.' : 'Select a start date, then an end date. Availability is rechecked for estimate and submission.'}</Text>
+      <Text color="$colorMuted" fontSize={12} lineHeight={18} style={{ textAlign: props.isRTL ? 'right' : 'left' }}>{isMaintenance
+        ? (props.language === 'ar' ? 'اختر أول وآخر يوم للصيانة. لا يمكن حجب فترة إيجار مؤكدة.' : 'Select the first and last maintenance day. A confirmed rental cannot be blocked.')
+        : (props.language === 'ar' ? 'اختر تاريخ البدء ثم تاريخ الانتهاء. التحقق النهائي يتم عند التقدير والإرسال.' : 'Select a start date, then an end date. Availability is rechecked for estimate and submission.')}</Text>
       {selectedDays > 0 && (
         <XStack bg="$surfaceRaised" flexDirection={props.isRTL ? 'row-reverse' : 'row'} p="$sm" rounded="$md">
-          <Text color="$accent" flex={1} fontSize={13} fontWeight="700" style={{ textAlign: props.isRTL ? 'right' : 'left' }}>{props.language === 'ar' ? `${selectedDays} ${selectedDays === 1 ? 'يوم محسوب' : 'أيام محسوبة'} (وقت الانتهاء غير مشمول)` : `${selectedDays} billable ${selectedDays === 1 ? 'day' : 'days'} (end time excluded)`}</Text>
+          <Text color="$accent" flex={1} fontSize={13} fontWeight="700" style={{ textAlign: props.isRTL ? 'right' : 'left' }}>{isMaintenance
+            ? (props.language === 'ar' ? `${selectedDays} ${selectedDays === 1 ? 'يوم صيانة' : 'أيام صيانة'}` : `${selectedDays} maintenance ${selectedDays === 1 ? 'day' : 'days'}`)
+            : (props.language === 'ar' ? `${selectedDays} ${selectedDays === 1 ? 'يوم محسوب' : 'أيام محسوبة'} (وقت الانتهاء غير مشمول)` : `${selectedDays} billable ${selectedDays === 1 ? 'day' : 'days'} (end time excluded)`)}</Text>
         </XStack>
       )}
       {props.mode === 'hourly' && (

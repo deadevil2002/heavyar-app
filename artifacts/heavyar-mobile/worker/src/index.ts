@@ -22,6 +22,8 @@ import { CURRENT_POLICY_ACCEPTANCE_MODE, INCIDENT_TYPES, LEGACY_POLICY_ACCEPTANC
 import { googleServiceAccountToken as googleToken } from './google-auth';
 import { assertActivePrivilegedSession, PrivilegedAuthUnavailableError, PrivilegedSessionRevokedError } from './privileged-session';
 import { parsePreciseLocation } from './location';
+import { quoteRentalExtension } from './rental-extension';
+import { rentalExpiryReminderSchedule } from './rental-expiry';
 import {
   consumeScheduledSubrequest,
   createScheduledGlobalBudget,
@@ -1464,6 +1466,57 @@ export async function processRegulatoryExpiry(env: Env) {
     await commitWrites(env, writes);
   }
 }
+
+export async function processRentalExpiryReminders(env: Env) {
+  const now = new Date().toISOString();
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'rentalExpiryReminderJobs' }],
+    where: { fieldFilter: { field: { fieldPath: 'dueAt' }, op: 'LESS_THAN_OR_EQUAL', value: { timestampValue: now } } },
+    orderBy: [{ field: { fieldPath: 'dueAt' }, direction: 'ASCENDING' }],
+    limit: 3,
+  } }) }) as any[] || [];
+  const jobs = rows
+    .filter(item => item?.document?.name && item?.document?.fields)
+    .map(item => {
+      const row = item.document;
+      return { row, job: decode(row), jobId: String(row.name).split('/').pop() || '' };
+    });
+  if (!jobs.length) return;
+  const validJobIds = jobs
+    .filter(({ job, jobId }) => /^[A-Za-z0-9_-]{1,128}$/.test(jobId) && job.requestId === jobId)
+    .map(({ jobId }) => ({ collection: 'equipmentRequests', id: jobId }));
+  const requests = await batchGetRawDocs(env, validJobIds);
+  for (const { row, job, jobId } of jobs) {
+    const deleteWrite = { delete: row.name, currentDocument: row.updateTime ? { updateTime: row.updateTime } : undefined };
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(jobId) || job.requestId !== jobId
+        || typeof job.customerUid !== 'string' || typeof job.providerUid !== 'string'
+        || !Number.isFinite(Date.parse(String(job.confirmedEndAt || '')))) {
+      await commitWrites(env, [deleteWrite]);
+      continue;
+    }
+    const rental = requests.get(`equipmentRequests/${jobId}`)?.data;
+    const rentalEnd = Date.parse(String(rental?.requestedEndAt || ''));
+    const jobEnd = Date.parse(String(job.confirmedEndAt || ''));
+    const stillCurrent = rental
+      && rental.pricingModelVersion === 2
+      && ['accepted', 'in_progress', 'completion_requested'].includes(String(rental.status))
+      && rental.customerUid === job.customerUid
+      && rental.providerUid === job.providerUid
+      && Number.isFinite(rentalEnd) && Number.isFinite(jobEnd) && rentalEnd === jobEnd;
+    if (!stillCurrent) {
+      await commitWrites(env, [deleteWrite]);
+      continue;
+    }
+    const occurrence = `${jobId}:expiry:${String(job.confirmedEndAt)}`;
+    const writes = [
+      await notificationWrite(fullName.bind(null, env), String(job.customerUid), 'rental_expiry_reminder', now, jobId, occurrence),
+      await notificationWrite(fullName.bind(null, env), String(job.providerUid), 'rental_expiry_reminder', now, jobId, occurrence),
+      deleteWrite,
+    ];
+    await commitWrites(env, writes);
+  }
+}
+
 async function verificationProfile(req: Request, env: Env, u: User) {
   const [canonical, documents] = await Promise.all([
     batchGetRawDocs(env, [
@@ -2077,6 +2130,26 @@ async function transitionV2Request(req: Request, env: Env, u: User, requestId: s
         : action === 'request_completion' ? 'completion_requested'
           : action === 'start' ? 'rental_starting' : 'rental_completed';
   const notification = await notificationWrite(fullName.bind(null, env), recipient, notificationEvent, now, requestId, `${requestId}:v2:${action}:${r.updatedAt || r.createdAt}`);
+  const reminderSchedule = action === 'accept' ? rentalExpiryReminderSchedule(requestId, r, now) : null;
+  if (action === 'accept' && !reminderSchedule) return out(env, req, { success: false, error: 'Rental interval has expired', errorCode: 'RENTAL_INTERVAL_EXPIRED' }, 409);
+  const reminderWrite = reminderSchedule ? {
+    update: {
+      name: fullName(env, `rentalExpiryReminderJobs/${encodeURIComponent(requestId)}`),
+      fields: {
+        requestId: { stringValue: requestId },
+        equipmentId: { stringValue: String(r.equipmentId) },
+        customerUid: { stringValue: String(r.customerUid) },
+        providerUid: { stringValue: String(r.providerUid) },
+        confirmedEndAt: { timestampValue: reminderSchedule.confirmedEndAt },
+        dueAt: { timestampValue: reminderSchedule.dueAt },
+        reminderKind: { stringValue: reminderSchedule.reminderKind },
+        leadMinutes: { integerValue: String(reminderSchedule.leadMinutes) },
+        createdAt: { timestampValue: now },
+        updatedAt: { timestampValue: now },
+      },
+    },
+    currentDocument: { exists: false },
+  } : null;
   try {
     if (action === 'accept') {
       // Pending V2 requests are soft/nonblocking. Acceptance performs the
@@ -2099,14 +2172,16 @@ async function transitionV2Request(req: Request, env: Env, u: User, requestId: s
           const fencePath = `equipmentBookingFences/${encodeURIComponent(String(r.equipmentId))}`;
           const fence = transaction ? await transactionDocument(env, fencePath, transaction) : await getRawDoc(env, 'equipmentBookingFences', String(r.equipmentId));
           const fenceWrite = { update: { name: fullName(env, fencePath), fields: { equipmentId: { stringValue: String(r.equipmentId) }, revision: { integerValue: String(Number(fence?.data?.revision || 0) + 1) }, requestId: { stringValue: requestId }, updatedAt: { timestampValue: now } } }, currentDocument: fence?.updateTime ? { updateTime: fence.updateTime } : { exists: false } };
-          await commitWrites(env, [requestWrite, fenceWrite, notification], transaction);
+          await commitWrites(env, [requestWrite, fenceWrite, notification, ...(reminderWrite ? [reminderWrite] : [])], transaction);
           break;
         } catch (error) {
           if (error instanceof Error && ['ACTIVE_RENTAL_OVERLAP', 'AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_CONFLICT', 'LISTING_TEMPORARILY_UNAVAILABLE'].includes(error.message)) throw error;
           if (attempt === 3) throw error;
         }
       }
-    } else await commitWrites(env, [requestWrite, notification]);
+    } else await commitWrites(env, [requestWrite, notification, ...(['cancel', 'complete'].includes(action)
+      ? [{ delete: fullName(env, `rentalExpiryReminderJobs/${encodeURIComponent(requestId)}`) }]
+      : [])]);
   } catch (error) {
     const code = error instanceof Error ? error.message : 'Request changed';
     const availabilityFailure = ['AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_UNAVAILABLE'].includes(code);
@@ -2162,6 +2237,288 @@ async function rentalV2Summary(req: Request, env: Env, u: User, requestId: strin
     pricingSnapshot: r.pricingSnapshot, duration, currentEstimate, final,
   } });
 }
+
+function rentalExtensionDto(id: string, extension: any) {
+  return {
+    id,
+    requestId: String(extension.requestId || ''),
+    status: String(extension.status || ''),
+    originalEndAt: String(extension.originalEndAt || ''),
+    proposedEndAt: String(extension.proposedEndAt || ''),
+    additionalDurationMinutes: Number(extension.additionalDurationMinutes),
+    additionalBillableUnits: Number(extension.additionalBillableUnits),
+    additionalBaseAmountMinor: Number(extension.additionalBaseAmountMinor),
+    currency: String(extension.currency || ''),
+    currencyDecimals: Number(extension.currencyDecimals),
+    rateUnit: String(extension.rateUnit || ''),
+    expiresAt: String(extension.expiresAt || ''),
+    createdAt: String(extension.createdAt || ''),
+    updatedAt: String(extension.updatedAt || ''),
+    paymentActivation: 'blocked_unverified' as const,
+  };
+}
+
+function rentalExtensionFailure(req: Request, env: Env, error: unknown) {
+  const code = error instanceof Error ? error.message : 'EXTENSION_CHANGED';
+  if (code === 'EXTENSION_INVALID_END') return out(env, req, { success: false, error: 'Invalid extension end', errorCode: code }, 400);
+  if (['EXTENSION_NOT_AVAILABLE', 'EXTENSION_RENTAL_EXPIRED', 'EXTENSION_ALREADY_PENDING', 'EXTENSION_CHANGED'].includes(code)) {
+    return out(env, req, { success: false, error: 'Extension is no longer available', errorCode: code }, 409);
+  }
+  if (code === 'EXTENSION_PRICING_UNAVAILABLE') return out(env, req, { success: false, error: 'Extension pricing temporarily unavailable', errorCode: code }, 503);
+  const failure = v2Failure(error);
+  return out(env, req, { success: false, error: failure.error, errorCode: failure.errorCode }, failure.status);
+}
+
+async function buildRentalExtensionEstimate(
+  env: Env,
+  requestId: string,
+  rental: any,
+  proposedEndAt: unknown,
+  now: string,
+  transaction?: string,
+) {
+  const quote = quoteRentalExtension(rental, proposedEndAt, now);
+  const listing = transaction
+    ? await transactionDocument(env, `equipment/${encodeURIComponent(String(rental.equipmentId))}`, transaction)
+    : await getRawDoc(env, 'equipment', String(rental.equipmentId));
+  if (!listing?.data) throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+  assertListingAvailableForInterval(
+    listing.data.availability,
+    { startAt: quote.originalEndAt, endAt: quote.proposedEndAt },
+    String(rental.countryCode || listing.data.countryCode || ''),
+  );
+  await assertV2Available(
+    env,
+    String(rental.equipmentId),
+    { startAt: quote.originalEndAt, endAt: quote.proposedEndAt },
+    requestId,
+    transaction,
+  );
+  if (!rental.commercialSnapshot) throw new Error('EXTENSION_PRICING_UNAVAILABLE');
+  const commercial = recalculateLockedCommercialMinor(rental.commercialSnapshot, quote.additionalBaseAmountMinor, now);
+  return { quote, commercial };
+}
+
+async function estimateRentalExtension(req: Request, env: Env, u: User, requestId: string) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) return out(env, req, { success: false, error: 'Not found' }, 404);
+  const body: any = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(key => key !== 'proposedEndAt')) {
+    return out(env, req, { success: false, error: 'Invalid extension request', errorCode: 'EXTENSION_INVALID_END' }, 400);
+  }
+  const rental = await getDoc(env, 'equipmentRequests', requestId);
+  if (!rental || rental.customerUid !== u.uid) return out(env, req, { success: false, error: 'Not found' }, 404);
+  const now = new Date().toISOString();
+  if (rental.pendingExtensionId) {
+    const pending = await getDoc(env, 'rentalExtensions', String(rental.pendingExtensionId));
+    const expired = pending?.status === 'pending_provider' && Date.parse(String(pending.expiresAt || '')) <= Date.parse(now);
+    if (!expired) return out(env, req, { success: false, error: 'An extension is already pending', errorCode: 'EXTENSION_ALREADY_PENDING' }, 409);
+  }
+  try {
+    const result = await buildRentalExtensionEstimate(env, requestId, rental, body.proposedEndAt, now);
+    return out(env, req, {
+      success: true,
+      serverNow: now,
+      estimate: { ...result.quote, commercial: result.commercial, paymentActivation: 'blocked_unverified' },
+    });
+  } catch (error) { return rentalExtensionFailure(req, env, error); }
+}
+
+async function createRentalExtension(req: Request, env: Env, u: User, requestId: string) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) return out(env, req, { success: false, error: 'Not found' }, 404);
+  const body: any = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(key => !['proposedEndAt', 'expectedAdditionalBaseAmountMinor'].includes(key))
+      || !Number.isSafeInteger(body.expectedAdditionalBaseAmountMinor) || body.expectedAdditionalBaseAmountMinor <= 0) {
+    return out(env, req, { success: false, error: 'Invalid extension request', errorCode: 'EXTENSION_INVALID_END' }, 400);
+  }
+  const now = new Date().toISOString();
+  const extensionId = `ext_${crypto.randomUUID().replace(/-/g, '')}`;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    const requestRaw = transaction
+      ? await transactionDocument(env, `equipmentRequests/${encodeURIComponent(requestId)}`, transaction)
+      : await getRawDoc(env, 'equipmentRequests', requestId);
+    const rental = requestRaw?.data;
+    if (!requestRaw?.updateTime || !rental || rental.customerUid !== u.uid) return out(env, req, { success: false, error: 'Not found' }, 404);
+    let expiredPreviousWrite: any = null;
+    if (rental.pendingExtensionId && rental.pendingExtensionId !== extensionId) {
+      const previousId = String(rental.pendingExtensionId);
+      const previousRaw = transaction
+        ? await transactionDocument(env, `rentalExtensions/${encodeURIComponent(previousId)}`, transaction)
+        : await getRawDoc(env, 'rentalExtensions', previousId);
+      const previous = previousRaw?.data;
+      if (!previousRaw?.updateTime || !previous || previous.requestId !== requestId
+          || previous.status !== 'pending_provider' || Date.parse(String(previous.expiresAt || '')) > Date.parse(now)) {
+        return out(env, req, { success: false, error: 'An extension is already pending', errorCode: 'EXTENSION_ALREADY_PENDING' }, 409);
+      }
+      expiredPreviousWrite = {
+        update: {
+          name: fullName(env, `rentalExtensions/${encodeURIComponent(previousId)}`),
+          fields: { status: { stringValue: 'expired' }, updatedAt: { timestampValue: now } },
+        },
+        updateMask: { fieldPaths: ['status', 'updatedAt'] },
+        currentDocument: { updateTime: previousRaw.updateTime },
+      };
+    }
+    try {
+      const result = await buildRentalExtensionEstimate(env, requestId, rental, body.proposedEndAt, now, transaction);
+      if (result.quote.additionalBaseAmountMinor !== body.expectedAdditionalBaseAmountMinor) throw new Error('EXTENSION_CHANGED');
+      const value = {
+        requestId,
+        equipmentId: String(rental.equipmentId),
+        customerUid: String(rental.customerUid),
+        providerUid: String(rental.providerUid),
+        status: 'pending_provider',
+        ...result.quote,
+        additionalCommercialSnapshot: result.commercial,
+        paymentActivation: 'blocked_unverified',
+        createdAt: now,
+        updatedAt: now,
+      };
+      const extensionFields = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, firestoreValue(item)]));
+      for (const field of ['additionalDurationMinutes', 'additionalBillableUnits', 'additionalBaseAmountMinor', 'currencyDecimals']) {
+        extensionFields[field] = { integerValue: String(value[field as keyof typeof value]) };
+      }
+      const writes = [
+        ...(expiredPreviousWrite ? [expiredPreviousWrite] : []),
+        {
+          update: {
+            name: fullName(env, `rentalExtensions/${encodeURIComponent(extensionId)}`),
+            fields: extensionFields,
+          },
+          currentDocument: { exists: false },
+        },
+        {
+          update: {
+            name: fullName(env, `equipmentRequests/${encodeURIComponent(requestId)}`),
+            fields: {
+              pendingExtensionId: { stringValue: extensionId },
+              extensionStatus: { stringValue: 'pending_provider' },
+              updatedAt: { timestampValue: now },
+            },
+          },
+          updateMask: { fieldPaths: ['pendingExtensionId', 'extensionStatus', 'updatedAt'] },
+          currentDocument: { updateTime: requestRaw.updateTime },
+        },
+        await notificationWrite(fullName.bind(null, env), String(rental.providerUid), 'rental_extension_requested', now, requestId, `${extensionId}:requested`),
+      ];
+      await commitWrites(env, writes, transaction);
+      return out(env, req, { success: true, serverNow: now, extension: rentalExtensionDto(extensionId, value) }, 201);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : '';
+      if (['EXTENSION_NOT_AVAILABLE', 'EXTENSION_RENTAL_EXPIRED', 'EXTENSION_INVALID_END', 'EXTENSION_PRICING_UNAVAILABLE', 'EXTENSION_CHANGED', 'ACTIVE_RENTAL_OVERLAP', 'AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_CONFLICT', 'LISTING_TEMPORARILY_UNAVAILABLE'].includes(code)) {
+        return rentalExtensionFailure(req, env, error);
+      }
+      if (attempt === 3) return rentalExtensionFailure(req, env, new Error('EXTENSION_CHANGED'));
+    }
+  }
+  return rentalExtensionFailure(req, env, new Error('EXTENSION_CHANGED'));
+}
+
+async function getRentalExtension(req: Request, env: Env, u: User, requestId: string) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) return out(env, req, { success: false, error: 'Not found' }, 404);
+  const rental = await getDoc(env, 'equipmentRequests', requestId);
+  if (!rental || (rental.customerUid !== u.uid && rental.providerUid !== u.uid && !u.admin)) return out(env, req, { success: false, error: 'Not found' }, 404);
+  const extensionId = typeof rental.pendingExtensionId === 'string' ? rental.pendingExtensionId : '';
+  if (!extensionId) return out(env, req, { success: true, extension: null, paymentActivation: 'blocked_unverified' });
+  const extension = await getDoc(env, 'rentalExtensions', extensionId);
+  if (!extension || extension.requestId !== requestId || extension.customerUid !== rental.customerUid || extension.providerUid !== rental.providerUid) {
+    return out(env, req, { success: false, error: 'Extension state unavailable', errorCode: 'EXTENSION_CHANGED' }, 409);
+  }
+  const effective = extension.status === 'pending_provider' && Date.parse(String(extension.expiresAt || '')) <= Date.now()
+    ? { ...extension, status: 'expired' }
+    : extension;
+  return out(env, req, { success: true, extension: rentalExtensionDto(extensionId, effective), paymentActivation: 'blocked_unverified' });
+}
+
+async function reviewRentalExtension(req: Request, env: Env, u: User, requestId: string, extensionId: string, action: 'approve' | 'decline') {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId) || !/^ext_[A-Za-z0-9]{16,128}$/.test(extensionId)) {
+    return out(env, req, { success: false, error: 'Not found' }, 404);
+  }
+  const body: any = await req.json().catch(() => ({}));
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) {
+    return out(env, req, { success: false, error: 'Invalid extension action' }, 400);
+  }
+  const now = new Date().toISOString();
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    const requestRaw = transaction
+      ? await transactionDocument(env, `equipmentRequests/${encodeURIComponent(requestId)}`, transaction)
+      : await getRawDoc(env, 'equipmentRequests', requestId);
+    const extensionRaw = transaction
+      ? await transactionDocument(env, `rentalExtensions/${encodeURIComponent(extensionId)}`, transaction)
+      : await getRawDoc(env, 'rentalExtensions', extensionId);
+    const rental = requestRaw?.data;
+    const extension = extensionRaw?.data;
+    if (!requestRaw?.updateTime || !extensionRaw?.updateTime || !rental || !extension
+        || rental.providerUid !== u.uid || extension.providerUid !== u.uid || extension.requestId !== requestId) {
+      return out(env, req, { success: false, error: 'Not found' }, 404);
+    }
+    if (rental.pendingExtensionId !== extensionId || extension.status !== 'pending_provider') {
+      return rentalExtensionFailure(req, env, new Error('EXTENSION_CHANGED'));
+    }
+    if (Date.parse(String(extension.expiresAt || '')) <= Date.parse(now)) {
+      return rentalExtensionFailure(req, env, new Error('EXTENSION_RENTAL_EXPIRED'));
+    }
+    try {
+      let status = 'declined';
+      if (action === 'approve') {
+        const result = await buildRentalExtensionEstimate(env, requestId, rental, extension.proposedEndAt, now, transaction);
+        if (result.quote.additionalBaseAmountMinor !== Number(extension.additionalBaseAmountMinor)
+            || result.quote.proposedEndAt !== extension.proposedEndAt) throw new Error('EXTENSION_CHANGED');
+        status = 'awaiting_payment_integration';
+      }
+      const extensionFields = {
+        status: { stringValue: status },
+        reviewedAt: { timestampValue: now },
+        reviewedBy: { stringValue: u.uid },
+        updatedAt: { timestampValue: now },
+        paymentActivation: { stringValue: 'blocked_unverified' },
+      };
+      const requestFields: Record<string, any> = {
+        extensionStatus: { stringValue: status },
+        updatedAt: { timestampValue: now },
+      };
+      if (action === 'decline') requestFields.pendingExtensionId = { stringValue: '' };
+      const writes = [
+        {
+          update: { name: fullName(env, `rentalExtensions/${encodeURIComponent(extensionId)}`), fields: extensionFields },
+          updateMask: { fieldPaths: Object.keys(extensionFields) },
+          currentDocument: { updateTime: extensionRaw.updateTime },
+        },
+        {
+          update: { name: fullName(env, `equipmentRequests/${encodeURIComponent(requestId)}`), fields: requestFields },
+          updateMask: { fieldPaths: Object.keys(requestFields) },
+          currentDocument: { updateTime: requestRaw.updateTime },
+        },
+        await notificationWrite(
+          fullName.bind(null, env),
+          String(rental.customerUid),
+          action === 'approve' ? 'rental_extension_approved' : 'rental_extension_declined',
+          now,
+          requestId,
+          `${extensionId}:${action}`,
+        ),
+      ];
+      await commitWrites(env, writes, transaction);
+      return out(env, req, {
+        success: true,
+        extension: rentalExtensionDto(extensionId, { ...extension, status, updatedAt: now }),
+        paymentActivation: 'blocked_unverified',
+        extensionConfirmed: false,
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : '';
+      if (['EXTENSION_NOT_AVAILABLE', 'EXTENSION_RENTAL_EXPIRED', 'EXTENSION_INVALID_END', 'EXTENSION_PRICING_UNAVAILABLE', 'EXTENSION_CHANGED', 'ACTIVE_RENTAL_OVERLAP', 'AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_CONFLICT', 'LISTING_TEMPORARILY_UNAVAILABLE'].includes(code)) {
+        return rentalExtensionFailure(req, env, error);
+      }
+      if (attempt === 3) return rentalExtensionFailure(req, env, new Error('EXTENSION_CHANGED'));
+    }
+  }
+  return rentalExtensionFailure(req, env, new Error('EXTENSION_CHANGED'));
+}
+
 async function transitionRequest(req: Request, env: Env, u: User, requestId: string) {
   const body: any = await req.json().catch(() => ({})), action = body.action;
   if (!['accept', 'reject', 'cancel', 'request_completion', 'start', 'complete'].includes(action) || !/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) return out(env, req, { success: false, error: 'Invalid transition' }, 400);
@@ -3640,8 +3997,9 @@ async function createWithPublicIdentifier(
   throw new Error('Public identifier allocation failed');
 }
 async function listingAvailability(req: Request, env: Env, u: User, id: string) {
-  const listing = await getDoc(env, 'equipment', id);
-  if (!listing || (listing.ownerUid !== u.uid && !canRentEquipment(u, listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  const raw = await getRawDoc(env, 'equipment', id);
+  const listing = raw?.data;
+  if (!raw?.updateTime || !listing || (listing.ownerUid !== u.uid && !canRentEquipment(u, listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
   const url = new URL(req.url);
   const from = url.searchParams.get('from') || '';
   const until = url.searchParams.get('until') || '';
@@ -3670,6 +4028,7 @@ async function listingAvailability(req: Request, env: Env, u: User, id: string) 
   return out(env, req, {
     success: true,
     listingId: id,
+    revision: raw.updateTime,
     serverNow: new Date().toISOString(),
     window: { from, until },
     availability,
@@ -3683,6 +4042,120 @@ async function listingAvailability(req: Request, env: Env, u: User, id: string) 
       };
     }),
   });
+}
+
+const OWNER_AVAILABILITY_BLOCK_LIMIT = 60;
+const OWNER_AVAILABILITY_BLOCK_MAX_DAYS = 90;
+
+function validateOwnerAvailabilityPolicy(
+  value: unknown,
+  today: string,
+  current?: ReturnType<typeof validateListingAvailabilityPolicy>,
+) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_AVAILABILITY_POLICY');
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).some(key => !['from', 'until', 'blocked', 'temporarilyUnavailable'].includes(key))) {
+    throw new Error('INVALID_AVAILABILITY_POLICY');
+  }
+  const policy = validateListingAvailabilityPolicy(raw);
+  if (policy.blocked.length > OWNER_AVAILABILITY_BLOCK_LIMIT) throw new Error('INVALID_AVAILABILITY_POLICY');
+  if (!Array.isArray(raw.blocked) || raw.blocked.some(entry => !entry || typeof entry !== 'object' || Array.isArray(entry)
+      || Object.keys(entry as Record<string, unknown>).some(key => !['from', 'until'].includes(key))
+      || typeof (entry as Record<string, unknown>).until !== 'string')) throw new Error('INVALID_AVAILABILITY_POLICY');
+  const sorted = [...policy.blocked].sort((left, right) => left.from.localeCompare(right.from));
+  for (let index = 0; index < sorted.length; index += 1) {
+    const range = sorted[index];
+    if (range.from < today && !current?.blocked.some(existing => existing.from === range.from && existing.until === range.until)) {
+      throw new Error('INVALID_AVAILABILITY_POLICY');
+    }
+    const until = range.until!;
+    const span = Math.round((Date.parse(`${until}T00:00:00.000Z`) - Date.parse(`${range.from}T00:00:00.000Z`)) / 86_400_000) + 1;
+    if (!Number.isSafeInteger(span) || span < 1 || span > OWNER_AVAILABILITY_BLOCK_MAX_DAYS) throw new Error('INVALID_AVAILABILITY_POLICY');
+    if (index > 0 && (sorted[index - 1].until || '9999-12-31') >= range.from) throw new Error('INVALID_AVAILABILITY_POLICY');
+  }
+  return { ...policy, blocked: sorted };
+}
+
+function availabilityStructure(policy: ReturnType<typeof validateListingAvailabilityPolicy>) {
+  return JSON.stringify({ from: policy.from, until: policy.until || null, blocked: policy.blocked });
+}
+
+async function listingAvailabilityUpdate(req: Request, env: Env, u: User, id: string) {
+  const body: any = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(key => !['availability', 'expectedRevision'].includes(key))
+      || typeof body.expectedRevision !== 'string' || !body.expectedRevision) {
+    return out(env, req, { success: false, error: 'Invalid availability update', errorCode: 'INVALID_AVAILABILITY_POLICY' }, 400);
+  }
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    const raw = transaction
+      ? await transactionDocument(env, `equipment/${encodeURIComponent(id)}`, transaction)
+      : await getRawDoc(env, 'equipment', id);
+    if (!raw?.updateTime || !raw.data || raw.data.ownerUid !== u.uid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+    if (raw.data.visibility === 'archived') return out(env, req, { success: false, error: 'Listing is archived' }, 409);
+    if (raw.updateTime !== body.expectedRevision) return out(env, req, { success: false, error: 'Availability changed; refresh and retry', errorCode: 'AVAILABILITY_UPDATE_CONFLICT' }, 409);
+    let current;
+    try { current = validateListingAvailabilityPolicy(raw.data.availability); }
+    catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'LISTING_AVAILABILITY_UNAVAILABLE' }, 503); }
+    const market = marketForCountry(String(raw.data.countryCode || ''));
+    const today = new Date(Date.now() + market.offsetMinutes * 60_000).toISOString().slice(0, 10);
+    let requested;
+    try { requested = validateOwnerAvailabilityPolicy(body.availability, today, current); }
+    catch { return out(env, req, { success: false, error: 'Invalid availability update', errorCode: 'INVALID_AVAILABILITY_POLICY' }, 400); }
+    if (availabilityStructure(current) !== availabilityStructure(requested)) {
+      let activeRows: RentalRowsResult;
+      try { activeRows = await rentalRowsForEquipment(env, id, ALL_ACTIVE_RENTAL_INTERVAL, transaction); }
+      catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_UNAVAILABLE' }, 503); }
+      if (activeRows.exhausted) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
+      try {
+        for (const row of activeRows.rows) {
+          const interval = activeInterval(row.data);
+          if (!interval) continue;
+          if (!interval.endAt) throw new Error('AVAILABILITY_CONFLICT');
+          assertListingAvailableForInterval(
+            { ...requested, temporarilyUnavailable: false },
+            { startAt: interval.startAt, endAt: interval.endAt },
+            String(raw.data.countryCode || ''),
+          );
+        }
+      } catch {
+        return out(env, req, { success: false, error: 'Availability conflicts with a committed rental', errorCode: 'AVAILABILITY_CONFLICT' }, 409);
+      }
+    }
+    const now = new Date().toISOString();
+    const write = {
+      update: {
+        name: fullName(env, `equipment/${encodeURIComponent(id)}`),
+        fields: { availability: firestoreValue(requested), updatedAt: { timestampValue: now } },
+      },
+      updateMask: { fieldPaths: ['availability', 'updatedAt'] },
+      currentDocument: { updateTime: raw.updateTime },
+    };
+    const fencePath = `equipmentBookingFences/${encodeURIComponent(id)}`;
+    const fence = transaction
+      ? await transactionDocument(env, fencePath, transaction)
+      : await getRawDoc(env, 'equipmentBookingFences', id);
+    const fenceWrite = {
+      update: {
+        name: fullName(env, fencePath),
+        fields: {
+          equipmentId: { stringValue: id },
+          revision: { integerValue: String(Number(fence?.data?.revision || 0) + 1) },
+          operation: { stringValue: 'owner_availability_update' },
+          updatedAt: { timestampValue: now },
+        },
+      },
+      currentDocument: fence?.updateTime ? { updateTime: fence.updateTime } : { exists: false },
+    };
+    try {
+      await commitWrites(env, [write, fenceWrite], transaction);
+      return out(env, req, { success: true, listingId: id, availability: requested, serverNow: now });
+    } catch {
+      if (attempt === 3) return out(env, req, { success: false, error: 'Availability changed; refresh and retry', errorCode: 'AVAILABILITY_UPDATE_CONFLICT' }, 409);
+    }
+  }
+  return out(env, req, { success: false, error: 'Availability changed; refresh and retry', errorCode: 'AVAILABILITY_UPDATE_CONFLICT' }, 409);
 }
 async function equipmentSearchRows(env: Env, structuredQuery: FirestoreQuery): Promise<EquipmentSearchRow[]> {
   capturedEquipmentQueries?.push(structuredQuery);
@@ -3806,15 +4279,15 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
   if (raw.data.visibility === 'archived') return out(env, req, { success: false, error: 'Listing is archived' }, 409);
   const body: any = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return out(env, req, { success: false, error: 'Invalid listing update' }, 400);
+  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'category', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'dailyPrice', 'pricePerDay', 'pricingModelVersion', 'pricing', 'images', 'isActive'];
+  const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'adminHidden', 'createdAt', 'updatedAt'];
+  if (Object.keys(body).some((key) => forbidden.includes(key) || !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported listing field' }, 400);
   let activeRows: RentalRowsResult;
   try { activeRows = await rentalRowsForEquipment(env, id, ALL_ACTIVE_RENTAL_INTERVAL); }
   catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_UNAVAILABLE' }, 503); }
   if (activeRows.exhausted) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
   const rentals = activeRows.rows.map(row => row.data);
   if (hasActiveRental(rentals)) return out(env, req, { success: false, error: 'LISTING_EDIT_LOCKED' }, 409);
-  const allowed = ['title', 'titleAr', 'titleEn', 'description', 'descriptionAr', 'descriptionEn', 'category', 'region', 'city', 'customCity', 'district', 'location', 'customCategory', 'dailyPrice', 'pricePerDay', 'pricingModelVersion', 'pricing', 'images', 'availability', 'isActive'];
-  const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'adminHidden', 'createdAt', 'updatedAt'];
-  if (Object.keys(body).some((key) => forbidden.includes(key) || !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported listing field' }, 400);
   const patch = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k) && !['title', 'description', 'dailyPrice'].includes(k)));
   if (Object.prototype.hasOwnProperty.call(body, 'location')) {
     try { patch.location = parsePreciseLocation(body.location)!; }
@@ -3832,12 +4305,6 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
   }
   if (Object.keys(patch).length === 0) return out(env, req, { success: false, error: 'No editable fields' }, 400);
   if (patch.pricePerDay !== undefined && (!Number.isFinite(Number(patch.pricePerDay)) || Number(patch.pricePerDay) <= 0 || Number(patch.pricePerDay) > 100000)) return out(env, req, { success: false, error: 'Invalid daily price' }, 400);
-  if (patch.availability) {
-    const a = patch.availability as any, valid = validateDateRange(a);
-    if (!valid.ok) return out(env, req, { success: false, error: valid.error }, 400);
-    const overlaps = rentals.some((r: any) => r.startDate && availabilityAllows(a, { from: String(r.startDate), until: r.endDate }).ok === false);
-    if (overlaps) return out(env, req, { success: false, error: 'AVAILABILITY_CONFLICT' }, 409);
-  }
   if (patch.isActive !== undefined) patch.visibility = listingVisibilityForOwnerActive(patch.isActive === true);
   if (raw.data.accountPurpose === 'store_review') patch.visibility = 'hidden';
   // Owners may hide an approved listing, but can never undo an Admin
@@ -4367,6 +4834,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       }
       const listingMatch = path.match(/^\/api\/listings\/([^/]+)\/availability$/);
       if (listingMatch && req.method === 'GET') return await listingAvailability(req, env, await authenticatedUser(req, env), decodeURIComponent(listingMatch[1]));
+      if (listingMatch && req.method === 'PATCH') return await listingAvailabilityUpdate(req, env, await authenticatedUser(req, env), decodeURIComponent(listingMatch[1]));
       if (path === '/api/listings' && req.method === 'POST') return await listingCreate(req, env, await authenticatedUser(req, env));
       const listingEditMatch = path.match(/^\/api\/listings\/([^/]+)$/);
       if (listingEditMatch && req.method === 'PATCH') return await listingUpdate(req, env, await authenticatedUser(req, env), decodeURIComponent(listingEditMatch[1]));
@@ -4401,6 +4869,13 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
        if (selfServiceInvoiceMatch && req.method === 'GET') return await selfServiceInvoicePdf(req, env, await authenticatedUser(req, env), selfServiceInvoiceMatch[1]);
     const requestTransitionMatch = path.match(/^\/api\/requests\/([^/]+)\/transition$/);
      if (requestTransitionMatch && req.method === 'POST') return await transitionRequest(req, env, await authenticatedUser(req, env), requestTransitionMatch[1]);
+    const extensionEstimateMatch = path.match(/^\/api\/requests\/([^/]+)\/extensions\/estimate$/);
+     if (extensionEstimateMatch && req.method === 'POST') return await estimateRentalExtension(req, env, await authenticatedUser(req, env), decodeURIComponent(extensionEstimateMatch[1]));
+    const extensionCollectionMatch = path.match(/^\/api\/requests\/([^/]+)\/extensions$/);
+     if (extensionCollectionMatch && req.method === 'GET') return await getRentalExtension(req, env, await authenticatedUser(req, env), decodeURIComponent(extensionCollectionMatch[1]));
+     if (extensionCollectionMatch && req.method === 'POST') return await createRentalExtension(req, env, await authenticatedUser(req, env), decodeURIComponent(extensionCollectionMatch[1]));
+    const extensionActionMatch = path.match(/^\/api\/requests\/([^/]+)\/extensions\/([^/]+)\/(approve|decline)$/);
+     if (extensionActionMatch && req.method === 'POST') return await reviewRentalExtension(req, env, await authenticatedUser(req, env), decodeURIComponent(extensionActionMatch[1]), decodeURIComponent(extensionActionMatch[2]), extensionActionMatch[3] as 'approve' | 'decline');
     const rentalSummaryMatch = path.match(/^\/api\/requests\/([^/]+)\/rental-summary$/);
      if (rentalSummaryMatch && req.method === 'GET') return await rentalV2Summary(req, env, await authenticatedUser(req, env), decodeURIComponent(rentalSummaryMatch[1]));
     const verificationAttemptMatch = path.match(/^\/api\/verification\/attempts\/([^/]+)$/);
@@ -4514,6 +4989,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       ['processStaffClaimSync', processStaffClaimSync],
       ['processDeletionJobs', processDeletionJobs],
       ['processRegulatoryExpiry', processRegulatoryExpiry],
+      ['processRentalExpiryReminders', processRentalExpiryReminders],
       ['retryDueNotificationDeliveries', retryDueNotificationDeliveries],
       ['pollNotificationReceipts', pollNotificationReceipts],
       ['processEarlyAccessRetention', processEarlyAccessRetention],
