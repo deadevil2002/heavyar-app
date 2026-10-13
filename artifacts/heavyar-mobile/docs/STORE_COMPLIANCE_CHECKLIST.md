@@ -17,7 +17,7 @@ legal advice and does not invent retention or business claims.
 | Privacy policy | Public URL live at `/privacy` | Store owner must link and review final content |
 | Terms | Public URL live at `/terms` | Store owner must review final content and listing link |
 | Support | Public URL live at `/support` | Store owner must verify contacts remain monitored |
-| Permissions | POST_NOTIFICATIONS plus explicit-action foreground coarse/precise location; broad legacy storage, background location, microphone, and overlay permissions blocked | Verify generated manifest and runtime prompts; location must not prompt before “Use my location” |
+| Permissions | Android: POST_NOTIFICATIONS plus explicit-action foreground coarse/precise location; broad legacy storage, background location, microphone, and overlay permissions are removed. iOS runtime source and 2026-10-13 native introspection are When-In-Use only; both plugin-generated `NSLocationAlways*` strings are explicitly disabled and no location background mode is present | Verify final generated manifest/plist and runtime prompts; location must not prompt before “Use my location” |
 | Notification permission | Expo Android channel/token path implemented | Verify on Android 13+ physical device |
 | Content rating | Not completed | Store owner must complete Play questionnaire |
 | App access | Not completed | Store owner must provide reviewer access/instructions |
@@ -80,6 +80,7 @@ Do not submit until the store owner has:
 - Provider commercial-registration data remains ordinary marketplace/business information with neutral wording.
 - Tap is a hosted payment flow for physical/off-app services. Heavyar does not receive/store raw card number or CVV; transaction records remain Purchase History for privacy declaration purposes.
 - M1 source collects a precise pin only when the user manually confirms it or explicitly grants foreground location access. It has no live/background tracking. Before an M1 build is distributed, update App Store Connect Precise Location and Google Play Data Safety, and align the public privacy policy with the in-app disclosure.
+- The public policy currently says the release does not collect precise geolocation; that statement conflicts with M1 and must be updated in the separate `deadevil2002/heavyar-website` repository before distributing an M1 build.
 - App Privacy and Review Notes are prepared only. No App Store Connect entry, build, submission, or approval occurred.
 
 ## Product completion update — 2026-09-17

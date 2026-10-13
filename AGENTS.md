@@ -41,6 +41,7 @@ Never place passwords, private keys, service-account keys, access/OAuth tokens, 
 - Current versions, worktree, validation, open work: `CURRENT_STATE.md`
 - Regulated, financial, privacy, monetization, advertising, and permission work: `COMPLIANCE.md`
 - Product, UX, and growth planning: `PRODUCT_ROADMAP.md`
+- Approved product/business decisions, proposals, and external dependencies: `docs/HEAVYAR_MASTER_PRODUCT_BUSINESS_SPEC.md`. Future related work must follow its relevant sections, but `[PROPOSED]` and `[DEPENDENCY]` never authorize implementation or deployment; `CURRENT_STATE.md` remains the sole implementation-status ledger.
 
 ## Project handoff / required reading
 
@@ -67,6 +68,13 @@ Code and configuration are authoritative. If documentation conflicts with them, 
 - Extend the existing Tamagui tokens, themes, variants, and shared components; do not introduce another UI framework without explicit approval.
 - New UI components must provide clear functional, usability, operational, compliance, conversion, or revenue value. Valid examples include an Active Rental Card, transaction timeline, alert, operational control, or promotional/revenue module.
 - Every addition must visually inherit the existing HEAVYAR system.
+
+### Owner-authorized UI/UX implementation
+
+- For every future Owner-authorized UI/UX phase, verify tool availability first, use the installed UI UX Pro Max Skill when available, and consult 21st.dev selectively for high-quality design and interaction inspiration. Never claim a tool was used when it was unavailable.
+- Treat 21st.dev web components as references, not automatically compatible React Native components. Implement approved designs with the existing Tamagui system and React Native conventions.
+- Improve appearance and functionality together: clarity, navigation, responsiveness, accessibility, purposeful animation, loading/error states, forms, and usability. Preserve HEAVYAR branding plus Arabic RTL and English LTR behavior.
+- Do not redesign completed screens without a justified functional benefit and Owner approval. Avoid unnecessary dependencies and token-intensive design exploration, and validate visual and functional regressions on every affected screen.
 
 ### Compliance gate
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -108,6 +109,10 @@ describe('current iOS release identity-verification boundary', () => {
     const locationPlugin = appConfig.expo.plugins.find((plugin: unknown) =>
       Array.isArray(plugin) && plugin[0] === 'expo-location',
     );
+    expect(locationPlugin?.[1]).toMatchObject({
+      locationAlwaysPermission: false,
+      locationAlwaysAndWhenInUsePermission: false,
+    });
     expect(locationPlugin?.[1].locationWhenInUsePermission).toContain('only when you choose');
     expect(appConfig.expo.ios.infoPlist).not.toHaveProperty('NSCameraUsageDescription');
     expect(appConfig.expo.ios.infoPlist).not.toHaveProperty('NSMicrophoneUsageDescription');
@@ -125,5 +130,36 @@ describe('current iOS release identity-verification boundary', () => {
       expect(readFileSync(path, 'utf8')).not.toMatch(/requestBackgroundPermissionsAsync|startLocationUpdatesAsync|watchPositionAsync/);
     }
     expect(source('services/deviceLocation.ts')).toContain('requestForegroundPermissionsAsync');
+  });
+
+  it('generates only foreground location permissions in native configuration', () => {
+    const expoCli = join(root, 'node_modules', 'expo', 'bin', 'cli');
+    const output = execFileSync(
+      process.execPath,
+      [expoCli, 'config', '--type', 'introspect', '--json'],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024,
+        env: { ...process.env, NO_COLOR: '1' },
+      },
+    );
+    const generated = JSON.parse(output);
+    const infoPlist = generated._internal.modResults.ios.infoPlist;
+    expect(infoPlist.NSLocationWhenInUseUsageDescription).toBe(
+      'Heavyar uses your location only when you choose to place an equipment, work-site, or shared chat pin.',
+    );
+    expect(infoPlist).not.toHaveProperty('NSLocationAlwaysUsageDescription');
+    expect(infoPlist).not.toHaveProperty('NSLocationAlwaysAndWhenInUseUsageDescription');
+    expect(infoPlist.UIBackgroundModes ?? []).not.toContain('location');
+
+    const permissionEntries = generated._internal.modResults.android.manifest.manifest['uses-permission'] ?? [];
+    const activePermissions = permissionEntries
+      .filter((entry: { $?: Record<string, string> }) => entry.$?.['tools:node'] !== 'remove')
+      .map((entry: { $?: Record<string, string> }) => entry.$?.['android:name']);
+    expect(activePermissions).toContain('android.permission.ACCESS_COARSE_LOCATION');
+    expect(activePermissions).toContain('android.permission.ACCESS_FINE_LOCATION');
+    expect(activePermissions).not.toContain('android.permission.ACCESS_BACKGROUND_LOCATION');
+    expect(activePermissions).not.toContain('android.permission.FOREGROUND_SERVICE_LOCATION');
   });
 });

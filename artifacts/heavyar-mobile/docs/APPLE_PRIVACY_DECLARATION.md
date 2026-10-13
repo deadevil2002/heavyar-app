@@ -67,6 +67,8 @@ Apple's official privacy guidance says data entered in an external payment flow 
 
 ## Human App Store Connect actions
 
+> **M1 source verification (2026-10-13):** runtime source requests foreground location only. Both plugin-generated Always purpose strings are explicitly disabled, and Expo native introspection confirms `NSLocationWhenInUseUsageDescription` only, with no `NSLocationAlways*` keys or location background mode. The signed archive must still be inspected before submission.
+
 1. Enter the categories above manually; this file is not a console update.
 2. Confirm the final archive contains only the declared foreground location path, with no analytics, crash, background/live location, contacts, microphone, KYC or banking SDK/path.
 3. Inspect every included `PrivacyInfo.xcprivacy` and required-reason API declaration.
