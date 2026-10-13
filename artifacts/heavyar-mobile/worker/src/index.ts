@@ -14,7 +14,7 @@ import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-ac
 import { hash } from './early-access-model';
 import { evaluateCanonicalCompleteness, isOperationallyBlocked, isSecuritySuspended, isStoreReviewAccount } from './integrity';
 import { reviewEquipmentProjection, searchPublicEquipment, type FirestoreQuery, type EquipmentSearchRow } from './equipment-search';
-import { activeInterval, buildFinalPaymentHandoff, calculateRental, estimateRental, intervalsOverlap, legacyMarketProjection, legacyPricingProjection, marketForCountry, parseV2RequestInput, rateFor, validateListingPricing, validateServerStart, v2TransitionAllowed, type V2RequestInput } from './rental-v2';
+import { activeInterval, assertListingAvailableForInterval, buildFinalPaymentHandoff, calculateRental, estimateRental, intervalsOverlap, legacyMarketProjection, legacyPricingProjection, marketForCountry, parseV2RequestInput, rateFor, validateListingAvailabilityPolicy, validateListingPricing, validateServerStart, v2TransitionAllowed, type V2RequestInput } from './rental-v2';
 import { mutationDiagnosticEvent, mutationRoute, responseErrorCode, type MutationDiagnostics, type MutationStage } from './observability';
 import { reserveCloudinaryUploadQuota as reserveCloudinaryUploadQuotaAttempt, type CloudinaryQuotaRecord } from './cloudinary-upload-quota';
 import { evaluateCapabilities, isSaudiTruckRentalWithoutDriver, validateRegulatoryDocumentSubmission, type RegulatoryDocument } from './regulatory';
@@ -1822,6 +1822,8 @@ function v2Failure(error: unknown): { status: number; error: string; errorCode: 
   const code = error instanceof Error ? error.message : '';
   if (code === 'RATE_CHANGED') return { status: 409, error: 'Listing rate changed before locking', errorCode: code };
   if (code === 'ACTIVE_RENTAL_OVERLAP') return { status: 409, error: 'Equipment is unavailable for the full selected period.', errorCode: code };
+  if (code === 'LISTING_AVAILABILITY_CONFLICT' || code === 'LISTING_TEMPORARILY_UNAVAILABLE') return { status: 409, error: 'Equipment is unavailable for the full selected period.', errorCode: code };
+  if (code === 'LISTING_AVAILABILITY_UNAVAILABLE') return { status: 503, error: 'Availability temporarily unavailable', errorCode: code };
   if (code === 'AVAILABILITY_CAP_EXHAUSTED') return { status: 503, error: 'Availability temporarily unavailable', errorCode: code };
   if (code === 'AVAILABILITY_UNAVAILABLE') return { status: 503, error: 'Availability temporarily unavailable', errorCode: code };
   if (code === 'Requested start is in the past') return { status: 400, error: code, errorCode: 'PAST_START_TIME' };
@@ -1835,6 +1837,7 @@ function v2Failure(error: unknown): { status: number; error: string; errorCode: 
 }
 async function buildV2Estimate(env: Env, input: V2RequestInput, equipment: any, now: string) {
   const normalizedEquipment = v2EquipmentContext(equipment);
+  assertListingAvailableForInterval(normalizedEquipment.availability, { startAt: input.requestedStartAt, endAt: input.requestedEndAt }, String(normalizedEquipment.countryCode || ''));
   const pricing = v2PricingForEquipment(normalizedEquipment);
   const estimate = estimateRental(input, pricing, String(normalizedEquipment.countryCode || ''), now);
   let commercial: CommercialSnapshot | null = null;
@@ -1844,7 +1847,10 @@ async function buildV2Estimate(env: Env, input: V2RequestInput, equipment: any, 
 async function estimateV2Request(req: Request, env: Env, u: User) {
   let input: V2RequestInput;
   try { input = parseV2RequestInput(await req.json()); }
-  catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid request', errorCode: 'INVALID_RENTAL_REQUEST' }, 400); }
+  catch (error) {
+    const code = error instanceof Error && error.message === 'FIXED_DURATION_REQUIRED' ? error.message : 'INVALID_RENTAL_REQUEST';
+    return out(env, req, { success: false, error: code === 'FIXED_DURATION_REQUIRED' ? 'A fixed rental end is required' : 'Invalid request', errorCode: code }, 400);
+  }
   const equipment = await getDoc(env, 'equipment', input.equipmentId);
   if (!equipment || equipment.ownerUid === u.uid || !canRentEquipment(u, equipment)) return out(env, req, { success: false, error: 'Listing unavailable', errorCode: 'LISTING_UNAVAILABLE' }, 409);
   const now = new Date().toISOString();
@@ -1880,7 +1886,10 @@ function requestEquipmentSnapshot(equipment: any): Record<string, unknown> {
 async function createV2Request(body: any, req: Request, env: Env, u: User) {
   let input: V2RequestInput;
   try { input = parseV2RequestInput(body); }
-  catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid request', errorCode: 'INVALID_RENTAL_REQUEST' }, 400); }
+  catch (error) {
+    const code = error instanceof Error && error.message === 'FIXED_DURATION_REQUIRED' ? error.message : 'INVALID_RENTAL_REQUEST';
+    return out(env, req, { success: false, error: code === 'FIXED_DURATION_REQUIRED' ? 'A fixed rental end is required' : 'Invalid request', errorCode: code }, 400);
+  }
   const equipmentRaw = await getRawDoc(env, 'equipment', input.equipmentId), equipment = equipmentRaw?.data;
   if (!equipmentRaw?.updateTime || !equipment || equipment.ownerUid === u.uid || !canRentEquipment(u, equipment)) return out(env, req, { success: false, error: 'Listing unavailable', errorCode: 'LISTING_UNAVAILABLE' }, 409);
   const account = u.accountProfile || await getDoc(env, 'users', u.uid);
@@ -1895,9 +1904,8 @@ async function createV2Request(body: any, req: Request, env: Env, u: User) {
       buildV2Estimate(env, input, normalizedEquipment, now),
       assertV2Available(env, input.equipmentId, { startAt: input.requestedStartAt, endAt: input.requestedEndAt }),
     ]);
-    // For open-ended requests, lock rule/tax terms against one selected rate
-    // unit. Usage amounts are deliberately absent until server completion.
-    const lockedCommercial = estimate.commercial || await authoritativeCommercialSnapshotMinor(env, { providerUid: normalizedEquipment.ownerUid }, normalizedEquipment, estimate.rateAmountMinor, now);
+    if (!estimate.commercial || estimate.baseAmountMinor === null) throw new Error('RENTAL_PRICING_UNAVAILABLE');
+    const lockedCommercial = estimate.commercial;
     const pricingSnapshot = {
       snapshotId: `rental-v2:${id}:locked`,
       calculationVersion: 2, rateUnit: estimate.rateUnit, rateAmountMinor: estimate.rateAmountMinor,
@@ -1913,7 +1921,7 @@ async function createV2Request(body: any, req: Request, env: Env, u: User) {
       rateUnit: input.rateUnit, requestedStartAt: input.requestedStartAt, requestedEndAt: input.requestedEndAt,
       actualStartAt: null, actualEndAt: null, notes: input.notes || '',
       ...(input.workSiteLocation ? { workSiteLocation: input.workSiteLocation } : {}), pricingSnapshot,
-      commercialSnapshot: lockedCommercial, commercialSnapshotStatus: input.rentalMode === 'open_ended' ? 'terms_locked' : 'estimated',
+      commercialSnapshot: lockedCommercial, commercialSnapshotStatus: 'estimated',
       currency: estimate.currency, nativeCurrency: normalizedEquipment.nativeCurrency, baseAmountMinor: estimate.baseAmountMinor,
       paymentStatus: 'unpaid', paymentState: null, paymentId: '', allowChat: false, createdAt: now, updatedAt: now,
     };
@@ -1940,6 +1948,7 @@ async function createRequest(req: Request, env: Env, u: User) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(equipmentId)) return out(env, req, { success: false, error: 'Invalid request' }, 400);
   const equipment = await getDoc(env, 'equipment', equipmentId);
   if (!equipment || equipment.ownerUid === u.uid || !isPublicRentableListing(equipment)) return out(env, req, { success: false, error: 'Listing unavailable' }, 409);
+  if (body.requestMode === 'open_ended') return out(env, req, { success: false, error: 'A fixed rental end is required', errorCode: 'FIXED_DURATION_REQUIRED' }, 400);
   if (equipment.pricingModelVersion === 2) {
     let pricing;
     try { pricing = validateListingPricing(equipment.pricing, String(equipment.nativeCurrency || equipment.currency || '')); }
@@ -1948,15 +1957,15 @@ async function createRequest(req: Request, env: Env, u: User) {
   }
   await enforceOperationalAccess(env, u, equipment);
   try { await enforceEmailVerified(env, u, 'rental'); } catch (error) { if (error instanceof Error && error.message === 'EMAIL_VERIFICATION_REQUIRED') return out(env, req, { success: false, error: 'EMAIL_VERIFICATION_REQUIRED' }, 403); throw error; }
-  const mode = body.requestMode === 'open_ended' ? 'open_ended' : 'fixed_days';
+  const mode = 'fixed_days';
   const dailyMajor = equipment.pricingModelVersion === 2
     ? Number(minorToMajor(rateFor(validateListingPricing(equipment.pricing, String(equipment.nativeCurrency || equipment.currency || '')), 'daily'), String(equipment.pricing.currency)))
     : Number(equipment.pricePerDay);
-  const days = Number(body.numberOfDays || 0), amount = mode === 'fixed_days' ? dailyMajor * days : dailyMajor;
+  const days = Number(body.numberOfDays || 0), amount = dailyMajor * days;
   const fallbackStart = new Date().toISOString().slice(0, 10), fallbackEnd = new Date(Date.now() + Math.max(0, days - 1) * 86400000).toISOString().slice(0, 10);
   const requestedRange = { from: String(body.startDate || fallbackStart), until: body.endDate === undefined ? fallbackEnd : String(body.endDate) };
   const dateCheck = validateDateRange(requestedRange);
-  if (!dateCheck.ok || !requestedRange.until || (mode === 'fixed_days' && Math.round((Date.parse(`${requestedRange.until}T00:00:00Z`) - Date.parse(`${requestedRange.from}T00:00:00Z`)) / 86400000) + 1 !== days)) return out(env, req, { success: false, error: 'Invalid rental dates' }, 400);
+  if (!dateCheck.ok || !requestedRange.until || Math.round((Date.parse(`${requestedRange.until}T00:00:00Z`) - Date.parse(`${requestedRange.from}T00:00:00Z`)) / 86400000) + 1 !== days) return out(env, req, { success: false, error: 'Invalid rental dates' }, 400);
   const availabilityCheckResult = availabilityAllows(equipment.availability || { from: requestedRange.from }, requestedRange);
   if (!availabilityCheckResult.ok) return out(env, req, { success: false, error: availabilityCheckResult.error }, 409);
   const legacyRequestedInterval = {
@@ -1979,7 +1988,7 @@ async function createRequest(req: Request, env: Env, u: User) {
     return out(env, req, { success: false, error: 'Commercial configuration unavailable' }, 503);
   }
   const initialQuote = quoteFromCommercial(commercialSnapshot, id, Date.parse(now));
-  const value: any = { equipmentId, equipmentSnapshot: requestEquipmentSnapshot(equipment), customerUid: u.uid, providerUid: equipment.ownerUid, categoryId: String(equipment.category || ''), countryCode: commercialSnapshot.countryCode, status: 'pending', requestMode: mode, ...(mode === 'fixed_days' ? { numberOfDays: days } : {}), startDate: requestedRange.from, endDate: requestedRange.until, availabilitySnapshot: equipment.availability || null, amount, platformFee: Number(minorToMajor(commercialSnapshot.platformFeeMinor, commercialSnapshot.currency)), providerAmount: Number(minorToMajor(commercialSnapshot.providerReceivableMinor, commercialSnapshot.currency)), paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: commercialSnapshot.currency, nativeCurrency: commercialSnapshot.currency, nativeAmount: amount, commercialSnapshot, commercialSnapshotStatus: mode === 'fixed_days' ? 'finalized' : 'estimated', allowChat: false, createdAt: now, updatedAt: now };
+  const value: any = { equipmentId, equipmentSnapshot: requestEquipmentSnapshot(equipment), customerUid: u.uid, providerUid: equipment.ownerUid, categoryId: String(equipment.category || ''), countryCode: commercialSnapshot.countryCode, status: 'pending', requestMode: mode, numberOfDays: days, startDate: requestedRange.from, endDate: requestedRange.until, availabilitySnapshot: equipment.availability || null, amount, platformFee: Number(minorToMajor(commercialSnapshot.platformFeeMinor, commercialSnapshot.currency)), providerAmount: Number(minorToMajor(commercialSnapshot.providerReceivableMinor, commercialSnapshot.currency)), paymentStatus: 'unpaid', paymentId: '', paidAt: null, currency: commercialSnapshot.currency, nativeCurrency: commercialSnapshot.currency, nativeAmount: amount, commercialSnapshot, commercialSnapshotStatus: 'finalized', allowChat: false, createdAt: now, updatedAt: now };
   const publicRequestNumber = await createWithPublicIdentifier(
     env, 'request', `equipmentRequests/${id}`, value,
     [await notificationWrite(fullName.bind(null, env), String(equipment.ownerUid), 'rental_request_created', now, id, `${id}:created`)],
@@ -2076,22 +2085,34 @@ async function transitionV2Request(req: Request, env: Env, u: User, requestId: s
         const transaction = await beginTransaction(env);
         try {
           await assertV2Available(env, String(r.equipmentId), { startAt: r.requestedStartAt, endAt: r.requestedEndAt }, requestId, transaction);
+          if (typeof r.requestedEndAt === 'string') {
+            const listing = transaction
+              ? await transactionDocument(env, `equipment/${encodeURIComponent(String(r.equipmentId))}`, transaction)
+              : await getRawDoc(env, 'equipment', String(r.equipmentId));
+            if (!listing?.data) throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+            assertListingAvailableForInterval(
+              listing.data.availability,
+              { startAt: String(r.requestedStartAt), endAt: r.requestedEndAt },
+              String(r.countryCode || listing.data.countryCode || ''),
+            );
+          }
           const fencePath = `equipmentBookingFences/${encodeURIComponent(String(r.equipmentId))}`;
           const fence = transaction ? await transactionDocument(env, fencePath, transaction) : await getRawDoc(env, 'equipmentBookingFences', String(r.equipmentId));
           const fenceWrite = { update: { name: fullName(env, fencePath), fields: { equipmentId: { stringValue: String(r.equipmentId) }, revision: { integerValue: String(Number(fence?.data?.revision || 0) + 1) }, requestId: { stringValue: requestId }, updatedAt: { timestampValue: now } } }, currentDocument: fence?.updateTime ? { updateTime: fence.updateTime } : { exists: false } };
           await commitWrites(env, [requestWrite, fenceWrite, notification], transaction);
           break;
         } catch (error) {
-          if (error instanceof Error && ['ACTIVE_RENTAL_OVERLAP', 'AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE'].includes(error.message)) throw error;
+          if (error instanceof Error && ['ACTIVE_RENTAL_OVERLAP', 'AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_CONFLICT', 'LISTING_TEMPORARILY_UNAVAILABLE'].includes(error.message)) throw error;
           if (attempt === 3) throw error;
         }
       }
     } else await commitWrites(env, [requestWrite, notification]);
   } catch (error) {
     const code = error instanceof Error ? error.message : 'Request changed';
-    const availabilityFailure = code === 'AVAILABILITY_CAP_EXHAUSTED' || code === 'AVAILABILITY_UNAVAILABLE';
-    const knownCode = code === 'ACTIVE_RENTAL_OVERLAP' || availabilityFailure ? code : 'REQUEST_CHANGED';
-    return out(env, req, { success: false, error: code === 'ACTIVE_RENTAL_OVERLAP' ? 'Equipment is unavailable for the full selected period.' : availabilityFailure ? 'Availability temporarily unavailable' : 'Request changed', errorCode: knownCode }, availabilityFailure ? 503 : 409);
+    const availabilityFailure = ['AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_UNAVAILABLE'].includes(code);
+    const conflict = ['ACTIVE_RENTAL_OVERLAP', 'LISTING_AVAILABILITY_CONFLICT', 'LISTING_TEMPORARILY_UNAVAILABLE'].includes(code);
+    const knownCode = conflict || availabilityFailure ? code : 'REQUEST_CHANGED';
+    return out(env, req, { success: false, error: conflict ? 'Equipment is unavailable for the full selected period.' : availabilityFailure ? 'Availability temporarily unavailable' : 'Request changed', errorCode: knownCode }, availabilityFailure ? 503 : 409);
   }
   const responseUpdates = decode({ fields: updates });
   if (responseUpdates.finalBaseAmountMinor !== undefined) responseUpdates.finalBaseAmountMinor = Number(responseUpdates.finalBaseAmountMinor);
@@ -3620,16 +3641,48 @@ async function createWithPublicIdentifier(
 }
 async function listingAvailability(req: Request, env: Env, u: User, id: string) {
   const listing = await getDoc(env, 'equipment', id);
-  if (!listing || (listing.ownerUid !== u.uid && !isPublicRentableListing(listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  if (!listing || (listing.ownerUid !== u.uid && !canRentEquipment(u, listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  const url = new URL(req.url);
+  const from = url.searchParams.get('from') || '';
+  const until = url.searchParams.get('until') || '';
+  let availability;
+  try {
+    availability = validateListingAvailabilityPolicy(listing.availability);
+    const requestedWindow = validateListingAvailabilityPolicy({ from, until, blocked: [], temporarilyUnavailable: false });
+    const span = Math.round((Date.parse(`${requestedWindow.until}T00:00:00.000Z`) - Date.parse(`${requestedWindow.from}T00:00:00.000Z`)) / 86_400_000);
+    if (!requestedWindow.until || span < 0 || span > 366) throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+  } catch {
+    return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'LISTING_AVAILABILITY_UNAVAILABLE' }, 503);
+  }
+  const market = marketForCountry(String(listing.countryCode || ''));
+  const requested = {
+    startAt: new Date(Date.parse(`${from}T00:00:00.000Z`) - market.offsetMinutes * 60_000).toISOString(),
+    endAt: new Date(Date.parse(`${until}T00:00:00.000Z`) - market.offsetMinutes * 60_000).toISOString(),
+  };
   let rows;
-  try { rows = await rentalRowsForEquipment(env, id, ALL_ACTIVE_RENTAL_INTERVAL); }
+  try { rows = await rentalRowsForEquipment(env, id, requested); }
   catch { return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_UNAVAILABLE' }, 503); }
   if (rows.exhausted) return out(env, req, { success: false, error: 'Availability temporarily unavailable', errorCode: 'AVAILABILITY_CAP_EXHAUSTED' }, 503);
   const rentals = rows.rows.map(row => row.data).filter((x: any) => activeInterval(x));
   let pricingProjection;
   try { pricingProjection = listing.pricingModelVersion === 2 ? { pricingModelVersion: 2, pricing: validateListingPricing(listing.pricing, String(listing.nativeCurrency || listing.currency || '')) } : legacyPricingProjection(listing); }
   catch { pricingProjection = null; }
-  return out(env, req, { success: true, listingId: id, availability: listing.availability || null, pricing: pricingProjection, activeRentals: rentals.map((x: any) => ({ from: x.startDate, until: x.endDate, startAt: x.requestedStartAt || null, endAt: x.actualEndAt || x.requestedEndAt || null, status: x.status })) });
+  return out(env, req, {
+    success: true,
+    listingId: id,
+    serverNow: new Date().toISOString(),
+    window: { from, until },
+    availability,
+    pricing: pricingProjection,
+    activeRentals: rentals.map((x: any) => {
+      const interval = activeInterval(x)!;
+      return {
+        startAt: interval.startAt,
+        endAt: interval.endAt,
+        state: ['in_progress', 'completion_requested'].includes(String(x.status)) ? 'in_rental' : 'booked',
+      };
+    }),
+  });
 }
 async function equipmentSearchRows(env: Env, structuredQuery: FirestoreQuery): Promise<EquipmentSearchRow[]> {
   capturedEquipmentQueries?.push(structuredQuery);
@@ -3843,18 +3896,19 @@ async function listingLifecycle(req: Request, env: Env, u: User, id: string, arc
 }
 async function availabilityCheck(req: Request, env: Env, u: User, id: string) {
   const listing = await getDoc(env, 'equipment', id);
-  if (!listing || (listing.ownerUid !== u.uid && !isPublicRentableListing(listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+  if (!listing || (listing.ownerUid !== u.uid && !canRentEquipment(u, listing))) return out(env, req, { success: false, error: 'Listing not found' }, 404);
   const body: any = await req.json().catch(() => null);
   if (body?.startAt !== undefined || body?.endAt !== undefined) {
     if (!body || Object.keys(body).some(key => !['startAt', 'endAt'].includes(key))) return out(env, req, { success: false, error: 'Invalid availability interval' }, 400);
     try {
-      const probe = parseV2RequestInput({ pricingModelVersion: 2, equipmentId: id, rentalMode: body.endAt === null ? 'open_ended' : 'hourly', rateUnit: 'hourly', requestedStartAt: body.startAt, requestedEndAt: body.endAt, expectedRateAmountMinor: 1 });
+      const probe = parseV2RequestInput({ pricingModelVersion: 2, equipmentId: id, rentalMode: 'hourly', rateUnit: 'hourly', requestedStartAt: body.startAt, requestedEndAt: body.endAt, expectedRateAmountMinor: 1 });
+      assertListingAvailableForInterval(listing.availability, { startAt: probe.requestedStartAt, endAt: probe.requestedEndAt }, String(listing.countryCode || ''));
       await assertV2Available(env, id, { startAt: probe.requestedStartAt, endAt: probe.requestedEndAt });
       return out(env, req, { success: true, available: true, reason: null, serverNow: new Date().toISOString() });
     } catch (error) {
       const code = error instanceof Error ? error.message : 'INVALID_INTERVAL';
-      if (code === 'ACTIVE_RENTAL_OVERLAP') return out(env, req, { success: true, available: false, reason: code, serverNow: new Date().toISOString() });
-      const availabilityFailure = code === 'AVAILABILITY_CAP_EXHAUSTED' || code === 'AVAILABILITY_UNAVAILABLE';
+      if (['ACTIVE_RENTAL_OVERLAP', 'LISTING_AVAILABILITY_CONFLICT', 'LISTING_TEMPORARILY_UNAVAILABLE'].includes(code)) return out(env, req, { success: true, available: false, reason: code, serverNow: new Date().toISOString() });
+      const availabilityFailure = code === 'AVAILABILITY_CAP_EXHAUSTED' || code === 'AVAILABILITY_UNAVAILABLE' || code === 'LISTING_AVAILABILITY_UNAVAILABLE';
       return out(env, req, { success: false, error: availabilityFailure ? 'Availability temporarily unavailable' : code, errorCode: code }, availabilityFailure ? 503 : 400);
     }
   }

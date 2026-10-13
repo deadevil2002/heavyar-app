@@ -21,10 +21,30 @@ describe('rental booking interaction network contract', () => {
     expect(modal).toContain('if (!estimate || submitting || qaSubmitBlocked) return;');
     expect(modal).toContain("process.env.EXPO_PUBLIC_HEAVYAR_QA_READ_ONLY !== '1'");
     expect(modal).toContain('EXPO_PUBLIC_HEAVYAR_QA_MUTATION_EQUIPMENT_ID');
-    expect(modal).toContain('disabled={estimating || submitting || (estimate !== null && qaSubmitBlocked)}');
+    expect(modal).toContain('disabled={estimating || submitting || availabilityLoading || availabilityError || !calendar || (estimate !== null && qaSubmitBlocked)}');
     expect(modal).toContain('onPress={estimate ? submit : requestEstimate}');
     expect(detail.match(/createRentalRequest\(/g)).toHaveLength(1);
     expect(detail).toContain('await createRentalRequest(draft);');
+  });
+
+  it('loads one aggregate calendar per opening and never requests availability per day cell', () => {
+    expect(modal.match(/getListingAvailability\(/g)).toHaveLength(1);
+    expect(modal).toContain('One aggregate request per modal opening/equipment');
+    const calendar = source('../components/rental/RentalSchedulePicker.tsx');
+    expect(calendar).not.toContain('getListingAvailability(');
+    expect(calendar).not.toContain('checkListingAvailability(');
+    expect(calendar).toContain('const unavailableEnd = conflictsAsEnd(key);');
+    expect(calendar).toContain('(selectingEnd ? key > maximum : key >= maximum)');
+  });
+
+  it('keeps the calendar bilingual, RTL-aware, accessible, and Tamagui-based', () => {
+    const calendar = source('../components/rental/RentalSchedulePicker.tsx');
+    expect(modal).toContain('HeavyarSegmentedControl');
+    expect(calendar).toContain("props.language === 'ar'");
+    expect(calendar).toContain("flexDirection={props.isRTL ? 'row-reverse' : 'row'}");
+    expect(calendar).toContain('accessibilityState={{ disabled, selected }}');
+    expect(calendar).toContain('HeavyarSurface');
+    expect(calendar).toContain('HeavyarIconButton');
   });
 
   it('does not start request-list or request-detail reconciliation from submit', () => {

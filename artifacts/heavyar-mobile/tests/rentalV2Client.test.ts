@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildRentalRequestPayload,
+  availabilityConflictForInterval,
+  availabilityStateForDate,
   calendarDayCount,
   currencyDecimals,
   decodeCommercialSnapshot,
   decodeFinalRentalSnapshot,
+  decodeListingAvailabilityCalendar,
   decodeRentalPricingSnapshot,
   decodeRentalSummary,
   liveRentalEstimateMinor,
@@ -14,6 +17,7 @@ import {
   normalizeEstimate,
   prorateHourlyMinor,
   rentalRequestPricingState,
+  type RentalRequestInput,
 } from '../services/rentalV2';
 import type { RentalSummary } from '../types';
 import { safeErrorMessage } from '../services/errorMessages';
@@ -152,12 +156,13 @@ describe('rental V2 client contract', () => {
     }).kind).toBe('v2');
   });
 
-  it('rejects zero durations and open-ended requests with an end', () => {
+  it('rejects zero durations and all new open-ended requests', () => {
     expect(() => buildRentalRequestPayload({ ...valid, requestedEndAt: valid.requestedStartAt })).toThrow('INVALID_TIME_RANGE');
-    expect(() => buildRentalRequestPayload({ ...valid, rentalMode: 'open_ended', requestedEndAt: valid.requestedEndAt })).toThrow('INVALID_TIME_RANGE');
+    expect(() => buildRentalRequestPayload({ ...valid, rentalMode: 'open_ended' } as unknown as RentalRequestInput)).toThrow('FIXED_DURATION_REQUIRED');
+    expect(() => buildRentalRequestPayload({ ...valid, requestedEndAt: null } as unknown as RentalRequestInput)).toThrow('INVALID_TIME_RANGE');
   });
 
-  it('keeps daily and open-ended mode payloads exact', () => {
+  it('keeps fixed daily payloads exact', () => {
     expect(buildRentalRequestPayload({
       ...valid,
       rentalMode: 'daily',
@@ -170,15 +175,39 @@ describe('rental V2 client contract', () => {
       rateUnit: 'daily',
       expectedRateAmountMinor: 150_000,
     });
-    expect(buildRentalRequestPayload({
-      ...valid,
-      rentalMode: 'open_ended',
-      requestedEndAt: null,
-    })).toMatchObject({
-      rentalMode: 'open_ended',
-      rateUnit: 'hourly',
-      requestedEndAt: null,
-    });
+  });
+
+  it('strictly decodes one bounded availability calendar and classifies states', () => {
+    const calendar = decodeListingAvailabilityCalendar({
+      success: true,
+      listingId: 'eq_1',
+      serverNow: '2026-09-19T09:00:00.000Z',
+      window: { from: '2026-09-19', until: '2027-09-20' },
+      availability: {
+        from: '2026-09-19', until: '2027-09-19', temporarilyUnavailable: false,
+        blocked: [{ from: '2026-09-24', until: '2026-09-25' }],
+      },
+      activeRentals: [
+        { startAt: '2026-09-20T05:00:00.000Z', endAt: '2026-09-20T07:00:00.000Z', state: 'booked' },
+        { startAt: '2026-09-22T00:00:00.000Z', endAt: null, state: 'in_rental' },
+      ],
+    }, 'eq_1');
+    expect(availabilityStateForDate(calendar, '2026-09-20', 180)).toBe('booked');
+    expect(availabilityStateForDate(calendar, '2026-09-22', 180)).toBe('in_rental');
+    expect(availabilityStateForDate(calendar, '2026-09-24', 180)).toBe('owner_blocked');
+    expect(availabilityStateForDate(calendar, '2026-09-21', 180)).toBe('available');
+    expect(availabilityConflictForInterval(calendar, '2026-09-20T05:30:00.000Z', '2026-09-20T06:00:00.000Z', 180)).toBe('booked');
+    expect(availabilityConflictForInterval(calendar, '2026-09-20T07:00:00.000Z', '2026-09-20T08:00:00.000Z', 180)).toBeNull();
+  });
+
+  it('fails closed on malformed or identity-mismatched availability responses', () => {
+    expect(() => decodeListingAvailabilityCalendar(null, 'eq_1')).toThrow('INVALID_AVAILABILITY_RESPONSE');
+    expect(() => decodeListingAvailabilityCalendar({ success: true, listingId: 'other' }, 'eq_1')).toThrow('INVALID_AVAILABILITY_RESPONSE');
+    expect(() => decodeListingAvailabilityCalendar({
+      success: true, listingId: 'eq_1', serverNow: '2026-09-19T09:00:00.000Z',
+      window: { from: '2026-09-19', until: '2026-10-19' },
+      availability: { from: '2026-02-30', blocked: [], temporarilyUnavailable: false }, activeRentals: [],
+    }, 'eq_1')).toThrow('INVALID_AVAILABILITY_RESPONSE');
   });
 
   it('normalizes the canonical estimate envelope and preserves serverNow', () => {

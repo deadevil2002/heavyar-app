@@ -3,6 +3,7 @@ import { parsePreciseLocation, type PreciseLocation } from './location';
 
 export type RateUnit = 'hourly' | 'daily';
 export type RentalMode = RateUnit | 'open_ended';
+export type FixedRentalMode = RateUnit;
 export type ListingPricing = {
   currency: string;
   hourly: { enabled: boolean; amountMinor?: number };
@@ -11,13 +12,18 @@ export type ListingPricing = {
 export type V2RequestInput = {
   pricingModelVersion: 2;
   equipmentId: string;
-  rentalMode: RentalMode;
+  rentalMode: FixedRentalMode;
   rateUnit: RateUnit;
   requestedStartAt: string;
-  requestedEndAt: string | null;
+  requestedEndAt: string;
   expectedRateAmountMinor: number;
   notes?: string;
   workSiteLocation?: PreciseLocation;
+};
+export type ListingAvailabilityRange = { from: string; until?: string };
+export type ListingAvailabilityPolicy = ListingAvailabilityRange & {
+  blocked: ListingAvailabilityRange[];
+  temporarilyUnavailable: boolean;
 };
 export type RentalDuration = {
   elapsedMinutes: number | null;
@@ -127,6 +133,69 @@ export function marketForCountry(countryCode: unknown) {
   return market;
 }
 
+function calendarDate(value: unknown): string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+  const [year, month, day] = value.split('-').map(Number);
+  const instant = new Date(Date.UTC(year, month - 1, day));
+  if (instant.getUTCFullYear() !== year || instant.getUTCMonth() !== month - 1 || instant.getUTCDate() !== day) {
+    throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+  }
+  return value;
+}
+
+export function validateListingAvailabilityPolicy(value: unknown): ListingAvailabilityPolicy {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+  const raw = value as Record<string, unknown>;
+  const from = calendarDate(raw.from);
+  const until = raw.until === undefined ? undefined : calendarDate(raw.until);
+  if (until && until < from) throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+  if (raw.temporarilyUnavailable !== undefined && typeof raw.temporarilyUnavailable !== 'boolean') {
+    throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+  }
+  if (raw.blocked !== undefined && (!Array.isArray(raw.blocked) || raw.blocked.length > 366)) {
+    throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+  }
+  const blocked = (raw.blocked || []).map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+    const range = entry as Record<string, unknown>;
+    const blockedFrom = calendarDate(range.from);
+    const blockedUntil = range.until === undefined ? undefined : calendarDate(range.until);
+    if (blockedUntil && blockedUntil < blockedFrom) throw new Error('LISTING_AVAILABILITY_UNAVAILABLE');
+    return { from: blockedFrom, ...(blockedUntil ? { until: blockedUntil } : {}) };
+  });
+  return { from, ...(until ? { until } : {}), blocked, temporarilyUnavailable: raw.temporarilyUnavailable === true };
+}
+
+function marketDateForInstant(iso: string, offsetMinutes: number, endExclusive = false): string {
+  const instant = Date.parse(timestamp(iso, endExclusive ? 'endAt' : 'startAt')) - (endExclusive ? 1 : 0);
+  return new Date(instant + offsetMinutes * 60_000).toISOString().slice(0, 10);
+}
+
+function availabilityRangesOverlap(left: ListingAvailabilityRange, right: ListingAvailabilityRange): boolean {
+  return left.from <= (right.until || '9999-12-31') && right.from <= (left.until || '9999-12-31');
+}
+
+/** Validates the owner-authored calendar policy for a fixed, half-open rental interval. */
+export function assertListingAvailableForInterval(
+  availabilityValue: unknown,
+  requested: { startAt: string; endAt: string },
+  countryCode: string,
+): ListingAvailabilityPolicy {
+  const policy = validateListingAvailabilityPolicy(availabilityValue);
+  const startAt = timestamp(requested.startAt, 'startAt');
+  const endAt = timestamp(requested.endAt, 'endAt');
+  if (endAt <= startAt) throw new Error('Requested end must be after start');
+  const { offsetMinutes } = marketForCountry(countryCode);
+  const range = {
+    from: marketDateForInstant(startAt, offsetMinutes),
+    until: marketDateForInstant(endAt, offsetMinutes, true),
+  };
+  if (policy.temporarilyUnavailable) throw new Error('LISTING_TEMPORARILY_UNAVAILABLE');
+  if (range.from < policy.from || (policy.until && range.until > policy.until)) throw new Error('LISTING_AVAILABILITY_CONFLICT');
+  if (policy.blocked.some(blocked => availabilityRangesOverlap(blocked, range))) throw new Error('LISTING_AVAILABILITY_CONFLICT');
+  return policy;
+}
+
 export function legacyMarketProjection(listing: Record<string, any>): { countryCode: string; nativeCurrency: string } {
   const countryCode = listing.countryCode === undefined || listing.countryCode === null || listing.countryCode === ''
     ? 'SA'
@@ -180,14 +249,14 @@ export function parseV2RequestInput(value: unknown): V2RequestInput {
   if (unknown) throw new Error(FORBIDDEN_COMMERCIAL_FIELDS.has(unknown) ? 'Client commercial totals and duration are forbidden' : `Unsupported request field: ${unknown}`);
   if (raw.pricingModelVersion !== 2) throw new Error('pricingModelVersion must be 2');
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(String(raw.equipmentId || ''))) throw new Error('Invalid equipmentId');
-  if (!['hourly', 'daily', 'open_ended'].includes(raw.rentalMode)) throw new Error('Unsupported rental mode');
+  if (raw.rentalMode === 'open_ended' || raw.requestedEndAt === null || raw.requestedEndAt === undefined) throw new Error('FIXED_DURATION_REQUIRED');
+  if (!['hourly', 'daily'].includes(raw.rentalMode)) throw new Error('Unsupported rental mode');
   if (!['hourly', 'daily'].includes(raw.rateUnit)) throw new Error('Unsupported rate unit');
-  if (raw.rentalMode !== 'open_ended' && raw.rateUnit !== raw.rentalMode) throw new Error('Rate unit does not match rental mode');
+  if (raw.rateUnit !== raw.rentalMode) throw new Error('Rate unit does not match rental mode');
   if (raw.requestMode !== undefined && raw.requestMode !== raw.rentalMode) throw new Error('requestMode does not match rentalMode');
   const requestedStartAt = timestamp(raw.requestedStartAt, 'requestedStartAt');
-  const requestedEndAt = raw.requestedEndAt === null ? null : timestamp(raw.requestedEndAt, 'requestedEndAt');
-  if (raw.rentalMode === 'open_ended' ? requestedEndAt !== null : requestedEndAt === null) throw new Error('Invalid requested end for rental mode');
-  if (requestedEndAt && requestedEndAt <= requestedStartAt) throw new Error('Requested end must be after start');
+  const requestedEndAt = timestamp(raw.requestedEndAt, 'requestedEndAt');
+  if (requestedEndAt <= requestedStartAt) throw new Error('Requested end must be after start');
   const notes = raw.notes === undefined ? undefined : String(raw.notes);
   if (notes !== undefined && (notes.length > 1000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(notes))) throw new Error('Invalid request notes');
   const workSiteLocation = parsePreciseLocation(raw.workSiteLocation, false);
@@ -242,9 +311,7 @@ export function estimateRental(input: V2RequestInput, pricing: ListingPricing, c
   const rateAmountMinor = rateFor(pricing, input.rateUnit);
   if (input.expectedRateAmountMinor !== rateAmountMinor) throw new Error('RATE_CHANGED');
   const marketTimezone = marketForCountry(countryCode).timezone;
-  const calculation = input.requestedEndAt
-    ? calculateRental({ mode: input.rentalMode, unit: input.rateUnit, rateAmountMinor, startAt: input.requestedStartAt, endAt: input.requestedEndAt, countryCode })
-    : { duration: { elapsedMinutes: null, billableMinutes: null, billableUnits: null, unit: input.rateUnit === 'hourly' ? 'minute' as const : 'day' as const }, baseAmountMinor: null };
+  const calculation = calculateRental({ mode: input.rentalMode, unit: input.rateUnit, rateAmountMinor, startAt: input.requestedStartAt, endAt: input.requestedEndAt, countryCode });
   return {
     pricingModelVersion: 2 as const, calculationVersion: 2 as const,
     rentalMode: input.rentalMode, rateUnit: input.rateUnit, rateAmountMinor,

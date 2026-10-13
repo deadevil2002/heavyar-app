@@ -33,18 +33,20 @@ V2 input is:
 {
   pricingModelVersion: 2,
   equipmentId: string,
-  rentalMode: "hourly" | "daily" | "open_ended",
+  rentalMode: "hourly" | "daily",
   rateUnit: "hourly" | "daily",
   requestedStartAt: ISO_UTC,
-  requestedEndAt: ISO_UTC | null,
+  requestedEndAt: ISO_UTC,
   expectedRateAmountMinor: number,
   notes?: string
 }
 ```
 
 `hourly` requires the hourly unit and a fixed end. `daily` requires the daily
-unit and a fixed end. `open_ended` requires no end and may use either enabled
-unit. Unknown fields that represent client duration, totals, base/final
+unit and a fixed end. New open-ended requests are rejected with
+`FIXED_DURATION_REQUIRED`. Historical open-ended records retain their existing
+read, lifecycle, accounting, and payment behavior and are never rewritten.
+Unknown fields that represent client duration, totals, base/final
 amounts, commission, tax, or payable/receivable values are rejected.
 `expectedRateAmountMinor` is an optimistic-lock check; a mismatch returns a
 rate-changed conflict rather than accepting a repriced request.
@@ -52,8 +54,8 @@ rate-changed conflict rather than accepting a repriced request.
 `POST /api/requests/estimate` validates the same commercial/time contract but
 does not create a request. It returns an authoritative estimate and
 `serverNow`. `GET /api/requests/:id/rental-summary` is restricted to the
-request customer and provider and derives current open-ended estimates without
-Firestore ticker writes.
+request customer and provider and continues to derive historical open-ended
+estimates without Firestore ticker writes.
 
 Successful estimate response (`200`):
 
@@ -64,14 +66,14 @@ Successful estimate response (`200`):
   estimate: {
     pricingModelVersion: 2,
     calculationVersion: 2,
-    rentalMode: "hourly" | "daily" | "open_ended",
+    rentalMode: "hourly" | "daily",
     rateUnit: "hourly" | "daily",
     rateAmountMinor: number,
     currency: string,
     currencyDecimals: 2 | 3,
     marketTimezone: string,
     requestedStartAt: ISO_UTC,
-    requestedEndAt: ISO_UTC | null,
+    requestedEndAt: ISO_UTC,
     duration: {
       elapsedMinutes: number | null,
       billableMinutes: number | null,
@@ -85,9 +87,9 @@ Successful estimate response (`200`):
 }
 ```
 
-For an open-ended estimate, duration and `baseAmountMinor` are `null`;
-`commercial` is also `null` because no usage total exists yet. The create
-response is `{ success: true, serverNow, request, estimate }` (`201`), where
+New estimates always have a fixed positive duration, integer
+`baseAmountMinor`, and authoritative commercial snapshot. The create response
+is `{ success: true, serverNow, request, estimate }` (`201`), where
 `request` includes the persisted V2 fields and locked `pricingSnapshot`.
 
 Successful participant-only rental summary response (`200`):
@@ -153,9 +155,10 @@ the listing country (Saudi Arabia: `Asia/Riyadh`) and is snapshotted.
   minutes, divided by 60, rounded half-up to an integer minor unit.
 * Fixed daily: inputs must be market-local midnight boundaries. The end is
   exclusive and whole market calendar days are billed; at least one day.
-* Open-ended hourly: the same minute rule applies from `actualStartAt` to the
-  server reference time/end.
-* Open-ended daily: elapsed positive time is rounded up by 24-hour units.
+* Historical open-ended hourly: the same minute rule continues to apply from
+  `actualStartAt` to the server reference time/end.
+* Historical open-ended daily: elapsed positive time continues to round up by
+  24-hour units.
 
 All multiplication/division uses `BigInt`; persisted/result amounts must remain
 within JavaScript's safe integer range. Supported GCC currencies preserve their
@@ -174,7 +177,7 @@ pricingSnapshot: {
   currency,
   currencyDecimals,
   marketTimezone,
-  baseAmountMinor, // null for an initially open-ended request
+  baseAmountMinor,
   ...lockedCommissionAndTaxTerms
 }
 ```
@@ -205,6 +208,26 @@ serialized by an equipment-scoped transaction fence shared by V1 and V2 so
 cross-version accepts cannot race. No result truncation may be interpreted as
 availability.
 
+New estimate, create, and fixed-request acceptance paths also validate the
+owner-authored listing policy (`from`, optional `until`, bounded blocked
+ranges, and `temporarilyUnavailable`). Malformed or unavailable policy data
+fails closed. Creation fences the listing update time; acceptance reads the
+listing inside the same transaction as the overlap query and equipment fence,
+so availability changes cannot race a booking commitment.
+
+The authenticated aggregate calendar endpoint is:
+
+`GET /api/listings/:id/availability?from=YYYY-MM-DD&until=YYYY-MM-DD`
+
+The window is mandatory and bounded to 366 days. One response contains the
+validated owner policy, server time, requested window, and at most 100 active
+intervals classified only as `booked` or `in_rental`. It never returns request
+IDs, participant identities, notes, or precise locations. The Mobile calendar
+derives available, booked, in-rental, owner-blocked/maintenance, temporarily
+unavailable, and outside-availability day states from this one aggregate
+response; it never performs per-cell network reads. Any fetch/schema/cap
+failure disables estimate/create until an explicit retry succeeds.
+
 Historical V1 active records are adapted conservatively: `actualStartAt`,
 `startedAt`, `startDate`, then `createdAt` supply the lower bound. If none is
 trustworthy, the lower bound is treated as unknown/past rather than silently
@@ -212,8 +235,8 @@ dropping the record. Active legacy `open_ended` requests always have an
 infinite upper bound regardless of a stale `endDate`; missing fixed upper
 bounds are also treated as open until the record leaves an active state.
 
-The existing availability endpoint accepts `startAt`/`endAt` while retaining
-legacy date inputs.
+The availability-check endpoint requires a fixed `startAt`/`endAt` for new V2
+checks while retaining bounded legacy date inputs for existing callers.
 
 ## State and authority
 
@@ -240,24 +263,12 @@ updated separately; this phase does not edit or deploy Rules.
 
 ## Query/index recommendation
 
-The implemented fail-closed query is one native Firestore `runQuery`:
-
-* collection `equipmentRequests`
-* filter `equipmentId == <listing id>`
-* AND native OR:
-  * `status IN [pending, accepted, in_progress, completion_requested,
-    payment_pending, paid]`
-  * `paymentState == paid`
-* order by document name ascending
-* limit `101`; Firestore deduplicates the native OR result globally. Receiving
-  101 documents is cap exhaustion, never “available”.
-
-The native OR query and its required index shape have been accepted by the
-production Firestore endpoint. This phase does not deploy index configuration
-or Rules and has no seven-query or broad-history fallback.
-Active-status and half-open timestamp overlap filtering happen server-side
-after this bounded read. Completed/rejected/cancelled history is excluded, so
-ordinary lifetime history cannot exhaust the cap. More than 100 simultaneously
+The implemented fail-closed lookup uses three bounded Firestore query
+families for current V2, legacy fixed, and historical legacy open-ended active
+records. Each family is filtered by equipment, blocking/payment state, and the
+requested time window, with a hard limit of `101`. Reaching that limit is cap
+exhaustion, never “available”. Completed/rejected/cancelled history is excluded,
+so ordinary lifetime history cannot exhaust the cap. More than 100 simultaneously
 blocking records fails closed and requires an owner-approved active-interval
 projection/index before availability can resume; unsafe truncation is
 forbidden.

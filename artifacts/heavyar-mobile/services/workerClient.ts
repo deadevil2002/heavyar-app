@@ -10,10 +10,12 @@ import type { RentalEstimate, RentalSummary } from '@/types';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import {
   buildRentalRequestPayload,
+  decodeListingAvailabilityCalendar,
   decodeRentalSummary,
   normalizeEstimate,
   reportInvalidRentalMoney,
   type RentalRequestInput,
+  type ListingAvailabilityCalendar,
 } from './rentalV2';
 export { driverRequestActions } from './driverRequestContract';
 
@@ -201,10 +203,13 @@ export async function createListing(payload: Record<string, unknown>, expectedUi
   return result;
 }
 
-export function getListingAvailability(id: string) {
-  return request<{ success: true; listingId: string; availability: ListingAvailability | null; activeRentals: AvailabilityRange[] }>(
-    `/api/listings/${encodeURIComponent(id)}/availability`,
+export async function getListingAvailability(id: string, window: { from: string; until: string }, signal?: AbortSignal): Promise<ListingAvailabilityCalendar> {
+  const params = new URLSearchParams({ from: window.from, until: window.until });
+  const raw = await request<unknown>(
+    `/api/listings/${encodeURIComponent(id)}/availability?${params.toString()}`,
+    { signal },
   );
+  return decodeListingAvailabilityCalendar(raw, id);
 }
 
 export function setListingControls(id: string, action: 'hide' | 'show' | 'archive' | 'delete') {

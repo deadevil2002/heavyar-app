@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
-  activeInterval, auditV2ProtectedMutation, buildFinalPaymentHandoff, calculateRental, estimateRental, intervalsOverlap,
+  activeInterval, assertListingAvailableForInterval, auditV2ProtectedMutation, buildFinalPaymentHandoff, calculateRental, estimateRental, intervalsOverlap,
   legacyMarketProjection, legacyPricingProjection, parseV2RequestInput, validateListingPricing,
   validateServerStart, v2TransitionAllowed,
 } from './rental-v2';
@@ -68,7 +68,8 @@ describe('Rental V2 input security', () => {
 
   it('enforces mode/rate/end combinations and compatibility alias agreement', () => {
     expect(() => request({ rentalMode: 'daily', rateUnit: 'hourly' })).toThrow();
-    expect(() => request({ rentalMode: 'open_ended', requestedEndAt: '2030-09-20T10:00:00.000Z' })).toThrow();
+    expect(() => request({ rentalMode: 'open_ended', requestedEndAt: '2030-09-20T10:00:00.000Z' })).toThrow('FIXED_DURATION_REQUIRED');
+    expect(() => request({ requestedEndAt: null })).toThrow('FIXED_DURATION_REQUIRED');
     expect(() => request({ requestMode: 'daily' })).toThrow();
     expect(request({ requestMode: 'hourly' }).rentalMode).toBe('hourly');
   });
@@ -100,11 +101,17 @@ describe('Rental V2 calculations', () => {
     expect(calculateRental({ mode: 'open_ended', unit: 'daily', rateAmountMinor: 150_000, startAt: '2030-09-20T08:00:00.000Z', endAt: '2030-09-21T08:00:01.000Z', countryCode: 'SA' }).baseAmountMinor).toBe(300_000);
   });
 
-  it('returns a null open-ended estimate and detects rate changes/device-clock past starts', () => {
-    const input = request({ rentalMode: 'open_ended', requestedEndAt: null });
-    expect(estimateRental(input, both, 'SA', '2030-09-20T07:00:00.000Z')).toMatchObject({ baseAmountMinor: null, duration: { elapsedMinutes: null }, marketTimezone: 'Asia/Riyadh' });
+  it('detects rate changes and device-clock past starts for fixed requests', () => {
     expect(() => estimateRental(request({ expectedRateAmountMinor: 1 }), both, 'SA', '2030-09-20T07:00:00.000Z')).toThrow('RATE_CHANGED');
     expect(() => estimateRental(request(), both, 'SA', '2030-09-20T09:00:00.000Z')).toThrow('past');
+  });
+
+  it('enforces owner availability using market calendar dates', () => {
+    const requested = { startAt: '2030-09-20T05:00:00.000Z', endAt: '2030-09-20T07:00:00.000Z' };
+    expect(assertListingAvailableForInterval({ from: '2030-09-20', until: '2030-09-30' }, requested, 'SA')).toMatchObject({ temporarilyUnavailable: false });
+    expect(() => assertListingAvailableForInterval({ from: '2030-09-20', blocked: [{ from: '2030-09-20' }] }, requested, 'SA')).toThrow('LISTING_AVAILABILITY_CONFLICT');
+    expect(() => assertListingAvailableForInterval({ from: '2030-09-20', temporarilyUnavailable: true }, requested, 'SA')).toThrow('LISTING_TEMPORARILY_UNAVAILABLE');
+    expect(() => assertListingAvailableForInterval({ from: '2030-02-30' }, requested, 'SA')).toThrow('LISTING_AVAILABILITY_UNAVAILABLE');
   });
 
   it('builds a deterministic settlement-enabled minor-unit payment handoff', () => {
@@ -225,6 +232,11 @@ describe('Rental V2 HTTP authority boundary', () => {
     }), env);
     expect(detail.status).toBe(200);
     expect(await detail.json()).toMatchObject({ success: true, equipment: [{ id: 'eq_1', pricingModelVersion: 2 }] });
+    const reviewCalendar = await worker.fetch(new Request('https://api.test/api/listings/eq_1/availability?from=2099-09-01&until=2099-10-01', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    expect(reviewCalendar.status).toBe(200);
+    expect(await reviewCalendar.json()).toMatchObject({ success: true, listingId: 'eq_1' });
 
     const estimate = await worker.fetch(new Request('https://api.test/api/requests/estimate', {
       method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
@@ -254,6 +266,64 @@ describe('Rental V2 HTTP authority boundary', () => {
     expect(response.status).toBe(200);
     expect(body).toMatchObject({ success: true, estimate: { calculationVersion: 2, baseAmountMinor: 24_000, currency: 'SAR', commercial: { baseAmountMinor: 24_000 } } });
     expect(typeof body.serverNow).toBe('string');
+    __test.setAuth(); __test.setFirestore();
+  });
+
+  it('rejects new open-ended REST requests while retaining historical lifecycle helpers', async () => {
+    fixture();
+    const response = await worker.fetch(new Request('https://api.test/api/requests/estimate', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...request(), rentalMode: 'open_ended', requestedEndAt: null }),
+    }), env);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ errorCode: 'FIXED_DURATION_REQUIRED' });
+    const legacy = await worker.fetch(new Request('https://api.test/api/requests', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ equipmentId: 'eq_1', requestMode: 'open_ended', startDate: '2099-09-20' }),
+    }), env);
+    expect(legacy.status).toBe(400);
+    expect(await legacy.json()).toMatchObject({ errorCode: 'FIXED_DURATION_REQUIRED' });
+    expect(activeInterval({ pricingModelVersion: 2, status: 'in_progress', rentalMode: 'open_ended', actualStartAt: '2030-09-20T08:00:00.000Z', requestedEndAt: null })).toEqual({ startAt: '2030-09-20T08:00:00.000Z', endAt: null });
+    __test.setAuth(); __test.setFirestore();
+  });
+
+  it('fails closed when listing availability is blocked, paused, or malformed', async () => {
+    for (const [availability, status, errorCode] of [
+      [{ from: '2099-01-01', blocked: [{ from: '2099-09-20' }] }, 409, 'LISTING_AVAILABILITY_CONFLICT'],
+      [{ from: '2099-01-01', temporarilyUnavailable: true }, 409, 'LISTING_TEMPORARILY_UNAVAILABLE'],
+      [{ from: '2099-02-30' }, 503, 'LISTING_AVAILABILITY_UNAVAILABLE'],
+    ] as const) {
+      fixture({ 'equipment/eq_1': { ...listing, availability } });
+      const response = await worker.fetch(new Request('https://api.test/api/requests/estimate', {
+        method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...request(), requestedStartAt: '2099-09-20T08:00:00.000Z', requestedEndAt: '2099-09-20T10:00:00.000Z' }),
+      }), env);
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject({ errorCode });
+    }
+    __test.setAuth(); __test.setFirestore();
+  });
+
+  it('returns one sanitized bounded availability calendar for rental and Store Review customers', async () => {
+    fixture({
+      '__queries/equipmentRequests': [{
+        id: 'private-request-id', equipmentId: 'eq_1', customerUid: 'private-customer', providerUid: 'provider',
+        pricingModelVersion: 2, status: 'accepted', requestedStartAt: '2099-09-20T08:00:00.000Z', requestedEndAt: '2099-09-20T10:00:00.000Z',
+        workSiteLocation: { lat: 1, lng: 2 },
+      }],
+    });
+    const response = await worker.fetch(new Request('https://api.test/api/listings/eq_1/availability?from=2099-09-01&until=2099-10-01', {
+      headers: { Authorization: 'Bearer test' },
+    }), env);
+    const body: any = await response.json();
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      success: true, listingId: 'eq_1', window: { from: '2099-09-01', until: '2099-10-01' },
+      activeRentals: [{ startAt: '2099-09-20T08:00:00.000Z', endAt: '2099-09-20T10:00:00.000Z', state: 'booked' }],
+    });
+    expect(JSON.stringify(body)).not.toContain('private-request-id');
+    expect(JSON.stringify(body)).not.toContain('private-customer');
+    expect(JSON.stringify(body)).not.toContain('workSiteLocation');
     __test.setAuth(); __test.setFirestore();
   });
 

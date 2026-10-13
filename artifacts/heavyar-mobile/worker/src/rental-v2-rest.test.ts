@@ -194,6 +194,7 @@ describe('Rental V2 real Firestore REST contracts', () => {
         daily: { enabled: false, amountMinor: 0 },
       },
       isActive: true, visibility: 'visible', moderationStatus: 'approved',
+      availability: { from: '2099-01-01' },
     });
     rest.put('commercialSettings/catalog', {
       revision: 7,
@@ -250,6 +251,7 @@ describe('Rental V2 real Firestore REST contracts', () => {
   it('propagates the acceptance transaction to the native OR query, fence read, and commit', async () => {
     const rest = new FirestoreRest();
     rest.put('equipmentRequests/r_v2', v2Request(), 'request-v1');
+    rest.put('equipment/eq_1', { countryCode: 'SA', availability: { from: '2099-01-01' } }, 'equipment-v1');
     rest.install();
     __test.setAuth({ uid: 'provider', admin: false, emailVerified: true });
 
@@ -271,6 +273,7 @@ describe('Rental V2 real Firestore REST contracts', () => {
     const rest = new FirestoreRest();
     rest.put('equipmentRequests/r_a', v2Request(), 'request-a-v1');
     rest.put('equipmentRequests/r_b', v2Request(), 'request-b-v1');
+    rest.put('equipment/eq_1', { countryCode: 'SA', availability: { from: '2099-01-01' } }, 'equipment-v1');
     let winner = '';
     let firstRoundCommits = 0;
     let releaseFirstRound!: () => void;
