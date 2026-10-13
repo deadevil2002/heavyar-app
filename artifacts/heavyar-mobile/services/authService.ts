@@ -508,6 +508,7 @@ export async function fetchUserProfile(uid: string): Promise<User | null> {
       city: data.city || '',
       customCity: data.customCity || '',
        role: data.role,
+      providerType: data.providerType === 'company' ? 'company' : data.providerType === 'individual' ? 'individual' : undefined,
       crNumber: data.crNumber || '',
       crVerified: data.crVerified || false,
       rating: data.rating || 0,

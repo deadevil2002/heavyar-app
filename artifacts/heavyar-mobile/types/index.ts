@@ -141,6 +141,7 @@ export interface User {
   city: string;
   customCity: string;
   role: UserRole;
+  providerType?: 'individual' | 'company';
   crNumber: string;
   crVerified: boolean;
   rating: number;

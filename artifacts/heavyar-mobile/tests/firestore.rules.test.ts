@@ -586,4 +586,23 @@ describe('Firestore authorization baseline', () => {
     await assertFails(updateDoc(doc(db, 'users/customer-1'), { currentPolicyVersions: { termsVersion: 'forged' } }));
     await assertFails(updateDoc(doc(db, 'users/customer-1'), { legalCapacityConfirmed: true }));
   });
+
+  it('keeps company organizations, memberships, invitations, and audit records Worker-only', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = asModularFirestore(context.firestore());
+      await setDoc(doc(db, 'organizations/org_fixture'), { ownerUid: 'provider-1', status: 'active' });
+      await setDoc(doc(db, 'organizationMemberships/member_fixture'), { organizationId: 'org_fixture', uid: 'customer-1', status: 'active' });
+      await setDoc(doc(db, 'organizationInvitations/invite_fixture'), { organizationId: 'org_fixture', status: 'pending' });
+      await setDoc(doc(db, 'organizationAudit/audit_fixture'), { organizationId: 'org_fixture', action: 'fixture' });
+    });
+    for (const uid of ['provider-1', 'customer-1', 'outsider']) {
+      const db = authed(uid);
+      for (const path of ['organizations/org_fixture', 'organizationMemberships/member_fixture', 'organizationInvitations/invite_fixture', 'organizationAudit/audit_fixture']) {
+        await assertFails(getDoc(doc(db, path)));
+        await assertFails(setDoc(doc(db, path), { forged: true }));
+      }
+    }
+    const anon = asModularFirestore(env.unauthenticatedContext().firestore());
+    await assertFails(getDoc(doc(anon, 'organizations/org_fixture')));
+  });
 });

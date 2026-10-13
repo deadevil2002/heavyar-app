@@ -25,6 +25,24 @@ import { parsePreciseLocation } from './location';
 import { quoteRentalExtension } from './rental-extension';
 import { rentalExpiryReminderSchedule } from './rental-expiry';
 import {
+  ORGANIZATION_INVITATION_TTL_MS,
+  ORGANIZATION_PAGE_SIZE,
+  isCompanyProvider,
+  isOrganizationAccountEligible,
+  maskOrganizationEmail,
+  normalizeOrganizationCapabilities,
+  normalizeOrganizationEmail,
+  organizationAccountPurpose,
+  organizationDisplayName,
+  organizationInvitationIsAcceptable,
+  organizationMemberCan,
+  organizationTokenParts,
+  safeOrganizationId,
+  safeOrganizationInvitationId,
+  safeOrganizationMemberId,
+  type OrganizationCapability,
+} from './organization';
+import {
   consumeScheduledSubrequest,
   createScheduledGlobalBudget,
   createScheduledProcessorBudget,
@@ -55,7 +73,7 @@ export interface Env {
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
-type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save';
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership';
 type AuthenticatedMutationRateLimitDecision =
   | { status: 'allowed' }
   | { status: 'limited'; retryAfterSeconds: number }
@@ -583,8 +601,14 @@ async function allowAuthenticatedMutation(env: Env, uid: string, scope: Authenti
   // remain explicitly test-only; Production always uses the transaction below.
   if (firestoreOverride || firestoreWrites || capturedCommits) return { status: 'allowed' };
   if (!Number.isFinite(nowMs) || !env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) return { status: 'unavailable' };
-  const windowMs = scope === 'listing_create' ? 10 * 60_000 : 60_000;
-  const limit = scope === 'listing_create' ? 10 : 30;
+  const policy: Record<AuthenticatedMutationScope, { windowMs: number; limit: number }> = {
+    listing_create: { windowMs: 10 * 60_000, limit: 10 },
+    driver_profile_save: { windowMs: 60_000, limit: 30 },
+    organization_provision: { windowMs: 60 * 60_000, limit: 3 },
+    organization_invite: { windowMs: 10 * 60_000, limit: 10 },
+    organization_membership: { windowMs: 10 * 60_000, limit: 20 },
+  };
+  const { windowMs, limit } = policy[scope];
   const id = await hashedId(`authenticated-mutation:${scope}:${uid}`);
   // Reuse the existing temporary rate-limit collection so its bounded expiry
   // cleanup continues without a new collection, index, binding, or Cron path.
@@ -4181,6 +4205,330 @@ async function equipmentSearchRows(env: Env, structuredQuery: FirestoreQuery): P
     data: decode(item.document),
   }));
 }
+
+const ORGANIZATION_JSON_LIMIT_BYTES = 24 * 1024;
+
+function organizationDocumentId(name: unknown): string {
+  return decodeURIComponent(String(name || '').split('/').pop() || '');
+}
+
+function organizationCursor(value: string | null): string | undefined {
+  if (!value || value.length > 300) return undefined;
+  try {
+    const decoded = new TextDecoder().decode(b64(value));
+    return decoded.startsWith('projects/') && decoded.includes('/documents/') ? decoded : undefined;
+  } catch { return undefined; }
+}
+
+function nextOrganizationCursor(name: string | undefined) {
+  return name ? b64u(enc.encode(name)) : null;
+}
+
+async function organizationQueryRows(
+  env: Env,
+  collection: string,
+  field: string,
+  value: string,
+  limit = ORGANIZATION_PAGE_SIZE + 1,
+  cursor?: string,
+): Promise<Array<{ name: string; data: any; updateTime?: string }>> {
+  if (firestoreOverride) {
+    const injected = firestoreOverride('__queries', collection);
+    return (Array.isArray(injected) ? injected : [])
+      .map((item: any) => ({ name: item.name || fullName(env, `${collection}/${encodeURIComponent(String(item.id || 'test'))}`), data: item.data || item, updateTime: item.updateTime || 'test-update-time' }))
+      .filter((row: any) => row.data?.[field] === value && (!cursor || row.name > cursor))
+      .sort((a: any, b: any) => a.name.localeCompare(b.name))
+      .slice(0, limit);
+  }
+  const structuredQuery: any = {
+    from: [{ collectionId: collection }],
+    where: { fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: { stringValue: value } } },
+    orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+    limit,
+  };
+  if (cursor) structuredQuery.startAt = { before: false, values: [{ referenceValue: cursor }] };
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [];
+  return rows.filter(row => row.document).map(row => ({
+    name: String(row.document.name || ''),
+    data: decode(row.document),
+    updateTime: row.document.updateTime as string | undefined,
+  }));
+}
+
+async function organizationIds(ownerUid: string, memberUid?: string, normalizedEmail?: string) {
+  return {
+    organizationId: `org_${await hashedId(`organization-owner:${ownerUid}`)}`,
+    memberId: memberUid ? `orgmem_${await hashedId(`organization-member:${ownerUid}:${memberUid}`)}` : undefined,
+    invitationId: normalizedEmail ? `orginv_${await hashedId(`organization-invitation:${ownerUid}:${normalizedEmail}`)}` : undefined,
+  };
+}
+
+function randomOrganizationSecret() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
+function organizationError(req: Request, env: Env, errorCode: string, status: number) {
+  return out(env, req, { success: false, error: 'Organization request could not be completed', errorCode }, status);
+}
+
+async function organizationBody(req: Request): Promise<Record<string, unknown> | null | 'too_large'> {
+  const result = await readBoundedJson(req, ORGANIZATION_JSON_LIMIT_BYTES);
+  if (result.status === 'too_large') return 'too_large';
+  return result.status === 'ok' && result.value && typeof result.value === 'object' && !Array.isArray(result.value)
+    ? result.value as Record<string, unknown>
+    : null;
+}
+
+function organizationWrite(path: string, env: Env, value: Record<string, unknown>, updateTime?: string) {
+  const fields = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, firestoreValue(item)]));
+  return {
+    update: { name: fullName(env, path), fields },
+    ...(updateTime ? { updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime } } : { currentDocument: { exists: false } }),
+  };
+}
+
+async function organizationAuditWrite(env: Env, organizationId: string, actorMemberId: string, action: string, targetId?: string) {
+  const now = new Date().toISOString();
+  const id = await hashedId(`organization-audit:${organizationId}:${action}:${targetId || ''}:${now}:${crypto.randomUUID()}`);
+  return organizationWrite(`organizationAudit/orgaudit_${id}`, env, {
+    organizationId, actorMemberId, action, ...(targetId ? { targetId } : {}), createdAt: now,
+  });
+}
+
+async function organizationAccess(
+  env: Env,
+  user: User,
+  organizationId: string,
+  capability?: OrganizationCapability,
+): Promise<{ organization: any; organizationRaw: { data: any; updateTime?: string }; membership: any; membershipRaw: { data: any; updateTime?: string }; account: any } | null> {
+  if (!safeOrganizationId(organizationId)) return null;
+  const organizationRaw = await getRawDoc(env, 'organizations', organizationId);
+  if (!organizationRaw?.data || organizationRaw.data.status !== 'active') return null;
+  const ids = await organizationIds(String(organizationRaw.data.ownerUid || ''), user.uid);
+  if (!ids.memberId) return null;
+  const [membershipRaw, account] = await Promise.all([
+    getRawDoc(env, 'organizationMemberships', ids.memberId),
+    user.accountProfile ? Promise.resolve(user.accountProfile) : getDoc(env, 'users', user.uid),
+  ]);
+  const membership = membershipRaw?.data;
+  if (!membership || membership.organizationId !== organizationId || membership.uid !== user.uid || membership.status !== 'active' ||
+      membership.accountPurpose !== organizationRaw.data.accountPurpose || organizationAccountPurpose(account) !== organizationRaw.data.accountPurpose ||
+      !isOrganizationAccountEligible(account) || capability && !organizationMemberCan(membership, capability)) return null;
+  return { organization: organizationRaw.data, organizationRaw, membership, membershipRaw: membershipRaw!, account };
+}
+
+async function organizationIndex(req: Request, env: Env, user: User) {
+  const account = user.accountProfile || await getDoc(env, 'users', user.uid);
+  if (!isOrganizationAccountEligible(account)) return organizationError(req, env, 'ORGANIZATION_ACCOUNT_INELIGIBLE', 403);
+  if (req.method === 'POST') {
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'organization_provision');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many organization requests');
+    if (limited) return limited;
+    if (!isCompanyProvider(account)) return organizationError(req, env, 'COMPANY_PROVIDER_REQUIRED', 403);
+    const ids = await organizationIds(user.uid, user.uid);
+    const now = new Date().toISOString(), purpose = organizationAccountPurpose(account);
+    const organizationValue = {
+      ownerUid: user.uid, status: 'active', accountPurpose: purpose,
+      displayName: organizationDisplayName(account, 'Company'), verificationStatus: 'unverified', legalAuthorityVerified: false,
+      createdAt: now, updatedAt: now,
+    };
+    const ownerMembershipValue = {
+      organizationId: ids.organizationId, uid: user.uid, role: 'owner', status: 'active', capabilities: [], accountPurpose: purpose,
+      createdAt: now, updatedAt: now,
+    };
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      const organizationRaw = transaction ? await transactionDocument(env, `organizations/${ids.organizationId}`, transaction) : await getRawDoc(env, 'organizations', ids.organizationId);
+      const membershipRaw = transaction ? await transactionDocument(env, `organizationMemberships/${ids.memberId}`, transaction) : await getRawDoc(env, 'organizationMemberships', ids.memberId!);
+      if (organizationRaw && (organizationRaw.data.ownerUid !== user.uid || organizationRaw.data.accountPurpose !== purpose || organizationRaw.data.status !== 'active')) return organizationError(req, env, 'ORGANIZATION_CONFLICT', 409);
+      if (membershipRaw && (membershipRaw.data.uid !== user.uid || membershipRaw.data.organizationId !== ids.organizationId || membershipRaw.data.role !== 'owner' || membershipRaw.data.status !== 'active')) return organizationError(req, env, 'ORGANIZATION_CONFLICT', 409);
+      const writes: any[] = [];
+      if (!organizationRaw) writes.push(organizationWrite(`organizations/${ids.organizationId}`, env, organizationValue));
+      if (!membershipRaw) writes.push(organizationWrite(`organizationMemberships/${ids.memberId}`, env, ownerMembershipValue));
+      if (!writes.length) return out(env, req, { success: true, organization: organizationProjection(ids.organizationId, organizationRaw!.data, membershipRaw!.data), alreadyProvisioned: true });
+      writes.push(await organizationAuditWrite(env, ids.organizationId, ids.memberId!, 'organization_provisioned'));
+      try {
+        await commitWrites(env, writes, transaction);
+        return out(env, req, { success: true, organization: organizationProjection(ids.organizationId, organizationRaw?.data || organizationValue, membershipRaw?.data || ownerMembershipValue), alreadyProvisioned: false }, 201);
+      } catch (error) {
+        if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+      }
+    }
+    return organizationError(req, env, 'ORGANIZATION_CONFLICT', 409);
+  }
+  const cursor = organizationCursor(new URL(req.url).searchParams.get('cursor'));
+  const rows = await organizationQueryRows(env, 'organizationMemberships', 'uid', user.uid, ORGANIZATION_PAGE_SIZE + 1, cursor);
+  const rawPage = rows.slice(0, ORGANIZATION_PAGE_SIZE);
+  const activeRows = rawPage.filter(row => row.data.uid === user.uid && row.data.status === 'active' && row.data.accountPurpose === organizationAccountPurpose(account));
+  const organizations = await batchGetRawDocs(env, activeRows.map(row => ({ collection: 'organizations', id: String(row.data.organizationId || '') })));
+  const result = activeRows.flatMap(row => {
+    const id = String(row.data.organizationId || ''), organization = organizations.get(`organizations/${id}`)?.data;
+    return organization?.status === 'active' && organization.accountPurpose === row.data.accountPurpose
+      ? [organizationProjection(id, organization, row.data)]
+      : [];
+  });
+  return out(env, req, { success: true, organizations: result, nextCursor: rows.length > ORGANIZATION_PAGE_SIZE ? nextOrganizationCursor(rawPage.at(-1)?.name) : null });
+}
+
+function organizationProjection(id: string, organization: any, membership: any) {
+  return {
+    id,
+    displayName: typeof organization?.displayName === 'string' ? organization.displayName : '',
+    verificationStatus: organization?.verificationStatus === 'verified' ? 'verified' : 'unverified',
+    legalAuthorityVerified: organization?.legalAuthorityVerified === true,
+    memberRole: membership?.role === 'owner' ? 'owner' : 'employee',
+    capabilities: normalizeOrganizationCapabilities(membership?.capabilities) || [],
+  };
+}
+
+async function organizationMembers(req: Request, env: Env, user: User, organizationId: string) {
+  const access = await organizationAccess(env, user, organizationId);
+  if (!access || access.membership.role !== 'owner') return organizationError(req, env, 'ORGANIZATION_OWNER_REQUIRED', 403);
+  const cursor = organizationCursor(new URL(req.url).searchParams.get('cursor'));
+  const rows = await organizationQueryRows(env, 'organizationMemberships', 'organizationId', organizationId, ORGANIZATION_PAGE_SIZE + 1, cursor);
+  const page = rows.slice(0, ORGANIZATION_PAGE_SIZE);
+  return out(env, req, { success: true, members: page.map(row => ({
+    id: organizationDocumentId(row.name), role: row.data.role === 'owner' ? 'owner' : 'employee',
+    status: ['active', 'revoked'].includes(row.data.status) ? row.data.status : 'revoked',
+    capabilities: normalizeOrganizationCapabilities(row.data.capabilities) || [], createdAt: row.data.createdAt, updatedAt: row.data.updatedAt,
+  })), nextCursor: rows.length > ORGANIZATION_PAGE_SIZE ? nextOrganizationCursor(page.at(-1)?.name) : null });
+}
+
+async function organizationInvitations(req: Request, env: Env, user: User, organizationId: string) {
+  const access = await organizationAccess(env, user, organizationId);
+  if (!access || access.membership.role !== 'owner') return organizationError(req, env, 'ORGANIZATION_OWNER_REQUIRED', 403);
+  if (req.method === 'GET') {
+    const cursor = organizationCursor(new URL(req.url).searchParams.get('cursor'));
+    const rows = await organizationQueryRows(env, 'organizationInvitations', 'organizationId', organizationId, ORGANIZATION_PAGE_SIZE + 1, cursor);
+    const page = rows.slice(0, ORGANIZATION_PAGE_SIZE);
+    return out(env, req, { success: true, invitations: page.map(row => ({
+      id: organizationDocumentId(row.name), emailHint: String(row.data.emailHint || ''),
+      status: row.data.status === 'pending' && !organizationInvitationIsAcceptable(row.data, Date.now()) ? 'expired' : String(row.data.status || 'cancelled'),
+      capabilities: normalizeOrganizationCapabilities(row.data.capabilities) || [], expiresAt: row.data.expiresAt, createdAt: row.data.createdAt,
+    })), nextCursor: rows.length > ORGANIZATION_PAGE_SIZE ? nextOrganizationCursor(page.at(-1)?.name) : null });
+  }
+  const rateLimit = await allowAuthenticatedMutation(env, user.uid, 'organization_invite');
+  const limited = authenticatedMutationRateLimitResponse(req, env, rateLimit, 'Too many invitation requests');
+  if (limited) return limited;
+  const body = await organizationBody(req);
+  if (body === 'too_large') return payloadTooLargeResponse(req, env);
+  if (!body || Object.keys(body).some(key => !['email', 'capabilities'].includes(key))) return organizationError(req, env, 'INVALID_INVITATION', 400);
+  const email = normalizeOrganizationEmail(body.email), capabilities = normalizeOrganizationCapabilities(body.capabilities);
+  if (!email || !capabilities) return organizationError(req, env, 'INVALID_INVITATION', 400);
+  if (user.emailVerified === true && normalizeOrganizationEmail(user.email) === email) return organizationError(req, env, 'OWNER_CANNOT_INVITE_SELF', 409);
+  const emailHash = await hashedId(`organization-email:${email}`), ids = await organizationIds(access.organization.ownerUid, undefined, email);
+  const invitationId = ids.invitationId!, secret = randomOrganizationSecret(), tokenHash = await hashedId(`organization-invitation-token:${secret}`);
+  const nowMs = Date.now(), now = new Date(nowMs).toISOString(), expiresAt = new Date(nowMs + ORGANIZATION_INVITATION_TTL_MS).toISOString();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    const prior = transaction ? await transactionDocument(env, `organizationInvitations/${invitationId}`, transaction) : await getRawDoc(env, 'organizationInvitations', invitationId);
+    if (prior && organizationInvitationIsAcceptable(prior.data, nowMs)) return organizationError(req, env, 'INVITATION_ALREADY_PENDING', 409);
+    const value = {
+      organizationId, emailHash, emailHint: maskOrganizationEmail(email), tokenHash, status: 'pending', capabilities,
+      accountPurpose: access.organization.accountPurpose, expiresAt, createdAt: prior?.data?.createdAt || now, updatedAt: now,
+    };
+    const actorMemberId = `orgmem_${await hashedId(`organization-member:${access.organization.ownerUid}:${user.uid}`)}`;
+    const writes = [organizationWrite(`organizationInvitations/${invitationId}`, env, value, prior?.updateTime), await organizationAuditWrite(env, organizationId, actorMemberId, 'invitation_created', invitationId)];
+    try {
+      await commitWrites(env, writes, transaction);
+      return out(env, req, { success: true, invitation: { id: invitationId, emailHint: value.emailHint, capabilities, expiresAt }, token: `${invitationId}.${secret}` }, 201);
+    } catch (error) {
+      if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+    }
+  }
+  return organizationError(req, env, 'INVITATION_CONFLICT', 409);
+}
+
+async function organizationAcceptInvitation(req: Request, env: Env, user: User) {
+  const rateLimit = await allowAuthenticatedMutation(env, user.uid, 'organization_membership');
+  const limited = authenticatedMutationRateLimitResponse(req, env, rateLimit, 'Too many membership requests');
+  if (limited) return limited;
+  const body = await organizationBody(req);
+  if (body === 'too_large') return payloadTooLargeResponse(req, env);
+  if (!body || Object.keys(body).some(key => key !== 'token')) return organizationError(req, env, 'INVALID_INVITATION', 400);
+  const parts = organizationTokenParts(body.token), email = normalizeOrganizationEmail(user.email);
+  if (!parts || !email || user.emailVerified !== true) return organizationError(req, env, 'VERIFIED_EMAIL_REQUIRED', 403);
+  const account = user.accountProfile || await getDoc(env, 'users', user.uid);
+  if (!isOrganizationAccountEligible(account)) return organizationError(req, env, 'ORGANIZATION_ACCOUNT_INELIGIBLE', 403);
+  const emailHash = await hashedId(`organization-email:${email}`), tokenHash = await hashedId(`organization-invitation-token:${parts.secret}`), nowMs = Date.now(), now = new Date(nowMs).toISOString();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    const invitation = transaction ? await transactionDocument(env, `organizationInvitations/${parts.invitationId}`, transaction) : await getRawDoc(env, 'organizationInvitations', parts.invitationId);
+    if (!invitation?.data || invitation.data.emailHash !== emailHash || invitation.data.tokenHash !== tokenHash || !organizationInvitationIsAcceptable(invitation.data, nowMs)) return organizationError(req, env, 'INVITATION_INVALID_OR_EXPIRED', 403);
+    const organization = transaction ? await transactionDocument(env, `organizations/${invitation.data.organizationId}`, transaction) : await getRawDoc(env, 'organizations', invitation.data.organizationId);
+    if (!organization?.data || organization.data.status !== 'active' || organization.data.accountPurpose !== invitation.data.accountPurpose || organizationAccountPurpose(account) !== invitation.data.accountPurpose) return organizationError(req, env, 'ORGANIZATION_ACCESS_DENIED', 403);
+    const ids = await organizationIds(organization.data.ownerUid, user.uid);
+    const priorMember = transaction ? await transactionDocument(env, `organizationMemberships/${ids.memberId}`, transaction) : await getRawDoc(env, 'organizationMemberships', ids.memberId!);
+    if (priorMember?.data?.role === 'owner' || priorMember?.data?.organizationId && priorMember.data.organizationId !== invitation.data.organizationId) return organizationError(req, env, 'MEMBERSHIP_CONFLICT', 409);
+    const capabilities = normalizeOrganizationCapabilities(invitation.data.capabilities);
+    if (!capabilities) return organizationError(req, env, 'INVITATION_INVALID_OR_EXPIRED', 403);
+    const memberValue = { organizationId: invitation.data.organizationId, uid: user.uid, role: 'employee', status: 'active', capabilities, accountPurpose: invitation.data.accountPurpose, createdAt: priorMember?.data?.createdAt || now, updatedAt: now };
+    const inviteValue = { ...invitation.data, tokenHash: '', status: 'accepted', acceptedMemberId: ids.memberId, acceptedAt: now, updatedAt: now };
+    const writes = [organizationWrite(`organizationMemberships/${ids.memberId}`, env, memberValue, priorMember?.updateTime), organizationWrite(`organizationInvitations/${parts.invitationId}`, env, inviteValue, invitation.updateTime), await organizationAuditWrite(env, invitation.data.organizationId, ids.memberId!, 'invitation_accepted', parts.invitationId)];
+    try {
+      await commitWrites(env, writes, transaction);
+      return out(env, req, { success: true, organization: organizationProjection(invitation.data.organizationId, organization.data, memberValue) });
+    } catch (error) {
+      if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+    }
+  }
+  return organizationError(req, env, 'MEMBERSHIP_CONFLICT', 409);
+}
+
+async function organizationCancelInvitation(req: Request, env: Env, user: User, organizationId: string, invitationId: string) {
+  if (!safeOrganizationInvitationId(invitationId)) return organizationError(req, env, 'INVITATION_NOT_FOUND', 404);
+  const access = await organizationAccess(env, user, organizationId);
+  if (!access || access.membership.role !== 'owner') return organizationError(req, env, 'ORGANIZATION_OWNER_REQUIRED', 403);
+  const rateLimit = await allowAuthenticatedMutation(env, user.uid, 'organization_membership');
+  const limited = authenticatedMutationRateLimitResponse(req, env, rateLimit, 'Too many membership requests');
+  if (limited) return limited;
+  const invitation = await getRawDoc(env, 'organizationInvitations', invitationId);
+  if (!invitation?.data || invitation.data.organizationId !== organizationId) return organizationError(req, env, 'INVITATION_NOT_FOUND', 404);
+  if (invitation.data.status === 'cancelled') return out(env, req, { success: true, status: 'cancelled' });
+  if (invitation.data.status !== 'pending') return organizationError(req, env, 'INVITATION_NOT_PENDING', 409);
+  const now = new Date().toISOString(), fields = { status: { stringValue: 'cancelled' }, tokenHash: { stringValue: '' }, cancelledAt: { timestampValue: now }, updatedAt: { timestampValue: now } };
+  await commitWrites(env, [{ update: { name: fullName(env, `organizationInvitations/${invitationId}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: invitation.updateTime! } }, await organizationAuditWrite(env, organizationId, `orgmem_${await hashedId(`organization-member:${access.organization.ownerUid}:${user.uid}`)}`, 'invitation_cancelled', invitationId)]);
+  return out(env, req, { success: true, status: 'cancelled' });
+}
+
+async function organizationRevokeMember(req: Request, env: Env, user: User, organizationId: string, memberId: string) {
+  if (!safeOrganizationMemberId(memberId)) return organizationError(req, env, 'MEMBER_NOT_FOUND', 404);
+  const access = await organizationAccess(env, user, organizationId);
+  if (!access || access.membership.role !== 'owner') return organizationError(req, env, 'ORGANIZATION_OWNER_REQUIRED', 403);
+  const rateLimit = await allowAuthenticatedMutation(env, user.uid, 'organization_membership');
+  const limited = authenticatedMutationRateLimitResponse(req, env, rateLimit, 'Too many membership requests');
+  if (limited) return limited;
+  const member = await getRawDoc(env, 'organizationMemberships', memberId);
+  if (!member?.data || member.data.organizationId !== organizationId) return organizationError(req, env, 'MEMBER_NOT_FOUND', 404);
+  if (member.data.role === 'owner') return organizationError(req, env, 'SOLE_OWNER_PROTECTED', 409);
+  if (member.data.status === 'revoked') return out(env, req, { success: true, status: 'revoked' });
+  const now = new Date().toISOString(), fields = { status: { stringValue: 'revoked' }, capabilities: { arrayValue: { values: [] } }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } };
+  await commitWrites(env, [{ update: { name: fullName(env, `organizationMemberships/${memberId}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: member.updateTime! } }, await organizationAuditWrite(env, organizationId, `orgmem_${await hashedId(`organization-member:${access.organization.ownerUid}:${user.uid}`)}`, 'member_revoked', memberId)]);
+  return out(env, req, { success: true, status: 'revoked' });
+}
+
+async function organizationWorkspace(req: Request, env: Env, user: User, organizationId: string, kind: 'equipment' | 'bookings') {
+  const capability: OrganizationCapability = kind === 'equipment' ? 'equipment.view' : 'bookings.view';
+  const access = await organizationAccess(env, user, organizationId, capability);
+  if (!access) return organizationError(req, env, 'ORGANIZATION_CAPABILITY_REQUIRED', 403);
+  const cursor = organizationCursor(new URL(req.url).searchParams.get('cursor'));
+  const collection = kind === 'equipment' ? 'equipment' : 'equipmentRequests', field = kind === 'equipment' ? 'ownerUid' : 'providerUid';
+  const rows = await organizationQueryRows(env, collection, field, access.organization.ownerUid, ORGANIZATION_PAGE_SIZE + 1, cursor);
+  const page = rows.slice(0, ORGANIZATION_PAGE_SIZE);
+  const items = kind === 'equipment' ? page.map(row => ({
+    id: organizationDocumentId(row.name), publicEquipmentNumber: row.data.publicEquipmentNumber || null,
+    titleAr: String(row.data.titleAr || row.data.title || ''), titleEn: String(row.data.titleEn || row.data.title || ''),
+    category: String(row.data.category || ''), isActive: row.data.isActive === true,
+    moderationStatus: String(row.data.moderationStatus || ''),
+  })) : page.map(row => ({
+    id: organizationDocumentId(row.name), publicRequestNumber: row.data.publicRequestNumber || null, status: String(row.data.status || ''),
+    equipmentTitleAr: String(row.data.equipmentSnapshot?.titleAr || row.data.equipmentNameAr || ''),
+    equipmentTitleEn: String(row.data.equipmentSnapshot?.titleEn || row.data.equipmentNameEn || ''),
+    requestedStartAt: row.data.requestedStartAt || row.data.startDate || null, requestedEndAt: row.data.requestedEndAt || row.data.endDate || null,
+  }));
+  return out(env, req, { success: true, items, nextCursor: rows.length > ORGANIZATION_PAGE_SIZE ? nextOrganizationCursor(page.at(-1)?.name) : null });
+}
 async function reviewEquipmentDetail(req: Request, env: Env, u: User, id: string) {
   const equipment = await getDoc(env, 'equipment', id);
   const account = u.accountProfile || await getDoc(env, 'users', u.uid);
@@ -4853,6 +5201,18 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       if (path === '/api/drivers/requests' && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env));
       const driverRequestMatch = path.match(/^\/api\/drivers\/requests\/([^/]+)$/);
       if (driverRequestMatch && req.method === 'POST') return await driverRequest(req, env, await authenticatedUser(req, env), decodeURIComponent(driverRequestMatch[1]));
+      if (path === '/api/organizations' && (req.method === 'GET' || req.method === 'POST')) return await organizationIndex(req, env, await authenticatedUser(req, env));
+      if (path === '/api/organization-invitations/accept' && req.method === 'POST') return await organizationAcceptInvitation(req, env, await authenticatedUser(req, env));
+      const organizationMembersMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/members$/);
+      if (organizationMembersMatch && req.method === 'GET') return await organizationMembers(req, env, await authenticatedUser(req, env), organizationMembersMatch[1]);
+      const organizationInvitationsMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/invitations$/);
+      if (organizationInvitationsMatch && (req.method === 'GET' || req.method === 'POST')) return await organizationInvitations(req, env, await authenticatedUser(req, env), organizationInvitationsMatch[1]);
+      const organizationInvitationCancelMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/invitations\/(orginv_[A-Za-z0-9_-]{43})\/cancel$/);
+      if (organizationInvitationCancelMatch && req.method === 'POST') return await organizationCancelInvitation(req, env, await authenticatedUser(req, env), organizationInvitationCancelMatch[1], organizationInvitationCancelMatch[2]);
+      const organizationMemberRevokeMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/members\/(orgmem_[A-Za-z0-9_-]{43})\/revoke$/);
+      if (organizationMemberRevokeMatch && req.method === 'POST') return await organizationRevokeMember(req, env, await authenticatedUser(req, env), organizationMemberRevokeMatch[1], organizationMemberRevokeMatch[2]);
+      const organizationWorkspaceMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/workspace\/(equipment|bookings)$/);
+      if (organizationWorkspaceMatch && req.method === 'GET') return await organizationWorkspace(req, env, await authenticatedUser(req, env), organizationWorkspaceMatch[1], organizationWorkspaceMatch[2] as 'equipment' | 'bookings');
        if (path === '/api/staff/invitations/accept' && req.method === 'POST') {
          const result = await acceptStaffInvitation(req, env, await activeFirebaseUser(req, env));
          const status = typeof result === 'object' && result && typeof (result as any).status === 'number' ? Number((result as any).status) : 200;

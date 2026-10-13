@@ -70,6 +70,7 @@ function RootLayoutNav() {
       <Stack.Screen name="edit-equipment" options={{ headerShown: false }} />
       <Stack.Screen name="invoices" options={{ headerShown: false }} />
       <Stack.Screen name="performance-report" options={{ headerShown: false }} />
+      <Stack.Screen name="company-team" options={{ headerShown: false }} />
     </Stack>
   );
 }

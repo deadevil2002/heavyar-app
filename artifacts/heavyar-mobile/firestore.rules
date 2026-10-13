@@ -459,6 +459,20 @@ service cloud.firestore {
     match /staffInvitations/{invitationId} {
       allow read, write: if false;
     }
+    // Company delegation is distinct from platform staff. Membership,
+    // invitation tokens and audit records are authoritative Worker-only data.
+    match /organizations/{organizationId} {
+      allow read, write: if false;
+    }
+    match /organizationMemberships/{membershipId} {
+      allow read, write: if false;
+    }
+    match /organizationInvitations/{invitationId} {
+      allow read, write: if false;
+    }
+    match /organizationAudit/{auditId} {
+      allow read, write: if false;
+    }
     match /paymentGateways/{gatewayId} {
       allow read, write: if false;
     }

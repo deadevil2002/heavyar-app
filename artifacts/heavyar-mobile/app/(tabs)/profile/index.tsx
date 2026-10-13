@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Settings, Package, Star, Search, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera, Trash2, Bell } from 'lucide-react-native';
+import { Settings, Package, Star, Search, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera, Trash2, Bell, Building2 } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
@@ -237,6 +237,7 @@ export default function ProfileScreen() {
       ? [{ icon: Shield, label: isRTL ? 'التحقق والموثوقية' : 'Verification & trust', route: '/verification' as const }]
       : []),
     { icon: Bell, label: t('notifications'), route: '/notifications' as const },
+    { icon: Building2, label: isRTL ? 'فريق الشركة' : 'Company team', route: '/company-team' as const },
     { icon: Receipt, label: t('invoices'), route: '/invoices' as const },
     { icon: Settings, label: t('settings'), route: '/settings' as const },
   ];

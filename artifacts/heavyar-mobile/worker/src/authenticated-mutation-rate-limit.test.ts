@@ -129,6 +129,20 @@ describe('durable authenticated mutation rate limiting', () => {
     expect((await __test.allowAuthenticatedMutation(env, 'shared-provider', 'listing_create', now)).status).toBe('limited');
   });
 
+  test('bounds organization provisioning, invitations, and membership changes with isolated hashed quotas', async () => {
+    const firestore = firestoreHarness();
+    globalThis.fetch = firestore.fetch;
+    const now = 1_800_000_000_000;
+    for (let attempt = 0; attempt < 3; attempt += 1) expect((await __test.allowAuthenticatedMutation(env, 'company-owner', 'organization_provision', now)).status).toBe('allowed');
+    expect(await __test.allowAuthenticatedMutation(env, 'company-owner', 'organization_provision', now)).toEqual({ status: 'limited', retryAfterSeconds: 3600 });
+    for (let attempt = 0; attempt < 10; attempt += 1) expect((await __test.allowAuthenticatedMutation(env, 'company-owner', 'organization_invite', now)).status).toBe('allowed');
+    expect((await __test.allowAuthenticatedMutation(env, 'company-owner', 'organization_invite', now)).status).toBe('limited');
+    for (let attempt = 0; attempt < 20; attempt += 1) expect((await __test.allowAuthenticatedMutation(env, 'employee-user', 'organization_membership', now)).status).toBe('allowed');
+    expect((await __test.allowAuthenticatedMutation(env, 'employee-user', 'organization_membership', now)).status).toBe('limited');
+    expect(JSON.stringify([...firestore.documents.entries()])).not.toContain('company-owner');
+    expect(JSON.stringify([...firestore.documents.entries()])).not.toContain('employee-user');
+  });
+
   test('storage failure fails closed and normal reservations use three Firestore subrequests', async () => {
     const healthy = firestoreHarness();
     globalThis.fetch = healthy.fetch;
