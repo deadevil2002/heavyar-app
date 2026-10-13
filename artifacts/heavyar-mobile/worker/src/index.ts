@@ -71,9 +71,9 @@ export interface Env {
   __diagnostics?: MutationDiagnostics;
   __scheduledBudget?: ScheduledBudgetView;
 }
-type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; roleProfileRaw?: { data: any; updateTime?: string } | null };
+type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; accountProfileRaw?: { data: any; updateTime?: string } | null; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
-type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership';
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking';
 type AuthenticatedMutationRateLimitDecision =
   | { status: 'allowed' }
   | { status: 'limited'; retryAfterSeconds: number }
@@ -259,6 +259,7 @@ async function authenticatedUser(req: Request, env: Env, allowAccountManagement 
   const profileRaw = await getRawDoc(env, 'users', user.uid);
   const profile = profileRaw?.data || null;
   user.accountProfile = profile || user.accountProfile;
+  user.accountProfileRaw = profileRaw;
   if (!user.testInjected) {
     if (!profile) err('ACCOUNT_PROVISIONING_INCOMPLETE');
     const roleProfileRaw = profile.role === 'driver' ? await getRawDoc(env, 'driverProfiles', user.uid) : null;
@@ -607,6 +608,8 @@ async function allowAuthenticatedMutation(env: Env, uid: string, scope: Authenti
     organization_provision: { windowMs: 60 * 60_000, limit: 3 },
     organization_invite: { windowMs: 10 * 60_000, limit: 10 },
     organization_membership: { windowMs: 10 * 60_000, limit: 20 },
+    organization_equipment: { windowMs: 60_000, limit: 30 },
+    organization_booking: { windowMs: 60_000, limit: 30 },
   };
   const { windowMs, limit } = policy[scope];
   const id = await hashedId(`authenticated-mutation:${scope}:${uid}`);
@@ -2072,9 +2075,11 @@ async function createRequest(req: Request, env: Env, u: User) {
   );
   return out(env, req, { success: true, request: requestDto(id, { ...value, publicRequestNumber }), quote: initialQuote, commercialSnapshot }, 201);
 }
-async function transitionV2Request(req: Request, env: Env, u: User, requestId: string, raw: { data: any; updateTime?: string }, body: any) {
+async function transitionV2Request(req: Request, env: Env, u: User, requestId: string, raw: { data: any; updateTime?: string }, body: any, delegation?: OrganizationDelegationContext) {
   const r = raw.data, action = String(body.action || '');
-  if (!v2TransitionAllowed(r, action, u.uid, u.admin)) return out(env, req, { success: false, error: 'Invalid V2 rental transition', errorCode: 'INVALID_TRANSITION' }, 409);
+  const effectiveUid = delegation?.access.organization.ownerUid || u.uid;
+  if (delegation && r.providerUid !== effectiveUid) return organizationError(req, env, 'BOOKING_NOT_FOUND', 404);
+  if (!v2TransitionAllowed(r, action, effectiveUid, delegation ? false : u.admin)) return out(env, req, { success: false, error: 'Invalid V2 rental transition', errorCode: 'INVALID_TRANSITION' }, 409);
   if (Object.keys(body).some(key => !['action', 'reason'].includes(key))) return out(env, req, { success: false, error: 'Unsupported transition field' }, 400);
   const reason = body.reason === undefined ? '' : String(body.reason).trim();
   if (action === 'cancel' && (!reason || reason.length > 500 || /[\u0000-\u001f\u007f]/.test(reason))) return out(env, req, { success: false, error: 'A valid cancellation reason is required' }, 400);
@@ -2143,10 +2148,11 @@ async function transitionV2Request(req: Request, env: Env, u: User, requestId: s
       updates.finalizedAt = { timestampValue: now }; updates.allowChat = { booleanValue: false };
     } catch { return out(env, req, { success: false, error: 'Invalid request accounting' }, 409); }
   }
+  if (delegation) updates.lastOrganizationOperation = firestoreValue({ actorMemberId: delegation.actorMemberId, action: `booking_${action}`, at: now });
   updates.status = { stringValue: next };
   const requestWrite = { update: { name: fullName(env, `equipmentRequests/${encodeURIComponent(requestId)}`), fields: updates }, updateMask: { fieldPaths: Object.keys(updates) }, currentDocument: { updateTime: raw.updateTime } };
   const recipient = action === 'cancel' || action === 'request_completion' || action === 'complete'
-    ? (u.uid === r.customerUid ? String(r.providerUid) : String(r.customerUid))
+    ? (effectiveUid === r.customerUid ? String(r.providerUid) : String(r.customerUid))
     : action === 'accept' || action === 'reject' || action === 'start' ? String(r.customerUid) : String(r.providerUid);
   const notificationEvent: NotificationEvent = action === 'accept' ? 'rental_accepted'
     : action === 'reject' ? 'rental_rejected'
@@ -2196,20 +2202,29 @@ async function transitionV2Request(req: Request, env: Env, u: User, requestId: s
           const fencePath = `equipmentBookingFences/${encodeURIComponent(String(r.equipmentId))}`;
           const fence = transaction ? await transactionDocument(env, fencePath, transaction) : await getRawDoc(env, 'equipmentBookingFences', String(r.equipmentId));
           const fenceWrite = { update: { name: fullName(env, fencePath), fields: { equipmentId: { stringValue: String(r.equipmentId) }, revision: { integerValue: String(Number(fence?.data?.revision || 0) + 1) }, requestId: { stringValue: requestId }, updatedAt: { timestampValue: now } } }, currentDocument: fence?.updateTime ? { updateTime: fence.updateTime } : { exists: false } };
-          await commitWrites(env, [requestWrite, fenceWrite, notification, ...(reminderWrite ? [reminderWrite] : [])], transaction);
+          const delegationWrites = delegation ? [
+            ...organizationAuthorizationVerifies(env, delegation.access),
+            await organizationAuditWrite(env, delegation.access.membership.organizationId, delegation.actorMemberId, u.uid, effectiveUid, `booking_${action}`, requestId),
+          ] : [];
+          await commitWrites(env, [requestWrite, fenceWrite, notification, ...(reminderWrite ? [reminderWrite] : []), ...delegationWrites], transaction);
           break;
         } catch (error) {
           if (error instanceof Error && ['ACTIVE_RENTAL_OVERLAP', 'AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_CONFLICT', 'LISTING_TEMPORARILY_UNAVAILABLE'].includes(error.message)) throw error;
+          if (delegation) throw error;
           if (attempt === 3) throw error;
         }
       }
     } else await commitWrites(env, [requestWrite, notification, ...(['cancel', 'complete'].includes(action)
       ? [{ delete: fullName(env, `rentalExpiryReminderJobs/${encodeURIComponent(requestId)}`) }]
-      : [])]);
+      : []), ...(delegation ? [
+        ...organizationAuthorizationVerifies(env, delegation.access),
+        await organizationAuditWrite(env, delegation.access.membership.organizationId, delegation.actorMemberId, u.uid, effectiveUid, `booking_${action}`, requestId),
+      ] : [])]);
   } catch (error) {
     const code = error instanceof Error ? error.message : 'Request changed';
     const availabilityFailure = ['AVAILABILITY_CAP_EXHAUSTED', 'AVAILABILITY_UNAVAILABLE', 'LISTING_AVAILABILITY_UNAVAILABLE'].includes(code);
     const conflict = ['ACTIVE_RENTAL_OVERLAP', 'LISTING_AVAILABILITY_CONFLICT', 'LISTING_TEMPORARILY_UNAVAILABLE'].includes(code);
+    if (delegation && !availabilityFailure && !conflict) return organizationError(req, env, 'ORGANIZATION_AUTHORIZATION_CHANGED', 409);
     const knownCode = conflict || availabilityFailure ? code : 'REQUEST_CHANGED';
     return out(env, req, { success: false, error: conflict ? 'Equipment is unavailable for the full selected period.' : availabilityFailure ? 'Availability temporarily unavailable' : 'Request changed', errorCode: knownCode }, availabilityFailure ? 503 : 409);
   }
@@ -2543,12 +2558,14 @@ async function reviewRentalExtension(req: Request, env: Env, u: User, requestId:
   return rentalExtensionFailure(req, env, new Error('EXTENSION_CHANGED'));
 }
 
-async function transitionRequest(req: Request, env: Env, u: User, requestId: string) {
-  const body: any = await req.json().catch(() => ({})), action = body.action;
+async function transitionRequest(req: Request, env: Env, u: User, requestId: string, bodyOverride?: any, delegation?: OrganizationDelegationContext) {
+  const body: any = bodyOverride ?? await req.json().catch(() => ({})), action = body.action;
   if (!['accept', 'reject', 'cancel', 'request_completion', 'start', 'complete'].includes(action) || !/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) return out(env, req, { success: false, error: 'Invalid transition' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', requestId), r = raw?.data;
   if (!raw?.updateTime || !r) return out(env, req, { success: false, error: 'Not found' }, 404);
-  if (r.pricingModelVersion === 2) return transitionV2Request(req, env, u, requestId, raw, body);
+  const effectiveUid = delegation?.access.organization.ownerUid || u.uid;
+  if (delegation && r.providerUid !== effectiveUid) return organizationError(req, env, 'BOOKING_NOT_FOUND', 404);
+  if (r.pricingModelVersion === 2) return transitionV2Request(req, env, u, requestId, raw, body, delegation);
   await enforceOperationalAccess(env, u, await getDoc(env, 'equipment', r.equipmentId));
   const accounts = await batchGetRawDocs(env, [
     { collection: 'users', id: String(r.customerUid || '') },
@@ -2557,7 +2574,7 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
   const customerAccount = accounts.get(`users/${r.customerUid}`)?.data;
   const providerAccount = accounts.get(`users/${r.providerUid}`)?.data;
   if (isOperationallyBlocked(customerAccount) || isOperationallyBlocked(providerAccount)) return out(env, req, { success: false, error: 'ACCOUNT_SUSPENDED' }, 403);
-  const provider = r.providerUid === u.uid || u.admin, customer = r.customerUid === u.uid;
+  const provider = r.providerUid === effectiveUid || (!delegation && u.admin), customer = r.customerUid === effectiveUid;
   const allowed = action === 'cancel' ? customer : action === 'accept' || action === 'reject' || action === 'start' ? provider : action === 'request_completion' ? provider : action === 'complete' ? customer : false;
   if (!allowed) return out(env, req, { success: false, error: 'Forbidden' }, 403);
   const transitions: Record<string, [string, string[]]> = { accept: ['accepted', ['pending']], reject: ['rejected', ['pending']], cancel: ['cancelled', ['pending', 'accepted']], request_completion: ['completion_requested', ['in_progress']], start: ['in_progress', ['accepted']], complete: ['completed', ['completion_requested']] };
@@ -2565,6 +2582,7 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
   if (!prior.includes(String(r.status))) return out(env, req, { success: false, error: 'Invalid request state' }, 409);
   if (action === 'accept' || action === 'start') await enforceTrustForCustomerAction(env, String(r.customerUid), r, await getDoc(env, 'equipment', r.equipmentId));
   const now = new Date().toISOString(), updates: any = { status: { stringValue: next }, updatedAt: { timestampValue: now } };
+  if (delegation) updates.lastOrganizationOperation = firestoreValue({ actorMemberId: delegation.actorMemberId, action: `booking_${action}`, at: now });
   if (next === 'accepted') {
     updates.allowChat = { booleanValue: true };
     if (!r.commercialSnapshot) {
@@ -2577,6 +2595,10 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
     }
   }
   if (next === 'in_progress') updates.startedAt = { timestampValue: now };
+  if (next === 'completion_requested' && delegation) {
+    updates.completionRequestedBy = { stringValue: u.uid };
+    updates.completionRequestedAt = { timestampValue: now };
+  }
   if (next === 'completed') {
     const started = Date.parse(String(r.startedAt || '')), daily = Number(r.amount);
     if (!Number.isFinite(started) || !Number.isFinite(daily) || daily <= 0) return out(env, req, { success: false, error: 'Invalid request accounting' }, 409);
@@ -2626,7 +2648,10 @@ async function transitionRequest(req: Request, env: Env, u: User, requestId: str
     reservationWrites.push({ update: { name: fullName(env, fencePath), fields: { equipmentId: { stringValue: String(r.equipmentId) }, revision: { integerValue: String(Number(fence?.data?.revision || 0) + 1) }, requestId: { stringValue: requestId }, updatedAt: { timestampValue: now } } }, currentDocument: fence?.updateTime ? { updateTime: fence.updateTime } : { exists: false } });
   }
   try {
-    await commitWrites(env, [{ update: { name: fullName(env, `equipmentRequests/${requestId}`), fields: updates }, updateMask: { fieldPaths: Object.keys(updates) }, currentDocument: { updateTime: raw.updateTime } }, ...reservationWrites, await notificationWrite(fullName.bind(null, env), String(action === 'cancel' || action === 'complete' ? r.providerUid : r.customerUid), action === 'accept' ? 'rental_accepted' : action === 'reject' ? 'rental_rejected' : action === 'cancel' ? 'rental_cancelled' : action === 'request_completion' ? 'completion_requested' : action === 'start' ? 'rental_starting' : 'rental_completed', now, requestId, `${requestId}:transition:${action}:${r.updatedAt || r.createdAt}`)]);
+    await commitWrites(env, [{ update: { name: fullName(env, `equipmentRequests/${requestId}`), fields: updates }, updateMask: { fieldPaths: Object.keys(updates) }, currentDocument: { updateTime: raw.updateTime } }, ...reservationWrites, await notificationWrite(fullName.bind(null, env), String(action === 'cancel' || action === 'complete' ? r.providerUid : r.customerUid), action === 'accept' ? 'rental_accepted' : action === 'reject' ? 'rental_rejected' : action === 'cancel' ? 'rental_cancelled' : action === 'request_completion' ? 'completion_requested' : action === 'start' ? 'rental_starting' : 'rental_completed', now, requestId, `${requestId}:transition:${action}:${r.updatedAt || r.createdAt}`), ...(delegation ? [
+      ...organizationAuthorizationVerifies(env, delegation.access),
+      await organizationAuditWrite(env, delegation.access.membership.organizationId, delegation.actorMemberId, u.uid, effectiveUid, `booking_${action}`, requestId),
+    ] : [])]);
   } catch {
     return out(env, req, { success: false, error: next === 'accepted' ? 'BOOKING_CONFLICT' : 'Request changed' }, 409);
   }
@@ -4104,8 +4129,8 @@ function availabilityStructure(policy: ReturnType<typeof validateListingAvailabi
   return JSON.stringify({ from: policy.from, until: policy.until || null, blocked: policy.blocked });
 }
 
-async function listingAvailabilityUpdate(req: Request, env: Env, u: User, id: string) {
-  const body: any = await req.json().catch(() => null);
+async function listingAvailabilityUpdate(req: Request, env: Env, u: User, id: string, delegation?: OrganizationDelegationContext, bodyOverride?: any) {
+  const body: any = bodyOverride ?? await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)
       || Object.keys(body).some(key => !['availability', 'expectedRevision'].includes(key))
       || typeof body.expectedRevision !== 'string' || !body.expectedRevision) {
@@ -4116,7 +4141,8 @@ async function listingAvailabilityUpdate(req: Request, env: Env, u: User, id: st
     const raw = transaction
       ? await transactionDocument(env, `equipment/${encodeURIComponent(id)}`, transaction)
       : await getRawDoc(env, 'equipment', id);
-    if (!raw?.updateTime || !raw.data || raw.data.ownerUid !== u.uid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
+    const effectiveOwnerUid = delegation?.access.organization.ownerUid || u.uid;
+    if (!raw?.updateTime || !raw.data || raw.data.ownerUid !== effectiveOwnerUid) return out(env, req, { success: false, error: 'Listing not found' }, 404);
     if (raw.data.visibility === 'archived') return out(env, req, { success: false, error: 'Listing is archived' }, 409);
     if (raw.updateTime !== body.expectedRevision) return out(env, req, { success: false, error: 'Availability changed; refresh and retry', errorCode: 'AVAILABILITY_UPDATE_CONFLICT' }, 409);
     let current;
@@ -4151,9 +4177,12 @@ async function listingAvailabilityUpdate(req: Request, env: Env, u: User, id: st
     const write = {
       update: {
         name: fullName(env, `equipment/${encodeURIComponent(id)}`),
-        fields: { availability: firestoreValue(requested), updatedAt: { timestampValue: now } },
+        fields: {
+          availability: firestoreValue(requested), updatedAt: { timestampValue: now },
+          ...(delegation ? { lastOrganizationOperation: firestoreValue({ actorMemberId: delegation.actorMemberId, action: 'equipment_availability_updated', at: now }) } : {}),
+        },
       },
-      updateMask: { fieldPaths: ['availability', 'updatedAt'] },
+      updateMask: { fieldPaths: ['availability', 'updatedAt', ...(delegation ? ['lastOrganizationOperation'] : [])] },
       currentDocument: { updateTime: raw.updateTime },
     };
     const fencePath = `equipmentBookingFences/${encodeURIComponent(id)}`;
@@ -4166,16 +4195,21 @@ async function listingAvailabilityUpdate(req: Request, env: Env, u: User, id: st
         fields: {
           equipmentId: { stringValue: id },
           revision: { integerValue: String(Number(fence?.data?.revision || 0) + 1) },
-          operation: { stringValue: 'owner_availability_update' },
+          operation: { stringValue: delegation ? 'delegated_availability_update' : 'owner_availability_update' },
           updatedAt: { timestampValue: now },
         },
       },
       currentDocument: fence?.updateTime ? { updateTime: fence.updateTime } : { exists: false },
     };
     try {
-      await commitWrites(env, [write, fenceWrite], transaction);
+      const delegationWrites = delegation ? [
+        ...organizationAuthorizationVerifies(env, delegation.access),
+        await organizationAuditWrite(env, delegation.access.membership.organizationId, delegation.actorMemberId, u.uid, effectiveOwnerUid, 'equipment_availability_updated', id),
+      ] : [];
+      await commitWrites(env, [write, fenceWrite, ...delegationWrites], transaction);
       return out(env, req, { success: true, listingId: id, availability: requested, serverNow: now });
     } catch {
+      if (delegation) return organizationError(req, env, 'ORGANIZATION_AUTHORIZATION_CHANGED', 409);
       if (attempt === 3) return out(env, req, { success: false, error: 'Availability changed; refresh and retry', errorCode: 'AVAILABILITY_UPDATE_CONFLICT' }, 409);
     }
   }
@@ -4288,12 +4322,46 @@ function organizationWrite(path: string, env: Env, value: Record<string, unknown
   };
 }
 
-async function organizationAuditWrite(env: Env, organizationId: string, actorMemberId: string, action: string, targetId?: string) {
+type OrganizationAccessContext = {
+  organization: any;
+  organizationRaw: { data: any; updateTime?: string };
+  membership: any;
+  membershipRaw: { data: any; updateTime?: string };
+  membershipId: string;
+  account: any;
+  accountRaw?: { data: any; updateTime?: string } | null;
+};
+
+type OrganizationDelegationContext = {
+  access: OrganizationAccessContext;
+  actorMemberId: string;
+  capability: OrganizationCapability;
+};
+
+async function organizationAuditWrite(
+  env: Env,
+  organizationId: string,
+  actorMemberId: string,
+  actorUid: string,
+  ownerUid: string,
+  action: string,
+  targetId?: string,
+  metadata?: Record<string, string | number | boolean>,
+) {
   const now = new Date().toISOString();
   const id = await hashedId(`organization-audit:${organizationId}:${action}:${targetId || ''}:${now}:${crypto.randomUUID()}`);
   return organizationWrite(`organizationAudit/orgaudit_${id}`, env, {
-    organizationId, actorMemberId, action, ...(targetId ? { targetId } : {}), createdAt: now,
+    organizationId, actorMemberId, actorUid, ownerUid, action, ...(targetId ? { targetId } : {}),
+    ...(metadata && Object.keys(metadata).length ? { metadata } : {}), createdAt: now,
   });
+}
+
+function organizationAuthorizationVerifies(env: Env, access: OrganizationAccessContext) {
+  const writes: any[] = [];
+  if (access.organizationRaw.updateTime) writes.push({ verify: fullName(env, `organizations/${access.membership.organizationId}`), currentDocument: { updateTime: access.organizationRaw.updateTime } });
+  if (access.membershipRaw.updateTime) writes.push({ verify: fullName(env, `organizationMemberships/${access.membershipId}`), currentDocument: { updateTime: access.membershipRaw.updateTime } });
+  if (access.accountRaw?.updateTime && typeof access.membership.uid === 'string') writes.push({ verify: fullName(env, `users/${encodeURIComponent(access.membership.uid)}`), currentDocument: { updateTime: access.accountRaw.updateTime } });
+  return writes;
 }
 
 async function organizationAccess(
@@ -4301,21 +4369,23 @@ async function organizationAccess(
   user: User,
   organizationId: string,
   capability?: OrganizationCapability,
-): Promise<{ organization: any; organizationRaw: { data: any; updateTime?: string }; membership: any; membershipRaw: { data: any; updateTime?: string }; account: any } | null> {
+): Promise<OrganizationAccessContext | null> {
   if (!safeOrganizationId(organizationId)) return null;
   const organizationRaw = await getRawDoc(env, 'organizations', organizationId);
   if (!organizationRaw?.data || organizationRaw.data.status !== 'active') return null;
   const ids = await organizationIds(String(organizationRaw.data.ownerUid || ''), user.uid);
   if (!ids.memberId) return null;
-  const [membershipRaw, account] = await Promise.all([
+  const [membershipRaw, fetchedAccountRaw] = await Promise.all([
     getRawDoc(env, 'organizationMemberships', ids.memberId),
-    user.accountProfile ? Promise.resolve(user.accountProfile) : getDoc(env, 'users', user.uid),
+    user.accountProfileRaw ? Promise.resolve(user.accountProfileRaw) : getRawDoc(env, 'users', user.uid),
   ]);
+  const accountRaw = fetchedAccountRaw || user.accountProfileRaw || null;
+  const account = accountRaw?.data || user.accountProfile;
   const membership = membershipRaw?.data;
   if (!membership || membership.organizationId !== organizationId || membership.uid !== user.uid || membership.status !== 'active' ||
       membership.accountPurpose !== organizationRaw.data.accountPurpose || organizationAccountPurpose(account) !== organizationRaw.data.accountPurpose ||
       !isOrganizationAccountEligible(account) || capability && !organizationMemberCan(membership, capability)) return null;
-  return { organization: organizationRaw.data, organizationRaw, membership, membershipRaw: membershipRaw!, account };
+  return { organization: organizationRaw.data, organizationRaw, membership, membershipRaw: membershipRaw!, membershipId: ids.memberId, account, accountRaw };
 }
 
 async function organizationIndex(req: Request, env: Env, user: User) {
@@ -4347,7 +4417,7 @@ async function organizationIndex(req: Request, env: Env, user: User) {
       if (!organizationRaw) writes.push(organizationWrite(`organizations/${ids.organizationId}`, env, organizationValue));
       if (!membershipRaw) writes.push(organizationWrite(`organizationMemberships/${ids.memberId}`, env, ownerMembershipValue));
       if (!writes.length) return out(env, req, { success: true, organization: organizationProjection(ids.organizationId, organizationRaw!.data, membershipRaw!.data), alreadyProvisioned: true });
-      writes.push(await organizationAuditWrite(env, ids.organizationId, ids.memberId!, 'organization_provisioned'));
+      writes.push(await organizationAuditWrite(env, ids.organizationId, ids.memberId!, user.uid, user.uid, 'organization_provisioned'));
       try {
         await commitWrites(env, writes, transaction);
         return out(env, req, { success: true, organization: organizationProjection(ids.organizationId, organizationRaw?.data || organizationValue, membershipRaw?.data || ownerMembershipValue), alreadyProvisioned: false }, 201);
@@ -4388,11 +4458,45 @@ async function organizationMembers(req: Request, env: Env, user: User, organizat
   const cursor = organizationCursor(new URL(req.url).searchParams.get('cursor'));
   const rows = await organizationQueryRows(env, 'organizationMemberships', 'organizationId', organizationId, ORGANIZATION_PAGE_SIZE + 1, cursor);
   const page = rows.slice(0, ORGANIZATION_PAGE_SIZE);
+  const accounts = await batchGetRawDocs(env, page.map(row => ({ collection: 'users', id: String(row.data.uid || '') })));
   return out(env, req, { success: true, members: page.map(row => ({
     id: organizationDocumentId(row.name), role: row.data.role === 'owner' ? 'owner' : 'employee',
     status: ['active', 'revoked'].includes(row.data.status) ? row.data.status : 'revoked',
-    capabilities: normalizeOrganizationCapabilities(row.data.capabilities) || [], createdAt: row.data.createdAt, updatedAt: row.data.updatedAt,
+    displayName: organizationDisplayName(accounts.get(`users/${row.data.uid}`)?.data, row.data.role === 'owner' ? 'Company owner' : 'Team member'),
+    capabilities: normalizeOrganizationCapabilities(row.data.capabilities) || [], revision: row.updateTime,
+    createdAt: row.data.createdAt, updatedAt: row.data.updatedAt,
   })), nextCursor: rows.length > ORGANIZATION_PAGE_SIZE ? nextOrganizationCursor(page.at(-1)?.name) : null });
+}
+
+async function organizationUpdateMemberCapabilities(req: Request, env: Env, user: User, organizationId: string, memberId: string) {
+  if (!safeOrganizationMemberId(memberId)) return organizationError(req, env, 'MEMBER_NOT_FOUND', 404);
+  const access = await organizationAccess(env, user, organizationId);
+  if (!access || access.membership.role !== 'owner') return organizationError(req, env, 'ORGANIZATION_OWNER_REQUIRED', 403);
+  const rateLimit = await allowAuthenticatedMutation(env, user.uid, 'organization_membership');
+  const limited = authenticatedMutationRateLimitResponse(req, env, rateLimit, 'Too many membership requests');
+  if (limited) return limited;
+  const body = await organizationBody(req);
+  if (body === 'too_large') return payloadTooLargeResponse(req, env);
+  if (!body || Object.keys(body).some(key => !['capabilities', 'expectedRevision'].includes(key)) || typeof body.expectedRevision !== 'string') {
+    return organizationError(req, env, 'INVALID_MEMBERSHIP_UPDATE', 400);
+  }
+  const capabilities = normalizeOrganizationCapabilities(body.capabilities);
+  if (!capabilities) return organizationError(req, env, 'INVALID_MEMBERSHIP_UPDATE', 400);
+  const member = await getRawDoc(env, 'organizationMemberships', memberId);
+  if (!member?.data || member.data.organizationId !== organizationId || member.data.role !== 'employee') return organizationError(req, env, 'MEMBER_NOT_FOUND', 404);
+  if (member.data.uid === user.uid) return organizationError(req, env, 'MEMBER_SELF_MODIFICATION_DENIED', 403);
+  if (member.data.status !== 'active') return organizationError(req, env, 'MEMBER_NOT_ACTIVE', 409);
+  if (!member.updateTime || member.updateTime !== body.expectedRevision) return organizationError(req, env, 'MEMBERSHIP_UPDATE_CONFLICT', 409);
+  const now = new Date().toISOString();
+  const fields = { capabilities: firestoreValue(capabilities), updatedAt: { timestampValue: now } };
+  const writes = [
+    { update: { name: fullName(env, `organizationMemberships/${memberId}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: member.updateTime } },
+    ...organizationAuthorizationVerifies(env, access),
+    await organizationAuditWrite(env, organizationId, access.membershipId, user.uid, access.organization.ownerUid, 'member_capabilities_updated', memberId, { capabilityCount: capabilities.length }),
+  ];
+  try { await commitWrites(env, writes); }
+  catch { return organizationError(req, env, 'MEMBERSHIP_UPDATE_CONFLICT', 409); }
+  return out(env, req, { success: true, status: 'updated', serverNow: now });
 }
 
 async function organizationInvitations(req: Request, env: Env, user: User, organizationId: string) {
@@ -4429,7 +4533,7 @@ async function organizationInvitations(req: Request, env: Env, user: User, organ
       accountPurpose: access.organization.accountPurpose, expiresAt, createdAt: prior?.data?.createdAt || now, updatedAt: now,
     };
     const actorMemberId = `orgmem_${await hashedId(`organization-member:${access.organization.ownerUid}:${user.uid}`)}`;
-    const writes = [organizationWrite(`organizationInvitations/${invitationId}`, env, value, prior?.updateTime), await organizationAuditWrite(env, organizationId, actorMemberId, 'invitation_created', invitationId)];
+    const writes = [organizationWrite(`organizationInvitations/${invitationId}`, env, value, prior?.updateTime), ...organizationAuthorizationVerifies(env, access), await organizationAuditWrite(env, organizationId, actorMemberId, user.uid, access.organization.ownerUid, 'invitation_created', invitationId)];
     try {
       await commitWrites(env, writes, transaction);
       return out(env, req, { success: true, invitation: { id: invitationId, emailHint: value.emailHint, capabilities, expiresAt }, token: `${invitationId}.${secret}` }, 201);
@@ -4465,7 +4569,7 @@ async function organizationAcceptInvitation(req: Request, env: Env, user: User) 
     if (!capabilities) return organizationError(req, env, 'INVITATION_INVALID_OR_EXPIRED', 403);
     const memberValue = { organizationId: invitation.data.organizationId, uid: user.uid, role: 'employee', status: 'active', capabilities, accountPurpose: invitation.data.accountPurpose, createdAt: priorMember?.data?.createdAt || now, updatedAt: now };
     const inviteValue = { ...invitation.data, tokenHash: '', status: 'accepted', acceptedMemberId: ids.memberId, acceptedAt: now, updatedAt: now };
-    const writes = [organizationWrite(`organizationMemberships/${ids.memberId}`, env, memberValue, priorMember?.updateTime), organizationWrite(`organizationInvitations/${parts.invitationId}`, env, inviteValue, invitation.updateTime), await organizationAuditWrite(env, invitation.data.organizationId, ids.memberId!, 'invitation_accepted', parts.invitationId)];
+    const writes = [organizationWrite(`organizationMemberships/${ids.memberId}`, env, memberValue, priorMember?.updateTime), organizationWrite(`organizationInvitations/${parts.invitationId}`, env, inviteValue, invitation.updateTime), await organizationAuditWrite(env, invitation.data.organizationId, ids.memberId!, user.uid, organization.data.ownerUid, 'invitation_accepted', parts.invitationId)];
     try {
       await commitWrites(env, writes, transaction);
       return out(env, req, { success: true, organization: organizationProjection(invitation.data.organizationId, organization.data, memberValue) });
@@ -4488,7 +4592,7 @@ async function organizationCancelInvitation(req: Request, env: Env, user: User, 
   if (invitation.data.status === 'cancelled') return out(env, req, { success: true, status: 'cancelled' });
   if (invitation.data.status !== 'pending') return organizationError(req, env, 'INVITATION_NOT_PENDING', 409);
   const now = new Date().toISOString(), fields = { status: { stringValue: 'cancelled' }, tokenHash: { stringValue: '' }, cancelledAt: { timestampValue: now }, updatedAt: { timestampValue: now } };
-  await commitWrites(env, [{ update: { name: fullName(env, `organizationInvitations/${invitationId}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: invitation.updateTime! } }, await organizationAuditWrite(env, organizationId, `orgmem_${await hashedId(`organization-member:${access.organization.ownerUid}:${user.uid}`)}`, 'invitation_cancelled', invitationId)]);
+  await commitWrites(env, [{ update: { name: fullName(env, `organizationInvitations/${invitationId}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: invitation.updateTime! } }, ...organizationAuthorizationVerifies(env, access), await organizationAuditWrite(env, organizationId, access.membershipId, user.uid, access.organization.ownerUid, 'invitation_cancelled', invitationId)]);
   return out(env, req, { success: true, status: 'cancelled' });
 }
 
@@ -4504,7 +4608,7 @@ async function organizationRevokeMember(req: Request, env: Env, user: User, orga
   if (member.data.role === 'owner') return organizationError(req, env, 'SOLE_OWNER_PROTECTED', 409);
   if (member.data.status === 'revoked') return out(env, req, { success: true, status: 'revoked' });
   const now = new Date().toISOString(), fields = { status: { stringValue: 'revoked' }, capabilities: { arrayValue: { values: [] } }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } };
-  await commitWrites(env, [{ update: { name: fullName(env, `organizationMemberships/${memberId}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: member.updateTime! } }, await organizationAuditWrite(env, organizationId, `orgmem_${await hashedId(`organization-member:${access.organization.ownerUid}:${user.uid}`)}`, 'member_revoked', memberId)]);
+  await commitWrites(env, [{ update: { name: fullName(env, `organizationMemberships/${memberId}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: member.updateTime! } }, ...organizationAuthorizationVerifies(env, access), await organizationAuditWrite(env, organizationId, access.membershipId, user.uid, access.organization.ownerUid, 'member_revoked', memberId)]);
   return out(env, req, { success: true, status: 'revoked' });
 }
 
@@ -4518,16 +4622,112 @@ async function organizationWorkspace(req: Request, env: Env, user: User, organiz
   const page = rows.slice(0, ORGANIZATION_PAGE_SIZE);
   const items = kind === 'equipment' ? page.map(row => ({
     id: organizationDocumentId(row.name), publicEquipmentNumber: row.data.publicEquipmentNumber || null,
+    revision: row.updateTime || null,
     titleAr: String(row.data.titleAr || row.data.title || ''), titleEn: String(row.data.titleEn || row.data.title || ''),
+    descriptionAr: String(row.data.descriptionAr || row.data.description || ''), descriptionEn: String(row.data.descriptionEn || row.data.description || ''),
     category: String(row.data.category || ''), isActive: row.data.isActive === true,
-    moderationStatus: String(row.data.moderationStatus || ''),
+    moderationStatus: String(row.data.moderationStatus || ''), availability: row.data.availability || null,
+    lastOrganizationOperation: row.data.lastOrganizationOperation || null,
   })) : page.map(row => ({
     id: organizationDocumentId(row.name), publicRequestNumber: row.data.publicRequestNumber || null, status: String(row.data.status || ''),
+    pricingModelVersion: row.data.pricingModelVersion === 2 ? 2 : 1,
     equipmentTitleAr: String(row.data.equipmentSnapshot?.titleAr || row.data.equipmentNameAr || ''),
     equipmentTitleEn: String(row.data.equipmentSnapshot?.titleEn || row.data.equipmentNameEn || ''),
     requestedStartAt: row.data.requestedStartAt || row.data.startDate || null, requestedEndAt: row.data.requestedEndAt || row.data.endDate || null,
+    lastOrganizationOperation: row.data.lastOrganizationOperation || null,
   }));
   return out(env, req, { success: true, items, nextCursor: rows.length > ORGANIZATION_PAGE_SIZE ? nextOrganizationCursor(page.at(-1)?.name) : null });
+}
+
+function delegatedMetadataPatch(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const allowed = ['titleAr', 'titleEn', 'descriptionAr', 'descriptionEn'];
+  if (!Object.keys(raw).length || Object.keys(raw).some(key => !allowed.includes(key))) return null;
+  const result: Record<string, string> = {};
+  for (const [key, input] of Object.entries(raw)) {
+    if (typeof input !== 'string' || /[\u0000-\u001f\u007f]/.test(input)) return null;
+    const text = input.trim();
+    const title = key === 'titleAr' || key === 'titleEn';
+    if (title ? text.length < 2 || text.length > 120 : text.length > 1000) return null;
+    result[key] = text;
+  }
+  return result;
+}
+
+async function organizationEquipmentMetadata(req: Request, env: Env, user: User, organizationId: string, equipmentId: string) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(equipmentId)) return organizationError(req, env, 'EQUIPMENT_NOT_FOUND', 404);
+  const access = await organizationAccess(env, user, organizationId, 'equipment.manage');
+  if (!access) return organizationError(req, env, 'ORGANIZATION_CAPABILITY_REQUIRED', 403);
+  const limit = await allowAuthenticatedMutation(env, user.uid, 'organization_equipment');
+  const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many equipment updates');
+  if (limited) return limited;
+  const body = await organizationBody(req);
+  if (body === 'too_large') return payloadTooLargeResponse(req, env);
+  if (!body || Object.keys(body).some(key => !['expectedRevision', 'patch'].includes(key)) || typeof body.expectedRevision !== 'string') {
+    return organizationError(req, env, 'INVALID_EQUIPMENT_UPDATE', 400);
+  }
+  const patch = delegatedMetadataPatch(body.patch);
+  if (!patch) return organizationError(req, env, 'INVALID_EQUIPMENT_UPDATE', 400);
+  const transaction = await beginTransaction(env);
+  const raw = transaction
+    ? await transactionDocument(env, `equipment/${encodeURIComponent(equipmentId)}`, transaction)
+    : await getRawDoc(env, 'equipment', equipmentId);
+  if (!raw?.data || !raw.updateTime || raw.data.ownerUid !== access.organization.ownerUid) return organizationError(req, env, 'EQUIPMENT_NOT_FOUND', 404);
+  if (raw.data.visibility === 'archived') return organizationError(req, env, 'EQUIPMENT_ARCHIVED', 409);
+  if (raw.updateTime !== body.expectedRevision) return organizationError(req, env, 'EQUIPMENT_UPDATE_CONFLICT', 409);
+  let activeRows: RentalRowsResult;
+  try { activeRows = await rentalRowsForEquipment(env, equipmentId, ALL_ACTIVE_RENTAL_INTERVAL, transaction); }
+  catch { return organizationError(req, env, 'AVAILABILITY_UNAVAILABLE', 503); }
+  if (activeRows.exhausted) return organizationError(req, env, 'AVAILABILITY_CAP_EXHAUSTED', 503);
+  if (hasActiveRental(activeRows.rows.map(row => row.data))) return organizationError(req, env, 'LISTING_EDIT_LOCKED', 409);
+  const now = new Date().toISOString();
+  const effectivePatch: Record<string, unknown> = { ...patch };
+  if (requiresListingRereview(raw.data, effectivePatch)) {
+    Object.assign(effectivePatch, { moderationStatus: 'pending_review', moderationReason: '', isActive: false, visibility: 'hidden', reviewedBy: '', reviewedAt: null });
+  }
+  const lastOrganizationOperation = { actorMemberId: access.membershipId, action: 'equipment_metadata_updated', at: now };
+  const fields = Object.fromEntries(Object.entries({ ...effectivePatch, lastOrganizationOperation, updatedAt: now }).map(([key, value]) => [key, firestoreValue(value)]));
+  const writes = [
+    { update: { name: fullName(env, `equipment/${encodeURIComponent(equipmentId)}`), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { updateTime: raw.updateTime } },
+    ...organizationAuthorizationVerifies(env, access),
+    await organizationAuditWrite(env, organizationId, access.membershipId, user.uid, access.organization.ownerUid, 'equipment_metadata_updated', equipmentId, { fieldCount: Object.keys(patch).length }),
+  ];
+  try { await commitWrites(env, writes, transaction); }
+  catch { return organizationError(req, env, 'EQUIPMENT_UPDATE_CONFLICT', 409); }
+  return out(env, req, { success: true, listingId: equipmentId, serverNow: now });
+}
+
+async function organizationEquipmentAvailability(req: Request, env: Env, user: User, organizationId: string, equipmentId: string) {
+  const access = await organizationAccess(env, user, organizationId, 'equipment.manage');
+  if (!access) return organizationError(req, env, 'ORGANIZATION_CAPABILITY_REQUIRED', 403);
+  const limit = await allowAuthenticatedMutation(env, user.uid, 'organization_equipment');
+  const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many equipment updates');
+  if (limited) return limited;
+  const body = await organizationBody(req);
+  if (body === 'too_large') return payloadTooLargeResponse(req, env);
+  if (!body) return organizationError(req, env, 'INVALID_AVAILABILITY_POLICY', 400);
+  return listingAvailabilityUpdate(req, env, user, equipmentId, { access, actorMemberId: access.membershipId, capability: 'equipment.manage' }, body);
+}
+
+async function organizationBookingTransition(req: Request, env: Env, user: User, organizationId: string, requestId: string) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) return organizationError(req, env, 'BOOKING_NOT_FOUND', 404);
+  const body = await organizationBody(req);
+  if (body === 'too_large') return payloadTooLargeResponse(req, env);
+  if (!body || Object.keys(body).some(key => key !== 'action') || typeof body.action !== 'string') {
+    return organizationError(req, env, 'INVALID_BOOKING_OPERATION', 400);
+  }
+  const action = body.action;
+  const capability: OrganizationCapability | null = ['accept', 'reject'].includes(action)
+    ? 'bookings.respond'
+    : ['start', 'request_completion'].includes(action) ? 'bookings.operate' : null;
+  if (!capability) return organizationError(req, env, 'BOOKING_OPERATION_NOT_DELEGABLE', 403);
+  const access = await organizationAccess(env, user, organizationId, capability);
+  if (!access) return organizationError(req, env, 'ORGANIZATION_CAPABILITY_REQUIRED', 403);
+  const limit = await allowAuthenticatedMutation(env, user.uid, 'organization_booking');
+  const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many booking operations');
+  if (limited) return limited;
+  return transitionRequest(req, env, user, requestId, body, { access, actorMemberId: access.membershipId, capability });
 }
 async function reviewEquipmentDetail(req: Request, env: Env, u: User, id: string) {
   const equipment = await getDoc(env, 'equipment', id);
@@ -5211,8 +5411,16 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       if (organizationInvitationCancelMatch && req.method === 'POST') return await organizationCancelInvitation(req, env, await authenticatedUser(req, env), organizationInvitationCancelMatch[1], organizationInvitationCancelMatch[2]);
       const organizationMemberRevokeMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/members\/(orgmem_[A-Za-z0-9_-]{43})\/revoke$/);
       if (organizationMemberRevokeMatch && req.method === 'POST') return await organizationRevokeMember(req, env, await authenticatedUser(req, env), organizationMemberRevokeMatch[1], organizationMemberRevokeMatch[2]);
+      const organizationMemberCapabilityMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/members\/(orgmem_[A-Za-z0-9_-]{43})\/capabilities$/);
+      if (organizationMemberCapabilityMatch && req.method === 'PATCH') return await organizationUpdateMemberCapabilities(req, env, await authenticatedUser(req, env), organizationMemberCapabilityMatch[1], organizationMemberCapabilityMatch[2]);
       const organizationWorkspaceMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/workspace\/(equipment|bookings)$/);
       if (organizationWorkspaceMatch && req.method === 'GET') return await organizationWorkspace(req, env, await authenticatedUser(req, env), organizationWorkspaceMatch[1], organizationWorkspaceMatch[2] as 'equipment' | 'bookings');
+      const organizationEquipmentMetadataMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/equipment\/([A-Za-z0-9_-]{1,128})\/metadata$/);
+      if (organizationEquipmentMetadataMatch && req.method === 'PATCH') return await organizationEquipmentMetadata(req, env, await authenticatedUser(req, env), organizationEquipmentMetadataMatch[1], organizationEquipmentMetadataMatch[2]);
+      const organizationEquipmentAvailabilityMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/equipment\/([A-Za-z0-9_-]{1,128})\/availability$/);
+      if (organizationEquipmentAvailabilityMatch && req.method === 'PATCH') return await organizationEquipmentAvailability(req, env, await authenticatedUser(req, env), organizationEquipmentAvailabilityMatch[1], organizationEquipmentAvailabilityMatch[2]);
+      const organizationBookingTransitionMatch = path.match(/^\/api\/organizations\/(org_[A-Za-z0-9_-]{43})\/bookings\/([A-Za-z0-9_-]{1,128})\/transition$/);
+      if (organizationBookingTransitionMatch && req.method === 'POST') return await organizationBookingTransition(req, env, await authenticatedUser(req, env), organizationBookingTransitionMatch[1], organizationBookingTransitionMatch[2]);
        if (path === '/api/staff/invitations/accept' && req.method === 'POST') {
          const result = await acceptStaffInvitation(req, env, await activeFirebaseUser(req, env));
          const status = typeof result === 'object' && result && typeof (result as any).status === 'number' ? Number((result as any).status) : 200;

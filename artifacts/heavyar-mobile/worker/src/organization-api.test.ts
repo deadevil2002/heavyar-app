@@ -20,7 +20,7 @@ const digest = (value: string) => createHash('sha256').update(value).digest('bas
 function firestoreHarness() {
   const documents = new Map<string, Stored>();
   const transactions = new Map<string, Map<string, number | null>>();
-  let txSequence = 0, version = 0;
+  let txSequence = 0, version = 0, beforeCommit: (() => void) | undefined;
   const put = (path: string, value: Record<string, unknown>) => documents.set(path, { fields: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encode(item)])), updateTime: `2026-10-13T00:00:${String(++version).padStart(2, '0')}.000000Z`, version });
   const data = (path: string) => documents.has(path) ? decodeFields(documents.get(path)!.fields) : null;
   const docResponse = (path: string, stored: Stored) => ({ name: `projects/test-project/databases/(default)/documents/${path}`, fields: stored.fields, updateTime: stored.updateTime });
@@ -52,8 +52,9 @@ function firestoreHarness() {
     if (url.includes(':commit')) {
       const body = JSON.parse(String(init?.body || '{}')), snapshot = transactions.get(String(body.transaction || ''));
       const writes = Array.isArray(body.writes) ? body.writes : [];
+      const hook = beforeCommit; beforeCommit = undefined; hook?.();
       for (const write of writes) {
-        const path = String(write.update?.name || write.delete || '').split('/documents/')[1] || '';
+        const path = String(write.update?.name || write.delete || write.verify || '').split('/documents/')[1] || '';
         const current = documents.get(path);
         const observed = snapshot?.get(path);
         if (observed !== undefined && observed !== (current?.version ?? null)) return Response.json({ error: { status: 'ABORTED' } }, { status: 409 });
@@ -61,7 +62,8 @@ function firestoreHarness() {
         if (write.currentDocument?.updateTime && write.currentDocument.updateTime !== current?.updateTime) return Response.json({ error: { status: 'FAILED_PRECONDITION' } }, { status: 409 });
       }
       for (const write of writes) {
-        const path = String(write.update?.name || write.delete || '').split('/documents/')[1] || '';
+        const path = String(write.update?.name || write.delete || write.verify || '').split('/documents/')[1] || '';
+        if (write.verify) continue;
         if (write.delete) { documents.delete(path); continue; }
         const current = documents.get(path), merged = write.updateMask ? { ...(current?.fields || {}), ...write.update.fields } : write.update.fields;
         documents.set(path, { fields: merged, updateTime: `2026-10-13T00:01:${String(++version).padStart(2, '0')}.000000Z`, version });
@@ -79,7 +81,7 @@ function firestoreHarness() {
     }
     return new Response('', { status: 404 });
   };
-  return { documents, put, data, fetch: fetch as typeof globalThis.fetch };
+  return { documents, put, data, beforeNextCommit(hook: () => void) { beforeCommit = hook; }, fetch: fetch as typeof globalThis.fetch };
 }
 
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -192,6 +194,75 @@ describe('company organization API security', () => {
     expect((await call(`/api/organizations/${organizationId}/members/${employeeMemberId}/revoke`, 'POST', {})).status).toBe(200);
     setEmployee();
     expect((await call(`/api/organizations/${organizationId}/workspace/equipment`)).status).toBe(403);
+  });
+
+  test('owner capability updates use an exact revision and never create platform authority', async () => {
+    const store = firestoreHarness(); globalThis.fetch = store.fetch; setOwner();
+    store.put(`organizations/${organizationId}`, { ownerUid, status: 'active', accountPurpose: 'standard', displayName: 'Owner Company' });
+    store.put(`organizationMemberships/${ownerMemberId}`, { organizationId, uid: ownerUid, role: 'owner', status: 'active', capabilities: [], accountPurpose: 'standard' });
+    store.put(`organizationMemberships/${employeeMemberId}`, { organizationId, uid: employeeUid, role: 'employee', status: 'active', capabilities: ['equipment.view'], accountPurpose: 'standard' });
+    const revision = store.documents.get(`organizationMemberships/${employeeMemberId}`)!.updateTime;
+    const updated = await call(`/api/organizations/${organizationId}/members/${employeeMemberId}/capabilities`, 'PATCH', { expectedRevision: revision, capabilities: ['equipment.manage', 'bookings.respond'] });
+    expect(updated.status).toBe(200);
+    expect(store.data(`organizationMemberships/${employeeMemberId}`)?.capabilities).toEqual(['equipment.manage', 'bookings.respond']);
+    expect((await call(`/api/organizations/${organizationId}/members/${employeeMemberId}/capabilities`, 'PATCH', { expectedRevision: revision, capabilities: ['bookings.operate'] })).status).toBe(409);
+    const freshRevision = store.documents.get(`organizationMemberships/${employeeMemberId}`)!.updateTime;
+    expect((await call(`/api/organizations/${organizationId}/members/${employeeMemberId}/capabilities`, 'PATCH', { expectedRevision: freshRevision, capabilities: ['platform.admin'] })).status).toBe(400);
+    expect([...store.documents.entries()].some(([path, record]) => path.startsWith('organizationAudit/') && store.data(path)?.actorUid === ownerUid && store.data(path)?.ownerUid === ownerUid)).toBe(true);
+  });
+
+  test('delegated equipment metadata is allowlisted and concurrent revocation aborts the write', async () => {
+    const store = firestoreHarness(); globalThis.fetch = store.fetch;
+    store.put(`organizations/${organizationId}`, { ownerUid, status: 'active', accountPurpose: 'standard', displayName: 'Owner Company' });
+    store.put(`organizationMemberships/${employeeMemberId}`, { organizationId, uid: employeeUid, role: 'employee', status: 'active', capabilities: ['equipment.manage'], accountPurpose: 'standard' });
+    store.put('equipment/listing-1', { ownerUid, titleAr: 'حفارة', titleEn: 'Excavator', descriptionAr: '', descriptionEn: '', countryCode: 'SA', availability: { from: '2026-10-13', blocked: [], temporarilyUnavailable: false }, visibility: 'visible', isActive: true, moderationStatus: 'approved' });
+    setEmployee();
+    const revision = store.documents.get('equipment/listing-1')!.updateTime;
+    expect((await call(`/api/organizations/${organizationId}/equipment/listing-1/metadata`, 'PATCH', { expectedRevision: revision, patch: { pricing: { daily: 1 } } })).status).toBe(400);
+    const saved = await call(`/api/organizations/${organizationId}/equipment/listing-1/metadata`, 'PATCH', { expectedRevision: revision, patch: { descriptionEn: 'Updated safely' } });
+    expect(saved.status).toBe(200);
+    expect(store.data('equipment/listing-1')).toMatchObject({ descriptionEn: 'Updated safely', ownerUid });
+    expect(store.data('equipment/listing-1')?.pricing).toBeUndefined();
+
+    const availabilityRevision = store.documents.get('equipment/listing-1')!.updateTime;
+    const availability = await call(`/api/organizations/${organizationId}/equipment/listing-1/availability`, 'PATCH', { expectedRevision: availabilityRevision, availability: { from: '2026-10-13', blocked: [], temporarilyUnavailable: true } });
+    expect(availability.status).toBe(200);
+    expect(store.data('equipment/listing-1')?.availability?.temporarilyUnavailable).toBe(true);
+
+    const secondRevision = store.documents.get('equipment/listing-1')!.updateTime;
+    store.beforeNextCommit(() => store.put(`organizationMemberships/${employeeMemberId}`, { organizationId, uid: employeeUid, role: 'employee', status: 'revoked', capabilities: [], accountPurpose: 'standard' }));
+    const revoked = await call(`/api/organizations/${organizationId}/equipment/listing-1/metadata`, 'PATCH', { expectedRevision: secondRevision, patch: { descriptionEn: 'Must not commit' } });
+    expect(revoked.status).toBe(409);
+    expect(store.data('equipment/listing-1')?.descriptionEn).toBe('Updated safely');
+  });
+
+  test('delegated booking actions preserve provider ownership and forbid financial finalization', async () => {
+    const store = firestoreHarness(); globalThis.fetch = store.fetch;
+    store.put(`organizations/${organizationId}`, { ownerUid, status: 'active', accountPurpose: 'standard', displayName: 'Owner Company' });
+    store.put(`organizationMemberships/${employeeMemberId}`, { organizationId, uid: employeeUid, role: 'employee', status: 'active', capabilities: ['bookings.respond', 'bookings.operate'], accountPurpose: 'standard' });
+    store.put('users/customer-user', { role: 'customer', accountStatus: 'active' });
+    store.put(`users/${ownerUid}`, { role: 'provider', providerType: 'company', accountStatus: 'active' });
+    store.put('equipment/listing-1', { ownerUid, countryCode: 'SA', category: 'excavator', availability: { from: '2026-10-13', until: null, blocked: [], temporarilyUnavailable: false } });
+    const pricingSnapshot = { rateAmountMinor: 10000, currency: 'SAR' }, commercialSnapshot = { platformFeeMinor: 1000, providerReceivableMinor: 9000 };
+    store.put('equipmentRequests/request-1', { providerUid: ownerUid, customerUid: 'customer-user', equipmentId: 'listing-1', status: 'pending', requestMode: 'fixed_days', startDate: '2026-10-20', endDate: '2026-10-21', numberOfDays: 2, amount: 200, currency: 'SAR', pricingSnapshot, commercialSnapshot, createdAt: '2026-10-13T00:00:00.000Z', updatedAt: '2026-10-13T00:00:00.000Z' });
+    setEmployee();
+    expect((await call(`/api/organizations/${organizationId}/bookings/request-1/transition`, 'POST', { action: 'complete' })).status).toBe(403);
+    const accepted = await call(`/api/organizations/${organizationId}/bookings/request-1/transition`, 'POST', { action: 'accept' });
+    expect(accepted.status).toBe(200);
+    expect(store.data('equipmentRequests/request-1')).toMatchObject({ status: 'accepted', providerUid: ownerUid });
+    expect(store.data('equipmentRequests/request-1')?.lastOrganizationOperation).toMatchObject({ actorMemberId: employeeMemberId, action: 'booking_accept' });
+    expect(store.data('equipmentRequests/request-1')?.pricingSnapshot).toEqual(pricingSnapshot);
+    expect(store.data('equipmentRequests/request-1')?.commercialSnapshot).toEqual(commercialSnapshot);
+    expect(store.data('equipmentRequests/request-1')?.paymentStatus).toBeUndefined();
+
+    store.put('equipmentRequests/request-open', { providerUid: ownerUid, customerUid: 'customer-user', equipmentId: 'listing-1', status: 'in_progress', requestMode: 'open_ended', amount: 100, startedAt: '2026-10-12T00:00:00.000Z', createdAt: '2026-10-12T00:00:00.000Z', updatedAt: '2026-10-12T00:00:00.000Z' });
+    expect((await call(`/api/organizations/${organizationId}/bookings/request-open/transition`, 'POST', { action: 'request_completion' })).status).toBe(200);
+    expect(store.data('equipmentRequests/request-open')).toMatchObject({ status: 'completion_requested', completionRequestedBy: employeeUid });
+
+    store.put('equipmentRequests/request-revoked', { providerUid: ownerUid, customerUid: 'customer-user', equipmentId: 'listing-1', status: 'pending', requestMode: 'fixed_days', startDate: '2026-10-24', endDate: '2026-10-25', amount: 200, createdAt: '2026-10-13T00:00:00.000Z', updatedAt: '2026-10-13T00:00:00.000Z' });
+    store.beforeNextCommit(() => store.put(`organizationMemberships/${employeeMemberId}`, { organizationId, uid: employeeUid, role: 'employee', status: 'revoked', capabilities: [], accountPurpose: 'standard' }));
+    expect((await call(`/api/organizations/${organizationId}/bookings/request-revoked/transition`, 'POST', { action: 'reject' })).status).toBe(409);
+    expect(store.data('equipmentRequests/request-revoked')?.status).toBe('pending');
   });
 
   test('expired, mismatched, replayed, suspended and Store Review cross-purpose invitations fail closed', async () => {

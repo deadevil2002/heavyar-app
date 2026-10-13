@@ -52,6 +52,9 @@ const SAFE_ERROR_CODES = new Set([
   'EXTENSION_PAYMENT_INTEGRATION_REQUIRED', 'INVALID_AVAILABILITY_POLICY', 'AVAILABILITY_UPDATE_CONFLICT', 'AVAILABILITY_CONFLICT',
   'RENTAL_INTERVAL_EXPIRED',
   'LISTING_UPDATE_CONFLICT', 'LISTING_LIFECYCLE_CONFLICT',
+  'ORGANIZATION_CAPABILITY_REQUIRED', 'ORGANIZATION_OWNER_REQUIRED', 'MEMBERSHIP_UPDATE_CONFLICT', 'ORGANIZATION_AUTHORIZATION_CHANGED',
+  'INVALID_MEMBERSHIP_UPDATE', 'INVALID_EQUIPMENT_UPDATE', 'EQUIPMENT_UPDATE_CONFLICT',
+  'BOOKING_OPERATION_NOT_DELEGABLE', 'INVALID_BOOKING_OPERATION',
   'INTERNAL_SERVICE_ERROR',
 ]);
 const SAFE_FIRESTORE_CODES = new Set([
@@ -73,6 +76,11 @@ const ROUTES: Array<[RegExp, string]> = [
   [/^\/api\/listings\/[^/]+\/archive$/, '/api/listings/:listingId/archive'],
   [/^\/api\/listings\/[^/]+$/, '/api/listings/:listingId'],
   [/^\/api\/drivers\/profile$/, '/api/drivers/profile'],
+  [/^\/api\/organizations\/[^/]+\/members\/[^/]+\/capabilities$/, '/api/organizations/:organizationId/members/:memberId/capabilities'],
+  [/^\/api\/organizations\/[^/]+\/members\/[^/]+\/revoke$/, '/api/organizations/:organizationId/members/:memberId/revoke'],
+  [/^\/api\/organizations\/[^/]+\/equipment\/[^/]+\/metadata$/, '/api/organizations/:organizationId/equipment/:equipmentId/metadata'],
+  [/^\/api\/organizations\/[^/]+\/equipment\/[^/]+\/availability$/, '/api/organizations/:organizationId/equipment/:equipmentId/availability'],
+  [/^\/api\/organizations\/[^/]+\/bookings\/[^/]+\/transition$/, '/api/organizations/:organizationId/bookings/:requestId/transition'],
   [/^\/cloudinary\/upload$/, '/cloudinary/upload'],
   [/^\/cloudinary\/delete$/, '/cloudinary/delete'],
 ];

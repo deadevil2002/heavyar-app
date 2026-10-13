@@ -39,6 +39,9 @@ describe('organization security model', () => {
     expect(normalizeOrganizationCapabilities(['finance.manage'])).toBeNull();
     expect(normalizeOrganizationCapabilities('equipment.view')).toBeNull();
     expect(organizationMemberCan({ role: 'employee', status: 'active', capabilities: ['equipment.view'] }, 'equipment.view')).toBe(true);
+    expect(organizationMemberCan({ role: 'employee', status: 'active', capabilities: ['equipment.manage'] }, 'equipment.view')).toBe(true);
+    expect(organizationMemberCan({ role: 'employee', status: 'active', capabilities: ['bookings.respond'] }, 'bookings.view')).toBe(true);
+    expect(organizationMemberCan({ role: 'employee', status: 'active', capabilities: ['bookings.respond'] }, 'bookings.operate')).toBe(false);
     expect(organizationMemberCan({ role: 'employee', status: 'revoked', capabilities: ['equipment.view'] }, 'equipment.view')).toBe(false);
     expect(organizationMemberCan({ role: 'owner', status: 'active', capabilities: [] }, 'bookings.view')).toBe(true);
   });

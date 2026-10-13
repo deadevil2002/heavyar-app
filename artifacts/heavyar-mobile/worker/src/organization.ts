@@ -1,4 +1,10 @@
-export const ORGANIZATION_CAPABILITIES = ['equipment.view', 'bookings.view'] as const;
+export const ORGANIZATION_CAPABILITIES = [
+  'equipment.view',
+  'equipment.manage',
+  'bookings.view',
+  'bookings.respond',
+  'bookings.operate',
+] as const;
 
 export type OrganizationCapability = (typeof ORGANIZATION_CAPABILITIES)[number];
 export type OrganizationMemberRole = 'owner' | 'employee';
@@ -41,9 +47,15 @@ export function organizationMemberCan(
 ): boolean {
   if (!membership || membership.status !== 'active') return false;
   if (membership.role === 'owner') return true;
-  return membership.role === 'employee'
-    && Array.isArray(membership.capabilities)
-    && membership.capabilities.includes(capability);
+  if (membership.role !== 'employee' || !Array.isArray(membership.capabilities)) return false;
+  if (membership.capabilities.includes(capability)) return true;
+  // An operational permission necessarily includes the bounded sanitized view
+  // needed to perform it. It never implies another mutation capability.
+  if (capability === 'equipment.view') return membership.capabilities.includes('equipment.manage');
+  if (capability === 'bookings.view') {
+    return membership.capabilities.includes('bookings.respond') || membership.capabilities.includes('bookings.operate');
+  }
+  return false;
 }
 
 export function organizationInvitationIsAcceptable(

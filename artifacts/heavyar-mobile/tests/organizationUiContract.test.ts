@@ -10,8 +10,9 @@ describe('company team mobile contract', () => {
     expect(screen).toContain("from '@/components/ui/heavyar'");
     expect(screen).toContain('useHeavyarDirection');
     expect(screen).toContain('isRTL ? ar : en');
-    expect(screen).toContain("'Loading team…'");
+    expect(screen).toContain("'Loading company workspace…'");
     expect(screen).toContain("'Retry'");
+    expect(screen).toContain('selected ? refreshSelected : refresh');
     expect(screen).toContain('ActivityIndicator');
   });
 
@@ -23,9 +24,13 @@ describe('company team mobile contract', () => {
     expect(profile).toContain("route: '/company-team'");
   });
 
-  it('limits the source UI to read capabilities and does not surface M2-C2 owner operations', () => {
-    expect(screen).toContain("['equipment.view', 'bookings.view']");
-    expect(screen).toContain('Finance, payouts, refunds, signing, and ownership transfer remain owner-only.');
+  it('surfaces only the narrow M2-C2 capabilities and keeps protected actions outside delegation', () => {
+    expect(screen).toContain("'equipment.manage'");
+    expect(screen).toContain("'bookings.respond'");
+    expect(screen).toContain("'bookings.operate'");
+    expect(screen).toContain('Pricing, payments, precise location, publication, deletion, signing and ownership transfer remain outside delegation.');
+    expect(screen).toContain('updateOrganizationMemberCapabilities');
+    expect(screen).toContain('transitionOrganizationBooking');
     expect(service).not.toMatch(/equipment\.create|booking\.accept|finance\.|signature\.|ownership\.transfer/);
   });
 });
