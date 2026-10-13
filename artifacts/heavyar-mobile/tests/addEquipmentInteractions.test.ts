@@ -50,7 +50,7 @@ function load(file: string): any {
       launchImageLibraryAsync: async () => ({ canceled: false, assets: [{ uri: 'file:///local-equipment.jpg' }] }),
     },
     'expo-router': { useRouter: () => ({ push: vi.fn() }) },
-    '@/contexts/LanguageContext': { useLanguage: () => ({ t, localizedText, isRTL: false }) },
+    '@/contexts/LanguageContext': { useLanguage: () => ({ t, localizedText, isRTL: false, language: 'en' }) },
     '@/contexts/AuthContext': { useAuth: () => ({
       user,
       isAuthenticated: true,
@@ -61,6 +61,10 @@ function load(file: string): any {
     '@/services/workerClient': { createListing: effects.create },
     '@/services/cloudinaryService': { uploadMultipleImages: effects.upload, deleteCloudinaryImage: effects.deleteImage },
     '@/components/AppDialog': { __esModule: true, default: host('Dialog') },
+    '@/components/location/LocationPicker': { __esModule: true, default: function MockLocationPicker(props: any) {
+      React.useEffect(() => props.onConfirm({ lat: 24.7136, lng: 46.6753, instructions: 'Gate 2' }), []);
+      return React.createElement('div');
+    } },
     '@/utils/mobilePerformance': { mobilePerformance: {
       countRender: (label: string) => { renders[label] = (renders[label] || 0) + 1; },
       startPress: () => ({ visible() {} }),
@@ -279,7 +283,7 @@ describe('Add Equipment local interaction isolation', () => {
     expect(effects.create.mock.calls[0][1]).toBe('provider-a');
     expect(effects.create.mock.calls[0][0]).toMatchObject({
       titleAr: 'حفار اختبار', titleEn: 'حفار اختبار',
-      region: 'eastern', city: 'dammam', district: 'Local district', location: { lat: 0, lng: 0 },
+      region: 'eastern', city: 'dammam', district: 'Local district', location: { lat: 24.7136, lng: 46.6753, instructions: 'Gate 2' },
       pricingModelVersion: 2,
       pricing: { currency: 'SAR', daily: { enabled: true, amountMinor: 12345 }, hourly: { enabled: false, amountMinor: 0 } },
       images: uploaded,

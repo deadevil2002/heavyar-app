@@ -10,6 +10,7 @@ Use authenticated QA accounts. Do not activate payments, Early Access, campaigns
 - Test suspended/disabled accounts with the QA fixture. Confirm no cached private screen remains after logout/revocation.
 - Grant and deny notification permission. Confirm the Android channel appears, a foreground notification presents safely, a notification opens the correct authenticated screen, token refresh does not create duplicate devices, and logout removes this device.
 - Create equipment with image-picker permission both granted and denied. Test upload failure, multiple images, preview, edit, visibility, archive/delete, and avatar replace/remove.
+- Verify no location prompt appears on launch or map open. In equipment, request, and chat pickers, test manual pin placement first; then tap “Use my location” and test foreground permission grant/denial, confirmation, invalid/unset `0,0`, map-load failure, and external-directions fallback. Confirm no live/background tracking indicator.
 - Test search, filters, equipment details, request creation, provider response, history, and notification inbox. Test driver search, request, accept, decline, close, availability, and back navigation.
 - Test all forms with keyboard open, back button, dialogs, and Android system Back. Confirm Back dismisses keyboard/modal or returns predictably and never exits unexpectedly.
 - Toggle airplane mode during discovery, authenticated request, image upload, and TEST payment. Confirm a safe message, finite wait, and no raw backend error.
@@ -18,7 +19,8 @@ Use authenticated QA accounts. Do not activate payments, Early Access, campaigns
 
 - Install a development build only after Apple development signing and a registered device are available. Confirm bundle `com.heavyar.app`, launch screen, Dynamic Island/notch spacing, home-indicator spacing, and portrait orientation.
 - Repeat all authentication, mobile-alias, verification, password-reset request, notification, equipment, rental, driver, and offline cases above.
-- Allow and deny photos and notifications. Confirm no camera, microphone, contacts, tracking, or location prompt appears.
+- Allow and deny photos and notifications. Confirm no camera, microphone, contacts, tracking, or location prompt appears until “Use my location” is explicitly tapped.
+- Test manual and foreground location selection, Apple Maps / installed Google Maps / Waze chooser behavior, browser fallback, static chat pin authorization, and the heavy-vehicle route warning. Confirm no Always/background location prompt.
 - Verify iOS notification presentation, APNs/Expo token registration, foreground behavior, inbox navigation, and logout cleanup.
 - Test header Back, edge swipe-back on detail screens, modal dismissal, keyboard dismissal, RTL screens, long Arabic/English labels, and forms with the keyboard open.
 

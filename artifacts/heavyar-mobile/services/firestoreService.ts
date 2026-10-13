@@ -24,6 +24,7 @@ import { deleteMultipleCloudinaryImages } from './cloudinaryService';
 import { getRemovedImages } from '@/utils/imageHelpers';
 import { WORKER_BASE_URL } from '@/constants/worker';
 import { listingCountryCode } from './locationHierarchy';
+import { buildPreciseLocation, decodePreciseLocation, type PreciseLocation } from './location';
 import {
   decodeCommercialSnapshot,
   decodeFinalRentalSnapshot,
@@ -131,7 +132,7 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
     city: (data.city as string) || '',
     customCity: (data.customCity as string) || '',
     district: (data.district as string) || '',
-    location: (data.location as { lat: number; lng: number }) || { lat: 0, lng: 0 },
+    location: decodePreciseLocation(data.location) || undefined,
     pricePerDay: (data.pricePerDay as number) || 0,
     countryCode: listingCountryCode({
       countryCode: typeof data.countryCode === 'string' ? data.countryCode : undefined,
@@ -235,6 +236,7 @@ function parseRequest(id: string, data: Record<string, unknown>): EquipmentReque
     startDate,
     endDate,
     notes: (data.notes as string) || '',
+    workSiteLocation: decodePreciseLocation(data.workSiteLocation) || undefined,
     amount: (data.amount as number) || 0,
     platformFee: (data.platformFee as number) || 0,
     providerAmount: (data.providerAmount as number) || 0,
@@ -273,11 +275,15 @@ function parseEquipmentRequestSnapshot(raw: unknown): EquipmentRequestSnapshot |
 }
 
 function parseMessage(id: string, data: Record<string, unknown>): ChatMessage {
+  const location = decodePreciseLocation(data.location);
+  const type = data.type === 'location' && location ? 'location' : 'text';
   return {
     id,
     requestId: (data.requestId as string) || '',
     senderUid: (data.senderUid as string) || '',
     text: (data.text as string) || '',
+    type,
+    ...(type === 'location' ? { location: location! } : {}),
     createdAt: toISOString(data.createdAt),
     read: (data.read as boolean) ?? false,
   };
@@ -604,6 +610,39 @@ export async function sendMessage(
     senderUid,
     clientMessageId: operation.id,
     text,
+    createdAt: Timestamp.fromMillis(operation.createdAtMs),
+    read: false,
+  });
+  return messageId;
+}
+
+export async function sendLocationMessage(
+  requestId: string,
+  senderUid: string,
+  location: PreciseLocation,
+  operation: { id: string; createdAtMs: number },
+): Promise<string> {
+  const db = getFirebaseDb();
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(operation.id) || !Number.isSafeInteger(operation.createdAtMs)) {
+    throw new Error('Invalid message operation');
+  }
+  const validated = buildPreciseLocation(location, location.instructions);
+  const reqSnap = await getDoc(doc(db, 'equipmentRequests', requestId));
+  if (!reqSnap.exists()) throw new Error('Request not found');
+  const rental = reqSnap.data();
+  if (!rental.allowChat || !['accepted', 'in_progress'].includes(String(rental.status || ''))) {
+    throw new Error('Chat is not active for this request');
+  }
+  if (rental.customerUid !== senderUid && rental.providerUid !== senderUid) {
+    throw new Error('You are not a participant in this request');
+  }
+  const messageId = `${senderUid}__${operation.id}`;
+  await setDoc(doc(db, 'equipmentRequests', requestId, 'messages', messageId), {
+    requestId,
+    senderUid,
+    clientMessageId: operation.id,
+    type: 'location',
+    location: validated,
     createdAt: Timestamp.fromMillis(operation.createdAtMs),
     read: false,
   });

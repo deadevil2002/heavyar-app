@@ -36,7 +36,7 @@ function formPayload(pricing: Json) {
     city: 'riyadh',
     customCity: '',
     district: '',
-    location: { lat: 0, lng: 0 },
+    location: { lat: 24.7136, lng: 46.6753 },
     pricingModelVersion: 2,
     pricing,
     countryCode: 'SA',
@@ -94,6 +94,16 @@ afterEach(() => {
 });
 
 describe('Provider form to Worker V2 listing contract', () => {
+  it('rejects missing, placeholder, malformed, and out-of-range equipment pins', async () => {
+    installProviderFixture();
+    const pricing = { currency: 'SAR', hourly: { enabled: false, amountMinor: 0 }, daily: { enabled: true, amountMinor: 150000 } };
+    for (const location of [undefined, { lat: 0, lng: 0 }, { lat: 91, lng: 46 }, { lat: '24', lng: 46 }]) {
+      const response = await worker.fetch(request('/api/listings', 'POST', { ...formPayload(pricing), location }), env());
+      expect(response.status).toBe(400);
+      expect((await response.json() as any).errorCode).toBe('INVALID_LOCATION');
+    }
+  });
+
   it('creates hourly-only, daily-only, and both-rate listings from the exact Add form shape', async () => {
     installProviderFixture();
     const commits: any[] = [];

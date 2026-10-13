@@ -19,7 +19,7 @@ test('exact current Add V2 shape persists without legacy daily fields and preser
   const response = await worker.fetch(request('/api/listings', {
     titleAr: 'معدة اختبار مؤقتة', titleEn: 'معدة اختبار مؤقتة', descriptionAr: '', descriptionEn: '',
     category: 'excavators', customCategory: '', region: 'riyadh', city: 'riyadh', customCity: '', district: '',
-    location: { lat: 0, lng: 0 }, pricingModelVersion: 2,
+    location: { lat: 24.7136, lng: 46.6753 }, pricingModelVersion: 2,
     pricing: { currency: 'SAR', hourly: { enabled: false, amountMinor: 0 }, daily: { enabled: true, amountMinor: 10000 } },
     countryCode: 'SA', nativeCurrency: 'SAR', displayCurrency: 'SAR',
     images: [{ url: 'https://res.cloudinary.com/qa/image/upload/qa.png', publicId: 'heavyar/review-provider/qa' }],

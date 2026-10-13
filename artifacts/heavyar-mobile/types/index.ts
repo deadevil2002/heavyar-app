@@ -149,6 +149,12 @@ export interface EquipmentAvailability {
   temporarilyUnavailable?: boolean;
 }
 
+export interface PreciseLocation {
+  lat: number;
+  lng: number;
+  instructions?: string;
+}
+
 export interface Equipment {
   id: string;
   /** Immutable Worker-issued operational identifier; Firestore `id` is unchanged. */
@@ -165,10 +171,8 @@ export interface Equipment {
   city: string;
   customCity: string;
   district: string;
-  location: {
-    lat: number;
-    lng: number;
-  };
+  /** Owner-only exact pin. Public Worker equipment projections omit it. */
+  location?: PreciseLocation;
   pricePerDay: number;
   images: EquipmentImage[];
   availability: boolean | EquipmentAvailability;
@@ -229,6 +233,8 @@ export interface EquipmentRequest {
   startDate: string;
   endDate: string;
   notes: string;
+  /** Immutable participant-only work-site pin captured when the request is created. */
+  workSiteLocation?: PreciseLocation;
   amount: number;
   platformFee: number;
   providerAmount: number;
@@ -302,6 +308,8 @@ export interface ChatMessage {
   requestId: string;
   senderUid: string;
   text: string;
+  type?: 'text' | 'location';
+  location?: PreciseLocation;
   createdAt: string;
   read: boolean;
 }

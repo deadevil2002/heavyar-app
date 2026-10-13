@@ -48,6 +48,29 @@ service cloud.firestore {
         && data.visibility == 'visible'
         && data.moderationStatus == 'approved';
     }
+    function validPreciseLocation(value) {
+      return value is map
+        && value.keys().hasOnly(['lat', 'lng', 'instructions'])
+        && value.lat is number
+        && value.lng is number
+        && value.lat >= -90 && value.lat <= 90
+        && value.lng >= -180 && value.lng <= 180
+        && !(value.lat == 0 && value.lng == 0)
+        && (!value.keys().hasAny(['instructions'])
+          || (value.instructions is string && value.instructions.size() <= 500));
+    }
+    function validChatPayload(data) {
+      return (
+        data.keys().hasOnly(['requestId', 'senderUid', 'clientMessageId', 'text', 'createdAt', 'read'])
+        && data.text is string
+        && data.text.size() > 0
+        && data.text.size() <= 4000
+      ) || (
+        data.keys().hasOnly(['requestId', 'senderUid', 'clientMessageId', 'type', 'location', 'createdAt', 'read'])
+        && data.type == 'location'
+        && validPreciseLocation(data.location)
+      );
+    }
     // Rating document IDs concatenate requestId and actor UID with `__`.
     // Requiring non-empty, bounded identifier segments separated by at most
     // one underscore keeps that delimiter unambiguous and collision-safe.
@@ -258,8 +281,9 @@ service cloud.firestore {
           && request.resource.data.createdAt is timestamp
           && request.resource.data.createdAt >= request.time - duration.value(5, 'm')
           && request.resource.data.createdAt <= request.time + duration.value(1, 'm')
+          && request.resource.data.read == false
           && notSuspended(request.auth.uid)
-          && request.resource.data.keys().hasOnly(['requestId', 'senderUid', 'clientMessageId', 'text', 'createdAt', 'read'])
+          && validChatPayload(request.resource.data)
           && get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.allowChat == true
           && participant(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data)
           && notSuspended(get(/databases/$(database)/documents/equipmentRequests/$(requestId)).data.customerUid)

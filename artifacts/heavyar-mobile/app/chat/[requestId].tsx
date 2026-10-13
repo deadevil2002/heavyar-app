@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, TextInput, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TextInput, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, ArrowRight, Send, Lock, Flag } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, Send, Lock, Flag, MapPinned, X } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -10,15 +10,19 @@ import {
   fetchOlderMessages,
   FirestoreCursor,
   sendMessage,
+  sendLocationMessage,
   subscribeToMessages,
   subscribeToRequest,
 } from '@/services/firestoreService';
 import { EquipmentRequest, ChatMessage } from '@/types';
 import { useBlockedUsers } from '@/services/blockedUsers';
+import LocationPicker from '@/components/location/LocationPicker';
+import LocationPreview from '@/components/location/LocationPreview';
+import type { PreciseLocation } from '@/services/location';
 
 export default function ChatScreen() {
   const { requestId } = useLocalSearchParams<{ requestId: string }>();
-  const { isRTL, t, localizedText } = useLanguage();
+  const { isRTL, language, t, localizedText } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
   const [message, setMessage] = useState<string>('');
@@ -27,6 +31,9 @@ export default function ChatScreen() {
   const [messageCursor, setMessageCursor] = useState<FirestoreCursor | null>(null);
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [shareLocationVisible, setShareLocationVisible] = useState(false);
+  const [sharedLocation, setSharedLocation] = useState<PreciseLocation | null>(null);
+  const [sendingLocation, setSendingLocation] = useState(false);
   const olderMessagesRef = useRef<ChatMessage[]>([]);
   const loadedOlderRef = useRef(false);
   const flatListRef = useRef<FlatList>(null);
@@ -125,17 +132,42 @@ export default function ChatScreen() {
     }
   }, [message, requestId, currentUid]);
 
+  const handleSendLocation = useCallback(async () => {
+    if (!sharedLocation || !requestId || sendingLocation || !isChatActive) return;
+    setSendingLocation(true);
+    try {
+      await sendLocationMessage(requestId, currentUid, sharedLocation, {
+        id: `loc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`,
+        createdAtMs: Date.now(),
+      });
+      setShareLocationVisible(false);
+      setSharedLocation(null);
+    } finally {
+      setSendingLocation(false);
+    }
+  }, [currentUid, isChatActive, requestId, sendingLocation, sharedLocation]);
+
+  const closeLocationShare = useCallback(() => {
+    if (sendingLocation) return;
+    setShareLocationVisible(false);
+    setSharedLocation(null);
+  }, [sendingLocation]);
+
   const renderMessage = useCallback(({ item }: { item: ChatMessage }) => {
     const isMe = item.senderUid === currentUid;
     return (
       <View style={[styles.messageBubble, isMe ? styles.myMessage : styles.otherMessage]}>
-        <Text style={[styles.messageText, isMe ? styles.myMessageText : styles.otherMessageText]}>{item.text}</Text>
+        {item.type === 'location' && item.location ? (
+          <LocationPreview location={item.location} language={language} compact />
+        ) : (
+          <Text style={[styles.messageText, isMe ? styles.myMessageText : styles.otherMessageText]}>{item.text}</Text>
+        )}
         <Text style={[styles.messageTime, isMe ? styles.myTimeText : styles.otherTimeText]}>
           {new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </Text>
       </View>
     );
-  }, [currentUid]);
+  }, [currentUid, language]);
 
   return (
     <View style={styles.container}>
@@ -185,6 +217,14 @@ export default function ChatScreen() {
             </View>
           ) : isChatActive ? (
             <View style={[styles.inputBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <Pressable
+                style={styles.locationButton}
+                onPress={() => setShareLocationVisible(true)}
+                accessibilityRole="button"
+                accessibilityLabel={isRTL ? 'مشاركة موقع ساكن' : 'Share a static location'}
+              >
+                <MapPinned size={19} color={Colors.gold} />
+              </Pressable>
               <TextInput
                 style={[styles.input, { textAlign: isRTL ? 'right' : 'left' }]}
                 placeholder={t('type_message')}
@@ -209,6 +249,20 @@ export default function ChatScreen() {
           )}
         </SafeAreaView>
       </KeyboardAvoidingView>
+      <Modal visible={shareLocationVisible} transparent animationType="slide" onRequestClose={closeLocationShare}>
+        <View style={styles.modalBackdrop}>
+          <SafeAreaView edges={['bottom']} style={styles.locationSheet}>
+            <View style={[styles.locationSheetHeader, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+              <Text style={styles.locationSheetTitle}>{isRTL ? 'مشاركة موقع ساكن' : 'Share a static location'}</Text>
+              <Pressable style={styles.backBtn} onPress={closeLocationShare}><X size={20} color={Colors.textPrimary} /></Pressable>
+            </View>
+            <LocationPicker value={sharedLocation} onConfirm={setSharedLocation} language={language} />
+            <Pressable style={[styles.shareButton, (!sharedLocation || sendingLocation) && styles.sendDisabled]} disabled={!sharedLocation || sendingLocation} onPress={() => void handleSendLocation()}>
+              {sendingLocation ? <ActivityIndicator color={Colors.primary} /> : <Text style={styles.shareButtonText}>{isRTL ? 'إرسال الموقع المؤكد' : 'Send confirmed location'}</Text>}
+            </Pressable>
+          </SafeAreaView>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -281,6 +335,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  locationButton: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
   sendDisabled: { backgroundColor: Colors.surface },
   closedBar: {
     flexDirection: 'row',
@@ -295,4 +350,10 @@ const styles = StyleSheet.create({
   closedText: { color: Colors.textMuted, fontSize: 14, fontWeight: '500' as const },
   olderButton: { alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 8, marginBottom: 10 },
   olderText: { color: Colors.gold, fontSize: 13, fontWeight: '600' },
+  modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,.62)' },
+  locationSheet: { maxHeight: '92%', padding: 16, gap: 12, backgroundColor: Colors.primary, borderTopLeftRadius: 26, borderTopRightRadius: 26, borderWidth: 1, borderColor: Colors.border },
+  locationSheetHeader: { alignItems: 'center', justifyContent: 'space-between' },
+  locationSheetTitle: { color: Colors.textPrimary, fontSize: 18, fontWeight: '800' },
+  shareButton: { minHeight: 48, borderRadius: 15, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.gold },
+  shareButtonText: { color: Colors.primary, fontSize: 14, fontWeight: '800' },
 });

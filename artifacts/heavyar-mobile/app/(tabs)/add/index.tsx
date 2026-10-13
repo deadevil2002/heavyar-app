@@ -19,6 +19,8 @@ import { safePublishErrorMessage } from '@/services/errorMessages';
 import { publishFailureStage } from '@/services/mutationError';
 import ListingPricingFields from '@/components/ListingPricingFields';
 import { mobilePerformance } from '@/utils/mobilePerformance';
+import LocationPicker from '@/components/location/LocationPicker';
+import type { PreciseLocation } from '@/services/location';
 import {
   buildListingPricing,
   ListingPricingInput,
@@ -92,7 +94,7 @@ function AddEquipmentForm({ auth, activeUid }: {
   activeUid: React.MutableRefObject<string | undefined>;
 }) {
   mobilePerformance.countRender('AddEquipment');
-  const { isRTL, t, localizedText } = useLanguage();
+  const { isRTL, language, t, localizedText } = useLanguage();
   const { user, isAuthenticated, isLoading, accountState, requiresEmailVerification } = auth;
   const mounted = useRef(true);
   const publishingRef = useRef(false);
@@ -137,6 +139,7 @@ function AddEquipmentForm({ auth, activeUid }: {
   const [city, setCity] = useState<string>('');
   const [customCity, setCustomCity] = useState<string>('');
   const [district, setDistrict] = useState<string>('');
+  const [location, setLocation] = useState<PreciseLocation | null>(null);
   const [showRegionPicker, setShowRegionPicker] = useState<boolean>(false);
   const [citySearch, setCitySearch] = useState<string>('');
   const pricingDraft = useRef<ListingPricingInput>(initialPricing());
@@ -236,6 +239,12 @@ function AddEquipmentForm({ auth, activeUid }: {
       showDialog(t('validation_error'), t('validation_city_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
+    if (!location) {
+      validationMeasurement.complete(true);
+      finishMeasurement(true);
+      showDialog(t('validation_error'), isRTL ? 'حدّد موقع المعدة على الخريطة وأكّد الدبوس.' : 'Choose the equipment location on the map and confirm the pin.', [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
     const currency = user.nativeCurrency || 'SAR';
     const pricingResult = buildListingPricing(pricingDraft.current, currency);
     if (!pricingResult.ok) {
@@ -302,7 +311,7 @@ function AddEquipmentForm({ auth, activeUid }: {
         city,
         customCity,
         district,
-        location: { lat: 0, lng: 0 },
+        location,
         pricingModelVersion: pricingResult.pricingModelVersion,
         pricing: pricingResult.pricing,
         countryCode: user.countryCode || 'SA',
@@ -329,6 +338,7 @@ function AddEquipmentForm({ auth, activeUid }: {
       setCity('');
       setCustomCity('');
       setDistrict('');
+      setLocation(null);
       pricingDraft.current = initialPricing();
       setPricingRevision(revision => revision + 1);
       setImages([]);
@@ -356,7 +366,7 @@ function AddEquipmentForm({ auth, activeUid }: {
         setUploadProgress('');
       }
     }
-  }, [titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, images, user, t, showDialog, requiresEmailVerification, isRTL, ownsDraft, activeUid]);
+  }, [titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, location, images, user, t, showDialog, requiresEmailVerification, isRTL, ownsDraft, activeUid]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 
@@ -592,6 +602,10 @@ function AddEquipmentForm({ auth, activeUid }: {
                 placeholder={t('district_name')}
                 placeholderTextColor={Colors.textMuted}
               />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <LocationPicker value={location} onConfirm={setLocation} language={language} />
             </View>
 
             <PricingSection

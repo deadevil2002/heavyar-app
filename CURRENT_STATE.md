@@ -2,9 +2,9 @@
 
 ## Current date
 
-2026-10-11 (Asia/Riyadh).
+2026-10-13 (Asia/Riyadh).
 
-## Live checkpoint — 2026-10-11 (read first; CURRENT STATUS)
+## Live checkpoint — 2026-10-13 (read first; CURRENT STATUS)
 
 > This is the sole current-state ledger. Subsequent sections retain historical detail and can contain older version/test figures. Code/config is technical authority. Production evidence here is based on authenticated Codex CLI/API verification. **Source commits are not deployments.**
 
@@ -12,7 +12,7 @@
 
 | Surface | Current state |
 |---|---|
-| Repo | `deadevil2002/heavyar-app`, `main`, local `C:/Heavyar-Last-2027/heavyar-app`; last functional source baseline `fff721e4781e661219b18904c8247697985dd5e0` |
+| Repo | `deadevil2002/heavyar-app`, `main`, local `C:/Heavyar-Last-2027/heavyar-app`; Phase M1 was prepared from verified source baseline `4a19f8830c9596d9bc8a1efd9b676b82899f4593` |
 | Firebase | `heavyar-app`; deployed Security Rules `05fe0a47-f2d5-49c3-9871-3ee01edadd60` (Codex verified) |
 | Cloudflare | Account `e43da79a0ea995c11c90e7819fb0c6e6`, Worker `heavyar-api`, directory-bound Wrangler profile **`heavyar`**; live version `51600f8d-d4e0-492a-bb6c-d8aafe823c64` from source `fff721e4781e661219b18904c8247697985dd5e0` (Codex verified) |
 | Mobile | Release source `1f4be0473d0641498365f1e767526f911b4a9fac`: version `1.1.2`, Android versionCode `5`, iOS buildNumber `5`. EAS Android build `b2c642d9-89e7-42d9-95c1-b83a5680d294` (AAB) and iOS build `c4a9b068-5574-4b78-9841-90d8540b7bbc` (IPA) both **FINISHED** from that exact source; **STORE UPLOAD NOT DONE / DEVICE QA NOT DONE / store identifier acceptance UNVERIFIED** |
@@ -28,6 +28,7 @@
 | P1 rating uniqueness | `c60258ff47df174a60d35c2a0b6bcb0b37b9fb6b`; canonical `requestId__auth.uid`, 19/19 Rules, 2/2 Worker+Rules, 15/15 rating Mobile; concurrency and forged ID denied. 9/9 Auth UID formats compatible; 0 Production ratings | **PRODUCTION CLOSED**; Rules `05fe0a47-f2d5-49c3-9871-3ee01edadd60`. Live rating write not exercised |
 | P1 Admin auth assurance / P1-A | Source `b8c01916af2d8188700b737b12cebc533c76ad32`, active in Worker `51600f8d-d4e0-492a-bb6c-d8aafe823c64`. Live `staffMembers.active == true` + authoritative role is mandatory for privileged bypasses; disabled/revoked Firebase sessions are rejected through bounded Auth lookup (60-second maximum successful-cache window), and Auth outages fail closed. Owner staff/Auth preflight and authenticated read-only Owner smoke PASS on the original P1-A deployment; the later rate-limit deployment preserved the same bindings and authorization source. Health and sanitized public equipment APIs returned 200; missing/forged Admin credentials returned 401. 586/586 Worker previously PASS, deployment-focused 23/23 and Worker TypeScript PASS | **P1-A PRODUCTION CLOSED / ACTIVE**. P1-B MFA was **DECLINED BY OWNER**; Admin remains email/password-only and the remaining password-only risk is accepted by Owner |
 | P1 durable mutation rate limiting | Source `fff721e4781e661219b18904c8247697985dd5e0`, deployed Worker `51600f8d-d4e0-492a-bb6c-d8aafe823c64`. Listing creation (`10/10 minutes/UID`) and driver-profile saves (`30/minute/UID`) use hashed-identity Firestore transactions with bounded retries, stable 429/Retry-After, fail-closed 503, existing expiry cleanup, and route-scoped 256 KiB/64 KiB JSON limits. Focused tests 4/4 and Worker TypeScript PASS; previously verified related regressions 223/223. Production bindings matched 16/16, health/public search returned 200, missing/forged Admin credentials returned 401, Firebase Rules remained `05fe0a47-f2d5-49c3-9871-3ee01edadd60`, and the 2026-10-11 19:30:25Z Cron execution completed `Ok` with no observed new errors | **P1 PRODUCTION CLOSED / ACTIVE**. Broader high-cost mutation coverage remains a separate scoped decision |
+| M1 maps, locations and navigation | Source adds MapLibre/MapTiler native maps, explicitly requested foreground-only device location, strict non-zero coordinate validation, owner-only exact equipment pins, participant-only immutable work-site pins, static participant chat pins, and external directions through installed map apps with browser fallback. Public Worker equipment projections continue to omit exact coordinates; no live/background tracking was added. Mobile 470/470, Worker 595/595, Rules 20/20, focused location/privacy 74/74, both TypeScript checks and diff check PASS | **SOURCE READY ONLY**. Native development build, physical Android/iOS QA, public/store privacy declaration alignment, and all deployment/release actions remain **NOT DONE** |
 | Other previously completed phases | P1 Account Integrity; P2-A/B/C search and campaign batching; Rental V2 overlap and request performance improvements | **KEEP CLOSED**; read related source/registries only when necessary |
 
 ### Next prioritized work — NOT YET authorized for implementation
@@ -36,6 +37,7 @@
 2. **NEXT: P1 operational assurance**: CI/Rules/secret scanning, alert destinations, budgets, backup and tested restore (runtime details unverified).
 3. **P2 scalability and physical QA**: DP-010 driver discovery; DP-016 deletion-preview fan-in; DP-012 unseen counts; DP-013 Admin polling; DP-017 aggregate cache; Android p50/p95, uploads, response sizes. See `docs/SCALABILITY_RISK_REGISTER.md` selectively.
 4. **Release**: Android AAB `b2c642d9-89e7-42d9-95c1-b83a5680d294` and iOS IPA `c4a9b068-5574-4b78-9841-90d8540b7bbc` are complete from source `1f4be0473d0641498365f1e767526f911b4a9fac`; neither is uploaded/submitted. Next action requires separate approval for physical-device QA and store upload/track verification.
+5. **M1 next gate**: align the public Privacy Policy plus App Store/Play location declarations, then run an authorized development/preview native build and physical-device QA for maps, foreground permission, chat pins, and Android/iOS external-navigation choosers. Expo Go is not sufficient for MapLibre native verification.
 
 ### Non-negotiable product/security decisions
 
@@ -43,6 +45,7 @@
 - Admin authentication remains Firebase email/password-only by Owner decision. Identity Platform, MFA and Cloudflare Access are not requested; P1-A live staff/revocation protections remain active. Do not reopen MFA without a new Owner request.
 - Tap remains **TEST**; fee **10% provider-paid**, future **20% draft only**. Split settlement and automated refunds are not enabled; historical financial/commercial snapshots are immutable.
 - Retain and anonymize rental/driver request evidence for **7 years after closure**. No unapproved Production mutation, regulatory sends, secret or identity changes.
+- Exact equipment coordinates are owner-only; work-site and chat pins are participant-only. Location permission is foreground-only and requested solely after an explicit user action. No live/background tracking and no public exact-coordinate projection.
 - Never commit/push/build/deploy without the owner's explicit approval for that exact operation and fresh repo/account/project preflight.
 
 ### Mandatory low-token status maintenance

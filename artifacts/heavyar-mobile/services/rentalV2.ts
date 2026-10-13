@@ -7,8 +7,10 @@ import type {
   RentalPricingSnapshot,
   RentalRateUnit,
   RentalSummary,
+  PreciseLocation,
 } from '@/types';
 import { currencyMinorDigits, formatMinorCurrency, resolveListingPricing } from './listingPricing';
+import { decodePreciseLocation } from './location';
 
 export type RentalModeV2 = 'hourly' | 'daily' | 'open_ended';
 
@@ -21,6 +23,7 @@ export interface RentalRequestInput {
   requestedStartAt: string;
   requestedEndAt: string | null;
   notes?: string;
+  workSiteLocation?: PreciseLocation;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -304,6 +307,10 @@ export function buildRentalRequestPayload(input: RentalRequestInput): RentalRequ
     throw new Error('INVALID_TIME_RANGE');
   }
   const notes = input.notes?.trim();
+  const workSiteLocation = input.workSiteLocation === undefined
+    ? undefined
+    : decodePreciseLocation(input.workSiteLocation);
+  if (input.workSiteLocation !== undefined && !workSiteLocation) throw new Error('INVALID_WORK_SITE_LOCATION');
   return {
     equipmentId: input.equipmentId,
     pricingModelVersion: 2,
@@ -313,6 +320,7 @@ export function buildRentalRequestPayload(input: RentalRequestInput): RentalRequ
     requestedStartAt: new Date(input.requestedStartAt).toISOString(),
     requestedEndAt: input.requestedEndAt ? new Date(input.requestedEndAt).toISOString() : null,
     ...(notes ? { notes } : {}),
+    ...(workSiteLocation ? { workSiteLocation } : {}),
   };
 }
 

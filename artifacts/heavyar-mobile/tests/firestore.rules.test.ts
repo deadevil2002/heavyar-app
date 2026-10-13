@@ -397,6 +397,39 @@ describe('Firestore authorization baseline', () => {
     await assertFails(setDoc(doc(authed('outsider'), 'equipmentRequests/request-1/messages/outsider__operation_00000003'), { ...message, senderUid: 'outsider', clientMessageId: 'operation_00000003' }));
   });
 
+  it('allows only confirmed static location messages from active chat participants', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(asModularFirestore(context.firestore()), 'equipmentRequests/request-1'), { allowChat: true, status: 'accepted' });
+    });
+    const customer = authed('customer-1');
+    const message = {
+      requestId: 'request-1', senderUid: 'customer-1', clientMessageId: 'location_00000001',
+      type: 'location', location: { lat: 24.7136, lng: 46.6753, instructions: 'Gate 2' },
+      createdAt: new Date(), read: false,
+    };
+    const canonical = doc(customer, 'equipmentRequests/request-1/messages/customer-1__location_00000001');
+    await assertSucceeds(setDoc(canonical, message));
+    await assertSucceeds(setDoc(canonical, message));
+    await assertFails(setDoc(doc(customer, 'equipmentRequests/request-1/messages/customer-1__location_00000002'), {
+      ...message, clientMessageId: 'location_00000002', location: { lat: 0, lng: 0 },
+    }));
+    await assertFails(setDoc(doc(customer, 'equipmentRequests/request-1/messages/customer-1__location_00000003'), {
+      ...message, clientMessageId: 'location_00000003', location: { lat: 91, lng: 46 },
+    }));
+    await assertFails(setDoc(doc(customer, 'equipmentRequests/request-1/messages/customer-1__location_00000004'), {
+      ...message, clientMessageId: 'location_00000004', text: 'smuggled extra field',
+    }));
+    await assertFails(setDoc(doc(authed('outsider'), 'equipmentRequests/request-1/messages/outsider__location_00000005'), {
+      ...message, senderUid: 'outsider', clientMessageId: 'location_00000005',
+    }));
+    await env.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(asModularFirestore(context.firestore()), 'equipmentRequests/request-1'), { allowChat: false });
+    });
+    await assertFails(setDoc(doc(customer, 'equipmentRequests/request-1/messages/customer-1__location_00000006'), {
+      ...message, clientMessageId: 'location_00000006',
+    }));
+  });
+
   it('blocks every direct mutation for deletion-requested users while preserving self reads', async () => {
     await env.withSecurityRulesDisabled(async (context) => {
       const db = asModularFirestore(context.firestore());

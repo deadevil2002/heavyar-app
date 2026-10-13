@@ -257,6 +257,24 @@ describe('Rental V2 HTTP authority boundary', () => {
     __test.setAuth(); __test.setFirestore();
   });
 
+  it('persists the validated static work-site location on the participant-only request', async () => {
+    fixture();
+    const commits: unknown[] = [];
+    __test.captureCommits(commits);
+    const workSiteLocation = { lat: 24.7136, lng: 46.6753, instructions: 'North gate' };
+    const response = await worker.fetch(new Request('https://api.test/api/requests', {
+      method: 'POST', headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...request(), requestedStartAt: '2099-09-20T08:00:00.000Z', requestedEndAt: '2099-09-20T10:00:00.000Z',
+        workSiteLocation,
+      }),
+    }), env);
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ request: { workSiteLocation } });
+    expect(JSON.stringify(commits)).toContain('workSiteLocation');
+    __test.setAuth(); __test.setFirestore(); __test.captureCommits();
+  });
+
   it('rejects an unfinalized V2 request before any provider settlement', async () => {
     fixture({ 'equipmentRequests/r_v2': { pricingModelVersion: 2, equipmentId: 'eq_1', customerUid: 'customer' } });
     const response = await worker.fetch(new Request('https://api.test/api/create-payment', {

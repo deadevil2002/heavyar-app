@@ -30,6 +30,10 @@ export default function PrivacyScreen() {
         <Text style={[styles.listItem, textStyle]}>{tx('• صور المعدات وأوصافها وأسعارها وتوفرها.', '• Equipment images, descriptions, pricing, and availability.')}</Text>
         <Text style={[styles.listItem, textStyle]}>{tx('• الطلبات والإيجارات والمحادثات والتقييمات والسجلات المرتبطة بتنفيذ الخدمة.', '• Requests, rentals, chats, ratings, and records needed to perform the service.')}</Text>
         <Text style={[styles.listItem, textStyle]}>{tx('• نطلب الوصول إلى الصور فقط عندما تختار رفع صورة للمعدة أو للملف الشخصي.', '• Photo-library access is requested only when you choose an equipment or profile image to upload.')}</Text>
+        <Text style={[styles.listItem, textStyle]}>{tx(
+          '• يمكنك تثبيت موقع دقيق يدويًا، أو اختيار «استخدم موقعي» ومنح إذن الموقع أثناء الاستخدام، لموقع المعدة أو موقع العمل أو رسالة موقع ساكنة. لا تستخدم Heavyar تتبعًا حيًا أو في الخلفية. يبقى موقع المعدة الدقيق خاصًا بمالكها، وتظهر مواقع الطلب والمحادثة لأطراف الطلب المصرح لهم.',
+          '• You may place a precise pin manually, or choose “Use my location” and grant foreground permission, for equipment, a work site, or a static chat location. Heavyar does not use live or background tracking. An equipment pin remains private to its owner; request and chat locations are available only to authorized request participants.',
+        )}</Text>
 
         <Text style={[styles.sectionTitle, textStyle]}>{tx('3) الإشعارات والبيانات الفنية', '3) Notifications and technical data')}</Text>
         <Text style={[styles.paragraph, textStyle]}>{tx(
@@ -43,16 +47,16 @@ export default function PrivacyScreen() {
           "Payments relate to physical equipment and real-world services. Heavyar sends the minimum customer and transaction context required by Tap to process payment. Card credentials are entered in Tap's hosted payment experience; Heavyar does not store card numbers or CVV. Heavyar retains transaction status, amounts, and related records needed for the request, invoice, and support.",
         )}</Text>
 
-        <Text style={[styles.sectionTitle, textStyle]}>{tx('5) بيانات غير مطلوبة في إصدار iOS الحالي', '5) Data not requested in the current iOS release')}</Text>
+        <Text style={[styles.sectionTitle, textStyle]}>{tx('5) بيانات أخرى غير مطلوبة في إصدار iOS الحالي', '5) Other data not requested in the current iOS release')}</Text>
         <Text style={[styles.paragraph, textStyle]}>{tx(
-          'لا يطلب إصدار iOS الحالي رقم هوية وطنية أو جواز سفر أو مستند هوية حكومي، ولا يطلب رقم حساب بنكي أو IBAN أو تفاصيل بنك الصرف. كما لا يطلب الموقع الدقيق أو جهات الاتصال أو الميكروفون.',
-          'The current iOS release does not request a national-ID or passport number, a government identity document, a bank-account number, IBAN, or payout-bank details. It also does not request precise location, contacts, or microphone access.',
+          'لا يطلب إصدار iOS الحالي رقم هوية وطنية أو جواز سفر أو مستند هوية حكومي، ولا يطلب رقم حساب بنكي أو IBAN أو تفاصيل بنك الصرف. كما لا يطلب جهات الاتصال أو الميكروفون أو إذن الموقع في الخلفية.',
+          'The current iOS release does not request a national-ID or passport number, a government identity document, a bank-account number, IBAN, or payout-bank details. It also does not request contacts, microphone access, or background-location permission.',
         )}</Text>
 
         <Text style={[styles.sectionTitle, textStyle]}>{tx('6) المشاركة والمعالجة', '6) Sharing and processing')}</Text>
         <Text style={[styles.paragraph, textStyle]}>{tx(
-          'لا نبيع البيانات. تُشارك البيانات بالقدر اللازم مع Firebase للمصادقة والتخزين، وCloudflare لخدمات API، وCloudinary للصور، وExpo للإشعارات، وTap للدفع المستضاف، ومع الطرف المقابل في الطلب حيث تتطلب الخدمة ذلك.',
-          'We do not sell personal data. Data is shared as needed with Firebase for authentication and storage, Cloudflare for API services, Cloudinary for images, Expo for notifications, Tap for hosted payments, and the request counterparty where the service requires it.',
+          'لا نبيع البيانات. تُشارك البيانات بالقدر اللازم مع Firebase للمصادقة والتخزين، وCloudflare لخدمات API، وCloudinary للصور، وExpo للإشعارات، وMapTiler لعرض الخرائط، وTap للدفع المستضاف، ومع الطرف المقابل في الطلب حيث تتطلب الخدمة ذلك. لا يُرسل موقع الوجهة إلى تطبيق خرائط خارجي إلا عندما تختار فتح الاتجاهات.',
+          'We do not sell personal data. Data is shared as needed with Firebase for authentication and storage, Cloudflare for API services, Cloudinary for images, Expo for notifications, MapTiler for map display, Tap for hosted payments, and the request counterparty where the service requires it. A destination is sent to an external maps app only when you choose to open directions.',
         )}</Text>
 
         <Text style={[styles.sectionTitle, textStyle]}>{tx('7) الحقوق والاحتفاظ', '7) Rights and retention')}</Text>

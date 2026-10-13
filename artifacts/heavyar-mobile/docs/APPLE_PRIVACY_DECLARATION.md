@@ -1,6 +1,6 @@
 # Apple App Privacy Declaration Worksheet
 
-Prepared: 2026-10-03. This is a source-audit checklist for the store owner. It does **not** mean App Store Connect has been updated, and the final signed binary/SDK privacy manifests still require inspection.
+Prepared: 2026-10-03; updated for M1 source on 2026-10-13. This is a source-audit checklist for the store owner. It does **not** mean App Store Connect has been updated, and the final signed binary/SDK privacy manifests still require inspection.
 
 ## Release facts
 
@@ -23,7 +23,7 @@ Apple's official privacy guidance says data entered in an external payment flow 
 | Contact Info — Email Address | YES | YES | NO | Authentication, account communications, payment customer context | `app/register.tsx`, `contexts/AuthContext.tsx`, `worker/src/payment.ts` |
 | Contact Info — Phone Number | YES | YES | NO | Account, login/contact, payment customer context | `app/register.tsx`, `contexts/AuthContext.tsx`, `worker/src/payment.ts` |
 | Location — Coarse Location | YES | YES | NO | User-entered marketplace/service area; not GPS | registration/profile/equipment fields `countryCode`, `region`, `city`, `customCity`, `district` |
-| Location — Precise Location | NO | NO | NO | Not requested | No `expo-location` dependency/import or location permission in `app.json` |
+| Location — Precise Location | YES | YES | NO | User-selected equipment/work-site/static-chat pins and directions; app functionality | `expo-location` foreground-only explicit action or manual pin; participant/owner-scoped storage |
 | User Content — Photos or Videos | YES | YES | NO | Profile and equipment images | profile/add/edit image picker; `services/cloudinaryService.ts`; Cloudinary |
 | User Content — Emails or Text Messages | YES | YES | NO | In-app participant chat | `app/chat/[requestId].tsx`, Firestore message services/rules |
 | User Content — Other User Content | YES | YES | NO | Listings, descriptions, rental/request content, ratings, complaint/support content | add/edit equipment, Rental V2 request, rating and complaint paths |
@@ -60,7 +60,7 @@ Apple's official privacy guidance says data entered in an external payment flow 
 | Raw card number/CVV | NO | YES, entered directly by the user to Tap outside Heavyar's form | Tap | Not received by Heavyar | NO | Tap-hosted checkout |
 | Government ID/passport | NO | NO | None | NO | NO | No enabled input/payload |
 | Bank account/IBAN/payout bank | NO | NO | None | NO | NO | No enabled input/payload |
-| Precise GPS | NO | NO | None | NO | NO | No permission/API |
+| Precise pin / foreground GPS when chosen | YES | YES | Firebase/Cloudflare for scoped records; MapTiler receives map-tile viewport requests; a user-selected external maps app receives the destination only after “Open directions” | YES in Heavyar records | NO | Equipment/work-site/static-chat map functionality; no live/background tracking |
 | Contacts | NO | NO | None | NO | NO | No permission/API |
 | Microphone/audio | NO | NO | None | NO | NO | No permission/API; Android microphone permission explicitly blocked |
 | User-selected photos | YES | YES | Cloudinary | YES | NO | Equipment/profile upload only after user action |
@@ -68,7 +68,8 @@ Apple's official privacy guidance says data entered in an external payment flow 
 ## Human App Store Connect actions
 
 1. Enter the categories above manually; this file is not a console update.
-2. Confirm the final archive contains no newly added analytics, crash, location, contacts, microphone, KYC or banking SDK/path.
+2. Confirm the final archive contains only the declared foreground location path, with no analytics, crash, background/live location, contacts, microphone, KYC or banking SDK/path.
 3. Inspect every included `PrivacyInfo.xcprivacy` and required-reason API declaration.
 4. Confirm Tap checkout in the submitted binary remains hosted and Heavyar cannot access raw card credentials.
 5. Keep the public and in-app privacy policies aligned with this worksheet.
+6. Update App Store Connect App Privacy and the public privacy policy for Precise Location before distributing an M1 build; this source update does not perform either external action.

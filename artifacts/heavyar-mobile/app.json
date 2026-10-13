@@ -20,6 +20,11 @@
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Heavyar uses your photo library when you choose an image for equipment or your profile.",
+        "NSLocationWhenInUseUsageDescription": "Heavyar uses your location only when you choose to place an equipment, work-site, or shared chat pin.",
+        "LSApplicationQueriesSchemes": [
+          "comgooglemaps",
+          "waze"
+        ],
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -61,8 +66,15 @@
       "expo-router",
       "expo-font",
       "expo-web-browser",
+      "@maplibre/maplibre-react-native",
       "./plugins/withPodsMinimumDeploymentTarget",
       "expo-notifications",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Heavyar uses your location only when you choose to place an equipment, work-site, or shared chat pin."
+        }
+      ],
       [
         "expo-image-picker",
         {

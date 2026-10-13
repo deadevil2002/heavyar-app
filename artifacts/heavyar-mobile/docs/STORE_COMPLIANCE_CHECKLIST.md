@@ -17,7 +17,7 @@ legal advice and does not invent retention or business claims.
 | Privacy policy | Public URL live at `/privacy` | Store owner must link and review final content |
 | Terms | Public URL live at `/terms` | Store owner must review final content and listing link |
 | Support | Public URL live at `/support` | Store owner must verify contacts remain monitored |
-| Permissions | POST_NOTIFICATIONS requested; broad legacy storage, microphone, and overlay permissions blocked | Verify generated manifest and runtime prompts |
+| Permissions | POST_NOTIFICATIONS plus explicit-action foreground coarse/precise location; broad legacy storage, background location, microphone, and overlay permissions blocked | Verify generated manifest and runtime prompts; location must not prompt before “Use my location” |
 | Notification permission | Expo Android channel/token path implemented | Verify on Android 13+ physical device |
 | Content rating | Not completed | Store owner must complete Play questionnaire |
 | App access | Not completed | Store owner must provide reviewer access/instructions |
@@ -31,7 +31,7 @@ legal advice and does not invent retention or business claims.
 | Bundle ID | Implemented: `com.heavyar.app` | Verify archive |
 | Privacy nutrition labels | Source-audited worksheet prepared in `APPLE_PRIVACY_DECLARATION.md`; App Store Connect not updated | Store owner must enter/verify the declaration against the signed binary |
 | Account deletion | Same authenticated in-app request is exposed from Profile and Settings; public page is informational and requires no login | Verify fulfillment and final policy wording |
-| Privacy policy | Public `/privacy` URL live | Add to App Store Connect and review |
+| Privacy policy | Public `/privacy` URL live; M1 precise-location alignment pending in the separate website repository | Update/review before distributing an M1 build, then keep the App Store URL |
 | Export compliance | `ITSAppUsesNonExemptEncryption=false` configured | Verify archive metadata |
 | Required-reason APIs | Dependency inventory reviewed; final archive not inspected | Inspect `PrivacyInfo.xcprivacy` for Firebase, AsyncStorage, Expo, and RN dependencies |
 | Privacy manifests | Final archive not available | Verify every shipped SDK manifest and required reason |
@@ -79,6 +79,7 @@ Do not submit until the store owner has:
 - Bank account/IBAN/payout-bank collection: **NO** in the enabled iOS path.
 - Provider commercial-registration data remains ordinary marketplace/business information with neutral wording.
 - Tap is a hosted payment flow for physical/off-app services. Heavyar does not receive/store raw card number or CVV; transaction records remain Purchase History for privacy declaration purposes.
+- M1 source collects a precise pin only when the user manually confirms it or explicitly grants foreground location access. It has no live/background tracking. Before an M1 build is distributed, update App Store Connect Precise Location and Google Play Data Safety, and align the public privacy policy with the in-app disclosure.
 - App Privacy and Review Notes are prepared only. No App Store Connect entry, build, submission, or approval occurred.
 
 ## Product completion update — 2026-09-17

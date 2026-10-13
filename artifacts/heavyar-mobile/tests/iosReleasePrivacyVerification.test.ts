@@ -93,7 +93,7 @@ describe('current iOS release identity-verification boundary', () => {
     expect(matches).toEqual([]);
   });
 
-  it('ships only the image-library permission used by the current iOS image flow', () => {
+  it('ships only the user-triggered photo and foreground-location permissions used by current flows', () => {
     const appConfig = JSON.parse(source('app.json'));
     const imagePickerPlugin = appConfig.expo.plugins.find((plugin: unknown) =>
       Array.isArray(plugin) && plugin[0] === 'expo-image-picker',
@@ -104,8 +104,15 @@ describe('current iOS release identity-verification boundary', () => {
       microphonePermission: false,
     });
     expect(appConfig.expo.ios.infoPlist.NSPhotoLibraryUsageDescription).toBeTruthy();
+    expect(appConfig.expo.ios.infoPlist.NSLocationWhenInUseUsageDescription).toContain('only when you choose');
+    const locationPlugin = appConfig.expo.plugins.find((plugin: unknown) =>
+      Array.isArray(plugin) && plugin[0] === 'expo-location',
+    );
+    expect(locationPlugin?.[1].locationWhenInUsePermission).toContain('only when you choose');
     expect(appConfig.expo.ios.infoPlist).not.toHaveProperty('NSCameraUsageDescription');
     expect(appConfig.expo.ios.infoPlist).not.toHaveProperty('NSMicrophoneUsageDescription');
+    expect(appConfig.expo.ios.infoPlist).not.toHaveProperty('NSLocationAlwaysUsageDescription');
+    expect(appConfig.expo.ios.infoPlist).not.toHaveProperty('NSLocationAlwaysAndWhenInUseUsageDescription');
 
     const enabledSources = [
       ...sourceFiles('app'),
@@ -115,6 +122,8 @@ describe('current iOS release identity-verification boundary', () => {
     ];
     for (const path of enabledSources) {
       expect(readFileSync(path, 'utf8')).not.toMatch(/launchCameraAsync|requestCameraPermissionsAsync/);
+      expect(readFileSync(path, 'utf8')).not.toMatch(/requestBackgroundPermissionsAsync|startLocationUpdatesAsync|watchPositionAsync/);
     }
+    expect(source('services/deviceLocation.ts')).toContain('requestForegroundPermissionsAsync');
   });
 });

@@ -1866,7 +1866,7 @@ describe('worker security boundary', () => {
       titleAr: 'حفار', titleEn: 'Excavator', descriptionAr: 'وصف', descriptionEn: 'Description',
       pricePerDay: 500, countryCode: 'SA', nativeCurrency: 'SAR', nativePricePerDay: 500, displayCurrency: 'USD',
       category: 'excavators', customCategory: '', region: 'riyadh', city: 'riyadh', customCity: '', district: '',
-      location: { lat: 0, lng: 0 }, images: [{ url: 'https://res.cloudinary.com/demo/image/upload/x.png', publicId: 'heavyar/provider-1/x' }],
+      location: { lat: 24.7136, lng: 46.6753 }, images: [{ url: 'https://res.cloudinary.com/demo/image/upload/x.png', publicId: 'heavyar/provider-1/x' }],
       availability: { from: '2026-01-01', temporarilyUnavailable: false },
     }, { Authorization: 'Bearer test' }), env);
     const createdBody: any = await created.json();

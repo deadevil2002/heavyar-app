@@ -31,9 +31,11 @@ import {
   ListingPricingInput,
   pricingInputFromListing,
 } from '@/services/listingPricing';
+import LocationPicker from '@/components/location/LocationPicker';
+import type { PreciseLocation } from '@/services/location';
 
 export default function EditEquipmentScreen() {
-  const { isRTL, t, localizedText } = useLanguage();
+  const { isRTL, language, t, localizedText } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -56,6 +58,7 @@ export default function EditEquipmentScreen() {
   const [city, setCity] = useState<string>('');
   const [customCity, setCustomCity] = useState<string>('');
   const [district, setDistrict] = useState<string>('');
+  const [location, setLocation] = useState<PreciseLocation | null>(null);
   const [pricingInput, setPricingInput] = useState<ListingPricingInput>({
     hourlyEnabled: false,
     hourlyAmount: '',
@@ -114,6 +117,7 @@ export default function EditEquipmentScreen() {
         setCity(eq.city);
         setCustomCity(eq.customCity || '');
         setDistrict(eq.district);
+        setLocation(eq.location || null);
         setPricingInput(pricingInputFromListing(eq as unknown as import('@/services/listingPricing').ListingPricingSource));
         if (typeof eq.availability === 'object' && eq.availability) {
           setAvailabilityFrom(eq.availability.from || '');
@@ -182,6 +186,10 @@ export default function EditEquipmentScreen() {
       showDialog(t('validation_error'), t('validation_city_required'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
+    if (!location) {
+      showDialog(t('validation_error'), isRTL ? 'حدّد موقع المعدة على الخريطة وأكّد الدبوس.' : 'Choose the equipment location on the map and confirm the pin.', [{ text: t('ok'), style: 'default' }]);
+      return;
+    }
     const currency = originalEquipment.nativeCurrency || user.nativeCurrency || 'SAR';
     const pricingResult = buildListingPricing(pricingInput, currency);
     if (!pricingResult.ok) {
@@ -229,6 +237,7 @@ export default function EditEquipmentScreen() {
         city,
         customCity,
         district,
+        location,
         pricingModelVersion: pricingResult.pricingModelVersion,
         pricing: pricingResult.pricing,
         images: finalImages,
@@ -259,7 +268,7 @@ export default function EditEquipmentScreen() {
       setSaving(false);
       setUploadProgress('');
     }
-  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, pricingInput, existingImages, newImageUris, oldImages, availabilityFrom, availabilityUntil, temporarilyUnavailable, t, router, showDialog, isRTL]);
+  }, [id, originalEquipment, user, titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, location, pricingInput, existingImages, newImageUris, oldImages, availabilityFrom, availabilityUntil, temporarilyUnavailable, t, router, showDialog, isRTL]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 
@@ -521,6 +530,10 @@ export default function EditEquipmentScreen() {
                 placeholder={t('district_name')}
                 placeholderTextColor={Colors.textMuted}
               />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <LocationPicker value={location} onConfirm={setLocation} language={language} />
             </View>
 
             <ListingPricingFields

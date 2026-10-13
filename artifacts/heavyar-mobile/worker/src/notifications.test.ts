@@ -47,6 +47,7 @@ describe('trusted notification foundation', () => {
     const valid = await worker.fetch(request('/api/listings', { method: 'POST', body: JSON.stringify({
       titleEn: 'Lift', titleAr: 'رافعة', descriptionEn: 'Safe lift', descriptionAr: 'رافعة آمنة',
       dailyPrice: 100, category: 'heavy', region: 'Riyadh', city: 'Riyadh',
+      location: { lat: 24.7136, lng: 46.6753 },
       availability: { from: '2025-01-01', until: '2025-12-31' },
     }) }), env);
     expect(valid.status).toBe(201);

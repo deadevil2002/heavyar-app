@@ -40,6 +40,7 @@ describe('invitation HTTP and Firestore resource contract', () => {
     __adminTest.setIdentity(async (_uid, role) => ({ role, previousRole: null }));
     __test.setAuth({ uid: 'real-owner', admin: true, role: 'super_admin', permissionRole: 'owner', emailVerified: true });
     __test.setFirestore(); __test.captureCommits();
+    __test.setAuthenticatedMutationLimiter(async () => ({ status: 'allowed' }));
     // Ephemeral test-only signing material. Every network request is intercepted.
     const keys = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
     const pkcs8 = await crypto.subtle.exportKey('pkcs8', keys.privateKey);
@@ -99,7 +100,7 @@ describe('invitation HTTP and Firestore resource contract', () => {
   });
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    __test.setAuth(); __test.setFirestore(); __test.captureCommits();
+    __test.setAuth(); __test.setFirestore(); __test.captureCommits(); __test.resetMutationLimits();
     __adminTest.setFirestore(); __adminTest.captureCommits(); __adminTest.setQuery();
     __adminTest.setVerifiedEmail(); __adminTest.setIdentity();
   });

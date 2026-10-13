@@ -21,6 +21,7 @@ import { evaluateCapabilities, isSaudiTruckRentalWithoutDriver, validateRegulato
 import { CURRENT_POLICY_ACCEPTANCE_MODE, INCIDENT_TYPES, LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED, LEGACY_POLICY_ACCEPTANCE_MODE, PRIVACY_REQUEST_TYPES, acceptanceIsCurrent, complaintServiceTargets, policyAcceptanceState, regulatoryDecision, requiredPolicyVersions, safeUserExport, validatePolicyAcceptance } from './compliance';
 import { googleServiceAccountToken as googleToken } from './google-auth';
 import { assertActivePrivilegedSession, PrivilegedAuthUnavailableError, PrivilegedSessionRevokedError } from './privileged-session';
+import { parsePreciseLocation } from './location';
 import {
   consumeScheduledSubrequest,
   createScheduledGlobalBudget,
@@ -1910,7 +1911,8 @@ async function createV2Request(body: any, req: Request, env: Env, u: User) {
       categoryId: String(normalizedEquipment.category || ''), countryCode: String(normalizedEquipment.countryCode || ''),
       status: 'pending', rentalMode: input.rentalMode, requestMode: input.rentalMode,
       rateUnit: input.rateUnit, requestedStartAt: input.requestedStartAt, requestedEndAt: input.requestedEndAt,
-      actualStartAt: null, actualEndAt: null, notes: input.notes || '', pricingSnapshot,
+      actualStartAt: null, actualEndAt: null, notes: input.notes || '',
+      ...(input.workSiteLocation ? { workSiteLocation: input.workSiteLocation } : {}), pricingSnapshot,
       commercialSnapshot: lockedCommercial, commercialSnapshotStatus: input.rentalMode === 'open_ended' ? 'terms_locked' : 'estimated',
       currency: estimate.currency, nativeCurrency: normalizedEquipment.nativeCurrency, baseAmountMinor: estimate.baseAmountMinor,
       paymentStatus: 'unpaid', paymentState: null, paymentId: '', allowChat: false, createdAt: now, updatedAt: now,
@@ -3719,6 +3721,9 @@ async function listingCreate(req: Request, env: Env, u: User) {
   const availability = body.availability || { from: new Date().toISOString().slice(0, 10) }, availabilityCheck = validateDateRange(availability);
   if (!availabilityCheck.ok) return out(env, req, { success: false, error: availabilityCheck.error }, 400);
   if (Array.isArray(availability.blocked) && availability.blocked.some((range: any) => !validateDateRange(range).ok)) return out(env, req, { success: false, error: 'Invalid blocked dates' }, 400);
+  let location;
+  try { location = parsePreciseLocation(body.location); }
+  catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid location', errorCode: 'INVALID_LOCATION' }, 400); }
   const requestedCountry = String(body.countryCode || profile.countryCode || 'SA').toUpperCase();
   if (profile.countryCode && requestedCountry !== String(profile.countryCode).toUpperCase()) return out(env, req, { success: false, error: 'Listing country must match provider country' }, 400);
   const country = await countrySettings(env, requestedCountry);
@@ -3732,7 +3737,7 @@ async function listingCreate(req: Request, env: Env, u: User) {
   const ownerPublic = { uid: u.uid, nameAr: String(profile.nameAr || ''), nameEn: String(profile.nameEn || ''), avatar: String(profile.avatar || '') };
   const publicationReason = 'automated_post_moderation_eligible_provider';
   const reviewOnly = profile.accountPurpose === 'store_review';
-  const value: any = { ownerUid: u.uid, ...(reviewOnly ? { accountPurpose: 'store_review' } : {}), countryCode: country.code, nativeCurrency: country.currency, ...(v2 ? { pricingModelVersion: 2, pricing } : { nativePricePerDay: dailyPrice, pricePerDay: dailyPrice }), titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location: body.location || null, customCategory: String(body.customCategory || '').slice(0, 100), images, availability, ownerPublic, isActive: true, visibility: reviewOnly ? 'hidden' : 'visible', moderationStatus: 'approved', moderationReason: reviewOnly ? 'store_review_qa_only' : publicationReason, createdAt: now, updatedAt: now };
+  const value: any = { ownerUid: u.uid, ...(reviewOnly ? { accountPurpose: 'store_review' } : {}), countryCode: country.code, nativeCurrency: country.currency, ...(v2 ? { pricingModelVersion: 2, pricing } : { nativePricePerDay: dailyPrice, pricePerDay: dailyPrice }), titleAr, titleEn, descriptionAr, descriptionEn, category: String(body.category || '').slice(0, 100), region: String(body.region || '').slice(0, 100), city: String(body.city || '').slice(0, 100), customCity: String(body.customCity || '').slice(0, 100), district: String(body.district || '').slice(0, 100), location, customCategory: String(body.customCategory || '').slice(0, 100), images, availability, ownerPublic, isActive: true, visibility: reviewOnly ? 'hidden' : 'visible', moderationStatus: 'approved', moderationReason: reviewOnly ? 'store_review_qa_only' : publicationReason, createdAt: now, updatedAt: now };
   const writes: any[] = [
     { update: { name: fullName(env, `listingAudit/${encodeURIComponent(`${id}:create`)}`), fields: { listingId: { stringValue: id }, ownerUid: { stringValue: u.uid }, action: { stringValue: 'create' }, reason: { stringValue: publicationReason }, automated: { booleanValue: true }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
   ];
@@ -3758,6 +3763,10 @@ async function listingUpdate(req: Request, env: Env, u: User, id: string) {
   const forbidden = ['ownerUid', 'providerUid', 'moderationStatus', 'verificationStatus', 'status', 'adminHidden', 'createdAt', 'updatedAt'];
   if (Object.keys(body).some((key) => forbidden.includes(key) || !allowed.includes(key))) return out(env, req, { success: false, error: 'Unsupported listing field' }, 400);
   const patch = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k) && !['title', 'description', 'dailyPrice'].includes(k)));
+  if (Object.prototype.hasOwnProperty.call(body, 'location')) {
+    try { patch.location = parsePreciseLocation(body.location)!; }
+    catch (error) { return out(env, req, { success: false, error: error instanceof Error ? error.message : 'Invalid location', errorCode: 'INVALID_LOCATION' }, 400); }
+  }
   if (body.title !== undefined) { patch.titleAr = String(body.title); patch.titleEn = String(body.title); }
   if (body.description !== undefined) { patch.descriptionAr = String(body.description); patch.descriptionEn = String(body.description); }
   if (body.dailyPrice !== undefined) { patch.pricePerDay = Number(body.dailyPrice); patch.nativePricePerDay = Number(body.dailyPrice); }

@@ -18,6 +18,8 @@ import {
 } from '@/services/rentalV2';
 import RentalSchedulePicker from './rental/RentalSchedulePicker';
 import { safeErrorMessage } from '@/services/errorMessages';
+import LocationPicker from './location/LocationPicker';
+import type { PreciseLocation } from '@/services/location';
 
 export type RentalRequestDraft = RentalRequestInput;
 
@@ -48,6 +50,7 @@ export default function RentalRequestModal({ visible, equipment, onClose, onSubm
   const [startTime, setStartTime] = useState('08:00');
   const [endTime, setEndTime] = useState('09:00');
   const [notes, setNotes] = useState('');
+  const [workSiteLocation, setWorkSiteLocation] = useState<PreciseLocation | null>(null);
   const [estimate, setEstimate] = useState<RentalEstimate | null>(null);
   const [estimating, setEstimating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -57,7 +60,11 @@ export default function RentalRequestModal({ visible, equipment, onClose, onSubm
   useEffect(() => {
     setEstimate(null);
     setError('');
-  }, [mode, rateUnit, startDate, endDate, startTime, endTime, visible]);
+  }, [mode, rateUnit, startDate, endDate, startTime, endTime, workSiteLocation, visible]);
+
+  useEffect(() => {
+    if (!visible) setWorkSiteLocation(null);
+  }, [equipment.id, visible]);
 
   useEffect(() => {
     if (mode === 'hourly') setRateUnit('hourly');
@@ -83,6 +90,7 @@ export default function RentalRequestModal({ visible, equipment, onClose, onSubm
       requestedStartAt: start,
       requestedEndAt: end,
       ...(notes.trim() ? { notes: notes.trim() } : {}),
+      ...(workSiteLocation ? { workSiteLocation } : {}),
     };
   };
 
@@ -173,6 +181,7 @@ export default function RentalRequestModal({ visible, equipment, onClose, onSubm
                 startDate={startDate} endDate={endDate} startTime={startTime} endTime={endTime}
                 onStartDate={setStartDate} onEndDate={setEndDate} onStartTime={setStartTime} onEndTime={setEndTime}
               />
+              <LocationPicker value={workSiteLocation} onConfirm={setWorkSiteLocation} language={language} />
               <TextInput
                 style={[styles.notes, { textAlign: isRTL ? 'right' : 'left' }]}
                 value={notes} onChangeText={setNotes} multiline maxLength={500}

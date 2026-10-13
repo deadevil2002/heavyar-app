@@ -23,13 +23,14 @@ import ListingPriceDisplay from '@/components/ListingPriceDisplay';
 import { HeavyarButton, HeavyarButtonText, HeavyarIconButton } from '@/components/ui/heavyar';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import { useBlockedUsers } from '@/services/blockedUsers';
+import LocationPreview from '@/components/location/LocationPreview';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function EquipmentDetailScreen() {
   mobilePerformance.countRender('EquipmentDetail');
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { isRTL, t, localizedText } = useLanguage();
+  const { isRTL, language, t, localizedText } = useLanguage();
   const auth = useAuth();
   const { user: currentUser, isAuthenticated, isLoading: authLoading, requiresEmailVerification } = auth;
   const router = useRouter();
@@ -259,6 +260,14 @@ export default function EquipmentDetailScreen() {
             <MapPin size={16} color={Colors.gold} />
             <Text style={styles.locationText}>{cityName} - {equipment.district}</Text>
           </View>
+
+          {equipment.location && equipment.ownerUid === currentUser?.uid ? (
+            <LocationPreview
+              location={equipment.location}
+              language={language}
+              title={isRTL ? 'موقع المعدة الخاص' : 'Private equipment location'}
+            />
+          ) : null}
 
           <View style={styles.divider} />
 

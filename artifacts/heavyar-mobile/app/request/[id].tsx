@@ -17,6 +17,7 @@ import { safeErrorMessage } from '@/services/errorMessages';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import { getRequestNavigationSnapshot } from '@/services/requestNavigationSnapshot';
 import { markRouteStage, startRouteModuleEvaluation } from '@/utils/routePerformance';
+import LocationPreview from '@/components/location/LocationPreview';
 
 const requestDetailModuleEvaluation = startRouteModuleEvaluation('request_detail');
 
@@ -25,7 +26,7 @@ export default function RequestDetailScreen() {
   markRouteStage('request_detail', 'component_first_execute');
   mobilePerformance.countRender('RequestDetail');
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { isRTL, t, localizedText } = useLanguage();
+  const { isRTL, language, t, localizedText } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
   const currentUid = user?.uid || '';
@@ -272,6 +273,16 @@ export default function RequestDetailScreen() {
                  : (isOpenEnded ? t('until_work_completion') : `${days || 0} ${t('days')}`)}
             </Text>
           </View>
+
+          {request.workSiteLocation ? (
+            <View style={styles.card}>
+              <LocationPreview
+                location={request.workSiteLocation}
+                language={language}
+                title={isRTL ? 'موقع العمل' : 'Work-site location'}
+              />
+            </View>
+          ) : null}
 
            {isV2 && pricingSnapshot ? (
              <View style={styles.card}>

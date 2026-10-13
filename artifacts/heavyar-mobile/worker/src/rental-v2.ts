@@ -1,4 +1,5 @@
 import { currencyDecimals } from './commercial';
+import { parsePreciseLocation, type PreciseLocation } from './location';
 
 export type RateUnit = 'hourly' | 'daily';
 export type RentalMode = RateUnit | 'open_ended';
@@ -16,6 +17,7 @@ export type V2RequestInput = {
   requestedEndAt: string | null;
   expectedRateAmountMinor: number;
   notes?: string;
+  workSiteLocation?: PreciseLocation;
 };
 export type RentalDuration = {
   elapsedMinutes: number | null;
@@ -39,6 +41,7 @@ const FORBIDDEN_COMMERCIAL_FIELDS = new Set([
 const INPUT_FIELDS = new Set([
   'pricingModelVersion', 'equipmentId', 'rentalMode', 'rateUnit',
   'requestedStartAt', 'requestedEndAt', 'expectedRateAmountMinor', 'notes',
+  'workSiteLocation',
   // Accepted only as a compatibility alias; it must agree with rentalMode.
   'requestMode',
 ]);
@@ -187,12 +190,14 @@ export function parseV2RequestInput(value: unknown): V2RequestInput {
   if (requestedEndAt && requestedEndAt <= requestedStartAt) throw new Error('Requested end must be after start');
   const notes = raw.notes === undefined ? undefined : String(raw.notes);
   if (notes !== undefined && (notes.length > 1000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(notes))) throw new Error('Invalid request notes');
+  const workSiteLocation = parsePreciseLocation(raw.workSiteLocation, false);
   return {
     pricingModelVersion: 2, equipmentId: String(raw.equipmentId),
     rentalMode: raw.rentalMode, rateUnit: raw.rateUnit,
     requestedStartAt, requestedEndAt,
     expectedRateAmountMinor: integer(raw.expectedRateAmountMinor, 'expectedRateAmountMinor', 1),
     ...(notes === undefined ? {} : { notes }),
+    ...(workSiteLocation ? { workSiteLocation } : {}),
   };
 }
 
