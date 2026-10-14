@@ -149,6 +149,8 @@ describe('durable authenticated mutation rate limiting', () => {
     expect((await __test.allowAuthenticatedMutation(env, 'organization-service-user', 'organization_service', now)).status).toBe('limited');
     for (let attempt = 0; attempt < 20; attempt += 1) expect((await __test.allowAuthenticatedMutation(env, 'operator-request-user', 'operator_request_prepare', now)).status).toBe('allowed');
     expect((await __test.allowAuthenticatedMutation(env, 'operator-request-user', 'operator_request_prepare', now)).status).toBe('limited');
+    for (let attempt = 0; attempt < 20; attempt += 1) expect((await __test.allowAuthenticatedMutation(env, 'transport-request-user', 'transport_request_prepare', now)).status).toBe('allowed');
+    expect((await __test.allowAuthenticatedMutation(env, 'transport-request-user', 'transport_request_prepare', now)).status).toBe('limited');
     expect(JSON.stringify([...firestore.documents.entries()])).not.toContain('company-owner');
     expect(JSON.stringify([...firestore.documents.entries()])).not.toContain('employee-user');
     expect(JSON.stringify([...firestore.documents.entries()])).not.toContain('equipment-user');
@@ -156,6 +158,7 @@ describe('durable authenticated mutation rate limiting', () => {
     expect(JSON.stringify([...firestore.documents.entries()])).not.toContain('service-profile-user');
     expect(JSON.stringify([...firestore.documents.entries()])).not.toContain('organization-service-user');
     expect(JSON.stringify([...firestore.documents.entries()])).not.toContain('operator-request-user');
+    expect(JSON.stringify([...firestore.documents.entries()])).not.toContain('transport-request-user');
   });
 
   test('storage failure fails closed and normal reservations use three Firestore subrequests', async () => {

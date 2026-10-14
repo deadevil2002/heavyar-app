@@ -32,6 +32,11 @@ describe('sanitized mutation observability', () => {
     expect(responseErrorCode('AVAILABILITY_UNAVAILABLE', 503)).toBe('AVAILABILITY_UNAVAILABLE');
   });
 
+  test('transport preparation uses a sanitized stable mutation route', () => {
+    expect(mutationRoute(new Request('https://worker.test/api/transport-requests/prepare?customer=private', { method: 'POST' }))).toBe('/api/transport-requests/prepare');
+    expect(responseErrorCode('INVALID_TRANSPORT_REQUEST', 400)).toBe('INVALID_TRANSPORT_REQUEST');
+  });
+
   test('denied writes report attempts without claiming a commit', () => {
     const event: any = mutationDiagnosticEvent(request, diagnostics({
       firestoreWriteAttempts: 1,

@@ -9,6 +9,18 @@
       ]
     },
     {
+      "collectionGroup": "transporterDiscoveryProfiles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "discoveryFacets", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "declaredCapacityKg", "order": "ASCENDING" },
+        { "fieldPath": "declaredDimensionsMm.length", "order": "ASCENDING" },
+        { "fieldPath": "declaredDimensionsMm.width", "order": "ASCENDING" },
+        { "fieldPath": "declaredDimensionsMm.height", "order": "ASCENDING" },
+        { "fieldPath": "sortKey", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "earlyAccessSubscribers",
       "queryScope": "COLLECTION",
       "fields": [

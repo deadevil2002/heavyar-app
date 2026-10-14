@@ -463,11 +463,17 @@ service cloud.firestore {
     }
     // Discovery projections and future request records remain Worker-only.
     // Public clients receive only the explicit API projection; request
-    // preparation in M2-D2 is ephemeral and does not write this collection.
+    // preparation in M2-D2/M2-D3 is ephemeral and does not write these collections.
     match /operatorDiscoveryProfiles/{profileId} {
       allow read, write: if false;
     }
     match /operatorRequests/{requestId} {
+      allow read, write: if false;
+    }
+    match /transporterDiscoveryProfiles/{profileId} {
+      allow read, write: if false;
+    }
+    match /transportRequests/{requestId} {
       allow read, write: if false;
     }
     match /serviceProfileAudit/{auditId} {

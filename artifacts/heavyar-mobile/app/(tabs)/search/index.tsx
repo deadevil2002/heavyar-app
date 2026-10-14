@@ -14,6 +14,7 @@ import { loadEquipmentView, saveEquipmentView, type EquipmentView } from '@/serv
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import DriverSearchTab from '@/components/DriverSearchTab';
 import OperatorSearchTab from '@/components/OperatorSearchTab';
+import TransporterSearchTab from '@/components/TransporterSearchTab';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import { useAuth } from '@/contexts/AuthContext';
 import { canBrowsePublicEquipment } from '@/services/marketplaceAccess';
@@ -46,11 +47,12 @@ function MarketplaceSearch() {
   const { text: query, changeText: setQuery, commitText, draftFilters, beginFilters, changeFilter, commitFilters, resetAll } = useDiscoveryDraft(discovery);
   const [showFilters, setShowFilters] = useState<boolean>(false);
   const [view, setView] = useState<EquipmentView>('list');
-  const [mode, setMode] = useState<'equipment' | 'drivers' | 'operators'>('equipment');
+  const [mode, setMode] = useState<'equipment' | 'drivers' | 'operators' | 'transporters'>('equipment');
 
   useEffect(() => {
     if (params.mode === 'drivers') setMode('drivers');
     else if (params.mode === 'operators') setMode('operators');
+    else if (params.mode === 'transporters') setMode('transporters');
     else if (params.mode === 'equipment') setMode('equipment');
   }, [params.mode]);
 
@@ -88,6 +90,10 @@ function MarketplaceSearch() {
           <HeavyarSegment height={40} minH={40} accessibilityRole="button" selected={mode === 'operators'}
             onPress={() => { setMode('operators'); router.setParams({ mode: 'operators' }); }}>
             <HeavyarSegmentText selected={mode === 'operators'}>{isRTL ? 'المشغّلون' : 'Operators'}</HeavyarSegmentText>
+          </HeavyarSegment>
+          <HeavyarSegment height={40} minH={40} accessibilityRole="button" selected={mode === 'transporters'}
+            onPress={() => { setMode('transporters'); router.setParams({ mode: 'transporters' }); }}>
+            <HeavyarSegmentText selected={mode === 'transporters'}>{isRTL ? 'النقل' : 'Transport'}</HeavyarSegmentText>
           </HeavyarSegment>
         </HeavyarSegmentedControl>
 
@@ -157,7 +163,7 @@ function MarketplaceSearch() {
             <Pressable accessibilityRole="button" onPress={refresh} style={styles.clearButton}><Text style={styles.clearText}>{t('discovery_retry')}</Text></Pressable>
           </View> : <EmptyState title={hasFilters ? t('no_results') : t('no_equipment')} />}
         />
-        </>) : mode === 'drivers' ? <DriverSearchTab /> : <OperatorSearchTab />}
+        </>) : mode === 'drivers' ? <DriverSearchTab /> : mode === 'operators' ? <OperatorSearchTab /> : <TransporterSearchTab />}
       </SafeAreaView>
     </View>
   );

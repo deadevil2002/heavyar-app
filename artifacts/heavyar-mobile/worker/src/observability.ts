@@ -56,6 +56,7 @@ const SAFE_ERROR_CODES = new Set([
   'INVALID_MEMBERSHIP_UPDATE', 'INVALID_EQUIPMENT_UPDATE', 'EQUIPMENT_UPDATE_CONFLICT',
   'BOOKING_OPERATION_NOT_DELEGABLE', 'INVALID_BOOKING_OPERATION',
   'INVALID_OPERATOR_REQUEST', 'INVALID_OPERATOR_SEARCH', 'OPERATOR_DISCOVERY_UNAVAILABLE',
+  'INVALID_TRANSPORT_REQUEST', 'INVALID_TRANSPORTER_SEARCH', 'TRANSPORTER_DISCOVERY_UNAVAILABLE',
   'INTERNAL_SERVICE_ERROR',
 ]);
 const SAFE_FIRESTORE_CODES = new Set([
@@ -78,6 +79,7 @@ const ROUTES: Array<[RegExp, string]> = [
   [/^\/api\/listings\/[^/]+$/, '/api/listings/:listingId'],
   [/^\/api\/drivers\/profile$/, '/api/drivers/profile'],
   [/^\/api\/operator-requests\/prepare$/, '/api/operator-requests/prepare'],
+  [/^\/api\/transport-requests\/prepare$/, '/api/transport-requests/prepare'],
   [/^\/api\/organizations\/[^/]+\/members\/[^/]+\/capabilities$/, '/api/organizations/:organizationId/members/:memberId/capabilities'],
   [/^\/api\/organizations\/[^/]+\/members\/[^/]+\/revoke$/, '/api/organizations/:organizationId/members/:memberId/revoke'],
   [/^\/api\/organizations\/[^/]+\/equipment\/[^/]+\/metadata$/, '/api/organizations/:organizationId/equipment/:equipmentId/metadata'],
