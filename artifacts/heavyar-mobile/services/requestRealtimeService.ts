@@ -24,18 +24,34 @@ export async function fetchRequestPage(uid: string, role: 'customer' | 'provider
 export function subscribeToRequestPage(uid: string, role: 'customer' | 'provider', callback: (page: RequestFirestorePage<EquipmentRequest>) => void, onError?: (error: Error) => void): Unsubscribe {
   const field = role === 'customer' ? 'customerUid' : 'providerUid';
   const stopMetric = mobilePerformance.startListener('firestore.requests-page');
-  const unsubscribe = onSnapshot(query(collection(getFirebaseDb(), 'equipmentRequests'), where(field, '==', uid),
+  let closed = false;
+  let unsubscribe: Unsubscribe = () => undefined;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    unsubscribe();
+    stopMetric();
+  };
+  unsubscribe = onSnapshot(query(collection(getFirebaseDb(), 'equipmentRequests'), where(field, '==', uid),
     orderBy('createdAt', 'desc'), orderBy(documentId(), 'desc'), limit(REQUESTS_PAGE_SIZE)), snapshot => callback({
       items: snapshot.docs.map(item => parseFirestoreRequest(item.id, item.data() as Record<string, unknown>)),
       cursor: snapshot.docs.at(-1) || null, hasMore: snapshot.size === REQUESTS_PAGE_SIZE,
-    }), onError);
-  return () => { unsubscribe(); stopMetric(); };
+    }), error => { close(); onError?.(error); });
+  return close;
 }
 
-export function subscribeToRequestDetail(requestId: string, callback: (request: EquipmentRequest | null) => void): Unsubscribe {
+export function subscribeToRequestDetail(requestId: string, callback: (request: EquipmentRequest | null) => void, onError?: (error: Error) => void): Unsubscribe {
   const stopMetric = mobilePerformance.startListener('firestore.request-detail');
-  const unsubscribe = onSnapshot(doc(getFirebaseDb(), 'equipmentRequests', requestId), snapshot => {
+  let closed = false;
+  let unsubscribe: Unsubscribe = () => undefined;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    unsubscribe();
+    stopMetric();
+  };
+  unsubscribe = onSnapshot(doc(getFirebaseDb(), 'equipmentRequests', requestId), snapshot => {
     callback(snapshot.exists() ? parseFirestoreRequest(snapshot.id, snapshot.data() as Record<string, unknown>) : null);
-  });
-  return () => { unsubscribe(); stopMetric(); };
+  }, error => { close(); onError?.(error); });
+  return close;
 }

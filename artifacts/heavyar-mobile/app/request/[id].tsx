@@ -23,6 +23,12 @@ import RentalExtensionCard from '@/components/rental/RentalExtensionCard';
 const requestDetailModuleEvaluation = startRouteModuleEvaluation('request_detail');
 
 export default function RequestDetailScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const { user } = useAuth();
+  return <RequestDetailContent key={`${user?.uid || 'guest'}:${id || ''}`} />;
+}
+
+function RequestDetailContent() {
   markRouteStage('request_detail', 'router_received');
   markRouteStage('request_detail', 'component_first_execute');
   mobilePerformance.countRender('RequestDetail');
@@ -48,6 +54,9 @@ export default function RequestDetailScreen() {
   const [cancelReason, setCancelReason] = useState('');
   const [_loading, setLoading] = useState<boolean>(!initialSnapshot);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [listenerAttempt, setListenerAttempt] = useState(0);
+  const listenerScopeRef = useRef('');
+  listenerScopeRef.current = `${currentUid}:${id || ''}`;
   const serverClockRef = useRef<{ serverNowMs: number; monotonicAtSync: number } | null>(null);
   const { dialog, showDialog, hideDialog } = useAppDialog();
 
@@ -64,15 +73,27 @@ export default function RequestDetailScreen() {
 
   useEffect(() => {
     if (!id) return;
+    const listenerScope = `${currentUid}:${id}`;
     let active = true;
     let unsubscribe: () => void = () => {};
     let firstFrame = 0;
     let secondFrame = 0;
     let dataTimer: ReturnType<typeof setTimeout> | undefined;
+    const failed = () => {
+      if (!active || listenerScopeRef.current !== listenerScope) return;
+      unsubscribe();
+      setRequest(null);
+      setOtherUserPublic(null);
+      setRentalSummary(null);
+      serverClockRef.current = null;
+      setLoadFailed(true);
+      setLoading(false);
+      markRouteStage('request_detail', 'fresh_data_complete');
+    };
     const startData = () => void import('@/services/requestRealtimeService').then(service => {
-      if (!active) return;
+      if (!active || listenerScopeRef.current !== listenerScope) return;
       unsubscribe = service.subscribeToRequestDetail(id, (req) => {
-        if (!active) return;
+        if (!active || listenerScopeRef.current !== listenerScope) return;
         setRequest(req);
         setLoadFailed(false);
         if (req) {
@@ -85,14 +106,9 @@ export default function RequestDetailScreen() {
         } else {
           setOtherUserPublic(null);
         }
-        if (active) setLoading(false);
-      });
-    }).catch(() => {
-      if (!active) return;
-      setLoadFailed(true);
-      setLoading(false);
-      markRouteStage('request_detail', 'fresh_data_complete');
-    });
+        setLoading(false);
+      }, failed);
+    }).catch(failed);
     firstFrame = requestAnimationFrame(() => {
       secondFrame = requestAnimationFrame(() => {
         dataTimer = setTimeout(startData, 100);
@@ -105,7 +121,7 @@ export default function RequestDetailScreen() {
       if (dataTimer) clearTimeout(dataTimer);
       unsubscribe();
     };
-  }, [id, currentUid]);
+  }, [id, currentUid, listenerAttempt]);
 
   useEffect(() => {
     if (!id || request?.pricingModelVersion !== 2) return;
@@ -148,7 +164,14 @@ export default function RequestDetailScreen() {
           <View style={styles.centered}>
             {_loading
               ? <ActivityIndicator color={Colors.gold} />
-              : <Text style={styles.errorText}>{loadFailed ? t('error_occurred') : t('error_occurred')}</Text>}
+              : <>
+                <Text style={styles.errorText}>{t('error_occurred')}</Text>
+                {loadFailed ? <Pressable accessibilityRole="button" style={styles.retryButton} onPress={() => {
+                  setLoadFailed(false);
+                  setLoading(true);
+                  setListenerAttempt(value => value + 1);
+                }}><Text style={styles.retryText}>{isRTL ? 'إعادة المحاولة' : 'Retry'}</Text></Pressable> : null}
+              </>}
           </View>
         </SafeAreaView>
       </View>
@@ -453,6 +476,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   errorText: { color: Colors.textSecondary, fontSize: 16 },
+  retryButton: { marginTop: 14, minHeight: 44, borderRadius: 12, backgroundColor: Colors.gold, paddingHorizontal: 20, justifyContent: 'center' },
+  retryText: { color: Colors.primary, fontSize: 14, fontWeight: '700' as const },
   header: { paddingHorizontal: 16, paddingVertical: 12, alignItems: 'center', justifyContent: 'space-between' },
   backBtn: { width: 42, height: 42, borderRadius: 14, backgroundColor: Colors.surface, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.border },
   headerTitle: { fontSize: 18, fontWeight: '700' as const, color: Colors.textPrimary },

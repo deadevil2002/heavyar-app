@@ -65,6 +65,8 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const registrationTransactionRef = useRef<RegistrationTransaction>('idle');
   const registrationGenerationRef = useRef(0);
   const authResolutionGenerationRef = useRef(0);
+  const authoritativeUidRef = useRef<string | null | undefined>(undefined);
+  const profileCacheQueueRef = useRef<Promise<void>>(Promise.resolve());
   const authTransitionRef = useRef<AuthTransition>('initializing');
   const pendingLoginResolutionRef = useRef<SessionResolutionWaiter | null>(null);
   const setAuthTransitionPhase = useCallback((phase: AuthTransition) => {
@@ -83,20 +85,30 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     registrationTransactionRef.current = phase;
     setRegistrationTransaction(phase);
   }, []);
+  const identityMayPublish = useCallback((uid: string | null, generation: number) =>
+    authoritativeUidRef.current === uid && authResolutionGenerationRef.current === generation, []);
+  const updateProfileCache = useCallback((uid: string | null, generation: number, profile: User | null) => {
+    const mutate = async () => {
+      if (!identityMayPublish(uid, generation)) return;
+      if (profile) await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
+      else await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+    };
+    const queued = profileCacheQueueRef.current.then(mutate, mutate);
+    profileCacheQueueRef.current = queued.catch(() => undefined);
+    return queued;
+  }, [identityMayPublish]);
 
   useEffect(() => {
-    const loadCachedProfile = async () => {
+    const cachedProfilePromise = (async (): Promise<User | null> => {
       try {
         const cached = await AsyncStorage.getItem(AUTH_PROFILE_KEY);
         if (cached) {
           const parsed = JSON.parse(cached) as User;
-          if (parsed.uid && ['customer', 'provider', 'driver'].includes(parsed.role)) setUser(parsed);
+          if (parsed.uid && ['customer', 'provider', 'driver'].includes(parsed.role)) return parsed;
         }
-      } catch (e) {
-      }
-    };
-
-    void loadCachedProfile();
+      } catch {}
+      return null;
+    })();
 
     const unsubscribe = subscribeToAuthState(async (firebaseUser) => {
       synchronizeRequestSnapshotOwner(firebaseUser?.uid || null);
@@ -110,6 +122,8 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         stopSessionLagMonitor();
         callbackMeasurement.cancel();
       };
+      const authoritativeUid = firebaseUser?.uid || null;
+      authoritativeUidRef.current = authoritativeUid;
       const authResolutionGeneration = ++authResolutionGenerationRef.current;
       const listenerGeneration = registrationGenerationRef.current;
       const isStale = () => authResolutionGeneration !== authResolutionGenerationRef.current || !registrationListenerMayPublish(
@@ -132,6 +146,9 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       let resolution: SessionResolution = { status: 'ready' };
       let pushRegistrationUid: string | null = null;
       if (firebaseUser) {
+        void cachedProfilePromise.then(cachedProfile => {
+          if (cachedProfile?.uid === authoritativeUid && !isStale()) setUser(cachedProfile);
+        });
         setIdentityEmail(firebaseUser.email || null);
         setEmailVerified(firebaseUser.emailVerified);
         try {
@@ -167,7 +184,8 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
               suspensionStatus: profile.suspensionStatus,
             }));
             setPolicyAcceptanceState(canonicalStatus.policyAcceptanceState === 'current' ? 'current' : 'legacy_unversioned');
-            await mobilePerformance.trackOperation('auth.profile_persistence', () => AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(authorizedProfile)));
+            await mobilePerformance.trackOperation('auth.profile_persistence', () =>
+              updateProfileCache(authoritativeUid, authResolutionGeneration, authorizedProfile));
             if (isStale()) { abandonMeasurement(); return; }
             pushRegistrationUid = firebaseUser.uid;
           } else {
@@ -175,14 +193,14 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
             setIsAuthenticated(true);
             setAccountState('provisioning_incomplete');
             setPolicyAcceptanceState(null);
-            await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+            await updateProfileCache(authoritativeUid, authResolutionGeneration, null);
           }
         } catch (e) {
           if (isStale()) { abandonMeasurement(); return; }
           setUser(null);
           setIsAuthenticated(false);
           setIdentityEmail(null);
-          await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+          await updateProfileCache(authoritativeUid, authResolutionGeneration, null);
           if (isStale()) { abandonMeasurement(); return; }
           setAuthError('SESSION_EXPIRED');
           setAccountState(null);
@@ -196,7 +214,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         setAccountState(null);
         setPolicyAcceptanceState(null);
         setIdentityEmail(null);
-        await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+        await updateProfileCache(null, authResolutionGeneration, null);
         if (pendingLoginResolutionRef.current) {
           resolution = { status: 'failed', errorCode: 'SESSION_EXPIRED' };
         }
@@ -214,8 +232,12 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       }
     });
 
-    return () => unsubscribe();
-  }, [setAuthTransitionPhase, settlePendingLogin]);
+    return () => {
+      authoritativeUidRef.current = undefined;
+      authResolutionGenerationRef.current += 1;
+      unsubscribe();
+    };
+  }, [setAuthTransitionPhase, settlePendingLogin, updateProfileCache]);
 
   useEffect(() => {
     void fetchAuthPolicy().then(setAuthPolicy);
@@ -247,6 +269,8 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     }
     const canonicalResolution = createSessionResolutionWaiter();
     pendingLoginResolutionRef.current = canonicalResolution;
+    authoritativeUidRef.current = null;
+    authResolutionGenerationRef.current += 1;
     setIsLoading(true);
     setAuthTransitionPhase('signing_in');
     try {
@@ -357,15 +381,19 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   }, [language, accountState, resumeRegistration, setRegistrationPhase]);
 
   const refreshEmailVerification = useCallback(async () => {
+    const uid = user?.uid;
+    if (!uid) return false;
+    const generation = authResolutionGenerationRef.current;
     const verified = await refreshFirebaseEmailVerification();
+    if (!identityMayPublish(uid, generation)) return verified;
     setEmailVerified(verified);
-    if (verified && user) {
+    if (verified) {
       const updated = { ...user, emailVerified: true };
       setUser(updated);
-      await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(updated));
+      await updateProfileCache(uid, generation, updated);
     }
     return verified;
-  }, [user]);
+  }, [identityMayPublish, updateProfileCache, user]);
 
   const sendEmailVerification = useCallback(async (locale: 'ar' | 'en') => {
     return sendVerificationEmail(locale);
@@ -381,53 +409,56 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
   const logout = useCallback(async (options?: { clearLocalStorage?: boolean }) => {
     clearRequestNavigationSnapshots();
     setAuthError(null);
+    authoritativeUidRef.current = null;
+    const logoutGeneration = ++authResolutionGenerationRef.current;
     setIsLoading(true);
     setAuthTransitionPhase('signing_out');
+    setUser(null);
+    setIsAuthenticated(false);
+    setAccountState(null);
+    setPolicyAcceptanceState(null);
+    setIdentityEmail(null);
+    setRecoveryRegistrationOpen(false);
+    await updateProfileCache(null, logoutGeneration, null);
     try {
       await revokeCurrentDevice().catch(() => undefined);
       await logoutUser();
-      await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
       if (options?.clearLocalStorage) await clearAccountLocalStorage();
-      setUser(null);
-      setIsAuthenticated(false);
-      setAccountState(null);
-      setPolicyAcceptanceState(null);
-      setIdentityEmail(null);
-      setRecoveryRegistrationOpen(false);
     } catch {
-      await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
       if (options?.clearLocalStorage) await clearAccountLocalStorage();
-      setUser(null);
-      setIsAuthenticated(false);
-      setAccountState(null);
-      setPolicyAcceptanceState(null);
-      setIdentityEmail(null);
-      setRecoveryRegistrationOpen(false);
     } finally {
       settlePendingLogin({ status: 'failed', errorCode: 'SESSION_EXPIRED' });
       setIsLoading(false);
       setAuthTransitionPhase('idle');
     }
-  }, [setAuthTransitionPhase, settlePendingLogin]);
+  }, [setAuthTransitionPhase, settlePendingLogin, updateProfileCache]);
 
   const refreshProfile = useCallback(async () => {
     if (!user?.uid) return;
+    const uid = user.uid;
+    const generation = authResolutionGenerationRef.current;
+    if (!identityMayPublish(uid, generation)) return;
     try {
-      const profile = await fetchUserProfile(user.uid);
-      if (profile) {
+      const profile = await fetchUserProfile(uid);
+      if (!identityMayPublish(uid, generation)) return;
+      if (profile?.uid === uid) {
         setUser(profile);
-        await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(profile));
+        await updateProfileCache(uid, generation, profile);
       }
     } catch {
+      if (!identityMayPublish(uid, generation)) return;
       setUser(null);
       setIsAuthenticated(false);
       setPolicyAcceptanceState(null);
-      await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+      await updateProfileCache(uid, generation, null);
     }
-  }, [user?.uid]);
+  }, [identityMayPublish, updateProfileCache, user?.uid]);
 
   const updateProfile = useCallback(async (updates: Partial<User>) => {
     if (!user?.uid) return;
+    const uid = user.uid;
+    const generation = authResolutionGenerationRef.current;
+    if (!identityMayPublish(uid, generation)) return;
     try {
       const ruleSafeUpdates: Partial<User> = { ...updates };
       delete (ruleSafeUpdates as Partial<User> & { role?: unknown }).role;
@@ -450,14 +481,15 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
         if (normalizedExisting === null) ruleSafeUpdates.crNumber = null as never;
       }
 
-      await updateUserProfile(user.uid, ruleSafeUpdates);
+      await updateUserProfile(uid, ruleSafeUpdates);
+      if (!identityMayPublish(uid, generation)) return;
       const updated = { ...user, ...ruleSafeUpdates };
       setUser(updated);
-      await AsyncStorage.setItem(AUTH_PROFILE_KEY, JSON.stringify(updated));
+      await updateProfileCache(uid, generation, updated);
     } catch (error) {
       throw error;
     }
-  }, [user]);
+  }, [identityMayPublish, updateProfileCache, user]);
 
   const acceptCurrentPolicies = useCallback(async () => {
     if (!user || !['customer', 'provider', 'driver'].includes(user.role)) throw new Error('PROFILE_REQUIRED');
@@ -473,10 +505,12 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
 
   const deleteIncompleteAccount = useCallback(async () => {
     clearRequestNavigationSnapshots();
-    await deleteIncompleteIdentity();
-    await AsyncStorage.removeItem(AUTH_PROFILE_KEY);
+    authoritativeUidRef.current = null;
+    const generation = ++authResolutionGenerationRef.current;
     setUser(null); setIsAuthenticated(false); setAccountState(null); setPolicyAcceptanceState(null); setIdentityEmail(null);
-  }, []);
+    await updateProfileCache(null, generation, null);
+    await deleteIncompleteIdentity();
+  }, [updateProfileCache]);
 
   return useMemo(() => ({
     user,

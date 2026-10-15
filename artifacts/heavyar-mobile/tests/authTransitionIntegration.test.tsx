@@ -3,23 +3,27 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 
-const mocks = vi.hoisted(() => ({
-  listener: undefined as undefined | ((user: any) => Promise<void>),
-  loginWithEmail: vi.fn(),
-  fetchUserProfile: vi.fn(),
-  fetchAccountProfileStatus: vi.fn(),
-  fetchEmailVerificationStatus: vi.fn(() => Promise.resolve(null)),
-  registerCurrentDevice: vi.fn(() => Promise.resolve()),
-  logoutUser: vi.fn(),
-  acceptCurrentPolicyVersions: vi.fn(),
-  storage: new Map<string, string>(),
-}));
+const mocks = vi.hoisted(() => {
+  const storage = new Map<string, string>();
+  return {
+    listener: undefined as undefined | ((user: any) => Promise<void>),
+    loginWithEmail: vi.fn(),
+    fetchUserProfile: vi.fn(),
+    fetchAccountProfileStatus: vi.fn(),
+    fetchEmailVerificationStatus: vi.fn(() => Promise.resolve(null)),
+    registerCurrentDevice: vi.fn(() => Promise.resolve()),
+    logoutUser: vi.fn(),
+    acceptCurrentPolicyVersions: vi.fn(),
+    storage,
+    storageGet: vi.fn((key: string) => Promise.resolve(storage.get(key) ?? null)),
+  };
+});
 
 vi.mock('react-native', () => ({ Platform: { OS: 'web' } }));
 vi.mock('expo-constants', () => ({ default: { expoConfig: { version: '1.1.1' } } }));
 vi.mock('@react-native-async-storage/async-storage', () => ({
   default: {
-    getItem: vi.fn((key: string) => Promise.resolve(mocks.storage.get(key) ?? null)),
+    getItem: mocks.storageGet,
     setItem: vi.fn((key: string, value: string) => { mocks.storage.set(key, value); return Promise.resolve(); }),
     removeItem: vi.fn((key: string) => { mocks.storage.delete(key); return Promise.resolve(); }),
   },
@@ -52,6 +56,16 @@ let root: Root;
 let host: HTMLDivElement;
 let auth: ReturnType<typeof useAuth>;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function Probe() {
   auth = useAuth();
   return null;
@@ -73,6 +87,7 @@ describe('AuthContext canonical session transitions', () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();
     mocks.storage.clear();
+    mocks.storageGet.mockImplementation((key: string) => Promise.resolve(mocks.storage.get(key) ?? null));
     mocks.listener = undefined;
     mocks.loginWithEmail.mockResolvedValue({ uid: 'fixture' });
     mocks.fetchAccountProfileStatus.mockResolvedValue({ state: 'authenticated_complete', accountStatus: 'active', policyAcceptanceState: 'current' });
@@ -227,5 +242,87 @@ describe('AuthContext canonical session transitions', () => {
     await act(async () => { await publishFirebaseUser('legacy-user'); });
     expect(auth.user?.uid).toBe('legacy-user');
     expect(auth.policyAcceptanceState).toBe('legacy_unversioned');
+  });
+
+  it('never publishes a delayed cached profile owned by another account', async () => {
+    const cacheRead = deferred<string | null>();
+    mocks.storageGet.mockReturnValueOnce(cacheRead.promise);
+    mocks.fetchUserProfile.mockResolvedValue({ uid: 'account-b', role: 'provider', nameEn: 'Current B' });
+    await mountAuth();
+    await act(async () => { await publishFirebaseUser('account-b'); });
+    expect(auth.user?.uid).toBe('account-b');
+
+    await act(async () => {
+      cacheRead.resolve(JSON.stringify({ uid: 'account-a', role: 'customer', nameEn: 'Old A' }));
+      await Promise.resolve();
+    });
+    expect(auth.user?.uid).toBe('account-b');
+    expect(JSON.parse(mocks.storage.get('heavyar_user_profile') || '{}').uid).toBe('account-b');
+  });
+
+  it('ignores a delayed old-account profile refresh after an account switch', async () => {
+    mocks.fetchUserProfile.mockImplementation((uid: string) => Promise.resolve({ uid, role: 'customer', nameEn: uid }));
+    await mountAuth();
+    await act(async () => { await publishFirebaseUser('account-a'); });
+    const oldRefresh = deferred<any>();
+    mocks.fetchUserProfile.mockImplementation((uid: string) => uid === 'account-a'
+      ? oldRefresh.promise
+      : Promise.resolve({ uid, role: 'driver', nameEn: 'Current B' }));
+    let refreshPromise!: Promise<void>;
+    await act(async () => { refreshPromise = auth.refreshProfile(); await Promise.resolve(); });
+    await act(async () => { await publishFirebaseUser('account-b'); });
+    await act(async () => { oldRefresh.resolve({ uid: 'account-a', role: 'customer', nameEn: 'Late A' }); await refreshPromise; });
+    expect(auth.user?.uid).toBe('account-b');
+    expect(JSON.parse(mocks.storage.get('heavyar_user_profile') || '{}').uid).toBe('account-b');
+  });
+
+  it('ignores a delayed old-account refresh failure after a new login', async () => {
+    mocks.fetchUserProfile.mockImplementation((uid: string) => Promise.resolve({ uid, role: 'customer' }));
+    await mountAuth();
+    await act(async () => { await publishFirebaseUser('account-a'); });
+    const oldRefresh = deferred<any>();
+    mocks.fetchUserProfile.mockImplementation((uid: string) => uid === 'account-a'
+      ? oldRefresh.promise
+      : Promise.resolve({ uid, role: 'provider' }));
+    let refreshPromise!: Promise<void>;
+    await act(async () => { refreshPromise = auth.refreshProfile(); await Promise.resolve(); });
+    await act(async () => { await publishFirebaseUser('account-b'); });
+    await act(async () => { oldRefresh.reject(new Error('late failure')); await refreshPromise; });
+    expect(auth.user?.uid).toBe('account-b');
+    expect(auth.isAuthenticated).toBe(true);
+  });
+
+  it('invalidates an in-flight profile refresh as soon as logout starts', async () => {
+    mocks.fetchUserProfile.mockResolvedValue({ uid: 'account-a', role: 'customer' });
+    await mountAuth();
+    await act(async () => { await publishFirebaseUser('account-a'); });
+    const oldRefresh = deferred<any>();
+    mocks.fetchUserProfile.mockReturnValueOnce(oldRefresh.promise);
+    let refreshPromise!: Promise<void>;
+    await act(async () => { refreshPromise = auth.refreshProfile(); await Promise.resolve(); });
+    await act(async () => { await auth.logout(); });
+    await act(async () => { oldRefresh.resolve({ uid: 'account-a', role: 'customer' }); await refreshPromise; });
+    expect(auth.user).toBeNull();
+    expect(auth.isAuthenticated).toBe(false);
+    expect(mocks.storage.has('heavyar_user_profile')).toBe(false);
+  });
+
+  it('uses a same-account cache only after Firebase confirms its UID, then refreshes canonically', async () => {
+    mocks.storage.set('heavyar_user_profile', JSON.stringify({ uid: 'account-a', role: 'customer', nameEn: 'Cached A' }));
+    const canonicalProfile = deferred<any>();
+    mocks.fetchUserProfile.mockReturnValueOnce(canonicalProfile.promise);
+    await mountAuth();
+    let resolution!: Promise<void>;
+    await act(async () => {
+      resolution = mocks.listener!({ uid: 'account-a', email: 'a@example.test', emailVerified: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(auth.user?.nameEn).toBe('Cached A');
+    await act(async () => {
+      canonicalProfile.resolve({ uid: 'account-a', role: 'customer', nameEn: 'Canonical A' });
+      await resolution;
+    });
+    expect(auth.user?.nameEn).toBe('Canonical A');
   });
 });

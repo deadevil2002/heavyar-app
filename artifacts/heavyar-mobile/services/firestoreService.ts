@@ -503,17 +503,25 @@ export async function updatePaymentStatus(
   throw new Error('Payment status is server-managed and cannot be written by the client');
 }
 
-export function subscribeToRequest(requestId: string, callback: (req: EquipmentRequest | null) => void): Unsubscribe {
+export function subscribeToRequest(requestId: string, callback: (req: EquipmentRequest | null) => void, onError?: (error: Error) => void): Unsubscribe {
   const db = getFirebaseDb();
   const stopMetric = mobilePerformance.startListener('firestore.request-detail');
-  const unsubscribe = onSnapshot(doc(db, 'equipmentRequests', requestId), (snap) => {
+  let closed = false;
+  let unsubscribe: Unsubscribe = () => undefined;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    unsubscribe();
+    stopMetric();
+  };
+  unsubscribe = onSnapshot(doc(db, 'equipmentRequests', requestId), (snap) => {
     if (snap.exists()) {
       callback(parseRequest(snap.id, snap.data() as Record<string, unknown>));
     } else {
       callback(null);
     }
-  });
-  return () => { unsubscribe(); stopMetric(); };
+  }, error => { close(); onError?.(error); });
+  return close;
 }
 
 export function subscribeToUserRequests(
@@ -542,7 +550,8 @@ export function subscribeToUserRequests(
 
 export function subscribeToMessages(
   requestId: string,
-  callback: (page: FirestorePage<ChatMessage>) => void
+  callback: (page: FirestorePage<ChatMessage>) => void,
+  onError?: (error: Error) => void,
 ): Unsubscribe {
   const db = getFirebaseDb();
   const q = query(
@@ -552,14 +561,22 @@ export function subscribeToMessages(
     limit(CHAT_PAGE_SIZE)
   );
   const stopMetric = mobilePerformance.startListener('firestore.chat-page');
-  const unsubscribe = onSnapshot(q, (snap) => {
+  let closed = false;
+  let unsubscribe: Unsubscribe = () => undefined;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    unsubscribe();
+    stopMetric();
+  };
+  unsubscribe = onSnapshot(q, (snap) => {
     callback({
       items: snap.docs.map(d => parseMessage(d.id, d.data() as Record<string, unknown>)).reverse(),
       cursor: snap.docs.at(-1) || null,
       hasMore: snap.size === CHAT_PAGE_SIZE,
     });
-  });
-  return () => { unsubscribe(); stopMetric(); };
+  }, error => { close(); onError?.(error); });
+  return close;
 }
 
 export async function fetchOlderMessages(

@@ -22,6 +22,12 @@ import type { PreciseLocation } from '@/services/location';
 
 export default function ChatScreen() {
   const { requestId } = useLocalSearchParams<{ requestId: string }>();
+  const { user } = useAuth();
+  return <ChatScreenContent key={`${user?.uid || 'guest'}:${requestId || ''}`} />;
+}
+
+function ChatScreenContent() {
+  const { requestId } = useLocalSearchParams<{ requestId: string }>();
   const { isRTL, language, t, localizedText } = useLanguage();
   const { user } = useAuth();
   const router = useRouter();
@@ -34,6 +40,9 @@ export default function ChatScreen() {
   const [shareLocationVisible, setShareLocationVisible] = useState(false);
   const [sharedLocation, setSharedLocation] = useState<PreciseLocation | null>(null);
   const [sendingLocation, setSendingLocation] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [listenerAttempt, setListenerAttempt] = useState(0);
   const olderMessagesRef = useRef<ChatMessage[]>([]);
   const loadedOlderRef = useRef(false);
   const flatListRef = useRef<FlatList>(null);
@@ -67,28 +76,80 @@ export default function ChatScreen() {
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
   useEffect(() => {
-    if (!requestId) return;
-    const unsub = subscribeToRequest(requestId, setRequest);
-    return () => unsub();
-  }, [requestId]);
-
-  useEffect(() => {
-    if (!requestId) return;
+    if (!requestId || !currentUid) {
+      setInitialLoading(false);
+      setLoadError(true);
+      return;
+    }
+    let active = true;
+    let requestReady = false;
+    let messagesReady = false;
+    let scrollTimer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribeRequest: () => void = () => undefined;
+    let unsubscribeMessages: () => void = () => undefined;
+    const finishInitialLoad = () => {
+      if (active && requestReady && messagesReady) setInitialLoading(false);
+    };
+    const fail = () => {
+      if (!active) return;
+      active = false;
+      unsubscribeRequest();
+      unsubscribeMessages();
+      if (scrollTimer) clearTimeout(scrollTimer);
+      olderMessagesRef.current = [];
+      loadedOlderRef.current = false;
+      pendingSendRef.current = null;
+      sendingRef.current = false;
+      setRequest(null);
+      setMessages([]);
+      setMessage('');
+      setMessageCursor(null);
+      setHasOlder(false);
+      setLoadingOlder(false);
+      setShareLocationVisible(false);
+      setSharedLocation(null);
+      setSendingLocation(false);
+      setInitialLoading(false);
+      setLoadError(true);
+    };
+    setInitialLoading(true);
+    setLoadError(false);
+    setRequest(null);
+    setMessages([]);
+    setMessageCursor(null);
+    setHasOlder(false);
     olderMessagesRef.current = [];
     loadedOlderRef.current = false;
-    const unsub = subscribeToMessages(requestId, (page) => {
+    unsubscribeRequest = subscribeToRequest(requestId, nextRequest => {
+      if (!active) return;
+      setRequest(nextRequest);
+      requestReady = true;
+      finishInitialLoad();
+    }, fail);
+    if (!active) return () => unsubscribeRequest();
+    unsubscribeMessages = subscribeToMessages(requestId, (page) => {
+      if (!active) return;
       const latestIds = new Set(page.items.map(item => item.id));
       setMessages([...olderMessagesRef.current.filter(item => !latestIds.has(item.id)), ...page.items]);
       if (!loadedOlderRef.current) {
         setMessageCursor(page.cursor);
         setHasOlder(page.hasMore);
       }
-      setTimeout(() => {
+      messagesReady = true;
+      finishInitialLoad();
+      if (scrollTimer) clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => {
+        if (!active) return;
         flatListRef.current?.scrollToEnd({ animated: true });
       }, 100);
-    });
-    return () => unsub();
-  }, [requestId]);
+    }, fail);
+    return () => {
+      active = false;
+      if (scrollTimer) clearTimeout(scrollTimer);
+      unsubscribeRequest();
+      unsubscribeMessages();
+    };
+  }, [currentUid, listenerAttempt, requestId]);
 
   const loadOlder = useCallback(async () => {
     if (!requestId || !messageCursor || !hasOlder || loadingOlder) return;
@@ -190,21 +251,27 @@ export default function ChatScreen() {
       </SafeAreaView>
 
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <FlatList
-          ref={flatListRef}
-          data={visibleMessages}
-          renderItem={renderMessage}
-          keyExtractor={item => item.id}
-          contentContainerStyle={styles.messagesList}
-          showsVerticalScrollIndicator={false}
-          ListHeaderComponent={hasOlder ? (
-            <Pressable style={styles.olderButton} onPress={() => void loadOlder()} disabled={loadingOlder}>
-              {loadingOlder
-                ? <ActivityIndicator size="small" color={Colors.gold} />
-                : <Text style={styles.olderText}>{isRTL ? 'تحميل رسائل أقدم' : 'Load older messages'}</Text>}
+        {initialLoading ? <View style={styles.centered}><ActivityIndicator color={Colors.gold} /></View> : loadError ?
+          <View style={styles.centered}>
+            <Text style={styles.errorText}>{isRTL ? 'تعذر تحميل المحادثة بأمان.' : 'The conversation could not be loaded securely.'}</Text>
+            <Pressable accessibilityRole="button" style={styles.retryButton} onPress={() => setListenerAttempt(value => value + 1)}>
+              <Text style={styles.retryText}>{isRTL ? 'إعادة المحاولة' : 'Retry'}</Text>
             </Pressable>
-          ) : null}
-        />
+          </View> : <FlatList
+            ref={flatListRef}
+            data={visibleMessages}
+            renderItem={renderMessage}
+            keyExtractor={item => item.id}
+            contentContainerStyle={styles.messagesList}
+            showsVerticalScrollIndicator={false}
+            ListHeaderComponent={hasOlder ? (
+              <Pressable style={styles.olderButton} onPress={() => void loadOlder()} disabled={loadingOlder}>
+                {loadingOlder
+                  ? <ActivityIndicator size="small" color={Colors.gold} />
+                  : <Text style={styles.olderText}>{isRTL ? 'تحميل رسائل أقدم' : 'Load older messages'}</Text>}
+              </Pressable>
+            ) : null}
+          />}
 
         <SafeAreaView edges={['bottom']} style={{ backgroundColor: Colors.card }}>
           {otherBlocked ? (
@@ -270,6 +337,10 @@ export default function ChatScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.primary },
   flex: { flex: 1 },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, gap: 14 },
+  errorText: { color: Colors.textSecondary, fontSize: 15, textAlign: 'center' },
+  retryButton: { minHeight: 44, borderRadius: 12, backgroundColor: Colors.gold, paddingHorizontal: 20, justifyContent: 'center' },
+  retryText: { color: Colors.primary, fontSize: 14, fontWeight: '700' },
   header: {
     paddingHorizontal: 16,
     paddingVertical: 12,

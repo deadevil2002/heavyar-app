@@ -41,11 +41,16 @@ describe('mobile data-flow architecture guardrails', () => {
     expect(detail).toContain('let active = true');
     expect(detail).toContain('active = false;');
     expect(detail).toContain('unsubscribe();');
-    expect(detail).toContain('if (!active) return');
+    expect(detail).toContain('listenerScopeRef.current !== listenerScope');
+    expect(detail).toContain('setListenerAttempt(value => value + 1)');
 
     const chat = read('../app/chat/[requestId].tsx');
-    expect(chat).toContain('const unsub = subscribeToRequest(requestId, setRequest)');
-    expect(chat).toContain('return () => unsub();');
+    expect(chat).toContain("key={`${user?.uid || 'guest'}:${requestId || ''}`}");
+    expect(chat).toContain('unsubscribeRequest = subscribeToRequest(');
+    expect(chat).toContain('unsubscribeMessages = subscribeToMessages(');
+    expect(chat).toContain('unsubscribeRequest();');
+    expect(chat).toContain('unsubscribeMessages();');
+    expect(chat).toContain('setLoadError(true)');
   });
 
   it('keeps driver-request enrichment ordered with bounded concurrency', () => {

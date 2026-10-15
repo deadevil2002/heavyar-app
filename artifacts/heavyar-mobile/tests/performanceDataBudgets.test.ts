@@ -181,7 +181,9 @@ describe('deterministic performance/data budgets', () => {
     const firestore = source('../services/firestoreService.ts');
     expect((requestService.match(/onSnapshot\(/g) || [])).toHaveLength(2);
     expect((firestore.match(/onSnapshot\(/g) || [])).toHaveLength(3);
-    expect((`${requestService}\n${firestore}`.match(/return \(\) => \{ unsubscribe\(\); stopMetric\(\); \};/g) || [])).toHaveLength(5);
+    expect((`${requestService}\n${firestore}`.match(/if \(closed\) return;/g) || [])).toHaveLength(4);
+    expect((`${requestService}\n${firestore}`.match(/return close;/g) || [])).toHaveLength(4);
+    expect((`${requestService}\n${firestore}`.match(/return \(\) => \{ unsubscribe\(\); stopMetric\(\); \};/g) || [])).toHaveLength(1);
     expect(requestService).toContain('limit(REQUESTS_PAGE_SIZE)');
     expect(firestore).toContain('limit(CHAT_PAGE_SIZE)');
   });

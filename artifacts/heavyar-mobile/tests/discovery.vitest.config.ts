@@ -19,6 +19,6 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['tests/discovery.setup.ts'],
-    include: ['tests/authTransitionIntegration.test.tsx', 'tests/discoveryInteraction.test.tsx', 'tests/equipmentCardRendering.test.tsx', 'tests/roleAwareDiscovery.test.tsx', 'tests/roleHomeSearch.test.tsx', 'tests/requestSubscription.test.tsx'],
+    include: ['tests/authTransitionIntegration.test.tsx', 'tests/discoveryInteraction.test.tsx', 'tests/equipmentCardRendering.test.tsx', 'tests/roleAwareDiscovery.test.tsx', 'tests/roleHomeSearch.test.tsx', 'tests/requestSubscription.test.tsx', 'tests/realtimeTerminalErrors.test.tsx'],
   },
 });
