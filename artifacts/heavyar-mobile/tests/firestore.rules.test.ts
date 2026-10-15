@@ -613,6 +613,7 @@ describe('Firestore authorization baseline', () => {
       'operatorDiscoveryProfiles/operator_fixture', 'operatorRequests/request_fixture',
       'transporterDiscoveryProfiles/transporter_fixture', 'transportRequests/request_fixture',
       'serviceRfqs/rfq_fixture', 'serviceQuotes/quote_fixture', 'serviceQuoteSelections/selection_fixture', 'serviceRfqAudit/audit_fixture',
+      'serviceMessages/service_message_fixture',
       'serviceExecutions/execution_fixture', 'serviceExecutionEvents/event_fixture',
       'serviceEvidenceUploadIntents/intent_fixture', 'serviceEvidenceMedia/media_fixture',
       'serviceProfileAudit/audit_fixture',
@@ -627,13 +628,13 @@ describe('Firestore authorization baseline', () => {
         await assertFails(getDoc(doc(db, path)));
         await assertFails(setDoc(doc(db, path), { discoverable: true, verificationState: 'verified' }));
       }
-      for (const privateCollection of ['serviceRfqs', 'serviceQuotes', 'serviceQuoteSelections', 'serviceRfqAudit', 'serviceExecutions', 'serviceExecutionEvents', 'serviceEvidenceUploadIntents', 'serviceEvidenceMedia']) {
+      for (const privateCollection of ['serviceRfqs', 'serviceQuotes', 'serviceQuoteSelections', 'serviceRfqAudit', 'serviceMessages', 'serviceExecutions', 'serviceExecutionEvents', 'serviceEvidenceUploadIntents', 'serviceEvidenceMedia']) {
         await assertFails(getDocs(query(collection(db, privateCollection), limit(1))));
       }
     }
     const anon = asModularFirestore(env.unauthenticatedContext().firestore());
     for (const path of paths) await assertFails(getDoc(doc(anon, path)));
-    for (const privateCollection of ['serviceRfqs', 'serviceQuotes', 'serviceQuoteSelections', 'serviceRfqAudit', 'serviceExecutions', 'serviceExecutionEvents', 'serviceEvidenceUploadIntents', 'serviceEvidenceMedia']) {
+    for (const privateCollection of ['serviceRfqs', 'serviceQuotes', 'serviceQuoteSelections', 'serviceRfqAudit', 'serviceMessages', 'serviceExecutions', 'serviceExecutionEvents', 'serviceEvidenceUploadIntents', 'serviceEvidenceMedia']) {
       await assertFails(getDocs(query(collection(anon, privateCollection), limit(1))));
     }
   });

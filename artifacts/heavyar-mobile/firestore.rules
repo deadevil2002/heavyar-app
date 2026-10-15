@@ -490,6 +490,12 @@ service cloud.firestore {
     match /serviceRfqAudit/{auditId} {
       allow read, write: if false;
     }
+    // M2-E4 request-scoped text communication is immutable and Worker-only.
+    // The Worker revalidates both the RFQ participant and the live account on
+    // every list/send operation; clients cannot guess a document ID to bypass it.
+    match /serviceMessages/{messageId} {
+      allow read, write: if false;
+    }
     // M2-E2 execution aggregates and append-only evidence events are private,
     // Worker-authoritative records. Participant projections are returned only
     // after live account and source authorization checks.

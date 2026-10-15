@@ -11,6 +11,7 @@ import { createNotificationOperationGuard } from '@/services/notificationOperati
 import { notificationUnreadKey } from '@/services/notificationUnreadPolicy';
 import {
   defaultPreferences,
+  enablePushNotifications,
   getNotificationPreferences,
   updateNotificationPreferences,
   listNotifications,
@@ -45,12 +46,14 @@ export default function NotificationsScreen() {
   const [mutationBusy, setMutationBusy] = useState(false);
   const [savingPreference, setSavingPreference] = useState<string | null>(null);
   const [readAllRemaining, setReadAllRemaining] = useState(0);
+  const [enablingPush, setEnablingPush] = useState(false);
 
   const load = useCallback(async (append = false) => {
     if (!uid) return;
     const isCurrent = operations.begin(uid, 'load');
     const mutationSnapshot = operations.mutationSnapshot();
-    append ? setLoadingMore(true) : setLoading(true);
+    if (append) setLoadingMore(true);
+    else setLoading(true);
     setError(null);
     try {
       const [pageResult, prefsResult] = await Promise.allSettled([
@@ -183,6 +186,15 @@ export default function NotificationsScreen() {
 
   const Chevron = isRTL ? ChevronLeft : ChevronRight;
   const BackChevron = isRTL ? ChevronRight : ChevronLeft;
+  const enablePush = useCallback(async () => {
+    if (!uid || enablingPush) return;
+    setEnablingPush(true); setError(null);
+    try {
+      const result = await enablePushNotifications(uid);
+      if (result.status !== 'registered') setError(isRTL ? 'لم يتم منح إذن الإشعارات.' : 'Notification permission was not granted.');
+    } catch { setError(t('notifications_error')); }
+    finally { setEnablingPush(false); }
+  }, [enablingPush, isRTL, t, uid]);
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -200,7 +212,7 @@ export default function NotificationsScreen() {
         <Text style={styles.preferenceValue}>{Object.values(preferences).filter(Boolean).length}/{Object.keys(preferences).length}</Text>
       </View>
       <View style={styles.preferenceList}>
-        {(Object.keys(preferences) as Array<keyof NotificationPreferences>).map((category) => {
+        {(Object.keys(preferences) as (keyof NotificationPreferences)[]).map((category) => {
           const critical = category === 'payment' || category === 'verification' || category === 'security';
           return (
             <View key={category} style={[styles.preferenceRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -219,6 +231,10 @@ export default function NotificationsScreen() {
           );
         })}
       </View>
+      <Pressable accessibilityRole="button" accessibilityLabel={isRTL ? 'تفعيل إشعارات الجهاز' : 'Enable device notifications'} accessibilityState={{ busy: enablingPush }} disabled={!uid || enablingPush} onPress={() => void enablePush()} style={styles.pushPermissionButton}>
+        {enablingPush ? <ActivityIndicator color={Colors.primary} /> : <Bell size={18} color={Colors.primary} />}
+        <Text style={styles.retryText}>{isRTL ? 'تفعيل إشعارات الجهاز' : 'Enable device notifications'}</Text>
+      </Pressable>
       {loading ? <View style={styles.center}><ActivityIndicator color={Colors.gold} /><Text style={styles.muted}>{t('loading')}</Text></View> :
         error && !items.length ? <View style={styles.center}><Text style={styles.error}>{error}</Text><Pressable accessibilityRole="button" accessibilityLabel={t('try_again')} onPress={() => void load()} style={styles.retry}><RefreshCw size={17} color={Colors.primary} /><Text style={styles.retryText}>{t('try_again')}</Text></Pressable></View> :
           <FlatList
@@ -267,6 +283,7 @@ const styles = StyleSheet.create({
   preferenceList: { marginHorizontal: 16, marginBottom: 8, gap: 2 },
   preferenceRow: { minHeight: 48, alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, borderRadius: 10, backgroundColor: Colors.card },
   preferenceLabel: { color: Colors.textPrimary, fontSize: 13 },
+  pushPermissionButton: { minHeight: 48, marginHorizontal: 16, marginBottom: 8, paddingHorizontal: 16, borderRadius: 12, backgroundColor: Colors.gold, flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' },
   list: { padding: 16, gap: 10 },
   emptyList: { flexGrow: 1 },
   card: { minHeight: 92, alignItems: 'center', gap: 10, padding: 14, borderRadius: 18, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border },

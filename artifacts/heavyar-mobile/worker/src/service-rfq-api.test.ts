@@ -50,10 +50,21 @@ function firestoreHarness() {
       const collection = String(query.from?.[0]?.collectionId || ''), filter = query.where?.fieldFilter;
       const field = String(filter?.field?.fieldPath || ''), expected = decodeValue(filter?.value), op = String(filter?.op || '');
       const cursor = String(query.startAt?.values?.[0]?.referenceValue || '');
+      const matchesFilter = (candidate: any, value: any): boolean => {
+        if (!candidate) return true;
+        if (candidate.fieldFilter) {
+          const fieldPath = String(candidate.fieldFilter.field?.fieldPath || '');
+          const actual = value[fieldPath], wanted = decodeValue(candidate.fieldFilter.value);
+          return candidate.fieldFilter.op === 'ARRAY_CONTAINS' ? Array.isArray(actual) && actual.includes(wanted) : actual === wanted;
+        }
+        if (candidate.compositeFilter?.op === 'AND') return (candidate.compositeFilter.filters || []).every((item: any) => matchesFilter(item, value));
+        return false;
+      };
       const rows = [...documents.entries()].filter(([path, stored]) => {
         if (!path.startsWith(`${collection}/`)) return false;
-        const actual = decodeFields(stored.fields)[field];
-        return !filter || op === 'ARRAY_CONTAINS' ? Array.isArray(actual) && actual.includes(expected) : actual === expected;
+        const value = decodeFields(stored.fields), actual = value[field];
+        return query.where?.compositeFilter ? matchesFilter(query.where, value)
+          : !filter ? true : op === 'ARRAY_CONTAINS' ? Array.isArray(actual) && actual.includes(expected) : actual === expected;
       }).map(([path, stored]) => document(path, stored)).filter(item => !cursor || item.name > cursor)
         .sort((left, right) => left.name.localeCompare(right.name)).slice(0, Number(query.limit || 100));
       const selected = Array.isArray(query.select?.fields) ? query.select.fields.map((item: any) => String(item.fieldPath || '')) : null;
@@ -237,6 +248,10 @@ describe('M2-E1 durable private RFQ Worker workflow', () => {
     expect(aggregate.quotes.find((item: any) => item.quoteId === quoteId).snapshots[0].quotedServicePriceMinor).toBe(130_000);
     expect(JSON.stringify(comparison.comparison)).not.toContain('workSite');
     expect(JSON.stringify(comparison.comparison)).not.toContain(providerA);
+    const notificationEvents = [...store.documents.entries()].filter(([path]) => path.startsWith('notificationOutbox/')).map(([, stored]) => decodeFields(stored.fields).event);
+    expect([
+      'service_rfq_invited', 'service_quote_submitted', 'service_quote_revised', 'service_quote_provisionally_selected',
+    ].every(event => notificationEvents.includes(event))).toBe(true);
   });
 
   test('serializes concurrent provider submissions and fails closed after cancellation', async () => {
@@ -256,9 +271,104 @@ describe('M2-E1 durable private RFQ Worker workflow', () => {
     expect(aggregate.quotes).toHaveLength(1);
     authenticate(customerUid, customerAccount);
     expect((await call(`/api/service-rfqs/${rfqId}/cancel`, 'POST', { expectedRevision: 2, idempotencyKey: 'cancel-rfq-0001' })).status).toBe(200);
+    expect([...store.documents.values()].map(stored => decodeFields(stored.fields).event)).toContain('service_rfq_cancelled');
     authenticate(providerA, providerAccount);
     expect((await call(`/api/service-rfqs/${rfqId}/quotes/${aggregate.quotes[0].quoteId}`, 'PUT', {
       quote: { ...quote, expectedQuoteRevision: 0 }, expectedRfqRevision: 3, idempotencyKey: 'revise-cancelled-1',
     })).status).toBe(403);
+  });
+
+  test('withdraws an existing quote through the authoritative transition and notifies only the customer', async () => {
+    const store = firestoreHarness(); globalThis.fetch = store.fetch;
+    store.put(`operatorDiscoveryProfiles/${profileA}`, eligibleProfile(providerA, 'Provider A'));
+    store.put(`users/${providerA}`, providerAccount); store.put(`users/${customerUid}`, customerAccount);
+    authenticate(customerUid, customerAccount);
+    const created: any = await (await call('/api/service-rfqs', 'POST', {
+      draft: requestDraft, targetProfileIds: [profileA], idempotencyKey: 'create-rfq-withdraw-0001',
+    })).json();
+    authenticate(providerA, providerAccount);
+    const submitted: any = await (await call(`/api/service-rfqs/${created.rfq.rfqId}/quotes`, 'POST', {
+      quote, expectedRfqRevision: 1, idempotencyKey: 'quote-withdraw-submit-0001',
+    })).json();
+    const quoteId = submitted.comparison.quotes[0].quoteId;
+    const withdrawn = await call(`/api/service-rfqs/${created.rfq.rfqId}/quotes/${quoteId}/withdraw`, 'POST', {
+      expectedRfqRevision: 2, expectedQuoteRevision: 0, idempotencyKey: 'quote-withdraw-0001',
+    });
+    expect(withdrawn.status).toBe(200);
+    authenticate(customerUid, customerAccount);
+    const customerView: any = await (await call(`/api/service-rfqs/${created.rfq.rfqId}`)).json();
+    expect(customerView.comparison.quotes).toEqual([]);
+    const outbox = [...store.documents.values()].map(stored => decodeFields(stored.fields));
+    expect(outbox.some(item => item.event === 'service_quote_withdrawn' && item.uid === customerUid)).toBe(true);
+    expect(outbox.some(item => item.event === 'service_quote_withdrawn' && item.uid === providerA)).toBe(false);
+  });
+
+  test('keeps request-scoped text messages private, idempotent, participant-bound, and read-only after cancellation', async () => {
+    const store = firestoreHarness(); globalThis.fetch = store.fetch;
+    store.put(`operatorDiscoveryProfiles/${profileA}`, eligibleProfile(providerA, 'Provider A'));
+    store.put(`operatorDiscoveryProfiles/${profileB}`, eligibleProfile(providerB, 'Provider B'));
+    store.put(`users/${providerA}`, providerAccount); store.put(`users/${providerB}`, providerAccount);
+    store.put(`users/${customerUid}`, customerAccount);
+    authenticate(customerUid, customerAccount);
+    const creation: any = await (await call('/api/service-rfqs', 'POST', {
+      draft: requestDraft, targetProfileIds: [profileA, profileB], idempotencyKey: 'create-rfq-message-0001',
+    })).json();
+    const rfqId = creation.rfq.rfqId;
+
+    const first = await call(`/api/service-rfqs/${rfqId}/messages`, 'POST', {
+      providerProfileId: profileA, text: '  Please confirm the work-site arrival window.  ', idempotencyKey: 'message-customer-0001',
+    });
+    expect(first.status).toBe(201);
+    const firstMessage = (await first.json() as any).message;
+    expect(firstMessage.senderRole).toBe('customer');
+    expect(firstMessage.text).toBe('Please confirm the work-site arrival window.');
+    const replay = await call(`/api/service-rfqs/${rfqId}/messages`, 'POST', {
+      providerProfileId: profileA, text: 'Please confirm the work-site arrival window.', idempotencyKey: 'message-customer-0001',
+    });
+    expect(replay.status).toBe(200);
+    expect((await replay.json() as any).replayed).toBe(true);
+    expect([...store.documents.keys()].filter(key => key.startsWith('serviceMessages/'))).toHaveLength(1);
+    expect([...store.documents.values()].map(stored => decodeFields(stored.fields))
+      .filter(item => item.event === 'service_message_received')).toHaveLength(1);
+
+    authenticate('outside-customer-0001', customerAccount);
+    expect((await call(`/api/service-rfqs/${rfqId}/messages?providerProfileId=${profileA}`)).status).toBe(403);
+    expect((await call(`/api/service-rfqs/${rfqId}/messages`, 'POST', {
+      providerProfileId: profileA, text: 'forged', idempotencyKey: 'message-outsider-0001',
+    })).status).toBe(403);
+
+    authenticate(providerA, providerAccount);
+    expect((await call(`/api/service-rfqs/${rfqId}/messages`, 'POST', {
+      text: 'Arrival window confirmed.', idempotencyKey: 'message-provider-0001',
+    })).status).toBe(201);
+    const providerView: any = await (await call(`/api/service-rfqs/${rfqId}/messages`)).json();
+    expect(providerView.messages).toHaveLength(2);
+    expect(JSON.stringify(providerView)).not.toContain(customerUid);
+    expect(JSON.stringify(providerView)).not.toContain(providerA);
+    store.put(`users/${providerA}`, { ...providerAccount, accountStatus: 'restricted' });
+    expect((await call(`/api/service-rfqs/${rfqId}/messages`)).status).toBe(403);
+    expect((await call(`/api/service-rfqs/${rfqId}/messages`, 'POST', {
+      text: 'must not send while restricted', idempotencyKey: 'message-restricted-0001',
+    })).status).toBe(403);
+    store.put(`users/${providerA}`, providerAccount);
+
+    authenticate(customerUid, customerAccount);
+    const customerView: any = await (await call(`/api/service-rfqs/${rfqId}/messages?providerProfileId=${profileA}`)).json();
+    expect(new Set(customerView.messages.map((item: any) => item.text))).toEqual(new Set([
+      'Please confirm the work-site arrival window.', 'Arrival window confirmed.',
+    ]));
+    const otherThread: any = await (await call(`/api/service-rfqs/${rfqId}/messages?providerProfileId=${profileB}`)).json();
+    expect(otherThread.messages).toEqual([]);
+
+    expect((await call(`/api/service-rfqs/${rfqId}/cancel`, 'POST', { expectedRevision: 1, idempotencyKey: 'cancel-message-rfq-0001' })).status).toBe(200);
+    expect((await call(`/api/service-rfqs/${rfqId}/messages`, 'POST', {
+      providerProfileId: profileA, text: 'must not send', idempotencyKey: 'message-closed-0001',
+    })).status).toBe(409);
+    expect((await call(`/api/service-rfqs/${rfqId}/messages?providerProfileId=${profileA}`)).status).toBe(200);
+
+    const outbox = [...store.documents.entries()].filter(([path]) => path.startsWith('notificationOutbox/')).map(([, stored]) => decodeFields(stored.fields));
+    expect(outbox.some(item => item.event === 'service_message_received')).toBe(true);
+    expect(JSON.stringify(outbox)).not.toContain('Arrival window confirmed.');
+    expect(JSON.stringify(outbox)).not.toContain('work-site arrival');
   });
 });

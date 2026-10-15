@@ -22,6 +22,19 @@ describe('trusted notification foundation', () => {
     expect((fields as any).token).toBe(undefined);
     expect(fields.expiresAt?.timestampValue).toBe('1970-06-30T00:00:00.000Z');
   });
+  test('service notifications use private generic copy and authorized deep-link actions', () => {
+    const rfqId = `rfq_${'R'.repeat(43)}`;
+    const executionId = `execution_${'E'.repeat(43)}`;
+    const message = notificationFields('provider-1', 'n-service-1', 'service_message_received', new Date(0).toISOString(), rfqId);
+    const selected = notificationFields('provider-1', 'n-service-2', 'service_quote_provisionally_selected', new Date(0).toISOString(), rfqId);
+    const execution = notificationFields('customer-1', 'n-service-3', 'service_execution_pickup_confirmed', new Date(0).toISOString(), executionId);
+    expect(message.category.stringValue).toBe('service');
+    expect(message.action.mapValue.fields.type.stringValue).toBe('service_rfq');
+    expect(message.bodyEn.stringValue).not.toContain('private message text');
+    expect(selected.titleEn.stringValue).toContain('non-binding');
+    expect(execution.action.mapValue.fields.type.stringValue).toBe('service_execution');
+    expect(defaultNotificationPreferences().service).toBe(true);
+  });
   test('preferences preserve mandatory critical categories', async () => {
     __test.setAuth({ uid: 'u1', admin: false });
     __test.setFirestore(() => null);

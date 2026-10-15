@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Ban, ChevronLeft, ChevronRight, HardHat, Save, ShieldCheck, Truck } from 'lucide-react-native';
+import { Ban, ChevronLeft, ChevronRight, HardHat, MessageCircle, Save, ShieldCheck, Truck } from 'lucide-react-native';
 import { Text, XStack, YStack } from 'tamagui';
 import ServiceQuoteComparison from '@/components/ServiceQuoteComparison';
 import {
@@ -29,6 +29,7 @@ import {
   serviceRfqIdempotencyKey,
   ServiceRfqScopeGuard,
   submitServiceQuote,
+  withdrawServiceQuote,
   type ServiceQuoteDraft,
   type ServiceRfqDetail,
 } from '@/services/serviceRfqService';
@@ -132,6 +133,19 @@ function ServiceRfqDetailBody({ rfqId }: { rfqId: string }) {
             <Text color="$colorMuted" fontSize={11} text={direction.textAlign}>{new Date(detail.rfq.updatedAt).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-SA')} · rev {detail.rfq.revision}</Text>
           </HeavyarSurface>
 
+          <HeavyarSurface tone="subtle" density="compact" gap="$sm">
+            <XStack items="center" flexDirection={direction.rowDirection} gap="$sm"><MessageCircle color={Colors.gold} size={19} />
+              <Text color="$color" flex={1} fontWeight="800" text={direction.textAlign}>{message('التواصل الخاص بالطلب', 'Private request communication')}</Text></XStack>
+            <Text color="$colorMuted" fontSize={12} lineHeight={18} text={direction.textAlign}>{message('رسائل نصية خاصة بالمشاركين المخولين فقط. لا تنشئ حجزًا أو التزامًا ماليًا.', 'Text messages are private to authorized participants. They create no booking or financial commitment.')}</Text>
+            {detail.access === 'customer' ? detail.rfq.targetProfileIds.map((profileId, index) =>
+              <HeavyarButton key={profileId} tone="secondary" onPress={() => router.push(`/service-rfq/${detail.rfq.rfqId}/conversation?providerProfileId=${encodeURIComponent(profileId)}` as never)} accessibilityRole="button">
+                <MessageCircle color={Colors.gold} size={18} /><HeavyarButtonText tone="secondary">{message(`محادثة مقدم الخدمة ${index + 1}`, `Provider conversation ${index + 1}`)}</HeavyarButtonText>
+              </HeavyarButton>) :
+              <HeavyarButton tone="secondary" onPress={() => router.push(`/service-rfq/${detail.rfq.rfqId}/conversation` as never)} accessibilityRole="button">
+                <MessageCircle color={Colors.gold} size={18} /><HeavyarButtonText tone="secondary">{message('فتح المحادثة', 'Open conversation')}</HeavyarButtonText>
+              </HeavyarButton>}
+          </HeavyarSurface>
+
           {detail.access === 'customer' ? <>
             <ServiceQuoteComparison serviceKind={detail.rfq.serviceKind} state="ready" quotes={detail.comparison.quotes}
               provisionalQuoteId={detail.rfq.provisionalSelection?.quoteId} selectingQuoteId={busy.startsWith('select:') ? busy.slice(7) : undefined}
@@ -206,5 +220,8 @@ function ProviderQuoteForm({ detail, busy, onSubmit }: {
     {error ? <Text color="$danger" fontSize={13} text={direction.textAlign}>{error}</Text> : null}
     {editable ? <HeavyarButton disabled={busy} opacity={busy ? 0.62 : 1} onPress={submit}><Save color={Colors.primary} size={18} />
       <HeavyarButtonText>{busy ? message('جارٍ الحفظ…', 'Saving…') : own ? message('حفظ إصدار جديد', 'Save new revision') : message('إرسال العرض', 'Submit offer')}</HeavyarButtonText></HeavyarButton> : null}
+    {editable && own?.status === 'active' ? <HeavyarButton tone="danger" disabled={busy} onPress={() => onSubmit((uid, signal) => withdrawServiceQuote(
+      detail.rfq.rfqId, own.quoteId, detail.rfq.revision, own.quoteVersion - 1, serviceRfqIdempotencyKey('withdraw-quote'), uid, signal,
+    ))}><Ban color={Colors.white} size={18} /><HeavyarButtonText tone="danger">{message('سحب العرض', 'Withdraw offer')}</HeavyarButtonText></HeavyarButton> : null}
   </YStack>;
 }

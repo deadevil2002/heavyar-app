@@ -140,6 +140,11 @@ export async function reviseServiceQuote(rfqId: string, quoteId: string, quote: 
     method: 'PUT', body: JSON.stringify({ quote, expectedRfqRevision, idempotencyKey }), signal,
   }, true, expectedUid));
 }
+export async function withdrawServiceQuote(rfqId: string, quoteId: string, expectedRfqRevision: number, expectedQuoteRevision: number, idempotencyKey: string, expectedUid: string, signal?: AbortSignal) {
+  return decodeServiceRfqDetail(await request<unknown>(`/api/service-rfqs/${encodeURIComponent(rfqId)}/quotes/${encodeURIComponent(quoteId)}/withdraw`, {
+    method: 'POST', body: JSON.stringify({ expectedRfqRevision, expectedQuoteRevision, idempotencyKey }), signal,
+  }, true, expectedUid));
+}
 export async function selectServiceQuote(rfqId: string, quoteId: string, expectedRfqRevision: number, idempotencyKey: string, expectedUid: string, signal?: AbortSignal) {
   return decodeServiceRfqDetail(await request<unknown>(`/api/service-rfqs/${encodeURIComponent(rfqId)}/selection`, {
     method: 'POST', body: JSON.stringify({ quoteId, expectedRfqRevision, idempotencyKey }), signal,

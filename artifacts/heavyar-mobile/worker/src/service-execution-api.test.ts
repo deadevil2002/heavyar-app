@@ -132,6 +132,10 @@ describe('M2-E2 durable private execution Worker workflow', () => {
     expect(JSON.stringify(body)).not.toContain(providerUid);
     expect(store.data(`serviceExecutions/${executionId}`)?.status).toBe('confirmed');
     expect([...store.documents.keys()].filter(key => key.startsWith('serviceExecutionEvents/'))).toHaveLength(1);
+    const creationNotifications = [...store.documents.entries()]
+      .filter(([path]) => path.startsWith('notificationOutbox/'))
+      .map(([, stored]) => decodeFields(stored.fields));
+    expect(creationNotifications.filter(item => item.event === 'service_execution_confirmed' && item.uid === providerUid)).toHaveLength(1);
     authenticate(providerUid, 'driver');
     expect((await call(`/api/service-executions/${executionId}`)).status).toBe(200);
     authenticate(outsiderUid, 'customer'); store.put(`users/${outsiderUid}`, account('customer'));
@@ -160,12 +164,18 @@ describe('M2-E2 durable private execution Worker workflow', () => {
     expect(responses.every(response => response.status === 200)).toBe(true);
     expect(store.data(`serviceExecutions/${executionId}`)?.revision).toBe(1);
     expect([...store.documents.keys()].filter(key => key.startsWith('serviceExecutionEvents/'))).toHaveLength(2);
+    const transitionNotifications = [...store.documents.entries()]
+      .filter(([path]) => path.startsWith('notificationOutbox/'))
+      .map(([, stored]) => decodeFields(stored.fields));
+    expect(transitionNotifications.filter(item => item.event === 'service_execution_started' && item.uid === customerUid)).toHaveLength(1);
+    expect(JSON.stringify(transitionNotifications)).not.toContain('Started.');
     expect((await call(`/api/service-executions/${executionId}/transitions`, 'POST', {
       action: 'record_progress', expectedRevision: 1, idempotencyKey: 'progress:provider:123', evidence: { photoReferences: ['https://public.example/evidence.jpg'] },
     })).status).toBe(400);
     expect((await call(`/api/service-executions/${executionId}/transitions`, 'POST', {
       action: 'record_progress', expectedRevision: 1, idempotencyKey: 'progress:provider:456', evidence: { mediaIntentId: `evidence_intent_${'i'.repeat(43)}` },
     })).status).toBe(400);
+    expect([...store.documents.entries()].filter(([path]) => path.startsWith('notificationOutbox/'))).toHaveLength(2);
   });
 
   test('uploads authenticated stripped evidence, atomically binds it, and grants only short participant access', async () => {

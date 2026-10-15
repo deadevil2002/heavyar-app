@@ -13,6 +13,7 @@ const PAGE_SIZE = 20;
 
 export type NotificationCategory =
   | 'rental'
+  | 'service'
   | 'payment'
   | 'verification'
   | 'complaint'
@@ -35,6 +36,8 @@ export type NotificationAction =
   | { type: 'payment'; subjectId: string }
   | { type: 'verification'; subjectId?: string }
   | { type: 'complaint'; subjectId: string }
+  | { type: 'service_rfq'; subjectId: string }
+  | { type: 'service_execution'; subjectId: string }
   | { type: 'profile'; subjectId?: string };
 
 export type NotificationPage = {
@@ -56,6 +59,7 @@ export function mergeNotificationPage(current: NotificationItem[], incoming: Not
 
 export type NotificationPreferences = {
   rental: boolean;
+  service: boolean;
   payment: boolean;
   verification: boolean;
   complaint: boolean;
@@ -64,6 +68,7 @@ export type NotificationPreferences = {
 
 const defaultPreferences: NotificationPreferences = {
   rental: true,
+  service: true,
   payment: true,
   verification: true,
   complaint: true,
@@ -147,9 +152,9 @@ async function request<T>(path: string, init?: RequestInit, expectedUid?: string
 
 export type DeviceRegistrationResult =
   | { status: 'registered'; token: string }
-  | { status: 'web' | 'permission-denied' | 'missing-project-id' | 'invalid-token' };
+  | { status: 'web' | 'permission-not-granted' | 'permission-denied' | 'missing-project-id' | 'invalid-token' };
 
-export async function registerCurrentDevice(expectedUid?: string): Promise<DeviceRegistrationResult> {
+export async function registerCurrentDevice(expectedUid?: string, requestPermission = false): Promise<DeviceRegistrationResult> {
   if (Platform.OS === 'web') return { status: 'web' };
   const auth = getFirebaseAuth();
   const uid = expectedUid ?? auth.currentUser?.uid ?? '';
@@ -171,6 +176,7 @@ export async function registerCurrentDevice(expectedUid?: string): Promise<Devic
   }
   const permissions = await Notifications.getPermissionsAsync();
   assertCurrent();
+  if (!permissions.granted && !requestPermission) return { status: 'permission-not-granted' };
   const granted = permissions.granted || (await Notifications.requestPermissionsAsync()).granted;
   assertCurrent();
   if (!granted) return { status: 'permission-denied' };
@@ -189,6 +195,11 @@ export async function registerCurrentDevice(expectedUid?: string): Promise<Devic
   await AsyncStorage.setItem(INSTALLATION_TOKEN_KEY, token);
   assertCurrent();
   return { status: 'registered', token };
+}
+
+/** Must be called only from an explicit user action. */
+export async function enablePushNotifications(expectedUid: string) {
+  return registerCurrentDevice(expectedUid, true);
 }
 
 export async function subscribeToPushTokenRefresh(): Promise<() => void> {
@@ -257,7 +268,9 @@ export async function listNotifications(pageToken?: string | null, expectedUid?:
       const action = rawAction === 'request' && subjectId ? { type: 'request' as const, subjectId }
         : rawAction === 'payment' && subjectId ? { type: 'payment' as const, subjectId }
           : rawAction === 'complaint' && subjectId ? { type: 'complaint' as const, subjectId }
-            : rawAction === 'verification' ? { type: 'verification' as const, ...(subjectId ? { subjectId } : {}) }
+            : rawAction === 'service_rfq' && subjectId ? { type: 'service_rfq' as const, subjectId }
+              : rawAction === 'service_execution' && subjectId ? { type: 'service_execution' as const, subjectId }
+                : rawAction === 'verification' ? { type: 'verification' as const, ...(subjectId ? { subjectId } : {}) }
               : rawAction === 'profile' ? { type: 'profile' as const, ...(subjectId ? { subjectId } : {}) } : undefined;
       // Do not let malformed server records reach the renderer. In
       // particular, legacy records may have no action (or a non-object
@@ -356,6 +369,12 @@ export function notificationActionRoute(action?: NotificationAction): string | n
       return typeof action.subjectId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(action.subjectId)
         ? `/payment/${encodeURIComponent(action.subjectId)}` : null;
     case 'verification': return verificationDestination();
+    case 'service_rfq':
+      return typeof action.subjectId === 'string' && /^rfq_[A-Za-z0-9_-]{43}$/.test(action.subjectId)
+        ? `/service-rfq/${encodeURIComponent(action.subjectId)}` : null;
+    case 'service_execution':
+      return typeof action.subjectId === 'string' && /^execution_[A-Za-z0-9_-]{43}$/.test(action.subjectId)
+        ? `/service-execution/${encodeURIComponent(action.subjectId)}` : null;
     // There is no standalone complaint route yet; profile is the safe authenticated destination.
     case 'complaint': return '/(tabs)/profile';
     case 'profile': return '/(tabs)/profile';
@@ -370,6 +389,8 @@ export function notificationRouteFromPayload(data: Record<string, unknown> | nul
     case 'request': return subjectId ? notificationActionRoute({ type: 'request', subjectId }) : null;
     case 'payment': return subjectId ? notificationActionRoute({ type: 'payment', subjectId }) : null;
     case 'verification': return verificationDestination();
+    case 'service_rfq': return subjectId ? notificationActionRoute({ type: 'service_rfq', subjectId }) : null;
+    case 'service_execution': return subjectId ? notificationActionRoute({ type: 'service_execution', subjectId }) : null;
     case 'complaint': return subjectId ? notificationActionRoute({ type: 'complaint', subjectId }) : null;
     case 'profile': return '/(tabs)/profile';
     case 'inbox': return '/notifications';

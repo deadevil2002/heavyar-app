@@ -63,6 +63,9 @@ describe('unread service binds requests to the query identity', () => {
     expect(notificationActionRoute({ type: 'payment', subjectId: '../invalid' })).toBeNull();
     expect(notificationActionRoute({ type: 'request' } as never)).toBeNull();
     expect(notificationActionRoute({ type: 'unsupported' } as never)).toBeNull();
+    expect(notificationActionRoute({ type: 'service_rfq', subjectId: `rfq_${'R'.repeat(43)}` })).toBe(`/service-rfq/rfq_${'R'.repeat(43)}`);
+    expect(notificationActionRoute({ type: 'service_execution', subjectId: `execution_${'E'.repeat(43)}` })).toBe(`/service-execution/execution_${'E'.repeat(43)}`);
+    expect(notificationActionRoute({ type: 'service_rfq', subjectId: 'rfq_invalid' })).toBeNull();
   });
   it('does not let an old refresh or cursor page revert a locally confirmed read', () => {
     const item = (id: string, read: boolean): NotificationItem => ({
