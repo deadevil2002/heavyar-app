@@ -75,6 +75,7 @@ function RootLayoutNav() {
       <Stack.Screen name="transport-request-prepare" options={{ headerShown: false }} />
       <Stack.Screen name="service-rfqs" options={{ headerShown: false }} />
       <Stack.Screen name="service-rfq/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="service-execution/[id]" options={{ headerShown: false }} />
     </Stack>
   );
 }

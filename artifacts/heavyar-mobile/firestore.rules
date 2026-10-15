@@ -490,6 +490,15 @@ service cloud.firestore {
     match /serviceRfqAudit/{auditId} {
       allow read, write: if false;
     }
+    // M2-E2 execution aggregates and append-only evidence events are private,
+    // Worker-authoritative records. Participant projections are returned only
+    // after live account and source authorization checks.
+    match /serviceExecutions/{executionId} {
+      allow read, write: if false;
+    }
+    match /serviceExecutionEvents/{eventId} {
+      allow read, write: if false;
+    }
     match /serviceProfileAudit/{auditId} {
       allow read, write: if false;
     }

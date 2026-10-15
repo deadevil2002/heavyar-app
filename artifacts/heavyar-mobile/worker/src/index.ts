@@ -87,6 +87,17 @@ import {
   type ServiceRfqAggregate,
 } from './service-rfq';
 import {
+  SERVICE_EXECUTION_PRODUCTION_ACTIVATION,
+  ServiceExecutionError,
+  createConfirmedExecution,
+  executionBindingMatches,
+  isServiceExecutionAggregate,
+  transitionServiceExecution,
+  type ConfirmedExecutionBinding,
+  type ServiceExecutionAction,
+  type ServiceExecutionAggregate,
+} from './service-execution';
+import {
   consumeScheduledSubrequest,
   createScheduledGlobalBudget,
   createScheduledProcessorBudget,
@@ -117,7 +128,7 @@ export interface Env {
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; accountProfileRaw?: { data: any; updateTime?: string } | null; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
-type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel';
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel' | 'service_execution_create' | 'service_execution_transition';
 type AuthenticatedMutationRateLimitDecision =
   | { status: 'allowed' }
   | { status: 'limited'; retryAfterSeconds: number }
@@ -143,12 +154,14 @@ let operatorDiscoveryActivationOverride: boolean | undefined;
 let capturedTransporterQueries: any[] | undefined;
 let transporterDiscoveryActivationOverride: boolean | undefined;
 let serviceRfqActivationOverride: boolean | undefined;
+let serviceExecutionActivationOverride: boolean | undefined;
+let serviceExecutionBindingOverride: ((sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) | undefined;
 let publicEquipmentLimiterOverride: ((ipHash: string) => Promise<boolean | null>) | undefined;
 let authenticatedMutationLimiterOverride: ((uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) | undefined;
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
 const paymentCreateInflight = new Map<string, Promise<Response>>();
-  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
+  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, setServiceExecutionActivation(value?: boolean) { serviceExecutionActivationOverride = value; }, setServiceExecutionBinding(resolver?: (sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) { serviceExecutionBindingOverride = resolver; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -668,6 +681,8 @@ async function allowAuthenticatedMutation(env: Env, uid: string, scope: Authenti
     service_rfq_quote: { windowMs: 60_000, limit: 30 },
     service_rfq_select: { windowMs: 60_000, limit: 20 },
     service_rfq_cancel: { windowMs: 60_000, limit: 20 },
+    service_execution_create: { windowMs: 10 * 60_000, limit: 10 },
+    service_execution_transition: { windowMs: 60_000, limit: 30 },
   };
   const { windowMs, limit } = policy[scope];
   const id = await hashedId(`authenticated-mutation:${scope}:${uid}`);
@@ -5362,6 +5377,281 @@ async function cancelServiceRfq(req: Request, env: Env, user: User, rfqId: strin
     return out(env, req, { success: true, ...(await serviceRfqView(env, stored.aggregate, user)) });
   } catch (error) { return serviceRfqErrorResponse(req, env, error); }
 }
+
+const SERVICE_EXECUTION_SOURCE_ID = /^[A-Za-z0-9:_-]{6,160}$/;
+const SERVICE_EXECUTION_JSON_LIMIT_BYTES = 256 * 1024;
+const SERVICE_EXECUTION_BODY_LIMIT_BYTES = 16 * 1024;
+
+type ServiceExecutionStored = {
+  aggregate: ServiceExecutionAggregate;
+  creationFingerprint: string;
+  updateTime?: string;
+};
+
+function serviceExecutionDisabled(req: Request, env: Env) {
+  return out(env, req, {
+    success: false,
+    error: 'Service execution is not activated',
+    errorCode: 'SERVICE_EXECUTION_NOT_ACTIVATED',
+    activation: { enabled: false, reason: SERVICE_EXECUTION_PRODUCTION_ACTIVATION },
+  }, 404);
+}
+
+function serviceExecutionErrorResponse(req: Request, env: Env, error: unknown) {
+  const code = error instanceof ServiceExecutionError ? error.code : 'SERVICE_EXECUTION_UNAVAILABLE';
+  const status = code.includes('NOT_FOUND') ? 404
+    : code.includes('NOT_AUTHORIZED') || code.includes('ACCOUNT_INELIGIBLE') ? 403
+      : code.includes('STALE') || code.includes('CONFLICT') || code.includes('CHANGED') || code.includes('TRANSITION') || code.includes('LIFECYCLE_REQUIRED') || code.includes('STATE') || code.includes('LIMIT_REACHED') ? 409
+        : code === 'SERVICE_EXECUTION_UNAVAILABLE' ? 503 : 400;
+  return out(env, req, { success: false, error: code, errorCode: code }, status);
+}
+
+function parseStoredServiceExecution(value: any, updateTime?: string): ServiceExecutionStored | null {
+  if (!value || value.schemaVersion !== 1 || typeof value.aggregateJson !== 'string' ||
+      new TextEncoder().encode(value.aggregateJson).byteLength > SERVICE_EXECUTION_JSON_LIMIT_BYTES ||
+      typeof value.creationFingerprint !== 'string' || value.creationFingerprint.length !== 43) return null;
+  try {
+    const aggregate = JSON.parse(value.aggregateJson) as ServiceExecutionAggregate;
+    if (!isServiceExecutionAggregate(aggregate) || value.executionId !== aggregate.executionId ||
+        value.serviceKind !== aggregate.serviceKind || value.status !== aggregate.status || value.revision !== aggregate.revision ||
+        value.customerUid !== aggregate.customerUid || value.providerUid !== aggregate.providerUid ||
+        value.sourceKind !== aggregate.source.kind || value.sourceId !== aggregate.source.id) return null;
+    return { aggregate, creationFingerprint: value.creationFingerprint, updateTime };
+  } catch { return null; }
+}
+
+function serviceExecutionFields(stored: ServiceExecutionStored) {
+  const aggregateJson = JSON.stringify(stored.aggregate);
+  if (new TextEncoder().encode(aggregateJson).byteLength > SERVICE_EXECUTION_JSON_LIMIT_BYTES) {
+    throw new ServiceExecutionError('EXECUTION_STORAGE_LIMIT_REACHED');
+  }
+  const state = stored.aggregate;
+  return {
+    schemaVersion: { integerValue: '1' },
+    executionId: { stringValue: state.executionId },
+    serviceKind: { stringValue: state.serviceKind },
+    lifecycleAuthority: { stringValue: state.lifecycleAuthority },
+    sourceKind: { stringValue: state.source.kind },
+    sourceId: { stringValue: state.source.id },
+    customerUid: { stringValue: state.customerUid },
+    providerUid: { stringValue: state.providerUid },
+    status: { stringValue: state.status },
+    revision: { integerValue: String(state.revision) },
+    createdAt: { timestampValue: state.createdAt },
+    updatedAt: { timestampValue: state.updatedAt },
+    creationFingerprint: { stringValue: stored.creationFingerprint },
+    aggregateJson: { stringValue: aggregateJson },
+  };
+}
+
+function serviceExecutionWrite(env: Env, stored: ServiceExecutionStored, expectedUpdateTime?: string) {
+  const fields = serviceExecutionFields(stored);
+  return {
+    update: { name: fullName(env, `serviceExecutions/${encodeURIComponent(stored.aggregate.executionId)}`), fields },
+    ...(expectedUpdateTime ? { updateMask: { fieldPaths: Object.keys(fields) } } : {}),
+    currentDocument: expectedUpdateTime ? { updateTime: expectedUpdateTime } : { exists: false },
+  };
+}
+
+async function serviceExecutionEventWrite(env: Env, aggregate: ServiceExecutionAggregate) {
+  const event = aggregate.events.at(-1);
+  if (!event) throw new ServiceExecutionError('SERVICE_EXECUTION_UNAVAILABLE');
+  return {
+    update: { name: fullName(env, `serviceExecutionEvents/${encodeURIComponent(event.eventId)}`), fields: {
+      executionId: { stringValue: aggregate.executionId },
+      revision: { integerValue: String(event.revision) },
+      action: { stringValue: event.action },
+      actorRole: { stringValue: event.actorRole },
+      actorHash: { stringValue: await hashedId(`service-execution-actor:${event.actorUid}`) },
+      occurredAt: { timestampValue: event.occurredAt },
+      ...(event.evidence?.note ? { evidenceNote: { stringValue: event.evidence.note } } : {}),
+    } }, currentDocument: { exists: false },
+  };
+}
+
+function executionAccountEligible(account: any, aggregate: Pick<ServiceExecutionAggregate, 'serviceKind'>, role: 'customer' | 'provider') {
+  if (!account || isStoreReviewAccount(account) || isOperationallyBlocked(account) || account.isActive === false ||
+      account.accountStatus !== undefined && account.accountStatus !== 'active') return false;
+  if (role === 'customer') return account.role === 'customer';
+  return aggregate.serviceKind === 'equipment_rental' ? account.role === 'provider' : account.role === 'driver';
+}
+
+async function executionAccountVerify(env: Env, uid: string, aggregate: Pick<ServiceExecutionAggregate, 'serviceKind'>, role: 'customer' | 'provider', transaction?: string) {
+  const raw = transaction
+    ? await transactionDocument(env, `users/${encodeURIComponent(uid)}`, transaction)
+    : await getRawDoc(env, 'users', uid);
+  if (!raw?.updateTime || !executionAccountEligible(raw.data, aggregate, role)) throw new ServiceExecutionError('EXECUTION_ACCOUNT_INELIGIBLE');
+  return { account: raw.data, verify: { verify: fullName(env, `users/${encodeURIComponent(uid)}`), currentDocument: { updateTime: raw.updateTime } } };
+}
+
+function serviceExecutionView(aggregate: ServiceExecutionAggregate, actorUid: string, rentalStatus?: string) {
+  const access = actorUid === aggregate.customerUid ? 'customer' : actorUid === aggregate.providerUid ? 'provider' : null;
+  if (!access) throw new ServiceExecutionError('EXECUTION_NOT_AUTHORIZED');
+  return {
+    access,
+    execution: {
+      executionId: aggregate.executionId,
+      serviceKind: aggregate.serviceKind,
+      lifecycleAuthority: aggregate.lifecycleAuthority,
+      source: aggregate.source,
+      status: aggregate.status,
+      revision: aggregate.revision,
+      createdAt: aggregate.createdAt,
+      updatedAt: aggregate.updatedAt,
+      ...(aggregate.lifecycleAuthority === 'rental_v2' ? { rentalStatus: rentalStatus || 'unavailable' } : {}),
+      events: aggregate.events.map(event => ({
+        eventId: event.eventId, revision: event.revision, action: event.action, actorRole: event.actorRole,
+        occurredAt: event.occurredAt, ...(event.evidence ? { evidence: event.evidence } : {}),
+      })),
+    },
+    activation: { productionEnabled: false, reason: SERVICE_EXECUTION_PRODUCTION_ACTIVATION },
+  };
+}
+
+async function rentalExecutionStatus(env: Env, aggregate: ServiceExecutionAggregate, transaction?: string) {
+  if (aggregate.lifecycleAuthority !== 'rental_v2') return undefined;
+  const raw = transaction
+    ? await transactionDocument(env, `equipmentRequests/${encodeURIComponent(aggregate.source.id)}`, transaction)
+    : await getRawDoc(env, 'equipmentRequests', aggregate.source.id);
+  if (!raw?.data || raw.data.pricingModelVersion !== 2 || raw.data.customerUid !== aggregate.customerUid || raw.data.providerUid !== aggregate.providerUid) {
+    throw new ServiceExecutionError('EXECUTION_SOURCE_NOT_FOUND');
+  }
+  return { status: String(raw.data.status || ''), verify: raw.updateTime
+    ? { verify: fullName(env, `equipmentRequests/${encodeURIComponent(aggregate.source.id)}`), currentDocument: { updateTime: raw.updateTime } }
+    : undefined };
+}
+
+async function createServiceExecution(req: Request, env: Env, user: User) {
+  if (serviceExecutionActivationOverride !== true) return serviceExecutionDisabled(req, env);
+  try {
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'service_execution_create');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many service execution attempts');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, SERVICE_EXECUTION_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['sourceKind', 'sourceId', 'idempotencyKey'].includes(key)) ||
+        !['service_contract', 'rental_request'].includes(String(body.sourceKind)) ||
+        !SERVICE_EXECUTION_SOURCE_ID.test(String(body.sourceId || '')) || typeof body.idempotencyKey !== 'string') {
+      throw new ServiceExecutionError('INVALID_SERVICE_EXECUTION');
+    }
+    // Deliberately no request/env-controlled resolver: only local test code can
+    // supply a confirmed source binding while Production activation is closed.
+    const binding = await serviceExecutionBindingOverride?.(body.sourceKind, body.sourceId);
+    if (!binding || binding.sourceKind !== body.sourceKind || binding.sourceId !== body.sourceId) {
+      throw new ServiceExecutionError('EXECUTION_PREREQUISITES_NOT_MET');
+    }
+    const creationFingerprint = await hashedId(stableJson({
+      sourceKind: binding.sourceKind, sourceId: binding.sourceId, sourceRevision: binding.sourceRevision,
+      serviceKind: binding.serviceKind, customerUid: binding.customerUid, providerUid: binding.providerUid,
+    }));
+    const executionId = `execution_${await hashedId(`service-execution:${binding.sourceKind}:${binding.sourceId}`)}`;
+    const aggregate = createConfirmedExecution(binding, { executionId, actorUid: user.uid, idempotencyKey: body.idempotencyKey, now: new Date().toISOString() });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      if (!transaction) throw new ServiceExecutionError('SERVICE_EXECUTION_UNAVAILABLE');
+      const priorRaw = await transactionDocument(env, `serviceExecutions/${encodeURIComponent(executionId)}`, transaction);
+      const prior = parseStoredServiceExecution(priorRaw?.data, priorRaw?.updateTime);
+      if (prior) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        if (prior.creationFingerprint !== creationFingerprint || prior.aggregate.customerUid !== user.uid) throw new ServiceExecutionError('IDEMPOTENCY_CONFLICT');
+        const [, , rental] = await Promise.all([
+          executionAccountVerify(env, prior.aggregate.customerUid, prior.aggregate, 'customer'),
+          executionAccountVerify(env, prior.aggregate.providerUid, prior.aggregate, 'provider'),
+          rentalExecutionStatus(env, prior.aggregate),
+        ]);
+        return out(env, req, { success: true, ...serviceExecutionView(prior.aggregate, user.uid, rental?.status), replayed: true });
+      }
+      const [customer, provider, rental] = await Promise.all([
+        executionAccountVerify(env, binding.customerUid, aggregate, 'customer', transaction),
+        executionAccountVerify(env, binding.providerUid, aggregate, 'provider', transaction),
+        rentalExecutionStatus(env, aggregate, transaction),
+      ]);
+      if (rental && !['accepted', 'in_progress', 'completion_requested'].includes(rental.status)) {
+        throw new ServiceExecutionError('EXECUTION_PREREQUISITES_NOT_MET');
+      }
+      try {
+        await commitWrites(env, [
+          serviceExecutionWrite(env, { aggregate, creationFingerprint }),
+          customer.verify,
+          provider.verify,
+          ...(rental?.verify ? [rental.verify] : []),
+          await serviceExecutionEventWrite(env, aggregate),
+        ], transaction);
+        return out(env, req, { success: true, ...serviceExecutionView(aggregate, user.uid, rental?.status), replayed: false }, 201);
+      } catch (error) {
+        if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+      }
+    }
+    throw new ServiceExecutionError('SERVICE_EXECUTION_CONFLICT');
+  } catch (error) { return serviceExecutionErrorResponse(req, env, error); }
+}
+
+async function getServiceExecution(req: Request, env: Env, user: User, executionId: string) {
+  if (serviceExecutionActivationOverride !== true) return serviceExecutionDisabled(req, env);
+  try {
+    const raw = await getRawDoc(env, 'serviceExecutions', executionId);
+    const stored = parseStoredServiceExecution(raw?.data, raw?.updateTime);
+    if (!stored) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+    const role = user.uid === stored.aggregate.customerUid ? 'customer' : user.uid === stored.aggregate.providerUid ? 'provider' : null;
+    if (!role) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+    await executionAccountVerify(env, user.uid, stored.aggregate, role);
+    const rental = await rentalExecutionStatus(env, stored.aggregate);
+    return out(env, req, { success: true, ...serviceExecutionView(stored.aggregate, user.uid, rental?.status) });
+  } catch (error) { return serviceExecutionErrorResponse(req, env, error); }
+}
+
+async function transitionServiceExecutionRequest(req: Request, env: Env, user: User, executionId: string) {
+  if (serviceExecutionActivationOverride !== true) return serviceExecutionDisabled(req, env);
+  try {
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'service_execution_transition');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many service execution updates');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, SERVICE_EXECUTION_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    const actions: ServiceExecutionAction[] = ['start', 'record_progress', 'confirm_pickup', 'confirm_delivery', 'request_completion', 'confirm_completion', 'dispute_completion', 'record_handover', 'record_return'];
+    if (!body || !Object.keys(body).every(key => ['action', 'expectedRevision', 'idempotencyKey', 'evidence'].includes(key)) ||
+        !actions.includes(body.action) || !Number.isSafeInteger(body.expectedRevision) || typeof body.idempotencyKey !== 'string') {
+      throw new ServiceExecutionError('INVALID_EXECUTION_TRANSITION');
+    }
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      if (!transaction) throw new ServiceExecutionError('SERVICE_EXECUTION_UNAVAILABLE');
+      const raw = await transactionDocument(env, `serviceExecutions/${encodeURIComponent(executionId)}`, transaction);
+      const stored = parseStoredServiceExecution(raw?.data, raw?.updateTime);
+      if (!stored?.updateTime) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+      const role = user.uid === stored.aggregate.customerUid ? 'customer' : user.uid === stored.aggregate.providerUid ? 'provider' : null;
+      if (!role) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+      const liveBinding = await serviceExecutionBindingOverride?.(stored.aggregate.source.kind, stored.aggregate.source.id);
+      if (!executionBindingMatches(stored.aggregate, liveBinding)) throw new ServiceExecutionError('EXECUTION_SOURCE_CHANGED');
+      const [customer, provider, rental] = await Promise.all([
+        executionAccountVerify(env, stored.aggregate.customerUid, stored.aggregate, 'customer', transaction),
+        executionAccountVerify(env, stored.aggregate.providerUid, stored.aggregate, 'provider', transaction),
+        rentalExecutionStatus(env, stored.aggregate, transaction),
+      ]);
+      const next = transitionServiceExecution(stored.aggregate, body, user.uid, new Date().toISOString(), rental?.status);
+      if (next === stored.aggregate) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        return out(env, req, { success: true, ...serviceExecutionView(stored.aggregate, user.uid, rental?.status), replayed: true });
+      }
+      try {
+        await commitWrites(env, [
+          serviceExecutionWrite(env, { ...stored, aggregate: next }, stored.updateTime),
+          customer.verify,
+          provider.verify,
+          ...(rental?.verify ? [rental.verify] : []),
+          await serviceExecutionEventWrite(env, next),
+        ], transaction);
+        return out(env, req, { success: true, ...serviceExecutionView(next, user.uid, rental?.status), replayed: false });
+      } catch (error) {
+        if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+      }
+    }
+    throw new ServiceExecutionError('SERVICE_EXECUTION_CONFLICT');
+  } catch (error) { return serviceExecutionErrorResponse(req, env, error); }
+}
+
 async function reviewEquipmentDetail(req: Request, env: Env, u: User, id: string) {
   const equipment = await getDoc(env, 'equipment', id);
   const account = u.accountProfile || await getDoc(env, 'users', u.uid);
@@ -6237,6 +6527,14 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
        if (serviceRfqSelectionMatch && req.method === 'POST') return await selectServiceQuote(req, env, await authenticatedUser(req, env), serviceRfqSelectionMatch[1]);
        const serviceRfqCancelMatch = path.match(/^\/api\/service-rfqs\/(rfq_[A-Za-z0-9_-]{43})\/cancel$/);
        if (serviceRfqCancelMatch && req.method === 'POST') return await cancelServiceRfq(req, env, await authenticatedUser(req, env), serviceRfqCancelMatch[1]);
+       if ((path === '/api/service-executions' || path.startsWith('/api/service-executions/')) && serviceExecutionActivationOverride !== true) {
+         return serviceExecutionDisabled(req, env);
+       }
+       if (path === '/api/service-executions' && req.method === 'POST') return await createServiceExecution(req, env, await authenticatedUser(req, env));
+       const serviceExecutionDetailMatch = path.match(/^\/api\/service-executions\/(execution_[A-Za-z0-9_-]{43})$/);
+       if (serviceExecutionDetailMatch && req.method === 'GET') return await getServiceExecution(req, env, await authenticatedUser(req, env), serviceExecutionDetailMatch[1]);
+       const serviceExecutionTransitionMatch = path.match(/^\/api\/service-executions\/(execution_[A-Za-z0-9_-]{43})\/transitions$/);
+       if (serviceExecutionTransitionMatch && req.method === 'POST') return await transitionServiceExecutionRequest(req, env, await authenticatedUser(req, env), serviceExecutionTransitionMatch[1]);
        const publicDriverMatch = path.match(/^\/api\/drivers\/public\/([^/]+)$/);
        if (publicDriverMatch && req.method === 'GET') return await publicDriverDetail(req, env, decodeURIComponent(publicDriverMatch[1]));
        if (path === '/api/drivers/requests' && req.method === 'GET') return await driverRequestList(req, env, await authenticatedUser(req, env));

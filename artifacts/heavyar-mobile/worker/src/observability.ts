@@ -58,6 +58,9 @@ const SAFE_ERROR_CODES = new Set([
   'INVALID_OPERATOR_REQUEST', 'INVALID_OPERATOR_SEARCH', 'OPERATOR_DISCOVERY_UNAVAILABLE',
   'INVALID_TRANSPORT_REQUEST', 'INVALID_TRANSPORTER_SEARCH', 'TRANSPORTER_DISCOVERY_UNAVAILABLE',
   'SERVICE_RFQ_NOT_ACTIVATED',
+  'SERVICE_EXECUTION_NOT_ACTIVATED', 'EXECUTION_NOT_AUTHORIZED', 'EXECUTION_ACCOUNT_INELIGIBLE',
+  'EXECUTION_STALE_REVISION', 'EXECUTION_SOURCE_CHANGED', 'INVALID_EXECUTION_TRANSITION',
+  'INVALID_RENTAL_EVIDENCE_STATE', 'RENTAL_V2_LIFECYCLE_REQUIRED', 'EVIDENCE_PHOTO_DELIVERY_NOT_READY',
   'INTERNAL_SERVICE_ERROR',
 ]);
 const SAFE_FIRESTORE_CODES = new Set([
@@ -85,6 +88,8 @@ const ROUTES: Array<[RegExp, string]> = [
   [/^\/api\/service-rfqs\/[^/]+\/quotes\/[^/]+$/, '/api/service-rfqs/:rfqId/quotes/:quoteId'],
   [/^\/api\/service-rfqs\/[^/]+\/quotes$/, '/api/service-rfqs/:rfqId/quotes'],
   [/^\/api\/service-rfqs\/[^/]+\/(selection|cancel)$/, '/api/service-rfqs/:rfqId/action'],
+  [/^\/api\/service-executions$/, '/api/service-executions'],
+  [/^\/api\/service-executions\/[^/]+\/transitions$/, '/api/service-executions/:executionId/transitions'],
   [/^\/api\/organizations\/[^/]+\/members\/[^/]+\/capabilities$/, '/api/organizations/:organizationId/members/:memberId/capabilities'],
   [/^\/api\/organizations\/[^/]+\/members\/[^/]+\/revoke$/, '/api/organizations/:organizationId/members/:memberId/revoke'],
   [/^\/api\/organizations\/[^/]+\/equipment\/[^/]+\/metadata$/, '/api/organizations/:organizationId/equipment/:equipmentId/metadata'],

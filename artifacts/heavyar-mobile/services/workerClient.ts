@@ -94,6 +94,7 @@ function metricLabel(path: string): string {
     .replace(/\/api\/drivers\/public\/[^/]+/, '/api/drivers/public/:id')
     .replace(/\/api\/drivers\/requests\/[^/]+/, '/api/drivers/requests/:id')
     .replace(/\/api\/service-rfqs\/[^/]+/, '/api/service-rfqs/:id')
+    .replace(/\/api\/service-executions\/[^/]+/, '/api/service-executions/:id')
     .replace(/\/quotes\/[^/]+/, '/quotes/:quoteId');
   return `worker${route.replace(/\//g, '.')}`.replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 80);
 }
