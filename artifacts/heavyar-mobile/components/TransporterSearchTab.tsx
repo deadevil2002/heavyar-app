@@ -103,7 +103,7 @@ export default function TransporterSearchTab() {
     setCountryCode('SA'); setRegion(''); setVehicleCategory(''); setVehicleType(''); setAvailability('');
     setCapacity(''); setLength(''); setWidth(''); setHeight('');
   };
-  const canPrepare = auth.user?.role === 'customer' && auth.accountState === 'authenticated_complete';
+  const canPrepare = activationEnabled === true && auth.user?.role === 'customer' && auth.accountState === 'authenticated_complete';
 
   return (
     <YStack flex={1}>
@@ -166,6 +166,9 @@ export default function TransporterSearchTab() {
           </HeavyarButton> : undefined} /></YStack> :
         <FlatList data={transporters} keyExtractor={item => item.id} contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20, gap: 10 }}
           onEndReached={() => { if (nextCursor) void load(true); }} onEndReachedThreshold={0.5}
+          ListHeaderComponent={canPrepare ? <HeavyarButton tone="secondary" onPress={() => router.push('/service-rfqs' as never)}>
+            <HeavyarButtonText tone="secondary">{isRTL ? 'طلبات وعروض النقل الخاصة' : 'My private transport requests and offers'}</HeavyarButtonText>
+          </HeavyarButton> : null}
           ListEmptyComponent={<HeavyarEmptyState icon={Truck} title={isRTL ? 'لا توجد نتائج مؤهلة' : 'No eligible results'} />}
           ListFooterComponent={loadingMore ? <ActivityIndicator color={Colors.gold} /> : null}
           renderItem={({ item }) => <HeavyarSurface density="compact" gap="$xs">
@@ -173,6 +176,9 @@ export default function TransporterSearchTab() {
             <XStack items="center" flexDirection={direction.rowDirection} gap="$xs"><MapPin color={Colors.gold} size={15} />
               <Text color="$colorMuted" fontSize={12}>{item.countryCode} · {item.region}</Text></XStack>
             <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{item.vehicleCategory} · {item.vehicleType} · {item.declaredCapacityKg} kg</Text>
+            {canPrepare ? <HeavyarButton compact tone="secondary" onPress={() => router.push({ pathname: '/transport-request-prepare', params: { profileId: item.id } } as never)}>
+              <HeavyarButtonText tone="secondary">{isRTL ? 'طلب عرض نقل خاص للاختبار' : 'Private transport QA request'}</HeavyarButtonText>
+            </HeavyarButton> : null}
           </HeavyarSurface>} />}
     </YStack>
   );

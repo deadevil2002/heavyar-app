@@ -41,8 +41,8 @@ Never automatically commit, push, deploy, run EAS production builds, change Fire
 - Continue Heavyar development incrementally in the existing repository, Expo project, Firebase project, and Cloudflare account. Do not create replacement or parallel infrastructure unless the Owner explicitly reverses this decision.
 - Do not start EAS/OTA builds, store submissions, or version/build-number changes during ordinary implementation phases. Every new implementation or release phase requires the Owner's specific scope approval.
 - Complete the approved application scope, UI/UX, backend, security, performance, and testing before preparing the final GitHub handoff and store-distribution artifacts.
-- When the completed application is explicitly approved for release preparation, produce the final Android AAB and iOS IPA with verified version/build identifiers, source SHA, build IDs, artifacts, and handoff instructions.
-- A separately hired human developer is exclusively responsible for uploading the final binaries to Apple TestFlight and Google Play Internal Testing. Codex must never upload or submit binaries to either store.
+- When the completed application is explicitly approved for release preparation, Codex finalizes and verifies the GitHub source, tests, release configuration, and handoff instructions; Codex does not create the final store binaries.
+- The separately contracted human programmer is exclusively responsible for building the final Android AAB and iOS IPA and uploading them to Apple TestFlight and Google Play Internal Testing.
 - The M1 backend is live, but native-device verification remains an outstanding release requirement. Do not mark it complete or start a new M1 build without a separately approved scope.
 
 ## Secrets
@@ -76,6 +76,8 @@ Code and configuration are authoritative. If documentation conflicts with them, 
 - No automatic Git push, builds or deployments; follow explicit owner scope. Preserve existing work. Mark unverified state clearly and never infer a Production deployment from a source commit.
 
 ## HEAVYAR Permanent Product Rules
+
+- HEAVYAR is a lean digital marketplace intermediary. Preserve the minimum existing organization delegation needed for marketplace operations; do not expand it into employee hierarchies, HR tooling, approval chains, or internal company-management software without a separately approved, demonstrated product need.
 
 ### Approved visual identity
 

@@ -612,7 +612,7 @@ describe('Firestore authorization baseline', () => {
       'organizationOperatorProfiles/org_fixture', 'organizationTransporterProfiles/org_fixture',
       'operatorDiscoveryProfiles/operator_fixture', 'operatorRequests/request_fixture',
       'transporterDiscoveryProfiles/transporter_fixture', 'transportRequests/request_fixture',
-      'serviceRfqs/rfq_fixture', 'serviceQuotes/quote_fixture', 'serviceQuoteSelections/selection_fixture',
+      'serviceRfqs/rfq_fixture', 'serviceQuotes/quote_fixture', 'serviceQuoteSelections/selection_fixture', 'serviceRfqAudit/audit_fixture',
       'serviceProfileAudit/audit_fixture',
     ];
     await env.withSecurityRulesDisabled(async (context) => {
@@ -625,13 +625,13 @@ describe('Firestore authorization baseline', () => {
         await assertFails(getDoc(doc(db, path)));
         await assertFails(setDoc(doc(db, path), { discoverable: true, verificationState: 'verified' }));
       }
-      for (const privateCollection of ['serviceRfqs', 'serviceQuotes', 'serviceQuoteSelections']) {
+      for (const privateCollection of ['serviceRfqs', 'serviceQuotes', 'serviceQuoteSelections', 'serviceRfqAudit']) {
         await assertFails(getDocs(query(collection(db, privateCollection), limit(1))));
       }
     }
     const anon = asModularFirestore(env.unauthenticatedContext().firestore());
     for (const path of paths) await assertFails(getDoc(doc(anon, path)));
-    for (const privateCollection of ['serviceRfqs', 'serviceQuotes', 'serviceQuoteSelections']) {
+    for (const privateCollection of ['serviceRfqs', 'serviceQuotes', 'serviceQuoteSelections', 'serviceRfqAudit']) {
       await assertFails(getDocs(query(collection(anon, privateCollection), limit(1))));
     }
   });

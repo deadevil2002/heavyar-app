@@ -57,6 +57,7 @@ const SAFE_ERROR_CODES = new Set([
   'BOOKING_OPERATION_NOT_DELEGABLE', 'INVALID_BOOKING_OPERATION',
   'INVALID_OPERATOR_REQUEST', 'INVALID_OPERATOR_SEARCH', 'OPERATOR_DISCOVERY_UNAVAILABLE',
   'INVALID_TRANSPORT_REQUEST', 'INVALID_TRANSPORTER_SEARCH', 'TRANSPORTER_DISCOVERY_UNAVAILABLE',
+  'SERVICE_RFQ_NOT_ACTIVATED',
   'INTERNAL_SERVICE_ERROR',
 ]);
 const SAFE_FIRESTORE_CODES = new Set([
@@ -80,6 +81,10 @@ const ROUTES: Array<[RegExp, string]> = [
   [/^\/api\/drivers\/profile$/, '/api/drivers/profile'],
   [/^\/api\/operator-requests\/prepare$/, '/api/operator-requests/prepare'],
   [/^\/api\/transport-requests\/prepare$/, '/api/transport-requests/prepare'],
+  [/^\/api\/service-rfqs$/, '/api/service-rfqs'],
+  [/^\/api\/service-rfqs\/[^/]+\/quotes\/[^/]+$/, '/api/service-rfqs/:rfqId/quotes/:quoteId'],
+  [/^\/api\/service-rfqs\/[^/]+\/quotes$/, '/api/service-rfqs/:rfqId/quotes'],
+  [/^\/api\/service-rfqs\/[^/]+\/(selection|cancel)$/, '/api/service-rfqs/:rfqId/action'],
   [/^\/api\/organizations\/[^/]+\/members\/[^/]+\/capabilities$/, '/api/organizations/:organizationId/members/:memberId/capabilities'],
   [/^\/api\/organizations\/[^/]+\/members\/[^/]+\/revoke$/, '/api/organizations/:organizationId/members/:memberId/revoke'],
   [/^\/api\/organizations\/[^/]+\/equipment\/[^/]+\/metadata$/, '/api/organizations/:organizationId/equipment/:equipmentId/metadata'],

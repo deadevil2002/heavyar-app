@@ -53,6 +53,7 @@ const provider = (patch: Partial<FutureProviderAuthority> = {}): FutureProviderA
   eligibility: { state: 'verified_eligible', source: 'future_authoritative_source' },
   ...patch,
 });
+const invitedProviders = [{ profileId: 'operator_12345678', principal: { kind: 'individual' as const, providerUid: PROVIDER_UID } }];
 
 const oversight = (patch: Partial<FutureOversightAuthority> = {}): FutureOversightAuthority => ({
   actorUid: 'staff_12345678',
@@ -114,9 +115,18 @@ const validQuote = {
   expiresAt: '2026-10-20T12:00:00.000Z',
 };
 
-function openedOperatorRfq() {
+function openedOperatorRfq(...authorities: FutureProviderAuthority[]) {
+  const invitedAuthorities = authorities.length > 0 ? authorities : [provider()];
   return openTestOnlyRfq(
-    createTestOnlyRfq(operatorDraft, { rfqId: RFQ_ID, customer, now: NOW }),
+    createTestOnlyRfq(operatorDraft, {
+      rfqId: RFQ_ID,
+      customer,
+      invitedProviders: invitedAuthorities.map((authority, index) => ({
+        profileId: `operator_${String(index + 1).padStart(8, '0')}`,
+        principal: authority.principal,
+      })),
+      now: NOW,
+    }),
     customer,
     0,
     'open-request-0001',
@@ -124,8 +134,8 @@ function openedOperatorRfq() {
   );
 }
 
-function withQuote(id = QUOTE_A, authority = provider(), input: unknown = validQuote) {
-  return submitTestOnlyQuote(openedOperatorRfq(), input, {
+function withQuote(id = QUOTE_A, authority = provider(), input: unknown = validQuote, additionalAuthorities: FutureProviderAuthority[] = []) {
+  return submitTestOnlyQuote(openedOperatorRfq(authority, ...additionalAuthorities), input, {
     quoteId: id,
     authority,
     expectedRfqRevision: 1,
@@ -144,19 +154,18 @@ function expectCode(run: () => unknown, code: string) {
   }
 }
 
-describe('M2-D4 inert RFQ and quote foundation', () => {
-  test('keeps the entire state machine test-only and unreachable from Production HTTP routing', () => {
+describe('M2-D4 RFQ and quote foundation', () => {
+  test('keeps Production activation disabled while exposing the source-only durable Worker boundary', () => {
     expect(SERVICE_RFQ_PRODUCTION_ACTIVATION).toBe('disabled_pending_commercial_and_regulatory_approval');
-    expect(SERVICE_RFQ_RUNTIME).toBe('test_only_in_memory');
+    expect(SERVICE_RFQ_RUNTIME).toBe('worker_authoritative_firestore_source_only');
     const index = fs.readFileSync(path.join(import.meta.dirname, 'index.ts'), 'utf8');
-    expect(index).not.toContain("from './service-rfq'");
-    expect(index).not.toMatch(/\/api\/(?:rfqs|service-quotes|quotes)/);
-    expect(index).not.toContain('serviceRfqs');
-    expect(index).not.toContain('serviceQuotes');
+    expect(index).toContain("from './service-rfq'");
+    expect(index).toContain("path === '/api/service-rfqs'");
+    expect(index).toContain('serviceRfqActivationOverride !== true');
   });
 
   test('creates immutable operator and transporter RFQ drafts from existing prepared-request contracts', () => {
-    const operator = createTestOnlyRfq(operatorDraft, { rfqId: RFQ_ID, customer, now: NOW });
+    const operator = createTestOnlyRfq(operatorDraft, { rfqId: RFQ_ID, customer, invitedProviders, now: NOW });
     expect(operator.rfq).toMatchObject({ serviceKind: 'operator', status: 'draft', version: 1, revision: 0, customerUid: CUSTOMER_UID });
     expect((operator.rfq.requirementsSnapshot.workSite as { lat: number }).lat).toBe(24.7136);
     expect(Object.isFrozen(operator.rfq.requirementsSnapshot)).toBe(true);
@@ -165,12 +174,12 @@ describe('M2-D4 inert RFQ and quote foundation', () => {
       serviceKind: 'transporter',
       preparedRequest: transportRequest,
       expiresAt: '2026-11-05T12:00:00.000Z',
-    }, { rfqId: `rfq_${'T'.repeat(43)}`, customer, now: NOW });
+    }, { rfqId: `rfq_${'T'.repeat(43)}`, customer, invitedProviders: [{ profileId: 'transporter_12345678', principal: { kind: 'individual', providerUid: PROVIDER_UID } }], now: NOW });
     expect(transporter.rfq.serviceKind).toBe('transporter');
     expect((transporter.rfq.requirementsSnapshot.origin as { pin: { lat: number } }).pin.lat).toBe(24.7136);
     expect(parseTestOnlyRfqDraftInput({ ...operatorDraft, customerUid: 'forged' })).toBeNull();
     expect(parseTestOnlyRfqDraftInput({ ...operatorDraft, rfqId: RFQ_ID })).toBeNull();
-    expect(() => createTestOnlyRfq(operatorDraft, { rfqId: 'forged', customer, now: NOW })).toThrow('INVALID_RFQ');
+    expect(() => createTestOnlyRfq(operatorDraft, { rfqId: 'forged', customer, invitedProviders, now: NOW })).toThrow('INVALID_RFQ');
   });
 
   test('strictly validates integer SAR quote components without financial-policy calculations', () => {
@@ -278,7 +287,8 @@ describe('M2-D4 inert RFQ and quote foundation', () => {
       membership: { uid: 'employee_first_1234', role: 'employee', status: 'active', operationalCapabilities: [] },
       commercialQuoteDelegation: { approvedByOwner: true, capability: 'operator_quotes.manage' },
     });
-    const submitted = submitTestOnlyQuote(opened, validQuote, {
+    const organizationOpened = openedOperatorRfq(firstEmployee);
+    const submitted = submitTestOnlyQuote(organizationOpened, validQuote, {
       quoteId: QUOTE_A,
       authority: firstEmployee,
       expectedRfqRevision: 1,
@@ -409,9 +419,9 @@ describe('M2-D4 inert RFQ and quote foundation', () => {
     expect(selected.provisionalSelection?.quoteVersion).toBe(2);
   });
 
-  test('documents process-local CAS limits while each deterministic aggregate permits one provisional selection', () => {
-    let base = withQuote();
+  test('documents transactional CAS while each deterministic aggregate permits one provisional selection', () => {
     const secondAuthority = provider({ actorUid: 'provider_87654321', principal: { kind: 'individual', providerUid: 'provider_87654321' } });
+    let base = withQuote(QUOTE_A, provider(), validQuote, [secondAuthority]);
     base = submitTestOnlyQuote(base, {
       ...validQuote,
       baseServicePriceMinor: 90_000,
@@ -438,7 +448,7 @@ describe('M2-D4 inert RFQ and quote foundation', () => {
     expectCode(() => provisionallySelectTestOnlyQuote(
       branchA, QUOTE_B, customer, secondAuthority, 3, 'select-cas-sequential', '2026-10-14T12:04:01.000Z',
     ), 'STALE_RFQ_REVISION');
-    expect(SERVICE_RFQ_CAS_BOUNDARY).toBe('process_local_only_requires_authoritative_transaction_before_activation');
+    expect(SERVICE_RFQ_CAS_BOUNDARY).toBe('firestore_transaction_required');
   });
 
   test('keeps cancellation non-binding and rejects cancellation after provisional selection', () => {
@@ -453,8 +463,8 @@ describe('M2-D4 inert RFQ and quote foundation', () => {
   });
 
   test('builds bounded stable sanitized comparison pages without N+1 enrichment or private locations', () => {
-    let state = withQuote(QUOTE_A, provider(), validQuote);
     const secondAuthority = provider({ actorUid: 'provider_87654321', principal: { kind: 'individual', providerUid: 'provider_87654321' } });
+    let state = withQuote(QUOTE_A, provider(), validQuote, [secondAuthority]);
     state = submitTestOnlyQuote(state, { ...validQuote, baseServicePriceMinor: 90_000, optionalComponents: [], serviceScope: 'Second synthetic operator proposal' }, {
       quoteId: QUOTE_B,
       authority: secondAuthority,
@@ -538,7 +548,7 @@ describe('M2-D4 inert RFQ and quote foundation', () => {
       serviceKind: 'transporter',
       preparedRequest: transportRequest,
       expiresAt: '2026-11-05T12:00:00.000Z',
-    }, { rfqId: `rfq_${'T'.repeat(43)}`, customer, now: NOW }), customer, 0, 'open-transport-01', '2026-10-14T12:01:00.000Z');
+    }, { rfqId: `rfq_${'T'.repeat(43)}`, customer, invitedProviders: [{ profileId: 'transporter_12345678', principal: { kind: 'individual', providerUid: PROVIDER_UID } }], now: NOW }), customer, 0, 'open-transport-01', '2026-10-14T12:01:00.000Z');
     const transportQuote = {
       ...validQuote,
       serviceScope: 'Lowbed transport for the declared load only',

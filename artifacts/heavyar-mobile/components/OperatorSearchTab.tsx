@@ -83,7 +83,7 @@ export default function OperatorSearchTab() {
     </HeavyarChip>
   );
   const reset = () => { setCountryCode('SA'); setRegion(''); setEquipmentSkill(''); setAvailability(''); };
-  const canPrepare = auth.user?.role === 'customer' && auth.accountState === 'authenticated_complete';
+  const canPrepare = activationEnabled === true && auth.user?.role === 'customer' && auth.accountState === 'authenticated_complete';
 
   return (
     <YStack flex={1}>
@@ -139,6 +139,9 @@ export default function OperatorSearchTab() {
           </HeavyarButton> : undefined} /></YStack> :
         <FlatList data={operators} keyExtractor={item => item.id} contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20, gap: 10 }}
           onEndReached={() => { if (nextCursor) void load(true); }} onEndReachedThreshold={0.5}
+          ListHeaderComponent={canPrepare ? <HeavyarButton tone="secondary" onPress={() => router.push('/service-rfqs' as never)}>
+            <HeavyarButtonText tone="secondary">{isRTL ? 'طلباتي وعروضي الخاصة' : 'My private requests and offers'}</HeavyarButtonText>
+          </HeavyarButton> : null}
           ListEmptyComponent={<HeavyarEmptyState icon={HardHat} title={isRTL ? 'لا توجد نتائج مؤهلة' : 'No eligible results'} />}
           ListFooterComponent={loadingMore ? <ActivityIndicator color={Colors.gold} /> : null}
           renderItem={({ item }) => <HeavyarSurface density="compact" gap="$xs">
@@ -146,6 +149,9 @@ export default function OperatorSearchTab() {
             <XStack items="center" flexDirection={direction.rowDirection} gap="$xs"><MapPin color={Colors.gold} size={15} />
               <Text color="$colorMuted" fontSize={12}>{item.countryCode} · {item.region}</Text></XStack>
             <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{item.equipmentSkills.join(' · ')}</Text>
+            {canPrepare ? <HeavyarButton compact tone="secondary" onPress={() => router.push({ pathname: '/operator-request-prepare', params: { profileId: item.id } } as never)}>
+              <HeavyarButtonText tone="secondary">{isRTL ? 'طلب عرض خاص للاختبار' : 'Private QA quote request'}</HeavyarButtonText>
+            </HeavyarButton> : null}
           </HeavyarSurface>} />}
     </YStack>
   );

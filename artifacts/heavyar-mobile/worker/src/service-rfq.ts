@@ -5,8 +5,11 @@ export const SERVICE_RFQ_CONTRACT_VERSION = 1 as const;
 export const SERVICE_QUOTE_CONTRACT_VERSION = 1 as const;
 export const SERVICE_QUOTE_PAGE_MAX = 20;
 export const SERVICE_RFQ_PRODUCTION_ACTIVATION = 'disabled_pending_commercial_and_regulatory_approval' as const;
-export const SERVICE_RFQ_RUNTIME = 'test_only_in_memory' as const;
-export const SERVICE_RFQ_CAS_BOUNDARY = 'process_local_only_requires_authoritative_transaction_before_activation' as const;
+export const SERVICE_RFQ_RUNTIME = 'worker_authoritative_firestore_source_only' as const;
+export const SERVICE_RFQ_CAS_BOUNDARY = 'firestore_transaction_required' as const;
+export const SERVICE_RFQ_MAX_INVITED_PROVIDERS = 5;
+export const SERVICE_RFQ_MAX_QUOTES = 20;
+export const SERVICE_QUOTE_MAX_REVISIONS = 12;
 
 const SAFE_RFQ_ID = /^rfq_[A-Za-z0-9_-]{43}$/;
 const SAFE_QUOTE_ID = /^quote_[A-Za-z0-9_-]{43}$/;
@@ -93,6 +96,10 @@ export type ServiceRfq = {
   revision: number;
   status: RfqStatus;
   requirementsSnapshot: Readonly<Record<string, unknown>>;
+  invitedProviders: readonly {
+    profileId: string;
+    principal: ProviderPrincipal;
+  }[];
   createdAt: string;
   updatedAt: string;
   expiresAt: string;
@@ -345,12 +352,26 @@ export function parseTestOnlyRfqDraftInput(value: unknown): DraftInput | null {
 
 export function createTestOnlyRfq(
   value: unknown,
-  server: { rfqId: string; customer: ActiveCustomerAuthority; now: string },
+  server: {
+    rfqId: string;
+    customer: ActiveCustomerAuthority;
+    invitedProviders: readonly { profileId: string; principal: ProviderPrincipal }[];
+    now: string;
+  },
 ): ServiceRfqAggregate {
   const input = parseTestOnlyRfqDraftInput(value);
   const now = timestamp(server.now);
   assertCustomer(server.customer);
-  if (!input || !SAFE_RFQ_ID.test(server.rfqId) || !now) throw new ServiceRfqError('INVALID_RFQ');
+  if (!input || !SAFE_RFQ_ID.test(server.rfqId) || !now || !Array.isArray(server.invitedProviders) ||
+      server.invitedProviders.length < 1 || server.invitedProviders.length > SERVICE_RFQ_MAX_INVITED_PROVIDERS) {
+    throw new ServiceRfqError('INVALID_RFQ');
+  }
+  const invitedProviders = server.invitedProviders.map(item => ({ profileId: item.profileId, principal: { ...item.principal } }));
+  if (new Set(invitedProviders.map(item => item.profileId)).size !== invitedProviders.length ||
+      invitedProviders.some(item => !/^[A-Za-z0-9_-]{8,128}$/.test(item.profileId) ||
+        (item.principal.kind === 'individual'
+          ? !SAFE_UID.test(item.principal.providerUid)
+          : !SAFE_ORGANIZATION_ID.test(item.principal.organizationId)))) throw new ServiceRfqError('INVALID_RFQ');
   const lifetime = Date.parse(input.expiresAt) - Date.parse(now);
   if (lifetime <= 0 || lifetime > MAX_RFQ_LIFETIME_MS) throw new ServiceRfqError('INVALID_RFQ_EXPIRY');
   const prepared = input.serviceKind === 'operator'
@@ -366,6 +387,7 @@ export function createTestOnlyRfq(
       revision: 0,
       status: 'draft',
       requirementsSnapshot: prepared.requirementsSnapshot,
+      invitedProviders,
       createdAt: now,
       updatedAt: now,
       expiresAt: input.expiresAt,
@@ -492,6 +514,9 @@ export function submitTestOnlyQuote(
   const now = timestamp(server.now);
   const fingerprint = `submit|${server.quoteId}|${server.expectedRfqRevision}|${JSON.stringify(input)}`;
   if (!providerCanManageFutureQuote(server.authority, state.rfq.serviceKind)) throw new ServiceRfqError('PROVIDER_NOT_AUTHORIZED');
+  if (!state.rfq.invitedProviders.some(item => samePrincipal(item.principal, server.authority.principal))) {
+    throw new ServiceRfqError('PROVIDER_NOT_INVITED');
+  }
   const authorizationScope = providerAuthorizationScope(state, server.authority);
   const prior = priorOperation(state, server.idempotencyKey, 'submit_quote', fingerprint, authorizationScope);
   if (prior) return prior;
@@ -499,6 +524,9 @@ export function submitTestOnlyQuote(
   if (state.rfq.revision !== server.expectedRfqRevision) throw new ServiceRfqError('STALE_RFQ_REVISION');
   if (state.rfq.status !== 'collecting_test_proposals' || Date.parse(now) >= Date.parse(state.rfq.expiresAt)) throw new ServiceRfqError('RFQ_NOT_COLLECTING');
   if (input.expectedQuoteRevision !== null || state.quotes.some(item => item.quoteId === server.quoteId)) throw new ServiceRfqError('QUOTE_ALREADY_EXISTS');
+  if (state.quotes.length >= SERVICE_RFQ_MAX_QUOTES || state.quotes.some(item => samePrincipal(item.principal, server.authority.principal))) {
+    throw new ServiceRfqError('QUOTE_LIMIT_REACHED');
+  }
   validateQuoteAgainstRfq(state, input, now);
   const quote: QuoteProposal = {
     quoteId: server.quoteId,
@@ -544,6 +572,7 @@ export function reviseTestOnlyQuote(
   if (!input || !now || quote.status !== 'active') throw new ServiceRfqError('QUOTE_NOT_ACTIVE');
   if (state.rfq.revision !== server.expectedRfqRevision || input.expectedQuoteRevision !== quote.revision) throw new ServiceRfqError('STALE_QUOTE_REVISION');
   if (state.rfq.status !== 'collecting_test_proposals') throw new ServiceRfqError('PROVIDER_NOT_AUTHORIZED');
+  if (quote.currentVersion >= SERVICE_QUOTE_MAX_REVISIONS) throw new ServiceRfqError('QUOTE_REVISION_LIMIT_REACHED');
   validateQuoteAgainstRfq(state, input, now);
   const revised: QuoteProposal = {
     ...quote,

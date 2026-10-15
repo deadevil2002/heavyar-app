@@ -476,9 +476,8 @@ service cloud.firestore {
     match /transportRequests/{requestId} {
       allow read, write: if false;
     }
-    // M2-D4 RFQs, quotes and provisional selections are inert source-only
-    // contracts. No client may read or persist these private future records;
-    // a separately approved Worker policy is required before activation.
+    // M2-E1 RFQs and immutable quote revisions are Worker-authoritative private
+    // records. Mobile clients can never bypass Worker participant checks.
     match /serviceRfqs/{rfqId} {
       allow read, write: if false;
     }
@@ -486,6 +485,9 @@ service cloud.firestore {
       allow read, write: if false;
     }
     match /serviceQuoteSelections/{selectionId} {
+      allow read, write: if false;
+    }
+    match /serviceRfqAudit/{auditId} {
       allow read, write: if false;
     }
     match /serviceProfileAudit/{auditId} {

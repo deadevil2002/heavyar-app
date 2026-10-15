@@ -116,7 +116,7 @@ describe('deterministic performance/data budgets', () => {
     configureMobilePerformance({ enabled: false });
   });
 
-  it('keeps all 67 Worker collection query shapes bounded or aggregate-only', () => {
+  it('keeps all 68 Worker collection query shapes bounded or aggregate-only', () => {
     const directory = fileURLToPath(new URL('../worker/src/', import.meta.url));
     const files = readdirSync(directory).filter(file => file.endsWith('.ts') && !file.includes('.test.') && file !== 'bun-test.d.ts');
     const shapes: Array<{ file: string; limited: boolean; aggregate: boolean }> = [];
@@ -139,8 +139,8 @@ describe('deterministic performance/data budgets', () => {
       };
       visit(tree);
     }
-    expect(shapes).toHaveLength(67);
-    expect(shapes.filter(shape => shape.limited)).toHaveLength(65);
+    expect(shapes).toHaveLength(68);
+    expect(shapes.filter(shape => shape.limited)).toHaveLength(66);
     expect(shapes.filter(shape => !shape.limited && shape.aggregate)).toHaveLength(2);
     expect(shapes.filter(shape => !shape.limited && !shape.aggregate)).toEqual([]);
     expect(shapes.filter(shape => shape.file === 'operator-marketplace.ts')).toEqual([

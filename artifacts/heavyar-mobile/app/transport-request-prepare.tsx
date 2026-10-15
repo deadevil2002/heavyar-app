@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ChevronLeft, ChevronRight, ClipboardCheck, ShieldCheck, Truck } from 'lucide-react-native';
 import { Text, XStack, YStack } from 'tamagui';
 import LocationPicker from '@/components/location/LocationPicker';
@@ -24,6 +24,7 @@ import { mockCategories } from '@/mocks/categories';
 import type { PreciseLocation } from '@/services/location';
 import { addCalendarDays, marketClock, marketDateTimeToUtc } from '@/services/rentalV2';
 import { prepareTransportRequest } from '@/services/transporterService';
+import { createServiceRfq, serviceRfqIdempotencyKey } from '@/services/serviceRfqService';
 
 function draftId() {
   return `draft_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
@@ -41,10 +42,13 @@ export default function TransportRequestPrepareScreen() {
 
 function TransportRequestPrepareForm() {
   const router = useRouter();
+  const { profileId } = useLocalSearchParams<{ profileId?: string }>();
   const auth = useAuth();
   const { language, isRTL } = useLanguage();
   const direction = useHeavyarDirection();
   const controller = useRef<AbortController | null>(null);
+  const creationAttempt = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
+  const clientDraftId = useRef(draftId());
   const countryCode = auth.user?.countryCode || 'SA';
   const offset = marketClock({ countryCode, marketTimezone: undefined }).offsetMinutes;
   const today = useMemo(() => new Date(Date.now() + offset * 60_000).toISOString().slice(0, 10), [offset]);
@@ -93,17 +97,30 @@ function TransportRequestPrepareForm() {
     const active = new AbortController(); controller.current = active;
     setSubmitting(true); setError(''); setPrepared(false);
     try {
-      await prepareTransportRequest({
-        clientDraftId: draftId(), contractVersion: 1, expectedRevision: null, equipmentCategory,
+      const preparedRequest = {
+        clientDraftId: clientDraftId.current, contractVersion: 1 as const, expectedRevision: null, equipmentCategory,
         loadWeightKg: weight, loadDimensionsMm: { length, width, height },
         origin: { region: { countryCode, region: originRegion.trim() }, pin: originPin },
         destination: { region: { countryCode, region: destinationRegion.trim() }, pin: destinationPin },
         requestedPickupWindow: { startAt, endAt }, requestedDeliveryBy: deliveryBy,
         ...(notes.trim() ? { notes: notes.trim() } : {}),
-      }, auth.user.uid, active.signal);
-      if (!active.signal.aborted) setPrepared(true);
+      };
+      await prepareTransportRequest(preparedRequest, auth.user.uid, active.signal);
+      if (active.signal.aborted) return;
+      if (profileId) {
+        const draft = {
+          contractVersion: 1 as const, serviceKind: 'transporter' as const, preparedRequest,
+          expiresAt: new Date(Math.min(Date.parse(startAt) - 60 * 60 * 1000, Date.now() + 7 * 24 * 60 * 60 * 1000)).toISOString(),
+        };
+        const fingerprint = JSON.stringify({ draft, profileId });
+        if (creationAttempt.current?.fingerprint !== fingerprint) creationAttempt.current = { fingerprint, idempotencyKey: serviceRfqIdempotencyKey('create-transport-rfq') };
+        const result = await createServiceRfq(draft, [profileId], creationAttempt.current.idempotencyKey, auth.user.uid, active.signal);
+        if (!active.signal.aborted) { creationAttempt.current = null; router.replace(`/service-rfq/${result.rfq.rfqId}` as never); }
+      } else setPrepared(true);
     } catch {
-      if (!active.signal.aborted) setError(message('تعذر التحقق من المتطلبات. لم يُرسل أي طلب.', 'Requirements could not be validated. No request was sent.'));
+      if (!active.signal.aborted) setError(profileId
+        ? message('تعذر تأكيد حفظ الطلب. أعد المحاولة بأمان؛ يمنع مفتاح العملية إنشاء نسخة مكررة.', 'Request persistence could not be confirmed. Retry safely; the operation key prevents a duplicate.')
+        : message('تعذر التحقق من المتطلبات. لم يُرسل أي طلب.', 'Requirements could not be validated. No request was sent.'));
     } finally {
       if (!active.signal.aborted) setSubmitting(false);
     }
@@ -119,7 +136,7 @@ function TransportRequestPrepareForm() {
             </HeavyarIconButton>
             <YStack flex={1} items={isRTL ? 'flex-end' : 'flex-start'}>
               <HeavyarTitle>{message('تجهيز متطلبات النقل', 'Prepare transport requirements')}</HeavyarTitle>
-              <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{message('تحقق فقط — لا يتم إرسال طلب', 'Validation only — no request is sent')}</Text>
+              <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{profileId ? message('مسار اختبار خاص وغير ملزم', 'Private, non-binding QA flow') : message('تحقق فقط — لا يتم إرسال طلب', 'Validation only — no request is sent')}</Text>
             </YStack>
           </XStack>
           <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 28, gap: 14 }} showsVerticalScrollIndicator={false}>
@@ -127,7 +144,7 @@ function TransportRequestPrepareForm() {
               <XStack items="center" flexDirection={direction.rowDirection} gap="$sm"><ShieldCheck color={Colors.gold} size={19} />
                 <Text color="$color" fontWeight="700" flex={1} text={direction.textAlign}>{message('خدمة النقل التجارية غير مفعّلة', 'Commercial transport service is not active')}</Text></XStack>
               <Text color="$colorMuted" fontSize={12} lineHeight={19} text={direction.textAlign}>
-                {message('لا اختيار ناقل، ولا اعتماد مسار أو تصريح، ولا إشعار أو دفع. القدرات المعلنة غير متحققة بشكل مستقل.', 'No transporter selection, route or permit approval, notification, or payment occurs. Declared capabilities are not independently verified.')}
+                {profileId ? message('سيُحفظ طلب خاص للناقل المؤهل ضمن مسار الاختبار فقط. لا اعتماد مسار أو تصريح، ولا حجز أو دفع.', 'A private request will be saved for the eligible transporter in the controlled QA path only. No route or permit approval, booking, or payment is created.') : message('لا اختيار ناقل، ولا اعتماد مسار أو تصريح، ولا إشعار أو دفع. القدرات المعلنة غير متحققة بشكل مستقل.', 'No transporter selection, route or permit approval, notification, or payment occurs. Declared capabilities are not independently verified.')}
               </Text>
             </HeavyarSurface>
 
@@ -176,7 +193,7 @@ function TransportRequestPrepareForm() {
               <ClipboardCheck color={Colors.success} size={20} /><Text color="$color" fontWeight="700" flex={1} text={direction.textAlign}>{message('المتطلبات صالحة ولم يُرسل أي طلب', 'Requirements are valid and no request was sent')}</Text>
             </XStack></HeavyarSurface> : null}
             <HeavyarButton fullWidth disabled={submitting} opacity={submitting ? 0.6 : 1} onPress={() => void submit()} accessibilityRole="button">
-              <Truck color={Colors.primary} size={19} /><HeavyarButtonText>{submitting ? message('جارٍ التحقق…', 'Validating…') : message('تحقق من المتطلبات فقط', 'Validate requirements only')}</HeavyarButtonText>
+              <Truck color={Colors.primary} size={19} /><HeavyarButtonText>{submitting ? message('جارٍ التحقق…', 'Validating…') : profileId ? message('إنشاء طلب نقل خاص للاختبار', 'Create private transport QA request') : message('تحقق من المتطلبات فقط', 'Validate requirements only')}</HeavyarButtonText>
             </HeavyarButton>
           </ScrollView>
         </KeyboardAvoidingView>

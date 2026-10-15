@@ -65,9 +65,27 @@ import {
   parseTransporterSearch,
   prepareTransportRequest,
   publicTransporterProjection,
+  matchTransportLoad,
   transporterCursorFromRow,
   transporterDiscoveryQuery,
 } from './transporter-marketplace';
+import {
+  SERVICE_RFQ_PRODUCTION_ACTIVATION,
+  ServiceRfqError,
+  cancelTestOnlyRfq,
+  createTestOnlyRfq,
+  expireTestOnlyRfq,
+  openTestOnlyRfq,
+  pageSyntheticQuoteSummaries,
+  provisionallySelectTestOnlyQuote,
+  reviseTestOnlyQuote,
+  submitTestOnlyQuote,
+  type ActiveCustomerAuthority,
+  type FutureProviderAuthority,
+  type ProviderPrincipal,
+  type ServiceKind,
+  type ServiceRfqAggregate,
+} from './service-rfq';
 import {
   consumeScheduledSubrequest,
   createScheduledGlobalBudget,
@@ -99,7 +117,7 @@ export interface Env {
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; accountProfileRaw?: { data: any; updateTime?: string } | null; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
-type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare';
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel';
 type AuthenticatedMutationRateLimitDecision =
   | { status: 'allowed' }
   | { status: 'limited'; retryAfterSeconds: number }
@@ -124,12 +142,13 @@ let capturedOperatorQueries: any[] | undefined;
 let operatorDiscoveryActivationOverride: boolean | undefined;
 let capturedTransporterQueries: any[] | undefined;
 let transporterDiscoveryActivationOverride: boolean | undefined;
+let serviceRfqActivationOverride: boolean | undefined;
 let publicEquipmentLimiterOverride: ((ipHash: string) => Promise<boolean | null>) | undefined;
 let authenticatedMutationLimiterOverride: ((uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) | undefined;
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
 const paymentCreateInflight = new Map<string, Promise<Response>>();
-  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
+  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -645,6 +664,10 @@ async function allowAuthenticatedMutation(env: Env, uid: string, scope: Authenti
     organization_service: { windowMs: 60_000, limit: 20 },
     operator_request_prepare: { windowMs: 60_000, limit: 20 },
     transport_request_prepare: { windowMs: 60_000, limit: 20 },
+    service_rfq_create: { windowMs: 10 * 60_000, limit: 10 },
+    service_rfq_quote: { windowMs: 60_000, limit: 30 },
+    service_rfq_select: { windowMs: 60_000, limit: 20 },
+    service_rfq_cancel: { windowMs: 60_000, limit: 20 },
   };
   const { windowMs, limit } = policy[scope];
   const id = await hashedId(`authenticated-mutation:${scope}:${uid}`);
@@ -4887,6 +4910,458 @@ async function organizationServiceProfile(req: Request, env: Env, user: User, or
   catch { return organizationError(req, env, 'ORGANIZATION_SERVICE_PROFILE_CONFLICT', 409); }
   return out(env, req, { success: true, profile: serviceProfileProjection(kind, value, null), refreshRequired: true });
 }
+
+const SERVICE_RFQ_JSON_LIMIT_BYTES = 700 * 1024;
+const SERVICE_RFQ_BODY_LIMIT_BYTES = 64 * 1024;
+const SERVICE_RFQ_ID = /^rfq_[A-Za-z0-9_-]{43}$/;
+const SERVICE_QUOTE_ID = /^quote_[A-Za-z0-9_-]{43}$/;
+const SERVICE_PROFILE_ID = /^[A-Za-z0-9_-]{8,128}$/;
+
+type ServiceRfqStored = {
+  aggregate: ServiceRfqAggregate;
+  creationFingerprint: string;
+  updateTime?: string;
+};
+
+function serviceRfqCustomer(user: User): ActiveCustomerAuthority {
+  const account = user.accountProfile;
+  if (!account || account.role !== 'customer' || isStoreReviewAccount(account) || isOperationallyBlocked(account) || account.isActive === false ||
+      account.accountStatus !== undefined && account.accountStatus !== 'active') throw new ServiceRfqError('CUSTOMER_NOT_AUTHORIZED');
+  return { actorUid: user.uid, role: 'customer', accountState: 'active', revoked: false, accountPurpose: 'standard' };
+}
+
+async function serviceRfqAccountVerify(env: Env, user: User) {
+  const raw = user.accountProfileRaw?.updateTime ? user.accountProfileRaw : await getRawDoc(env, 'users', user.uid);
+  if (!raw?.updateTime) throw new ServiceRfqError('RFQ_NOT_AUTHORIZED');
+  return {
+    account: raw.data,
+    verify: { verify: fullName(env, `users/${encodeURIComponent(user.uid)}`), currentDocument: { updateTime: raw.updateTime } },
+  };
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+
+function parseStoredServiceRfq(value: any, updateTime?: string): ServiceRfqStored | null {
+  if (!value || value.schemaVersion !== 1 || typeof value.aggregateJson !== 'string' || value.aggregateJson.length > SERVICE_RFQ_JSON_LIMIT_BYTES ||
+      typeof value.creationFingerprint !== 'string' || value.creationFingerprint.length !== 43) return null;
+  try {
+    const aggregate = JSON.parse(value.aggregateJson) as ServiceRfqAggregate;
+    const rfq = aggregate?.rfq;
+    if (!rfq || !SERVICE_RFQ_ID.test(rfq.rfqId) || rfq.contractVersion !== 1 || rfq.version !== 1 ||
+        !['operator', 'transporter'].includes(rfq.serviceKind) || !['draft', 'collecting_test_proposals', 'provisionally_selected', 'cancelled', 'expired'].includes(rfq.status) ||
+        !Number.isSafeInteger(rfq.revision) || rfq.revision < 0 || typeof rfq.customerUid !== 'string' ||
+        !Array.isArray(rfq.invitedProviders) || rfq.invitedProviders.length < 1 || rfq.invitedProviders.length > 5 ||
+        !Array.isArray(aggregate.quotes) || aggregate.quotes.length > 20 || !Array.isArray(aggregate.operationHistory) || aggregate.operationHistory.length > 100 ||
+        value.rfqId !== rfq.rfqId || value.customerUid !== rfq.customerUid || value.serviceKind !== rfq.serviceKind || value.status !== rfq.status ||
+        value.revision !== rfq.revision || value.quoteCount !== aggregate.quotes.length) return null;
+    return { aggregate, creationFingerprint: value.creationFingerprint, updateTime };
+  } catch { return null; }
+}
+
+function serviceProviderScope(principal: ProviderPrincipal) {
+  return principal.kind === 'individual' ? `individual:${principal.providerUid}` : `organization:${principal.organizationId}`;
+}
+
+function serviceRfqFields(aggregate: ServiceRfqAggregate, creationFingerprint: string) {
+  const aggregateJson = JSON.stringify(aggregate);
+  if (new TextEncoder().encode(aggregateJson).byteLength > SERVICE_RFQ_JSON_LIMIT_BYTES) throw new ServiceRfqError('RFQ_STORAGE_LIMIT_REACHED');
+  const fields: Record<string, any> = {
+    schemaVersion: { integerValue: '1' },
+    rfqId: { stringValue: aggregate.rfq.rfqId },
+    customerUid: { stringValue: aggregate.rfq.customerUid },
+    serviceKind: { stringValue: aggregate.rfq.serviceKind },
+    status: { stringValue: aggregate.rfq.status },
+    revision: { integerValue: String(aggregate.rfq.revision) },
+    quoteCount: { integerValue: String(aggregate.quotes.length) },
+    providerScopes: { arrayValue: { values: aggregate.rfq.invitedProviders.map(item => ({ stringValue: serviceProviderScope(item.principal) })) } },
+    providerTargets: { arrayValue: { values: aggregate.rfq.invitedProviders.map(item => ({ stringValue: `${serviceProviderScope(item.principal)}|${item.profileId}` })) } },
+    targetProfileIds: { arrayValue: { values: aggregate.rfq.invitedProviders.map(item => ({ stringValue: item.profileId })) } },
+    createdAt: { timestampValue: aggregate.rfq.createdAt },
+    updatedAt: { timestampValue: aggregate.rfq.updatedAt },
+    expiresAt: { timestampValue: aggregate.rfq.expiresAt },
+    creationFingerprint: { stringValue: creationFingerprint },
+    aggregateJson: { stringValue: aggregateJson },
+  };
+  return fields;
+}
+
+function serviceRfqWrite(env: Env, stored: ServiceRfqStored, expectedUpdateTime?: string) {
+  const fields = serviceRfqFields(stored.aggregate, stored.creationFingerprint);
+  return {
+    update: { name: fullName(env, `serviceRfqs/${encodeURIComponent(stored.aggregate.rfq.rfqId)}`), fields },
+    ...(expectedUpdateTime ? { updateMask: { fieldPaths: Object.keys(fields) } } : {}),
+    currentDocument: expectedUpdateTime ? { updateTime: expectedUpdateTime } : { exists: false },
+  };
+}
+
+async function serviceRfqAuditWrite(env: Env, aggregate: ServiceRfqAggregate, actorUid: string, operation: string) {
+  const auditId = `${aggregate.rfq.rfqId}__${aggregate.rfq.revision}`;
+  return {
+    update: { name: fullName(env, `serviceRfqAudit/${encodeURIComponent(auditId)}`), fields: {
+      rfqId: { stringValue: aggregate.rfq.rfqId }, revision: { integerValue: String(aggregate.rfq.revision) },
+      status: { stringValue: aggregate.rfq.status }, operation: { stringValue: operation },
+      actorHash: { stringValue: await hashedId(`service-rfq-actor:${actorUid}`) },
+      createdAt: { timestampValue: aggregate.rfq.updatedAt },
+    } }, currentDocument: { exists: false },
+  };
+}
+
+function serviceRfqErrorResponse(req: Request, env: Env, error: unknown) {
+  const code = error instanceof ServiceRfqError ? error.code : 'SERVICE_RFQ_UNAVAILABLE';
+  const status = code.includes('NOT_FOUND') ? 404
+    : code.includes('NOT_AUTHORIZED') || code.includes('NOT_INVITED') || code.includes('AUTHORITY_REVOKED') ? 403
+      : code.includes('STALE') || code.includes('CONFLICT') || code.includes('ALREADY') || code.includes('LIMIT_REACHED') || code.includes('TRANSITION') || code.includes('NOT_COLLECTING') ? 409
+        : code === 'SERVICE_RFQ_UNAVAILABLE' ? 503 : 400;
+  return out(env, req, { success: false, error: code, errorCode: code }, status);
+}
+
+function serviceRfqDisabled(req: Request, env: Env) {
+  return out(env, req, {
+    success: false,
+    error: 'Service RFQ is not activated',
+    errorCode: 'SERVICE_RFQ_NOT_ACTIVATED',
+    activation: { enabled: false, reason: SERVICE_RFQ_PRODUCTION_ACTIVATION },
+  }, 404);
+}
+
+async function invitedProfiles(env: Env, serviceKind: ServiceKind, profileIds: string[], preparedRequest: any) {
+  if (profileIds.length < 1 || profileIds.length > 5 || new Set(profileIds).size !== profileIds.length || profileIds.some(id => !SERVICE_PROFILE_ID.test(id))) {
+    throw new ServiceRfqError('INVALID_RFQ_TARGETS');
+  }
+  const collection = serviceKind === 'operator' ? 'operatorDiscoveryProfiles' : 'transporterDiscoveryProfiles';
+  const results: { profileId: string; principal: ProviderPrincipal; updateTime: string }[] = [];
+  for (const profileId of profileIds) {
+    const raw = await getRawDoc(env, collection, profileId);
+    const projection = serviceKind === 'operator' ? publicOperatorProjection(profileId, raw?.data) : publicTransporterProjection(profileId, raw?.data);
+    if (!raw?.updateTime || !projection || raw.data.principalType !== 'individual' || typeof raw.data.ownerUid !== 'string') {
+      throw new ServiceRfqError('RFQ_PROVIDER_NOT_ELIGIBLE');
+    }
+    if (serviceKind === 'operator' && (!('equipmentSkills' in projection) ||
+        !(projection as { equipmentSkills: string[] }).equipmentSkills.includes(String(preparedRequest?.equipmentSkill || '')))) {
+      throw new ServiceRfqError('RFQ_PROVIDER_NOT_ELIGIBLE');
+    }
+    if (serviceKind === 'transporter' && !matchTransportLoad(preparedRequest, projection as any).compatible) {
+      throw new ServiceRfqError('RFQ_PROVIDER_NOT_ELIGIBLE');
+    }
+    results.push({ profileId, principal: { kind: 'individual', providerUid: raw.data.ownerUid }, updateTime: raw.updateTime });
+  }
+  if (new Set(results.map(item => serviceProviderScope(item.principal))).size !== results.length) throw new ServiceRfqError('INVALID_RFQ_TARGETS');
+  return { collection, results };
+}
+
+async function providerAuthorityForRfq(env: Env, aggregate: ServiceRfqAggregate, user: User) {
+  const liveAccount = await serviceRfqAccountVerify(env, user);
+  const account = liveAccount.account;
+  if (!account || account.role !== 'driver' || isStoreReviewAccount(account) || isOperationallyBlocked(account) || account.isActive === false ||
+      account.accountStatus !== undefined && account.accountStatus !== 'active') throw new ServiceRfqError('PROVIDER_NOT_AUTHORIZED');
+  const invited = aggregate.rfq.invitedProviders.find(item => item.principal.kind === 'individual' && item.principal.providerUid === user.uid);
+  if (!invited) throw new ServiceRfqError('PROVIDER_NOT_AUTHORIZED');
+  const collection = aggregate.rfq.serviceKind === 'operator' ? 'operatorDiscoveryProfiles' : 'transporterDiscoveryProfiles';
+  const raw = await getRawDoc(env, collection, invited.profileId);
+  const projection = aggregate.rfq.serviceKind === 'operator' ? publicOperatorProjection(invited.profileId, raw?.data) : publicTransporterProjection(invited.profileId, raw?.data);
+  if (!raw?.updateTime || !projection || raw.data.ownerUid !== user.uid || raw.data.principalType !== 'individual') {
+    throw new ServiceRfqError('PROVIDER_AUTHORITY_REVOKED');
+  }
+  const authority: FutureProviderAuthority = {
+    actorUid: user.uid, accountState: 'active', revoked: false, accountPurpose: 'standard', serviceKind: aggregate.rfq.serviceKind,
+    principal: { kind: 'individual', providerUid: user.uid }, eligibility: { state: 'verified_eligible', source: 'future_authoritative_source' },
+  };
+  return { authority, verifies: [
+    liveAccount.verify,
+    { verify: fullName(env, `${collection}/${encodeURIComponent(invited.profileId)}`), currentDocument: { updateTime: raw.updateTime } },
+  ] };
+}
+
+async function loadServiceRfq(env: Env, rfqId: string): Promise<ServiceRfqStored> {
+  const raw = await getRawDoc(env, 'serviceRfqs', rfqId);
+  const stored = parseStoredServiceRfq(raw?.data, raw?.updateTime);
+  if (!stored) throw new ServiceRfqError('RFQ_NOT_FOUND');
+  return stored;
+}
+
+async function mutateServiceRfq(
+  env: Env,
+  rfqId: string,
+  actorUid: string,
+  operation: string,
+  mutate: (aggregate: ServiceRfqAggregate) => Promise<{ aggregate: ServiceRfqAggregate; verifies?: any[] }> | { aggregate: ServiceRfqAggregate; verifies?: any[] },
+) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    if (!transaction) throw new ServiceRfqError('SERVICE_RFQ_UNAVAILABLE');
+    const raw = await transactionDocument(env, `serviceRfqs/${encodeURIComponent(rfqId)}`, transaction);
+    const stored = parseStoredServiceRfq(raw?.data, raw?.updateTime);
+    if (!stored?.updateTime) throw new ServiceRfqError('RFQ_NOT_FOUND');
+    const result = await mutate(stored.aggregate);
+    if (result.aggregate === stored.aggregate) {
+      await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+      return stored;
+    }
+    try {
+      await commitWrites(env, [
+        serviceRfqWrite(env, { ...stored, aggregate: result.aggregate }, stored.updateTime),
+        ...(result.verifies || []),
+        await serviceRfqAuditWrite(env, result.aggregate, actorUid, operation),
+      ], transaction);
+      if (env.__diagnostics) env.__diagnostics.cas = 'succeeded';
+      return { ...stored, aggregate: result.aggregate };
+    } catch (error) {
+      if (env.__diagnostics) env.__diagnostics.cas = error instanceof FirestorePreconditionError ? 'conflict' : 'failed';
+      if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+    }
+  }
+  throw new ServiceRfqError('SERVICE_RFQ_CONFLICT');
+}
+
+function serviceRfqListSummary(aggregate: ServiceRfqAggregate) {
+  return {
+    rfqId: aggregate.rfq.rfqId, serviceKind: aggregate.rfq.serviceKind, status: aggregate.rfq.status,
+    revision: aggregate.rfq.revision, quoteCount: aggregate.quotes.length,
+    createdAt: aggregate.rfq.createdAt, updatedAt: aggregate.rfq.updatedAt, expiresAt: aggregate.rfq.expiresAt,
+  };
+}
+
+type ServiceRfqListRow = ReturnType<typeof serviceRfqListSummary> & { providerTargets: string[] };
+
+function parseServiceRfqListRow(value: any, documentId: string): ServiceRfqListRow | null {
+  if (!value || value.schemaVersion !== 1 || value.rfqId !== documentId || !SERVICE_RFQ_ID.test(documentId) ||
+      !['operator', 'transporter'].includes(value.serviceKind) ||
+      !['draft', 'collecting_test_proposals', 'provisionally_selected', 'cancelled', 'expired'].includes(value.status) ||
+      !Number.isSafeInteger(value.revision) || value.revision < 0 || !Number.isSafeInteger(value.quoteCount) || value.quoteCount < 0 || value.quoteCount > 20 ||
+      ![value.createdAt, value.updatedAt, value.expiresAt].every(item => typeof item === 'string' && Number.isFinite(Date.parse(item))) ||
+      !Array.isArray(value.providerTargets) || value.providerTargets.length < 1 || value.providerTargets.length > 5 ||
+      value.providerTargets.some((item: unknown) => typeof item !== 'string' || item.length > 300)) return null;
+  return {
+    rfqId: value.rfqId, serviceKind: value.serviceKind, status: value.status, revision: value.revision, quoteCount: value.quoteCount,
+    createdAt: value.createdAt, updatedAt: value.updatedAt, expiresAt: value.expiresAt, providerTargets: value.providerTargets,
+  };
+}
+
+function providerQuoteSummaries(aggregate: ServiceRfqAggregate, principal: ProviderPrincipal, now: string) {
+  return aggregate.quotes.filter(quote => serviceProviderScope(quote.principal) === serviceProviderScope(principal)).map(quote => {
+    const snapshot = quote.snapshots[quote.currentVersion - 1];
+    return {
+      quoteId: quote.quoteId, quoteVersion: quote.currentVersion, serviceKind: quote.serviceKind, serviceScope: snapshot.serviceScope,
+      schedule: snapshot.schedule, inclusions: snapshot.inclusions, exclusions: snapshot.exclusions, serviceCategory: snapshot.serviceCategory,
+      availability: snapshot.availability, currency: snapshot.currency, baseServicePriceMinor: snapshot.baseServicePriceMinor,
+      optionalComponents: snapshot.optionalComponents, quotedServicePriceMinor: snapshot.quotedServicePriceMinor, expiresAt: snapshot.expiresAt,
+      status: quote.status === 'active' && Date.parse(now) < Date.parse(snapshot.expiresAt) ? 'active' : 'expired',
+      eligibility: 'verified_by_future_authoritative_source' as const,
+    };
+  });
+}
+
+async function serviceRfqView(env: Env, aggregate: ServiceRfqAggregate, user: User) {
+  const now = new Date().toISOString();
+  if (aggregate.rfq.customerUid === user.uid) {
+    const customer = serviceRfqCustomer(user);
+    return {
+      access: 'customer' as const, rfq: { ...serviceRfqListSummary(aggregate), requirementsSnapshot: aggregate.rfq.requirementsSnapshot,
+        targetProfileIds: aggregate.rfq.invitedProviders.map(item => item.profileId), provisionalSelection: aggregate.provisionalSelection },
+      comparison: { contractVersion: 1, rfqId: aggregate.rfq.rfqId, rfqVersion: 1, serviceKind: aggregate.rfq.serviceKind,
+        ...pageSyntheticQuoteSummaries(aggregate, { kind: 'customer', customer }, { now }) },
+    };
+  }
+  const provider = await providerAuthorityForRfq(env, aggregate, user);
+  return {
+    access: 'provider' as const, rfq: { ...serviceRfqListSummary(aggregate), requirementsSnapshot: aggregate.rfq.requirementsSnapshot,
+      targetProfileIds: [], provisionalSelection: aggregate.provisionalSelection?.quoteId &&
+        providerQuoteSummaries(aggregate, provider.authority.principal, now).some(item => item.quoteId === aggregate.provisionalSelection?.quoteId)
+        ? aggregate.provisionalSelection : null },
+    comparison: { contractVersion: 1, rfqId: aggregate.rfq.rfqId, rfqVersion: 1, serviceKind: aggregate.rfq.serviceKind,
+      quotes: providerQuoteSummaries(aggregate, provider.authority.principal, now), nextCursor: null },
+  };
+}
+
+async function createServiceRfq(req: Request, env: Env, user: User) {
+  if (serviceRfqActivationOverride !== true) return serviceRfqDisabled(req, env);
+  try {
+    const customerAccount = await serviceRfqAccountVerify(env, user);
+    const customer = serviceRfqCustomer({ ...user, accountProfile: customerAccount.account });
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'service_rfq_create');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many RFQ submissions');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, SERVICE_RFQ_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['draft', 'targetProfileIds', 'idempotencyKey'].includes(key)) ||
+        !Array.isArray(body.targetProfileIds) || typeof body.idempotencyKey !== 'string') throw new ServiceRfqError('INVALID_RFQ');
+    const serviceKind = body.draft?.serviceKind as ServiceKind;
+    if (!['operator', 'transporter'].includes(serviceKind)) throw new ServiceRfqError('INVALID_RFQ');
+    const targets = await invitedProfiles(env, serviceKind, body.targetProfileIds, body.draft?.preparedRequest);
+    const creationFingerprint = await hashedId(stableJson({ draft: body.draft, targetProfileIds: [...body.targetProfileIds].sort() }));
+    const rfqId = `rfq_${await hashedId(`service-rfq:${user.uid}:${body.idempotencyKey}`)}`;
+    const now = new Date().toISOString();
+    const created = createTestOnlyRfq(body.draft, { rfqId, customer, invitedProviders: targets.results, now });
+    const aggregate = openTestOnlyRfq(created, customer, 0, body.idempotencyKey, now);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      if (!transaction) throw new ServiceRfqError('SERVICE_RFQ_UNAVAILABLE');
+      const priorRaw = await transactionDocument(env, `serviceRfqs/${encodeURIComponent(rfqId)}`, transaction);
+      const prior = parseStoredServiceRfq(priorRaw?.data, priorRaw?.updateTime);
+      if (prior) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        if (prior.aggregate.rfq.customerUid !== user.uid || prior.creationFingerprint !== creationFingerprint) throw new ServiceRfqError('IDEMPOTENCY_CONFLICT');
+        return out(env, req, { success: true, ...(await serviceRfqView(env, prior.aggregate, user)), replayed: true });
+      }
+      const stored = { aggregate, creationFingerprint };
+      try {
+        await commitWrites(env, [
+          serviceRfqWrite(env, stored),
+          customerAccount.verify,
+          ...targets.results.map(item => ({ verify: fullName(env, `${targets.collection}/${encodeURIComponent(item.profileId)}`), currentDocument: { updateTime: item.updateTime } })),
+          await serviceRfqAuditWrite(env, aggregate, user.uid, 'rfq_created'),
+        ], transaction);
+        if (env.__diagnostics) env.__diagnostics.cas = 'succeeded';
+        return out(env, req, { success: true, ...(await serviceRfqView(env, aggregate, user)), replayed: false }, 201);
+      } catch (error) {
+        if (env.__diagnostics) env.__diagnostics.cas = error instanceof FirestorePreconditionError ? 'conflict' : 'failed';
+        if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+      }
+    }
+    throw new ServiceRfqError('SERVICE_RFQ_CONFLICT');
+  } catch (error) { return serviceRfqErrorResponse(req, env, error); }
+}
+
+async function serviceRfqRows(env: Env, fieldPath: 'customerUid' | 'providerScopes', value: string, cursor?: string) {
+  const query: any = {
+    select: { fields: ['schemaVersion', 'rfqId', 'serviceKind', 'status', 'revision', 'quoteCount', 'createdAt', 'updatedAt', 'expiresAt', 'providerTargets']
+      .map(fieldPath => ({ fieldPath })) },
+    from: [{ collectionId: 'serviceRfqs' }],
+    where: { fieldFilter: { field: { fieldPath }, op: fieldPath === 'providerScopes' ? 'ARRAY_CONTAINS' : 'EQUAL', value: { stringValue: value } } },
+    orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 21,
+  };
+  if (cursor) query.startAt = { before: false, values: [{ referenceValue: fullName(env, `serviceRfqs/${encodeURIComponent(cursor)}`) }] };
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: query }) }) as any[] || [];
+  return result.filter(item => item.document).map(item => ({ id: decodeURIComponent(String(item.document.name).split('/').pop() || ''), data: decode(item.document) }));
+}
+
+async function listServiceRfqs(req: Request, env: Env, user: User) {
+  if (serviceRfqActivationOverride !== true) return serviceRfqDisabled(req, env);
+  try {
+    const url = new URL(req.url), cursor = url.searchParams.get('cursor') || undefined;
+    if ([...url.searchParams.keys()].some(key => key !== 'cursor') || cursor && !SERVICE_RFQ_ID.test(cursor)) throw new ServiceRfqError('INVALID_RFQ_PAGE');
+    const account = user.accountProfile || await getDoc(env, 'users', user.uid);
+    let field: 'customerUid' | 'providerScopes', value: string;
+    if (account?.role === 'customer') { serviceRfqCustomer(user); field = 'customerUid'; value = user.uid; }
+    else if (eligibleAccount(account, 'driver')) { field = 'providerScopes'; value = `individual:${user.uid}`; }
+    else throw new ServiceRfqError('RFQ_NOT_AUTHORIZED');
+    const rows = await serviceRfqRows(env, field, value, cursor), page = rows.slice(0, 20);
+    let summaries = page.map(row => parseServiceRfqListRow(row.data, row.id)).filter((item): item is ServiceRfqListRow => !!item);
+    if (field === 'providerScopes') {
+      const targetPrefix = `${value}|`;
+      const invited = summaries.flatMap(summary => summary.providerTargets
+        .filter(target => target.startsWith(targetPrefix) && SERVICE_PROFILE_ID.test(target.slice(targetPrefix.length)))
+        .map(target => ({ summary, profileId: target.slice(targetPrefix.length), collection: summary.serviceKind === 'operator' ? 'operatorDiscoveryProfiles' : 'transporterDiscoveryProfiles' })));
+      const currentProfiles = await batchGetRawDocs(env, invited.map(item => ({ collection: item.collection, id: item.profileId })));
+      summaries = summaries.filter(summary => invited.some(candidate => {
+        if (candidate.summary !== summary) return false;
+        const raw = currentProfiles.get(`${candidate.collection}/${candidate.profileId}`)?.data;
+        const projection = summary.serviceKind === 'operator'
+          ? publicOperatorProjection(candidate.profileId, raw)
+          : publicTransporterProjection(candidate.profileId, raw);
+        return !!projection && raw?.principalType === 'individual' && raw?.ownerUid === user.uid;
+      }));
+    }
+    const rfqs = summaries.map(({ providerTargets: _providerTargets, ...summary }) => summary);
+    return out(env, req, { success: true, rfqs, nextCursor: rows.length > 20 ? page.at(-1)?.id || null : null });
+  } catch (error) { return serviceRfqErrorResponse(req, env, error); }
+}
+
+async function getServiceRfq(req: Request, env: Env, user: User, rfqId: string) {
+  if (serviceRfqActivationOverride !== true) return serviceRfqDisabled(req, env);
+  try {
+    let stored = await loadServiceRfq(env, rfqId);
+    const authorizedView = await serviceRfqView(env, stored.aggregate, user);
+    if (['draft', 'collecting_test_proposals'].includes(stored.aggregate.rfq.status) && Date.now() >= Date.parse(stored.aggregate.rfq.expiresAt)) {
+      stored = await mutateServiceRfq(env, rfqId, user.uid, 'rfq_expired', aggregate => ({
+        aggregate: expireTestOnlyRfq(aggregate, aggregate.rfq.revision, new Date().toISOString()),
+      }));
+      return out(env, req, { success: true, ...(await serviceRfqView(env, stored.aggregate, user)) });
+    }
+    return out(env, req, { success: true, ...authorizedView });
+  } catch (error) { return serviceRfqErrorResponse(req, env, error); }
+}
+
+async function submitOrReviseServiceQuote(req: Request, env: Env, user: User, rfqId: string, quoteId?: string) {
+  if (serviceRfqActivationOverride !== true) return serviceRfqDisabled(req, env);
+  try {
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'service_rfq_quote');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many quotation updates');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, SERVICE_RFQ_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['quote', 'expectedRfqRevision', 'idempotencyKey'].includes(key)) ||
+        !Number.isSafeInteger(body.expectedRfqRevision) || typeof body.idempotencyKey !== 'string' || quoteId && !SERVICE_QUOTE_ID.test(quoteId)) {
+      throw new ServiceRfqError('INVALID_QUOTE');
+    }
+    const stored = await mutateServiceRfq(env, rfqId, user.uid, quoteId ? 'quote_revised' : 'quote_submitted', async aggregate => {
+      const provider = await providerAuthorityForRfq(env, aggregate, user);
+      const nextQuoteId = quoteId || `quote_${await hashedId(`service-quote:${rfqId}:${serviceProviderScope(provider.authority.principal)}:${body.idempotencyKey}`)}`;
+      const next = quoteId
+        ? reviseTestOnlyQuote(aggregate, quoteId, body.quote, { authority: provider.authority, expectedRfqRevision: body.expectedRfqRevision, idempotencyKey: body.idempotencyKey, now: new Date().toISOString() })
+        : submitTestOnlyQuote(aggregate, body.quote, { quoteId: nextQuoteId, authority: provider.authority, expectedRfqRevision: body.expectedRfqRevision, idempotencyKey: body.idempotencyKey, now: new Date().toISOString() });
+      return { aggregate: next, verifies: provider.verifies };
+    });
+    return out(env, req, { success: true, ...(await serviceRfqView(env, stored.aggregate, user)) }, quoteId ? 200 : 201);
+  } catch (error) { return serviceRfqErrorResponse(req, env, error); }
+}
+
+async function selectServiceQuote(req: Request, env: Env, user: User, rfqId: string) {
+  if (serviceRfqActivationOverride !== true) return serviceRfqDisabled(req, env);
+  try {
+    const customerAccount = await serviceRfqAccountVerify(env, user);
+    const customer = serviceRfqCustomer({ ...user, accountProfile: customerAccount.account });
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'service_rfq_select');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many selection attempts');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, SERVICE_RFQ_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['quoteId', 'expectedRfqRevision', 'idempotencyKey'].includes(key)) ||
+        !SERVICE_QUOTE_ID.test(String(body.quoteId || '')) || !Number.isSafeInteger(body.expectedRfqRevision) || typeof body.idempotencyKey !== 'string') {
+      throw new ServiceRfqError('INVALID_SELECTION');
+    }
+    const stored = await mutateServiceRfq(env, rfqId, user.uid, 'quote_provisionally_selected', async aggregate => {
+      const quote = aggregate.quotes.find(item => item.quoteId === body.quoteId);
+      if (!quote) throw new ServiceRfqError('QUOTE_NOT_FOUND');
+      const invited = aggregate.rfq.invitedProviders.find(item => serviceProviderScope(item.principal) === serviceProviderScope(quote.principal));
+      if (!invited || quote.principal.kind !== 'individual') throw new ServiceRfqError('PROVIDER_AUTHORITY_REVOKED');
+      const provider = await providerAuthorityForRfq(env, aggregate, { uid: quote.principal.providerUid, admin: false });
+      return {
+        aggregate: provisionallySelectTestOnlyQuote(aggregate, body.quoteId, customer, provider.authority, body.expectedRfqRevision, body.idempotencyKey, new Date().toISOString()),
+        verifies: [customerAccount.verify, ...provider.verifies],
+      };
+    });
+    return out(env, req, { success: true, ...(await serviceRfqView(env, stored.aggregate, user)), binding: 'non_binding_preliminary_selection' });
+  } catch (error) { return serviceRfqErrorResponse(req, env, error); }
+}
+
+async function cancelServiceRfq(req: Request, env: Env, user: User, rfqId: string) {
+  if (serviceRfqActivationOverride !== true) return serviceRfqDisabled(req, env);
+  try {
+    const customerAccount = await serviceRfqAccountVerify(env, user);
+    const customer = serviceRfqCustomer({ ...user, accountProfile: customerAccount.account });
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'service_rfq_cancel');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many cancellation attempts');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, SERVICE_RFQ_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['expectedRevision', 'idempotencyKey'].includes(key)) ||
+        !Number.isSafeInteger(body.expectedRevision) || typeof body.idempotencyKey !== 'string') throw new ServiceRfqError('INVALID_RFQ');
+    const stored = await mutateServiceRfq(env, rfqId, user.uid, 'rfq_cancelled', aggregate => ({
+      aggregate: cancelTestOnlyRfq(aggregate, customer, body.expectedRevision, body.idempotencyKey, new Date().toISOString()),
+      verifies: [customerAccount.verify],
+    }));
+    return out(env, req, { success: true, ...(await serviceRfqView(env, stored.aggregate, user)) });
+  } catch (error) { return serviceRfqErrorResponse(req, env, error); }
+}
 async function reviewEquipmentDetail(req: Request, env: Env, u: User, id: string) {
   const equipment = await getDoc(env, 'equipment', id);
   const account = u.accountProfile || await getDoc(env, 'users', u.uid);
@@ -5747,6 +6222,21 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
        if (path === '/api/operator-requests/prepare' && req.method === 'POST') return await operatorRequestPrepare(req, env, await authenticatedUser(req, env));
        if (path === '/api/transporters/search' && req.method === 'GET') return await transporterSearch(req, env);
        if (path === '/api/transport-requests/prepare' && req.method === 'POST') return await transportRequestPrepare(req, env, await authenticatedUser(req, env));
+       if ((path === '/api/service-rfqs' || path.startsWith('/api/service-rfqs/')) && serviceRfqActivationOverride !== true) {
+         return serviceRfqDisabled(req, env);
+       }
+       if (path === '/api/service-rfqs' && req.method === 'POST') return await createServiceRfq(req, env, await authenticatedUser(req, env));
+       if (path === '/api/service-rfqs' && req.method === 'GET') return await listServiceRfqs(req, env, await authenticatedUser(req, env));
+       const serviceRfqDetailMatch = path.match(/^\/api\/service-rfqs\/(rfq_[A-Za-z0-9_-]{43})$/);
+       if (serviceRfqDetailMatch && req.method === 'GET') return await getServiceRfq(req, env, await authenticatedUser(req, env), serviceRfqDetailMatch[1]);
+       const serviceRfqQuoteCreateMatch = path.match(/^\/api\/service-rfqs\/(rfq_[A-Za-z0-9_-]{43})\/quotes$/);
+       if (serviceRfqQuoteCreateMatch && req.method === 'POST') return await submitOrReviseServiceQuote(req, env, await authenticatedUser(req, env), serviceRfqQuoteCreateMatch[1]);
+       const serviceRfqQuoteReviseMatch = path.match(/^\/api\/service-rfqs\/(rfq_[A-Za-z0-9_-]{43})\/quotes\/(quote_[A-Za-z0-9_-]{43})$/);
+       if (serviceRfqQuoteReviseMatch && req.method === 'PUT') return await submitOrReviseServiceQuote(req, env, await authenticatedUser(req, env), serviceRfqQuoteReviseMatch[1], serviceRfqQuoteReviseMatch[2]);
+       const serviceRfqSelectionMatch = path.match(/^\/api\/service-rfqs\/(rfq_[A-Za-z0-9_-]{43})\/selection$/);
+       if (serviceRfqSelectionMatch && req.method === 'POST') return await selectServiceQuote(req, env, await authenticatedUser(req, env), serviceRfqSelectionMatch[1]);
+       const serviceRfqCancelMatch = path.match(/^\/api\/service-rfqs\/(rfq_[A-Za-z0-9_-]{43})\/cancel$/);
+       if (serviceRfqCancelMatch && req.method === 'POST') return await cancelServiceRfq(req, env, await authenticatedUser(req, env), serviceRfqCancelMatch[1]);
        const publicDriverMatch = path.match(/^\/api\/drivers\/public\/([^/]+)$/);
        if (publicDriverMatch && req.method === 'GET') return await publicDriverDetail(req, env, decodeURIComponent(publicDriverMatch[1]));
        if (path === '/api/drivers/requests' && req.method === 'GET') return await driverRequestList(req, env, await authenticatedUser(req, env));

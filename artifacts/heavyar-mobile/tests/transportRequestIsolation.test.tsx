@@ -41,7 +41,7 @@ function loadScreen(): React.ComponentType {
     react: React,
     'react-native': { KeyboardAvoidingView: host('KeyboardAvoidingView'), Platform: { OS: 'android' }, ScrollView: host('ScrollView') },
     'react-native-safe-area-context': { SafeAreaView: host('SafeAreaView') },
-    'expo-router': { useRouter: () => ({ back: vi.fn() }) },
+    'expo-router': { useRouter: () => ({ back: vi.fn(), replace: vi.fn() }), useLocalSearchParams: () => ({}) },
     'lucide-react-native': new Proxy({}, { get: () => host('Icon') }),
     tamagui: { Text: host('Text'), XStack: stack, YStack: stack },
     '@/components/location/LocationPicker': { __esModule: true, default: LocationPicker },
@@ -67,6 +67,7 @@ function loadScreen(): React.ComponentType {
       marketDateTimeToUtc: (date: string, time: string) => new Date(`${date}T${time}:00.000Z`).toISOString(),
     },
     '@/services/transporterService': { prepareTransportRequest: effects.prepare },
+    '@/services/serviceRfqService': { createServiceRfq: vi.fn(), serviceRfqIdempotencyKey: () => 'unused-test-key' },
   };
   new Function('require', 'module', 'exports', output)((id: string) => {
     if (id in mocks) return mocks[id];
