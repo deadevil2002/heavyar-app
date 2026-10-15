@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/heavyar';
 import type { ServiceExecutionAction, ServiceExecutionDetail } from '@/services/serviceExecutionService';
 import { serviceExecutionActions } from '@/services/serviceExecutionPresentation';
+import { PrivateEvidenceMediaViewer } from '@/components/PrivateEvidenceMediaField';
 
 function copy(isRTL: boolean, ar: string, en: string) { return isRTL ? ar : en; }
 
@@ -49,8 +50,10 @@ export default function ServiceExecutionTimeline({
   detail,
   busy,
   onAction,
+  uid,
 }: {
   detail: ServiceExecutionDetail;
+  uid: string;
   busy?: ServiceExecutionAction | '';
   onAction?: (action: ServiceExecutionAction) => void;
 }) {
@@ -104,6 +107,13 @@ export default function ServiceExecutionTimeline({
             <Text color="$color" fontSize={14} fontWeight="700" text={direction.textAlign}>{eventLabel(event.action, isRTL)}</Text>
             <Text color="$colorMuted" fontSize={11} text={direction.textAlign}>{new Date(event.occurredAt).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-SA')}</Text>
             {event.evidence?.note ? <Text color="$colorMuted" fontSize={12} lineHeight={18} mt="$xs" text={direction.textAlign}>{event.evidence.note}</Text> : null}
+            {event.evidence?.media?.map(media => <PrivateEvidenceMediaViewer
+              key={media.mediaId}
+              executionId={detail.execution.executionId}
+              eventId={event.eventId}
+              mediaId={media.mediaId}
+              uid={uid}
+            />)}
           </YStack>
         </XStack>;
       })}

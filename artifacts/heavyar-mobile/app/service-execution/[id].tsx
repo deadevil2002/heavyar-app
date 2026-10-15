@@ -2,9 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ChevronLeft, ChevronRight, ImageOff } from 'lucide-react-native';
+import { ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { Text, XStack, YStack } from 'tamagui';
 import ServiceExecutionTimeline from '@/components/ServiceExecutionTimeline';
+import PrivateEvidenceMediaField from '@/components/PrivateEvidenceMediaField';
 import {
   HeavyarButton,
   HeavyarButtonText,
@@ -28,6 +29,12 @@ import {
   type ServiceExecutionDetail,
 } from '@/services/serviceExecutionService';
 import { serviceExecutionActions } from '@/services/serviceExecutionPresentation';
+import {
+  abandonPrivateEvidenceUploadIntent,
+  createPrivateEvidenceUploadIntent,
+  uploadPrivateEvidenceFile,
+  type PrivateEvidenceSelection,
+} from '@/services/privateEvidenceMediaService';
 
 const SAFE_EXECUTION_ID = /^execution_[A-Za-z0-9_-]{43}$/;
 
@@ -48,6 +55,7 @@ function ServiceExecutionBody({ executionId }: { executionId: string }) {
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [busy, setBusy] = useState<ServiceExecutionAction | ''>('');
   const [note, setNote] = useState('');
+  const [selectedEvidence, setSelectedEvidence] = useState<readonly PrivateEvidenceSelection[]>([]);
   const [actionError, setActionError] = useState('');
   const message = (ar: string, en: string) => isRTL ? ar : en;
   const BackIcon = isRTL ? ChevronRight : ChevronLeft;
@@ -56,7 +64,7 @@ function ServiceExecutionBody({ executionId }: { executionId: string }) {
     const uid = auth.user?.uid;
     if (!uid || !SAFE_EXECUTION_ID.test(executionId)) { setDetail(null); setState('error'); return; }
     const active = guard.current.begin(uid);
-    setDetail(null); setState('loading'); setActionError(''); setNote('');
+    setDetail(null); setState('loading'); setActionError(''); setNote(''); setSelectedEvidence([]);
     try {
       const result = await getServiceExecution(executionId, uid, active.signal);
       if (!guard.current.isCurrent(active)) return;
@@ -74,16 +82,37 @@ function ServiceExecutionBody({ executionId }: { executionId: string }) {
     busyRef.current = true;
     const active = guard.current.begin(uid);
     setBusy(action); setActionError('');
+    const transitionKey = serviceExecutionIdempotencyKey(action);
+    let mediaIntentId = '';
     try {
+      if (selectedEvidence.length) {
+        if (!current.evidenceMedia.enabled) throw new Error('EVIDENCE_MEDIA_NOT_ACTIVATED');
+        const intent = await createPrivateEvidenceUploadIntent(
+          executionId,
+          action,
+          current.execution.revision,
+          `${transitionKey}:media`,
+          selectedEvidence,
+          uid,
+          active.signal,
+        );
+        mediaIntentId = intent.intentId;
+        for (const file of intent.files) {
+          const local = selectedEvidence.find(item => item.clientFileId === file.clientFileId);
+          if (!local) throw new Error('EVIDENCE_FILE_MISMATCH');
+          if (!file.uploaded) await uploadPrivateEvidenceFile(file, local, uid, active.signal);
+        }
+      }
       const next = await transitionServiceExecution(executionId, {
         action,
         expectedRevision: current.execution.revision,
-        idempotencyKey: serviceExecutionIdempotencyKey(action),
-        ...(note.trim() ? { evidence: { note: note.trim() } } : {}),
+        idempotencyKey: transitionKey,
+        ...(note.trim() || mediaIntentId ? { evidence: { ...(note.trim() ? { note: note.trim() } : {}), ...(mediaIntentId ? { mediaIntentId } : {}) } } : {}),
       }, uid, active.signal);
       if (!guard.current.isCurrent(active)) return;
-      setDetail(next); setNote('');
+      setDetail(next); setNote(''); setSelectedEvidence([]);
     } catch {
+      if (mediaIntentId) void abandonPrivateEvidenceUploadIntent(executionId, mediaIntentId, uid).catch(() => undefined);
       if (guard.current.isCurrent(active)) setActionError(message(
         'تعذر حفظ التحديث بأمان. حدّث السجل وحاول مجددًا.',
         'The update could not be saved safely. Refresh and retry.',
@@ -116,14 +145,9 @@ function ServiceExecutionBody({ executionId }: { executionId: string }) {
           <HeavyarInput value={note} onChangeText={value => setNote(value.slice(0, 500))} maxLength={500}
             multiline numberOfLines={3} textAlignVertical="top" style={{ textAlign: direction.textAlign }}
             placeholder={message('اكتب وصفًا مختصرًا للحالة…', 'Add a concise status note…')} accessibilityLabel={message('ملاحظة تقدم الخدمة', 'Service progress note')} />
-          <XStack items="flex-start" flexDirection={direction.rowDirection} gap="$xs">
-            <ImageOff color={Colors.textMuted} size={15} />
-            <Text color="$colorMuted" flex={1} fontSize={11} lineHeight={17} text={direction.textAlign}>
-              {message('صور الأدلة غير متاحة حتى تفعيل تسليم خاص ومحمي للملفات.', 'Evidence photos remain unavailable until private authenticated media delivery is enabled.')}
-            </Text>
-          </XStack>
+          <PrivateEvidenceMediaField capability={detail.evidenceMedia} selected={selectedEvidence} onChange={setSelectedEvidence} disabled={!!busy} />
         </HeavyarSurface> : null}
-        <ServiceExecutionTimeline detail={detail} busy={busy} onAction={action => void act(action)} />
+        <ServiceExecutionTimeline detail={detail} uid={auth.user?.uid || ''} busy={busy} onAction={action => void act(action)} />
         {actionError ? <Text color="$danger" fontSize={13} lineHeight={20} text={direction.textAlign}>{actionError}</Text> : null}
       </ScrollView>}
   </SafeAreaView></HeavyarScreen>;

@@ -34,7 +34,11 @@ export type ConfirmedExecutionBinding = {
   paymentState: 'verified' | 'not_required';
 };
 
-export type ExecutionEvidence = Readonly<{ note?: string }>;
+export type ExecutionEvidence = Readonly<{
+  note?: string;
+  mediaIntentId?: string;
+  media?: readonly Readonly<{ mediaId: string }>[];
+}>;
 export type ServiceExecutionEvent = Readonly<{
   eventId: string;
   revision: number;
@@ -83,6 +87,8 @@ const SAFE_UID = /^[A-Za-z0-9_-]{6,128}$/;
 const SAFE_SOURCE_ID = /^[A-Za-z0-9:_-]{6,160}$/;
 const SAFE_EXECUTION_ID = /^execution_[A-Za-z0-9_-]{43}$/;
 const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9:_-]{8,128}$/;
+const SAFE_MEDIA_INTENT_ID = /^evidence_intent_[A-Za-z0-9_-]{43}$/;
+const SAFE_MEDIA_ID = /^evidence_media_[A-Za-z0-9_-]{43}$/;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const MAX_EVENTS = 64;
 const MAX_OPERATIONS = 100;
@@ -110,23 +116,45 @@ function actorRole(state: ServiceExecutionAggregate, actorUid: string): Executio
   throw new ServiceExecutionError('EXECUTION_NOT_AUTHORIZED');
 }
 
-function normalizedEvidence(value: unknown): ExecutionEvidence | undefined {
+function normalizedEvidence(
+  value: unknown,
+  verifiedMedia?: Readonly<{ intentId: string; mediaIds: readonly string[] }>,
+): ExecutionEvidence | undefined {
   if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ServiceExecutionError('INVALID_EXECUTION_EVIDENCE');
   const raw = value as Record<string, unknown>;
-  if (!Object.keys(raw).every(key => ['note', 'photoReferences'].includes(key))) throw new ServiceExecutionError('INVALID_EXECUTION_EVIDENCE');
+  if (!Object.keys(raw).every(key => ['note', 'photoReferences', 'mediaIntentId'].includes(key))) throw new ServiceExecutionError('INVALID_EXECUTION_EVIDENCE');
   if (raw.photoReferences !== undefined && (!Array.isArray(raw.photoReferences) || raw.photoReferences.length !== 0)) {
-    // Current Cloudinary delivery is public. Private service evidence must not
-    // be uploaded until authenticated/signed delivery and retention are ready.
     throw new ServiceExecutionError('EVIDENCE_PHOTO_DELIVERY_NOT_READY');
   }
-  if (raw.note === undefined || raw.note === null || raw.note === '') return undefined;
-  if (typeof raw.note !== 'string' || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(raw.note)) {
+  const requestedIntent = raw.mediaIntentId;
+  if (requestedIntent !== undefined && requestedIntent !== null && requestedIntent !== '') {
+    if (typeof requestedIntent !== 'string' || !SAFE_MEDIA_INTENT_ID.test(requestedIntent) ||
+        !verifiedMedia || verifiedMedia.intentId !== requestedIntent || !Array.isArray(verifiedMedia.mediaIds) ||
+        verifiedMedia.mediaIds.length < 1 || verifiedMedia.mediaIds.length > 3 ||
+        new Set(verifiedMedia.mediaIds).size !== verifiedMedia.mediaIds.length ||
+        verifiedMedia.mediaIds.some(mediaId => !SAFE_MEDIA_ID.test(mediaId))) {
+      throw new ServiceExecutionError('EVIDENCE_PHOTO_DELIVERY_NOT_READY');
+    }
+  } else if (verifiedMedia) {
     throw new ServiceExecutionError('INVALID_EXECUTION_EVIDENCE');
   }
-  const note = raw.note.trim();
-  if (!note || note.length > 500) throw new ServiceExecutionError('INVALID_EXECUTION_EVIDENCE');
-  return freeze({ note });
+  let note: string | undefined;
+  if (raw.note !== undefined && raw.note !== null && raw.note !== '') {
+    if (typeof raw.note !== 'string' || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(raw.note)) {
+      throw new ServiceExecutionError('INVALID_EXECUTION_EVIDENCE');
+    }
+    note = raw.note.trim();
+    if (!note || note.length > 500) throw new ServiceExecutionError('INVALID_EXECUTION_EVIDENCE');
+  }
+  if (!note && !verifiedMedia) return undefined;
+  return freeze({
+    ...(note ? { note } : {}),
+    ...(verifiedMedia ? {
+      mediaIntentId: verifiedMedia.intentId,
+      media: verifiedMedia.mediaIds.map(mediaId => freeze({ mediaId })),
+    } : {}),
+  });
 }
 
 function operationFingerprint(action: ServiceExecutionAction, evidence?: ExecutionEvidence) {
@@ -211,9 +239,10 @@ export function transitionServiceExecution(
   actorUid: string,
   nowValue: string,
   rentalStatus?: string,
+  verifiedMedia?: Readonly<{ intentId: string; mediaIds: readonly string[] }>,
 ): ServiceExecutionAggregate {
   const role = actorRole(state, actorUid);
-  const evidence = normalizedEvidence(input.evidence);
+  const evidence = normalizedEvidence(input.evidence, verifiedMedia);
   const fingerprint = operationFingerprint(input.action, evidence);
   if (replayed(state, input.idempotencyKey, input.action, fingerprint, actorUid)) return state;
   if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision !== state.revision) {
@@ -305,10 +334,18 @@ export function isServiceExecutionAggregate(value: unknown): value is ServiceExe
         Date.parse(event.occurredAt) < Date.parse(state.createdAt) || Date.parse(event.occurredAt) > Date.parse(state.updatedAt)) return false;
     if (event.evidence === undefined) return true;
     const evidence = event.evidence as Record<string, unknown>;
-    return !!evidence && typeof evidence === 'object' && !Array.isArray(evidence) &&
-      Object.keys(evidence).length === 1 && typeof evidence.note === 'string' &&
+    if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence) ||
+        Object.keys(evidence).some(key => !['note', 'mediaIntentId', 'media'].includes(key))) return false;
+    const noteValid = evidence.note === undefined || typeof evidence.note === 'string' &&
       evidence.note === evidence.note.trim() && evidence.note.length > 0 && evidence.note.length <= 500 &&
       !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(evidence.note);
+    const mediaValid = evidence.mediaIntentId === undefined && evidence.media === undefined ||
+      typeof evidence.mediaIntentId === 'string' && SAFE_MEDIA_INTENT_ID.test(evidence.mediaIntentId) &&
+      Array.isArray(evidence.media) && evidence.media.length >= 1 && evidence.media.length <= 3 &&
+      new Set(evidence.media.map(item => item?.mediaId)).size === evidence.media.length &&
+      evidence.media.every(item => !!item && typeof item === 'object' && !Array.isArray(item) &&
+        Object.keys(item).length === 1 && SAFE_MEDIA_ID.test(String(item.mediaId || '')));
+    return noteValid && mediaValid && (evidence.note !== undefined || evidence.media !== undefined);
   });
   if (!eventsValid || state.events[0]?.action !== 'confirmed' || state.events[0]?.occurredAt !== state.createdAt) return false;
 

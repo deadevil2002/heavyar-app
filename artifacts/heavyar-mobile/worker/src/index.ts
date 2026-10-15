@@ -98,6 +98,22 @@ import {
   type ServiceExecutionAggregate,
 } from './service-execution';
 import {
+  PRIVATE_EVIDENCE_MEDIA_LIMITS,
+  PRIVATE_EVIDENCE_MEDIA_PRODUCTION_ACTIVATION,
+  PrivateEvidenceMediaError,
+  abandonPrivateEvidenceIntent,
+  attachPrivateEvidenceToEvent,
+  claimPrivateEvidenceCleanup,
+  completePrivateEvidenceCleanup,
+  createPrivateEvidenceUploadIntent,
+  isPrivateEvidenceUploadIntent,
+  issuePrivateEvidenceAccessGrant,
+  recordVerifiedPrivateEvidenceUpload,
+  retryPrivateEvidenceCleanup,
+  type PrivateEvidenceMediaCapability,
+  type PrivateEvidenceUploadIntent,
+} from './private-evidence-media';
+import {
   consumeScheduledSubrequest,
   createScheduledGlobalBudget,
   createScheduledProcessorBudget,
@@ -128,7 +144,7 @@ export interface Env {
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; accountProfileRaw?: { data: any; updateTime?: string } | null; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
-type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel' | 'service_execution_create' | 'service_execution_transition';
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel' | 'service_execution_create' | 'service_execution_transition' | 'service_evidence_intent' | 'service_evidence_upload';
 type AuthenticatedMutationRateLimitDecision =
   | { status: 'allowed' }
   | { status: 'limited'; retryAfterSeconds: number }
@@ -683,6 +699,8 @@ async function allowAuthenticatedMutation(env: Env, uid: string, scope: Authenti
     service_rfq_cancel: { windowMs: 60_000, limit: 20 },
     service_execution_create: { windowMs: 10 * 60_000, limit: 10 },
     service_execution_transition: { windowMs: 60_000, limit: 30 },
+    service_evidence_intent: { windowMs: 10 * 60_000, limit: 10 },
+    service_evidence_upload: { windowMs: 10 * 60_000, limit: 30 },
   };
   const { windowMs, limit } = policy[scope];
   const id = await hashedId(`authenticated-mutation:${scope}:${uid}`);
@@ -5398,12 +5416,124 @@ function serviceExecutionDisabled(req: Request, env: Env) {
 }
 
 function serviceExecutionErrorResponse(req: Request, env: Env, error: unknown) {
-  const code = error instanceof ServiceExecutionError ? error.code : 'SERVICE_EXECUTION_UNAVAILABLE';
+  const code = error instanceof ServiceExecutionError || error instanceof PrivateEvidenceMediaError ? error.code : 'SERVICE_EXECUTION_UNAVAILABLE';
   const status = code.includes('NOT_FOUND') ? 404
     : code.includes('NOT_AUTHORIZED') || code.includes('ACCOUNT_INELIGIBLE') ? 403
-      : code.includes('STALE') || code.includes('CONFLICT') || code.includes('CHANGED') || code.includes('TRANSITION') || code.includes('LIFECYCLE_REQUIRED') || code.includes('STATE') || code.includes('LIMIT_REACHED') ? 409
+      : code === 'EVIDENCE_UPLOAD_VERIFICATION_FAILED' ? 502
+        : code === 'EVIDENCE_MEDIA_UNAVAILABLE' ? 503
+      : code.includes('STALE') || code.includes('CONFLICT') || code.includes('CHANGED') || code.includes('TRANSITION') || code.includes('LIFECYCLE_REQUIRED') || code.includes('STATE') || code.includes('LIMIT_REACHED') || code.includes('EXPIRED') || code.includes('INCOMPLETE') || code.includes('ALREADY_ATTACHED') ? 409
         : code === 'SERVICE_EXECUTION_UNAVAILABLE' ? 503 : 400;
   return out(env, req, { success: false, error: code, errorCode: code }, status);
+}
+
+const PRIVATE_EVIDENCE_INTENT_JSON_LIMIT_BYTES = 48 * 1024;
+const PRIVATE_EVIDENCE_MULTIPART_OVERHEAD_BYTES = 128 * 1024;
+const PRIVATE_EVIDENCE_FOLDER = /^[A-Za-z0-9_-]{1,64}$/;
+const PRIVATE_EVIDENCE_INTENT_ID = /^evidence_intent_[A-Za-z0-9_-]{43}$/;
+
+function privateEvidenceCapability(env: Env): PrivateEvidenceMediaCapability {
+  const enabled = serviceExecutionActivationOverride === true && !!env.CLOUDINARY_CLOUD_NAME && !!env.CLOUDINARY_API_KEY &&
+    !!env.CLOUDINARY_API_SECRET && PRIVATE_EVIDENCE_FOLDER.test(env.CLOUDINARY_FOLDER || 'heavyar');
+  return enabled ? {
+    enabled: true,
+    backend: 'authenticated_private',
+    authenticatedUpload: true,
+    participantAuthorizedDelivery: true,
+    metadataStrippedBeforeStorage: true,
+  } : {
+    enabled: false,
+    backend: 'authenticated_private',
+    authenticatedUpload: false,
+    participantAuthorizedDelivery: false,
+    metadataStrippedBeforeStorage: false,
+    reason: PRIVATE_EVIDENCE_MEDIA_PRODUCTION_ACTIVATION,
+  };
+}
+
+type PrivateEvidenceStored = { intent: PrivateEvidenceUploadIntent; updateTime?: string };
+
+function parseStoredPrivateEvidenceIntent(value: any, updateTime?: string): PrivateEvidenceStored | null {
+  if (!value || value.schemaVersion !== 1 || typeof value.intentJson !== 'string' ||
+      new TextEncoder().encode(value.intentJson).byteLength > PRIVATE_EVIDENCE_INTENT_JSON_LIMIT_BYTES) return null;
+  try {
+    const intent = JSON.parse(value.intentJson) as PrivateEvidenceUploadIntent;
+    if (!isPrivateEvidenceUploadIntent(intent) || value.intentId !== intent.intentId || value.executionId !== intent.executionId ||
+        value.state !== intent.state || value.expiresAt !== intent.expiresAt) return null;
+    return { intent, updateTime };
+  } catch { return null; }
+}
+
+async function privateEvidenceIntentFields(intent: PrivateEvidenceUploadIntent) {
+  const intentJson = JSON.stringify(intent);
+  if (new TextEncoder().encode(intentJson).byteLength > PRIVATE_EVIDENCE_INTENT_JSON_LIMIT_BYTES) {
+    throw new PrivateEvidenceMediaError('INVALID_EVIDENCE_INTENT');
+  }
+  return {
+    schemaVersion: { integerValue: '1' },
+    intentId: { stringValue: intent.intentId },
+    executionId: { stringValue: intent.executionId },
+    actorHash: { stringValue: await hashedId(`service-evidence-actor:${intent.actorUid}`) },
+    state: { stringValue: intent.state },
+    expiresAt: { timestampValue: intent.expiresAt },
+    retentionClass: { stringValue: intent.retentionClass },
+    intentJson: { stringValue: intentJson },
+    ...(intent.cleanup?.nextAttemptAt ? { cleanupDueAt: { timestampValue: intent.cleanup.nextAttemptAt } } : {}),
+  };
+}
+
+async function privateEvidenceIntentWrite(env: Env, intent: PrivateEvidenceUploadIntent, expectedUpdateTime?: string) {
+  const fields = await privateEvidenceIntentFields(intent);
+  return {
+    update: { name: fullName(env, `serviceEvidenceUploadIntents/${encodeURIComponent(intent.intentId)}`), fields },
+    currentDocument: expectedUpdateTime ? { updateTime: expectedUpdateTime } : { exists: false },
+  };
+}
+
+function cloudinarySignaturePayload(params: Record<string, string | number | boolean>) {
+  return Object.entries(params).sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${String(value)}`).join('&');
+}
+
+async function sha1Hex(value: string) {
+  const digest = await crypto.subtle.digest('SHA-1', enc.encode(value));
+  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function signCloudinaryParams(params: Record<string, string | number | boolean>, secret: string) {
+  return sha1Hex(`${cloudinarySignaturePayload(params)}${secret}`);
+}
+
+async function verifyCloudinaryUploadResponse(result: any, expectedPublicId: string, secret: string) {
+  if (!result || result.public_id !== expectedPublicId || result.resource_type !== 'image' || result.type !== 'authenticated' ||
+      typeof result.asset_id !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(result.asset_id) ||
+      !Number.isSafeInteger(result.version) || result.version < 1 || typeof result.signature !== 'string' || !/^[a-f0-9]{40}$/.test(result.signature)) return false;
+  const expected = await sha1Hex(`public_id=${expectedPublicId}&version=${result.version}${secret}`);
+  return constantTimeBytesEqual(enc.encode(expected), enc.encode(result.signature));
+}
+
+async function privateEvidenceDownloadUrl(env: Env, file: PrivateEvidenceUploadIntent['files'][number], expiresAt: string) {
+  if (!file.upload || !env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) {
+    throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_NOT_ACTIVATED');
+  }
+  const timestamp = Math.floor(Date.now() / 1000);
+  const params = {
+    expires_at: Math.floor(Date.parse(expiresAt) / 1000),
+    format: file.upload.format === 'jpeg' ? 'jpg' : file.upload.format,
+    public_id: file.publicId,
+    timestamp,
+    type: 'authenticated',
+  };
+  const signature = await signCloudinaryParams(params, env.CLOUDINARY_API_SECRET);
+  const query = new URLSearchParams({
+    api_key: env.CLOUDINARY_API_KEY,
+    expires_at: String(params.expires_at),
+    format: params.format,
+    public_id: params.public_id,
+    signature,
+    timestamp: String(timestamp),
+    type: params.type,
+  });
+  return `https://api.cloudinary.com/v1_1/${encodeURIComponent(env.CLOUDINARY_CLOUD_NAME)}/image/download?${query.toString()}`;
 }
 
 function parseStoredServiceExecution(value: any, updateTime?: string): ServiceExecutionStored | null {
@@ -5465,6 +5595,8 @@ async function serviceExecutionEventWrite(env: Env, aggregate: ServiceExecutionA
       actorHash: { stringValue: await hashedId(`service-execution-actor:${event.actorUid}`) },
       occurredAt: { timestampValue: event.occurredAt },
       ...(event.evidence?.note ? { evidenceNote: { stringValue: event.evidence.note } } : {}),
+      ...(event.evidence?.mediaIntentId ? { evidenceIntentId: { stringValue: event.evidence.mediaIntentId } } : {}),
+      ...(event.evidence?.media?.length ? { evidenceMediaIds: { arrayValue: { values: event.evidence.media.map(item => ({ stringValue: item.mediaId })) } } } : {}),
     } }, currentDocument: { exists: false },
   };
 }
@@ -5484,7 +5616,7 @@ async function executionAccountVerify(env: Env, uid: string, aggregate: Pick<Ser
   return { account: raw.data, verify: { verify: fullName(env, `users/${encodeURIComponent(uid)}`), currentDocument: { updateTime: raw.updateTime } } };
 }
 
-function serviceExecutionView(aggregate: ServiceExecutionAggregate, actorUid: string, rentalStatus?: string) {
+function serviceExecutionView(env: Env, aggregate: ServiceExecutionAggregate, actorUid: string, rentalStatus?: string) {
   const access = actorUid === aggregate.customerUid ? 'customer' : actorUid === aggregate.providerUid ? 'provider' : null;
   if (!access) throw new ServiceExecutionError('EXECUTION_NOT_AUTHORIZED');
   return {
@@ -5501,10 +5633,21 @@ function serviceExecutionView(aggregate: ServiceExecutionAggregate, actorUid: st
       ...(aggregate.lifecycleAuthority === 'rental_v2' ? { rentalStatus: rentalStatus || 'unavailable' } : {}),
       events: aggregate.events.map(event => ({
         eventId: event.eventId, revision: event.revision, action: event.action, actorRole: event.actorRole,
-        occurredAt: event.occurredAt, ...(event.evidence ? { evidence: event.evidence } : {}),
+        occurredAt: event.occurredAt, ...(event.evidence ? { evidence: {
+          ...(event.evidence.note ? { note: event.evidence.note } : {}),
+          ...(event.evidence.media?.length ? { media: event.evidence.media } : {}),
+        } } : {}),
       })),
     },
     activation: { productionEnabled: false, reason: SERVICE_EXECUTION_PRODUCTION_ACTIVATION },
+    evidenceMedia: {
+      enabled: privateEvidenceCapability(env).enabled,
+      ...(privateEvidenceCapability(env).enabled ? {} : { reason: PRIVATE_EVIDENCE_MEDIA_PRODUCTION_ACTIVATION }),
+      limits: {
+        maxFilesPerEvent: PRIVATE_EVIDENCE_MEDIA_LIMITS.maxFilesPerEvent,
+        maxFileBytes: PRIVATE_EVIDENCE_MEDIA_LIMITS.maxFileBytes,
+      },
+    },
   };
 }
 
@@ -5560,7 +5703,7 @@ async function createServiceExecution(req: Request, env: Env, user: User) {
           executionAccountVerify(env, prior.aggregate.providerUid, prior.aggregate, 'provider'),
           rentalExecutionStatus(env, prior.aggregate),
         ]);
-        return out(env, req, { success: true, ...serviceExecutionView(prior.aggregate, user.uid, rental?.status), replayed: true });
+        return out(env, req, { success: true, ...serviceExecutionView(env, prior.aggregate, user.uid, rental?.status), replayed: true });
       }
       const [customer, provider, rental] = await Promise.all([
         executionAccountVerify(env, binding.customerUid, aggregate, 'customer', transaction),
@@ -5578,7 +5721,7 @@ async function createServiceExecution(req: Request, env: Env, user: User) {
           ...(rental?.verify ? [rental.verify] : []),
           await serviceExecutionEventWrite(env, aggregate),
         ], transaction);
-        return out(env, req, { success: true, ...serviceExecutionView(aggregate, user.uid, rental?.status), replayed: false }, 201);
+        return out(env, req, { success: true, ...serviceExecutionView(env, aggregate, user.uid, rental?.status), replayed: false }, 201);
       } catch (error) {
         if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
       }
@@ -5597,7 +5740,372 @@ async function getServiceExecution(req: Request, env: Env, user: User, execution
     if (!role) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
     await executionAccountVerify(env, user.uid, stored.aggregate, role);
     const rental = await rentalExecutionStatus(env, stored.aggregate);
-    return out(env, req, { success: true, ...serviceExecutionView(stored.aggregate, user.uid, rental?.status) });
+    return out(env, req, { success: true, ...serviceExecutionView(env, stored.aggregate, user.uid, rental?.status) });
+  } catch (error) { return serviceExecutionErrorResponse(req, env, error); }
+}
+
+function privateEvidenceIntentResponse(intent: PrivateEvidenceUploadIntent) {
+  return {
+    intentId: intent.intentId,
+    expiresAt: intent.expiresAt,
+    state: intent.state,
+    files: intent.files.map(file => ({
+      clientFileId: file.clientFileId,
+      mediaId: file.mediaId,
+      uploaded: !!file.upload,
+      uploadPath: `/api/service-executions/${intent.executionId}/evidence-media/intents/${intent.intentId}/files/${file.mediaId}`,
+    })),
+  };
+}
+
+async function createPrivateEvidenceIntentRequest(req: Request, env: Env, user: User, executionId: string) {
+  if (serviceExecutionActivationOverride !== true) return serviceExecutionDisabled(req, env);
+  try {
+    const capability = privateEvidenceCapability(env);
+    if (!capability.enabled) throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_NOT_ACTIVATED');
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'service_evidence_intent');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many evidence upload attempts');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, SERVICE_EXECUTION_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    const actions: ServiceExecutionAction[] = ['start', 'record_progress', 'confirm_pickup', 'confirm_delivery', 'request_completion', 'dispute_completion', 'record_handover', 'record_return'];
+    if (!body || !Object.keys(body).every(key => ['expectedRevision', 'action', 'idempotencyKey', 'files'].includes(key)) ||
+        !Number.isSafeInteger(body.expectedRevision) || !actions.includes(body.action) || typeof body.idempotencyKey !== 'string' || !Array.isArray(body.files)) {
+      throw new PrivateEvidenceMediaError('INVALID_EVIDENCE_INTENT');
+    }
+    const intentId = `evidence_intent_${await hashedId(`service-evidence-intent:${executionId}:${user.uid}:${body.idempotencyKey}`)}`;
+    const folder = env.CLOUDINARY_FOLDER || 'heavyar';
+    const serverFiles = await Promise.all(body.files.map(async (file: any) => {
+      const mediaId = `evidence_media_${await hashedId(`service-evidence-file:${intentId}:${String(file?.clientFileId || '')}`)}`;
+      return { mediaId, publicId: `${folder}/evidence/${executionId}/${mediaId}` };
+    }));
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      if (!transaction) throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_UNAVAILABLE');
+      const [executionRaw, priorRaw] = await Promise.all([
+        transactionDocument(env, `serviceExecutions/${encodeURIComponent(executionId)}`, transaction),
+        transactionDocument(env, `serviceEvidenceUploadIntents/${encodeURIComponent(intentId)}`, transaction),
+      ]);
+      const stored = parseStoredServiceExecution(executionRaw?.data, executionRaw?.updateTime);
+      if (!stored) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+      const role = user.uid === stored.aggregate.customerUid ? 'customer' : user.uid === stored.aggregate.providerUid ? 'provider' : null;
+      if (!role) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+      const liveBinding = await serviceExecutionBindingOverride?.(stored.aggregate.source.kind, stored.aggregate.source.id);
+      if (!executionBindingMatches(stored.aggregate, liveBinding)) throw new ServiceExecutionError('EXECUTION_SOURCE_CHANGED');
+      const [customer, provider, rental] = await Promise.all([
+        executionAccountVerify(env, stored.aggregate.customerUid, stored.aggregate, 'customer', transaction),
+        executionAccountVerify(env, stored.aggregate.providerUid, stored.aggregate, 'provider', transaction),
+        rentalExecutionStatus(env, stored.aggregate, transaction),
+      ]);
+      const actor = role === 'customer' ? customer : provider;
+      // Validate that this actor can perform the intended lifecycle action
+      // before reserving provider storage. No state is persisted by this dry run.
+      transitionServiceExecution(stored.aggregate, {
+        action: body.action,
+        expectedRevision: body.expectedRevision,
+        idempotencyKey: body.idempotencyKey,
+      }, user.uid, new Date().toISOString(), rental?.status);
+      const prior = parseStoredPrivateEvidenceIntent(priorRaw?.data, priorRaw?.updateTime)?.intent;
+      const intent = createPrivateEvidenceUploadIntent({
+        capability,
+        execution: stored.aggregate,
+        actorUid: user.uid,
+        actorAccount: actor.account,
+        expectedRevision: body.expectedRevision,
+        action: body.action,
+        idempotencyKey: body.idempotencyKey,
+        files: body.files,
+        prior,
+        server: { intentId, files: serverFiles, now: new Date().toISOString() },
+      });
+      if (prior) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        return out(env, req, { success: true, ...privateEvidenceIntentResponse(intent), replayed: true });
+      }
+      try {
+        await commitWrites(env, [
+          await privateEvidenceIntentWrite(env, intent),
+          customer.verify,
+          provider.verify,
+          ...(rental?.verify ? [rental.verify] : []),
+        ], transaction);
+        return out(env, req, { success: true, ...privateEvidenceIntentResponse(intent), replayed: false }, 201);
+      } catch (error) {
+        if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+      }
+    }
+    throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_CONFLICT');
+  } catch (error) { return serviceExecutionErrorResponse(req, env, error); }
+}
+
+async function uploadPrivateEvidenceFile(req: Request, env: Env, user: User, executionId: string, intentId: string, mediaId: string) {
+  if (serviceExecutionActivationOverride !== true) return serviceExecutionDisabled(req, env);
+  try {
+    const capability = privateEvidenceCapability(env);
+    if (!capability.enabled || !env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) {
+      throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_NOT_ACTIVATED');
+    }
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'service_evidence_upload');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many evidence uploads');
+    if (limited) return limited;
+    const declaredLength = Number(req.headers.get('Content-Length') || 0);
+    if (declaredLength > PRIVATE_EVIDENCE_MEDIA_LIMITS.maxFileBytes + PRIVATE_EVIDENCE_MULTIPART_OVERHEAD_BYTES) {
+      return out(env, req, { success: false, error: 'Evidence file too large', errorCode: 'PAYLOAD_TOO_LARGE' }, 413);
+    }
+    const [executionRaw, intentRaw] = await Promise.all([
+      getRawDoc(env, 'serviceExecutions', executionId),
+      getRawDoc(env, 'serviceEvidenceUploadIntents', intentId),
+    ]);
+    const stored = parseStoredServiceExecution(executionRaw?.data, executionRaw?.updateTime);
+    const storedIntent = parseStoredPrivateEvidenceIntent(intentRaw?.data, intentRaw?.updateTime);
+    if (!stored || !storedIntent || storedIntent.intent.executionId !== executionId) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+    const role = user.uid === stored.aggregate.customerUid ? 'customer' : user.uid === stored.aggregate.providerUid ? 'provider' : null;
+    if (!role || storedIntent.intent.actorUid !== user.uid) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+    await executionAccountVerify(env, user.uid, stored.aggregate, role);
+    const liveBinding = await serviceExecutionBindingOverride?.(stored.aggregate.source.kind, stored.aggregate.source.id);
+    if (!executionBindingMatches(stored.aggregate, liveBinding)) throw new ServiceExecutionError('EXECUTION_SOURCE_CHANGED');
+    const expected = storedIntent.intent.files.find(file => file.mediaId === mediaId);
+    if (!expected) throw new PrivateEvidenceMediaError('EVIDENCE_REFERENCE_MISMATCH');
+    if (expected.upload) return out(env, req, { success: true, mediaId, uploaded: true, replayed: true });
+    if (storedIntent.intent.state !== 'pending' || Date.now() > Date.parse(storedIntent.intent.expiresAt)) {
+      throw new PrivateEvidenceMediaError('EVIDENCE_INTENT_EXPIRED');
+    }
+    const form: any = await req.formData().catch(() => null), file = form?.get('file');
+    if (!form || Array.from(form.keys() as Iterable<string>).some(key => key !== 'file') || !(file instanceof Blob) ||
+        file.type !== expected.mimeType || file.size !== expected.sizeBytes || file.size > PRIVATE_EVIDENCE_MEDIA_LIMITS.maxFileBytes) {
+      throw new PrivateEvidenceMediaError('INVALID_EVIDENCE_FILE');
+    }
+    const sourceSha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer())))
+      .map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const timestamp = Math.floor(Date.now() / 1000);
+    const params = { overwrite: false, public_id: expected.publicId, timestamp, transformation: 'fl_force_strip', type: 'authenticated' };
+    const signature = await signCloudinaryParams(params, env.CLOUDINARY_API_SECRET);
+    const upload = new FormData();
+    upload.append('file', file);
+    upload.append('overwrite', 'false');
+    upload.append('public_id', expected.publicId);
+    upload.append('timestamp', String(timestamp));
+    upload.append('transformation', 'fl_force_strip');
+    upload.append('type', 'authenticated');
+    upload.append('api_key', env.CLOUDINARY_API_KEY);
+    upload.append('signature', signature);
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(env.CLOUDINARY_CLOUD_NAME)}/image/upload`, { method: 'POST', body: upload });
+    const result: any = await response.json().catch(() => null);
+    if (!response.ok || !await verifyCloudinaryUploadResponse(result, expected.publicId, env.CLOUDINARY_API_SECRET)) {
+      if (response.ok) await destroyPrivateEvidenceAsset(env, expected.publicId).catch(() => false);
+      throw new PrivateEvidenceMediaError('EVIDENCE_UPLOAD_VERIFICATION_FAILED');
+    }
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      if (!transaction) throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_UNAVAILABLE');
+      const currentRaw = await transactionDocument(env, `serviceEvidenceUploadIntents/${encodeURIComponent(intentId)}`, transaction);
+      const current = parseStoredPrivateEvidenceIntent(currentRaw?.data, currentRaw?.updateTime);
+      if (!current?.updateTime) throw new PrivateEvidenceMediaError('EVIDENCE_REFERENCE_MISMATCH');
+      const next = recordVerifiedPrivateEvidenceUpload({
+        intent: current.intent,
+        actorUid: user.uid,
+        mediaId,
+        receipt: {
+          assetId: result.asset_id,
+          version: result.version,
+          format: result.format,
+          bytes: result.bytes,
+          width: result.width,
+          height: result.height,
+          sha256: sourceSha256,
+          uploadedAt: new Date().toISOString(),
+        },
+        now: new Date().toISOString(),
+      });
+      try {
+        await commitWrites(env, [await privateEvidenceIntentWrite(env, next, current.updateTime)], transaction);
+        return out(env, req, { success: true, mediaId, uploaded: true, replayed: next === current.intent });
+      } catch (error) {
+        if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+      }
+    }
+    throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_CONFLICT');
+  } catch (error) { return serviceExecutionErrorResponse(req, env, error); }
+}
+
+async function accessPrivateEvidenceFile(req: Request, env: Env, user: User, executionId: string, eventId: string, mediaId: string) {
+  if (serviceExecutionActivationOverride !== true) return serviceExecutionDisabled(req, env);
+  try {
+    const capability = privateEvidenceCapability(env);
+    if (!capability.enabled) throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_NOT_ACTIVATED');
+    const executionRaw = await getRawDoc(env, 'serviceExecutions', executionId);
+    const stored = parseStoredServiceExecution(executionRaw?.data, executionRaw?.updateTime);
+    if (!stored) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+    const role = user.uid === stored.aggregate.customerUid ? 'customer' : user.uid === stored.aggregate.providerUid ? 'provider' : null;
+    if (!role) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+    const event = stored.aggregate.events.find(item => item.eventId === eventId);
+    const intentId = event?.evidence?.mediaIntentId;
+    if (!event || !intentId || !event.evidence?.media?.some(item => item.mediaId === mediaId)) {
+      throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+    }
+    const [account, intentRaw] = await Promise.all([
+      executionAccountVerify(env, user.uid, stored.aggregate, role),
+      getRawDoc(env, 'serviceEvidenceUploadIntents', intentId),
+    ]);
+    const intent = parseStoredPrivateEvidenceIntent(intentRaw?.data, intentRaw?.updateTime)?.intent;
+    if (!intent || intent.attachedEventId !== eventId) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+    const grant = issuePrivateEvidenceAccessGrant({
+      capability,
+      intent,
+      execution: stored.aggregate,
+      requesterUid: user.uid,
+      requesterAccount: account.account,
+      server: { grantId: `evidence_grant_${await hashedId(`service-evidence-grant:${user.uid}:${eventId}:${mediaId}:${Date.now()}:${crypto.randomUUID()}`)}`, now: new Date().toISOString() },
+    });
+    if (!grant.mediaIds.includes(mediaId)) throw new PrivateEvidenceMediaError('EVIDENCE_REFERENCE_MISMATCH');
+    const file = intent.files.find(item => item.mediaId === mediaId);
+    if (!file?.upload) throw new PrivateEvidenceMediaError('EVIDENCE_UPLOAD_INCOMPLETE');
+    return out(env, req, {
+      success: true,
+      mediaId,
+      expiresAt: grant.expiresAt,
+      url: await privateEvidenceDownloadUrl(env, file, grant.expiresAt),
+    });
+  } catch (error) { return serviceExecutionErrorResponse(req, env, error); }
+}
+
+async function destroyPrivateEvidenceAsset(env: Env, publicId: string) {
+  if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return false;
+  const timestamp = Math.floor(Date.now() / 1000), params = { public_id: publicId, timestamp, type: 'authenticated' };
+  const form = new FormData();
+  form.append('public_id', publicId);
+  form.append('timestamp', String(timestamp));
+  form.append('type', 'authenticated');
+  form.append('api_key', env.CLOUDINARY_API_KEY);
+  form.append('signature', await signCloudinaryParams(params, env.CLOUDINARY_API_SECRET));
+  const response = await scheduledExternalFetch(env, 'cloudinary', `https://api.cloudinary.com/v1_1/${encodeURIComponent(env.CLOUDINARY_CLOUD_NAME)}/image/destroy`, { method: 'POST', body: form });
+  const result: any = await response.json().catch(() => null);
+  return response.ok && ['ok', 'not found'].includes(String(result?.result || ''));
+}
+
+async function claimScheduledPrivateEvidenceCleanup(env: Env, intentId: string, now: string) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    if (!transaction) throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_UNAVAILABLE');
+    const raw = await transactionDocument(env, `serviceEvidenceUploadIntents/${encodeURIComponent(intentId)}`, transaction);
+    const current = parseStoredPrivateEvidenceIntent(raw?.data, raw?.updateTime);
+    if (!current?.updateTime || current.intent.intentId !== intentId) {
+      await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+      return null;
+    }
+    let claimed: PrivateEvidenceUploadIntent;
+    try {
+      claimed = claimPrivateEvidenceCleanup({
+        intent: current.intent,
+        claimId: `evidence_cleanup_${await hashedId(`service-evidence-cleanup:${intentId}:${now}:${crypto.randomUUID()}`)}`,
+        now,
+      });
+    } catch (error) {
+      await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+      if (error instanceof PrivateEvidenceMediaError && error.code === 'EVIDENCE_CLEANUP_NOT_ELIGIBLE') return null;
+      throw error;
+    }
+    try {
+      await commitWrites(env, [await privateEvidenceIntentWrite(env, claimed, current.updateTime)], transaction);
+      return claimed;
+    } catch (error) {
+      if (!(error instanceof FirestorePreconditionError) || attempt === 2) throw error;
+    }
+  }
+  return null;
+}
+
+async function settleScheduledPrivateEvidenceCleanup(env: Env, claimed: PrivateEvidenceUploadIntent, deleted: boolean, now: string) {
+  const claimId = claimed.cleanup?.claimId;
+  if (!claimId) throw new PrivateEvidenceMediaError('EVIDENCE_CLEANUP_CLAIM_MISMATCH');
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    if (!transaction) throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_UNAVAILABLE');
+    const raw = await transactionDocument(env, `serviceEvidenceUploadIntents/${encodeURIComponent(claimed.intentId)}`, transaction);
+    const current = parseStoredPrivateEvidenceIntent(raw?.data, raw?.updateTime);
+    if (!current?.updateTime || current.intent.state !== 'cleanup_claimed' || current.intent.cleanup?.claimId !== claimId) {
+      await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+      return false;
+    }
+    const next = deleted
+      ? completePrivateEvidenceCleanup({ intent: current.intent, claimId, now })
+      : retryPrivateEvidenceCleanup({ intent: current.intent, claimId, now });
+    try {
+      await commitWrites(env, [await privateEvidenceIntentWrite(env, next, current.updateTime)], transaction);
+      return true;
+    } catch (error) {
+      if (!(error instanceof FirestorePreconditionError) || attempt === 2) throw error;
+    }
+  }
+  return false;
+}
+
+export async function processPrivateEvidenceCleanup(env: Env, nowOverride?: string) {
+  // The processor deliberately does not depend on feature activation: it must
+  // finish previously reserved private assets even if execution is later
+  // disabled. Missing provider credentials fail closed and leave records due.
+  if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return;
+  const now = nowOverride || new Date().toISOString();
+  const rows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: {
+    from: [{ collectionId: 'serviceEvidenceUploadIntents' }],
+    where: { fieldFilter: { field: { fieldPath: 'cleanupDueAt' }, op: 'LESS_THAN_OR_EQUAL', value: { timestampValue: now } } },
+    orderBy: [{ field: { fieldPath: 'cleanupDueAt' }, direction: 'ASCENDING' }],
+    limit: PRIVATE_EVIDENCE_MEDIA_LIMITS.cleanupCandidateScanLimit,
+  } }) }) as any[] || [];
+  for (const row of rows) {
+    const intentId = String(row?.document?.name || '').split('/').pop() || '';
+    if (!PRIVATE_EVIDENCE_INTENT_ID.test(intentId)) continue;
+    const claimed = await claimScheduledPrivateEvidenceCleanup(env, intentId, now);
+    if (!claimed) continue;
+    let deleted = true;
+    for (const file of claimed.files) {
+      if (!await destroyPrivateEvidenceAsset(env, file.publicId).catch(() => false)) {
+        deleted = false;
+        break;
+      }
+    }
+    await settleScheduledPrivateEvidenceCleanup(env, claimed, deleted, now);
+    // One claimed intent costs at most eleven external subrequests including
+    // query, claim/finalize transactions and three authenticated deletions.
+    return;
+  }
+}
+
+async function abandonPrivateEvidenceIntentRequest(req: Request, env: Env, user: User, executionId: string, intentId: string) {
+  if (serviceExecutionActivationOverride !== true) return serviceExecutionDisabled(req, env);
+  try {
+    const executionRaw = await getRawDoc(env, 'serviceExecutions', executionId);
+    const stored = parseStoredServiceExecution(executionRaw?.data, executionRaw?.updateTime);
+    if (!stored) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+    const role = user.uid === stored.aggregate.customerUid ? 'customer' : user.uid === stored.aggregate.providerUid ? 'provider' : null;
+    if (!role) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+    await executionAccountVerify(env, user.uid, stored.aggregate, role);
+    let abandoned: PrivateEvidenceUploadIntent | null = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env);
+      if (!transaction) throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_UNAVAILABLE');
+      const intentRaw = await transactionDocument(env, `serviceEvidenceUploadIntents/${encodeURIComponent(intentId)}`, transaction);
+      const current = parseStoredPrivateEvidenceIntent(intentRaw?.data, intentRaw?.updateTime);
+      if (!current?.updateTime || current.intent.executionId !== executionId) throw new ServiceExecutionError('EXECUTION_NOT_FOUND');
+      abandoned = abandonPrivateEvidenceIntent({ intent: current.intent, actorUid: user.uid, now: new Date().toISOString() });
+      if (abandoned === current.intent) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        break;
+      }
+      try {
+        await commitWrites(env, [await privateEvidenceIntentWrite(env, abandoned, current.updateTime)], transaction);
+        break;
+      } catch (error) {
+        if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+      }
+    }
+    if (!abandoned) throw new PrivateEvidenceMediaError('EVIDENCE_MEDIA_CONFLICT');
+    // Deleting every reserved, server-generated public ID also covers the
+    // orphan window where Cloudinary accepted a file but the receipt CAS did
+    // not commit. `not found` is an idempotent success.
+    const cleanup = await Promise.all(abandoned.files.map(file => destroyPrivateEvidenceAsset(env, file.publicId).catch(() => false)));
+    return out(env, req, { success: true, state: 'abandoned', cleanupPending: cleanup.some(result => !result) });
   } catch (error) { return serviceExecutionErrorResponse(req, env, error); }
 }
 
@@ -5630,10 +6138,34 @@ async function transitionServiceExecutionRequest(req: Request, env: Env, user: U
         executionAccountVerify(env, stored.aggregate.providerUid, stored.aggregate, 'provider', transaction),
         rentalExecutionStatus(env, stored.aggregate, transaction),
       ]);
-      const next = transitionServiceExecution(stored.aggregate, body, user.uid, new Date().toISOString(), rental?.status);
+      const mediaIntentId = body.evidence && typeof body.evidence === 'object' && !Array.isArray(body.evidence)
+        ? String(body.evidence.mediaIntentId || '') : '';
+      let evidenceStored: PrivateEvidenceStored | null = null;
+      if (mediaIntentId) {
+        if (!PRIVATE_EVIDENCE_INTENT_ID.test(mediaIntentId) || !privateEvidenceCapability(env).enabled) {
+          throw new ServiceExecutionError('EVIDENCE_PHOTO_DELIVERY_NOT_READY');
+        }
+        const evidenceRaw = await transactionDocument(env, `serviceEvidenceUploadIntents/${encodeURIComponent(mediaIntentId)}`, transaction);
+        evidenceStored = parseStoredPrivateEvidenceIntent(evidenceRaw?.data, evidenceRaw?.updateTime);
+        if (!evidenceStored?.updateTime) throw new PrivateEvidenceMediaError('EVIDENCE_REFERENCE_MISMATCH');
+      }
+      const verifiedMedia = evidenceStored ? {
+        intentId: evidenceStored.intent.intentId,
+        mediaIds: evidenceStored.intent.files.map(file => file.mediaId),
+      } : undefined;
+      const next = transitionServiceExecution(stored.aggregate, body, user.uid, new Date().toISOString(), rental?.status, verifiedMedia);
+      const actorAccount = role === 'customer' ? customer.account : provider.account;
+      const attachedIntent = evidenceStored ? attachPrivateEvidenceToEvent({
+        intent: evidenceStored.intent,
+        execution: next,
+        event: next.events.find(event => event.eventId === evidenceStored!.intent.attachedEventId) || next.events.at(-1)!,
+        actorUid: user.uid,
+        actorAccount,
+        now: new Date().toISOString(),
+      }) : null;
       if (next === stored.aggregate) {
         await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
-        return out(env, req, { success: true, ...serviceExecutionView(stored.aggregate, user.uid, rental?.status), replayed: true });
+        return out(env, req, { success: true, ...serviceExecutionView(env, stored.aggregate, user.uid, rental?.status), replayed: true });
       }
       try {
         await commitWrites(env, [
@@ -5642,8 +6174,9 @@ async function transitionServiceExecutionRequest(req: Request, env: Env, user: U
           provider.verify,
           ...(rental?.verify ? [rental.verify] : []),
           await serviceExecutionEventWrite(env, next),
+          ...(attachedIntent && evidenceStored?.updateTime ? [await privateEvidenceIntentWrite(env, attachedIntent, evidenceStored.updateTime)] : []),
         ], transaction);
-        return out(env, req, { success: true, ...serviceExecutionView(next, user.uid, rental?.status), replayed: false });
+        return out(env, req, { success: true, ...serviceExecutionView(env, next, user.uid, rental?.status), replayed: false });
       } catch (error) {
         if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
       }
@@ -6531,6 +7064,16 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
          return serviceExecutionDisabled(req, env);
        }
        if (path === '/api/service-executions' && req.method === 'POST') return await createServiceExecution(req, env, await authenticatedUser(req, env));
+       const serviceEvidenceIntentCreateMatch = path.match(/^\/api\/service-executions\/(execution_[A-Za-z0-9_-]{43})\/evidence-media\/intents$/);
+       if (serviceEvidenceIntentCreateMatch && req.method === 'POST') return await createPrivateEvidenceIntentRequest(req, env, await authenticatedUser(req, env), serviceEvidenceIntentCreateMatch[1]);
+       const serviceEvidenceUploadMatch = path.match(/^\/api\/service-executions\/(execution_[A-Za-z0-9_-]{43})\/evidence-media\/intents\/(evidence_intent_[A-Za-z0-9_-]{43})\/files\/(evidence_media_[A-Za-z0-9_-]{43})$/);
+       if (serviceEvidenceUploadMatch && req.method === 'POST') return await uploadPrivateEvidenceFile(req, env, await authenticatedUser(req, env), serviceEvidenceUploadMatch[1], serviceEvidenceUploadMatch[2], serviceEvidenceUploadMatch[3]);
+       const serviceEvidenceAbandonMatch = path.match(/^\/api\/service-executions\/(execution_[A-Za-z0-9_-]{43})\/evidence-media\/intents\/(evidence_intent_[A-Za-z0-9_-]{43})$/);
+       if (serviceEvidenceAbandonMatch && req.method === 'DELETE') return await abandonPrivateEvidenceIntentRequest(req, env, await authenticatedUser(req, env), serviceEvidenceAbandonMatch[1], serviceEvidenceAbandonMatch[2]);
+       const serviceEvidenceAccessMatch = path.match(/^\/api\/service-executions\/(execution_[A-Za-z0-9_-]{43})\/events\/(execution_[A-Za-z0-9_-]{43}__\d{1,3})\/evidence\/(evidence_media_[A-Za-z0-9_-]{43})\/access$/);
+       if (serviceEvidenceAccessMatch && req.method === 'GET' && serviceEvidenceAccessMatch[2].startsWith(`${serviceEvidenceAccessMatch[1]}__`)) {
+         return await accessPrivateEvidenceFile(req, env, await authenticatedUser(req, env), serviceEvidenceAccessMatch[1], serviceEvidenceAccessMatch[2], serviceEvidenceAccessMatch[3]);
+       }
        const serviceExecutionDetailMatch = path.match(/^\/api\/service-executions\/(execution_[A-Za-z0-9_-]{43})$/);
        if (serviceExecutionDetailMatch && req.method === 'GET') return await getServiceExecution(req, env, await authenticatedUser(req, env), serviceExecutionDetailMatch[1]);
        const serviceExecutionTransitionMatch = path.match(/^\/api\/service-executions\/(execution_[A-Za-z0-9_-]{43})\/transitions$/);
@@ -6703,6 +7246,7 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       ['processDeletionJobs', processDeletionJobs],
       ['processRegulatoryExpiry', processRegulatoryExpiry],
       ['processRentalExpiryReminders', processRentalExpiryReminders],
+      ['processPrivateEvidenceCleanup', processPrivateEvidenceCleanup],
       ['retryDueNotificationDeliveries', retryDueNotificationDeliveries],
       ['pollNotificationReceipts', pollNotificationReceipts],
       ['processEarlyAccessRetention', processEarlyAccessRetention],

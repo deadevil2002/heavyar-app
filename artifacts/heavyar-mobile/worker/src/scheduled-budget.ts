@@ -12,6 +12,7 @@ export const SCHEDULED_PROCESSOR_LIMITS = {
   processDeletionJobs: { work: 16, recovery: 3 },
   processRegulatoryExpiry: { work: 8, recovery: 1 },
   processRentalExpiryReminders: { work: 8, recovery: 1 },
+  processPrivateEvidenceCleanup: { work: 12, recovery: 1 },
   retryDueNotificationDeliveries: { work: 20, recovery: 1 },
   pollNotificationReceipts: { work: 24, recovery: 1 },
   processEarlyAccessRetention: { work: 18, recovery: 1 },

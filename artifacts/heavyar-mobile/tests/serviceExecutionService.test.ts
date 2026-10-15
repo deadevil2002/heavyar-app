@@ -32,6 +32,11 @@ const detail = {
     events: [{ eventId: `${executionId}__0`, revision: 0, action: 'confirmed', actorRole: 'customer', occurredAt: '2026-10-15T10:00:00.000Z' }],
   },
   activation: { productionEnabled: false, reason: 'disabled_pending_contractual_eligibility_booking_and_payment_prerequisites' },
+  evidenceMedia: {
+    enabled: false,
+    reason: 'disabled_pending_authenticated_private_media_delivery',
+    limits: { maxFilesPerEvent: 3, maxFileBytes: 5 * 1024 * 1024 },
+  },
 };
 
 describe('M2-E2 mobile service execution boundary', () => {
@@ -48,6 +53,16 @@ describe('M2-E2 mobile service execution boundary', () => {
       ...detail,
       execution: { ...detail.execution, events: [{ ...detail.execution.events[0], actorUid: 'private', evidence: { photoUrl: 'https://public.example' } }] },
     })).toThrow();
+    expect(() => decodeServiceExecutionDetail({ ...detail, evidenceMedia: { ...detail.evidenceMedia, enabled: true } })).toThrow();
+    expect(decodeServiceExecutionDetail({
+      ...detail,
+      evidenceMedia: { enabled: true, limits: detail.evidenceMedia.limits },
+      execution: { ...detail.execution, revision: 1, events: [
+        detail.execution.events[0],
+        { eventId: `${executionId}__1`, revision: 1, action: 'start', actorRole: 'provider', occurredAt: '2026-10-15T10:01:00.000Z', evidence: { media: [{ mediaId: `evidence_media_${'m'.repeat(43)}` }] } },
+      ] },
+    }).evidenceMedia.enabled).toBe(true);
+    expect(() => decodeServiceExecutionDetail({ ...detail, evidenceMedia: { ...detail.evidenceMedia, publicUrl: 'https://public.example' } })).toThrow();
   });
 
   it('never sends actor identities, activation flags, money, or evidence photo URLs', async () => {

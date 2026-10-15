@@ -499,6 +499,15 @@ service cloud.firestore {
     match /serviceExecutionEvents/{eventId} {
       allow read, write: if false;
     }
+    // Private evidence media intent/attachment metadata is reserved for the
+    // authoritative Worker. Native clients must never forge ownership or read
+    // provider storage identifiers directly.
+    match /serviceEvidenceUploadIntents/{intentId} {
+      allow read, write: if false;
+    }
+    match /serviceEvidenceMedia/{mediaId} {
+      allow read, write: if false;
+    }
     match /serviceProfileAudit/{auditId} {
       allow read, write: if false;
     }

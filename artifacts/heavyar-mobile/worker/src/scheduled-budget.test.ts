@@ -91,6 +91,7 @@ describe('scheduled external-subrequest budget', () => {
 
     expect(opportunities.get('processDeletionJobs')).toBeGreaterThan(0);
     expect(opportunities.get('processRegulatoryExpiry')).toBeGreaterThan(0);
+    expect(opportunities.get('processPrivateEvidenceCleanup')).toBeGreaterThan(0);
     expect(opportunities.get('processPendingNotificationOutbox')).toBeGreaterThan(0);
   });
 });

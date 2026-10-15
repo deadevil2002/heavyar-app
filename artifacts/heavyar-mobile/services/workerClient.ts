@@ -95,6 +95,9 @@ function metricLabel(path: string): string {
     .replace(/\/api\/drivers\/requests\/[^/]+/, '/api/drivers/requests/:id')
     .replace(/\/api\/service-rfqs\/[^/]+/, '/api/service-rfqs/:id')
     .replace(/\/api\/service-executions\/[^/]+/, '/api/service-executions/:id')
+    .replace(/\/evidence-media\/intents\/[^/]+/, '/evidence-media/intents/:intentId')
+    .replace(/\/files\/[^/]+/, '/files/:mediaId')
+    .replace(/\/events\/[^/]+\/evidence\/[^/]+/, '/events/:eventId/evidence/:mediaId')
     .replace(/\/quotes\/[^/]+/, '/quotes/:quoteId');
   return `worker${route.replace(/\//g, '.')}`.replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 80);
 }
@@ -115,7 +118,9 @@ function requestSignal(external?: AbortSignal | null) {
 export async function request<T>(path: string, init: RequestInit = {}, authenticated = true, expectedUid?: string): Promise<T> {
   const label = metricLabel(path);
   const headers = new Headers(init.headers);
-  headers.set('Content-Type', 'application/json');
+  // Let React Native/fetch add the multipart boundary for private evidence
+  // uploads. JSON remains the default for every existing API contract.
+  if (!(typeof FormData !== 'undefined' && init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   const auth = authenticated ? getFirebaseAuth() : undefined;
   const user = auth?.currentUser;
   const uid = expectedUid || user?.uid;

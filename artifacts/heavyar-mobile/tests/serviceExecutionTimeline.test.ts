@@ -14,6 +14,11 @@ function detail(overrides: Partial<ServiceExecutionDetail['execution']> = {}, ac
       ...overrides,
     },
     activation: { productionEnabled: false, reason: 'disabled_pending_contractual_eligibility_booking_and_payment_prerequisites' },
+    evidenceMedia: {
+      enabled: false,
+      reason: 'disabled_pending_authenticated_private_media_delivery',
+      limits: { maxFilesPerEvent: 3, maxFileBytes: 5242880 },
+    },
   };
 }
 

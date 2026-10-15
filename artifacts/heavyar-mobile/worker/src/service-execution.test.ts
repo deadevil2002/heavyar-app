@@ -119,6 +119,8 @@ describe('service execution lifecycle', () => {
     expect(() => move(initial, 'start', 'unrelated_uid_789', 1)).toThrowError(new ServiceExecutionError('EXECUTION_NOT_AUTHORIZED'));
     expect(() => move(initial, 'start', providerUid, 1, undefined, { photoReferences: ['https://public.example/evidence.jpg'] }))
       .toThrowError(new ServiceExecutionError('EVIDENCE_PHOTO_DELIVERY_NOT_READY'));
+    expect(() => move(initial, 'start', providerUid, 1, undefined, { mediaIntentId: `evidence_intent_${'i'.repeat(43)}` }))
+      .toThrowError(new ServiceExecutionError('EVIDENCE_PHOTO_DELIVERY_NOT_READY'));
   });
 
   it('rejects malformed persisted history before it can be projected or transitioned', () => {
