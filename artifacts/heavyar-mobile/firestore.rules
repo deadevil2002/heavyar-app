@@ -476,6 +476,18 @@ service cloud.firestore {
     match /transportRequests/{requestId} {
       allow read, write: if false;
     }
+    // M2-D4 RFQs, quotes and provisional selections are inert source-only
+    // contracts. No client may read or persist these private future records;
+    // a separately approved Worker policy is required before activation.
+    match /serviceRfqs/{rfqId} {
+      allow read, write: if false;
+    }
+    match /serviceQuotes/{quoteId} {
+      allow read, write: if false;
+    }
+    match /serviceQuoteSelections/{selectionId} {
+      allow read, write: if false;
+    }
     match /serviceProfileAudit/{auditId} {
       allow read, write: if false;
     }
