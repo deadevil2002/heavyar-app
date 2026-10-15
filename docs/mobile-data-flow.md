@@ -59,6 +59,18 @@ This document records the production ownership and client reconciliation rules. 
 - Notifications: one shared unread request per UID/stale window.
 - Worker calls: one 15-second attempt unless an endpoint explicitly documents safe idempotent retry. Client mutations must not silently retry.
 
+## Permanent architecture and scalability review gate
+
+Every material data-flow change must satisfy and document the applicable criteria below. Passing this gate is a design/review requirement, not evidence that any traffic capacity has already been achieved.
+
+- **Ownership and separation:** keep one authoritative source of truth per domain with explicit read/write authority. Separate public projections, participant-private data, financial records, and audit/retention evidence. Project only the minimum authorized fields; do not duplicate authority, create conflicting caches, or re-enrich values already carried by an immutable snapshot.
+- **Bounded access:** use indexed bounded queries, stable cursor pagination, bounded response/render sizes, single-flight deduplication, and explicit concurrency caps. Prohibit N+1 reads, uncontrolled fan-out, unconditional polling, duplicate realtime listeners, and unbounded client lists. Every cache must define its identity-scoped key, TTL, freshness requirement, targeted invalidation, and stale-response fence.
+- **Protected mutations and background work:** keep protected business mutations Worker-authoritative with transactions or CAS plus actor-bound idempotency. Apply durable rate/abuse limits where warranted. Queues and scheduled processors must be bounded, fair, backpressured, independently recoverable, and use safe retry with exponential backoff; notification batches, Firestore indexes, and Cloudflare subrequests require explicit budgets. Never perform synchronous mass processing on a user-facing request path or let one failed processor block unrelated work.
+- **Measured evidence:** important changes must state the measured or still-unverified startup/navigation latency, API p50/p95, reads/writes per operation, Worker execution/subrequest budget, query efficiency, cache hit/invalidation behavior, memory/render cost, error/timeout/crash-free rate, queue lag/retry backlog, and estimated infrastructure cost at the modeled traffic. Never invent results or present an unmeasured target as achieved capacity. Telemetry labels and payloads must exclude personal data, credentials, private request content, and user-derived identifiers.
+- **Minimization and cleanup:** collect, store, cache, and process only what is necessary. Evidence must identify obsolete fields, duplicate requests, or stale caches before removal is proposed, and unnecessary processing should be removed before new infrastructure is added. Persisted data or historical source must never be deleted automatically: first verify usage, migration compatibility, audit/privacy duties, and retention, including the existing seven-year post-closure requirement for applicable transaction evidence. Production deletion, migration, or destructive cleanup requires separate Owner authorization.
+
+Future capacity validation, including the unverified 200,000-concurrent-user engineering target, is defined in `docs/SCALABILITY_RISK_REGISTER.md` and requires a separately authorized synthetic non-Production exercise.
+
 ## Prohibited patterns
 
 - Raw authenticated Worker `fetch` calls that bypass the central request boundary.

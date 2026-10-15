@@ -69,3 +69,20 @@ The original register was diagnostic. P2-C resolves DP-003 with source changes p
 ## Recommended next phase boundaries
 
 P2-C is narrowly limited to DP-003 and preserves direct canonical-source ownership. The next separate search scalability phase is DP-010 public driver discovery; it must not reuse Admin-only semantics without preserving `driverEligibility` and market filters.
+
+## Future capacity-readiness verification `[TARGET / NOT VERIFIED]`
+
+The Owner's engineering target is possible future operation at up to **200,000 simultaneous active sessions**. This is neither measured capacity nor a release guarantee. Capacity planning must report registered users, monthly active users, daily active users, and simultaneous active sessions separately rather than treating them as equivalent.
+
+A future test phase requires separate Owner authorization, isolated synthetic data and traffic, explicit acceptance thresholds derived from measured baselines, and a non-Production target. It must cover:
+
+1. a synthetic 200,000 registered-user dataset;
+2. progressive traffic/concurrency stages up to the 200,000-concurrent engineering target, with stop conditions;
+3. concurrent searches, bookings, and chat sessions;
+4. login/session-refresh and push-notification bursts;
+5. large equipment inventories and historical booking volumes;
+6. slow networks, timeouts, partial outages, retry/backpressure, and recovery;
+7. Firebase and Cloudflare quotas, subrequests, queues, indexes, storage/egress, and projected cost; and
+8. baseline-defined latency, error, saturation, backlog, and crash-free acceptance thresholds, followed by evidence-based bottleneck remediation.
+
+Do not run this load plan against Production, infer success from source tests, mark any risk resolved without measured evidence, or purchase/upgrade/provision infrastructure without separate approval.
