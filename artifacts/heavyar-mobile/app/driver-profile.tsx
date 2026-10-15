@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator, ScrollView, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
@@ -25,6 +25,11 @@ import {
 type OwnerStatus = 'pending_review' | 'approved' | 'rejected' | 'suspended';
 
 export default function DriverProfileScreen() {
+  const { user } = useAuth();
+  return <DriverProfileContent key={user?.uid || 'guest'} />;
+}
+
+function DriverProfileContent() {
   const { isRTL, t } = useLanguage();
   const router = useRouter();
   const { dialog, showDialog, hideDialog } = useAppDialog();
@@ -32,6 +37,21 @@ export default function DriverProfileScreen() {
   const account = user as (typeof user & { accountStatus?: string; suspensionStatus?: string | null; isActive?: boolean });
   const canEdit = isAuthenticated && canEditDriverOwnerProfile(account);
   const dirty = useRef(false);
+  const mounted = useRef(true);
+  const focused = useRef(false);
+  const focusGeneration = useRef(0);
+  const inFlight = useRef<Promise<void> | null>(null);
+  const requestController = useRef<AbortController | null>(null);
+  const loadedOnce = useRef(false);
+  const savingRef = useRef(false);
+  const reconcileAfterSave = useRef(false);
+  const draftGeneration = useRef(0);
+  const uidRef = useRef(user?.uid || '');
+  const canEditRef = useRef(canEdit);
+  const localeRef = useRef<'ar' | 'en'>(isRTL ? 'ar' : 'en');
+  uidRef.current = user?.uid || '';
+  canEditRef.current = canEdit;
+  localeRef.current = isRTL ? 'ar' : 'en';
   const [displayName, setDisplayName] = useState('');
   const [countryCode, setCountryCode] = useState<GccCountryCode>('SA');
   const [region, setRegion] = useState('');
@@ -54,7 +74,10 @@ export default function DriverProfileScreen() {
   })));
 
   const localized = useCallback((ar: string, en: string) => isRTL ? ar : en, [isRTL]);
-  const markDirty = useCallback(() => { dirty.current = true; }, []);
+  const markDirty = useCallback(() => {
+    dirty.current = true;
+    draftGeneration.current += 1;
+  }, []);
 
   const applyProfile = useCallback((profile: Awaited<ReturnType<typeof getDriverProfile>>['profile'], hydrateDraft: boolean) => {
     if (!profile) return;
@@ -74,41 +97,100 @@ export default function DriverProfileScreen() {
       : 'offline');
   }, []);
 
-  const loadProfile = useCallback(async (initial = false) => {
-    if (!canEdit) {
+  const loadProfile = useCallback((mode: 'focus' | 'refresh' = 'refresh') => {
+    const uid = uidRef.current;
+    const generation = focusGeneration.current;
+    if (!focused.current || !canEditRef.current || !uid || savingRef.current) {
       setLoading(false);
-      return;
+      setRefreshing(false);
+      return Promise.resolve();
     }
-    if (!initial) setRefreshing(true);
-    try {
-      const { profile } = await getDriverProfile();
-      applyProfile(profile, !dirty.current);
-      setLoadError('');
-    } catch (error) {
-      setLoadError(error instanceof WorkerError ? safeErrorMessage(error, isRTL ? 'ar' : 'en') : localized(
-        'تعذر تحميل ملف السائق. تحقق من الاتصال وحاول مرة أخرى.',
-        'Could not load the driver profile. Check your connection and try again.',
-      ));
-    } finally {
+    if (inFlight.current) return inFlight.current;
+
+    const showInitialLoading = mode === 'focus' && !loadedOnce.current;
+    if (showInitialLoading) setLoading(true);
+    else setRefreshing(true);
+    const controller = new AbortController();
+    requestController.current = controller;
+    const pending = (async () => {
+      try {
+        const { profile } = await getDriverProfile(controller.signal, uid);
+        if (!mounted.current || !focused.current || controller.signal.aborted || generation !== focusGeneration.current
+          || uidRef.current !== uid || !canEditRef.current) return;
+        loadedOnce.current = true;
+        applyProfile(profile, !dirty.current);
+        setLoadError('');
+      } catch (error) {
+        if (!mounted.current || !focused.current || controller.signal.aborted || generation !== focusGeneration.current
+          || uidRef.current !== uid || !canEditRef.current) return;
+        setLoadError(error instanceof WorkerError ? safeErrorMessage(error, localeRef.current) : localeRef.current === 'ar'
+          ? 'تعذر تحميل ملف السائق. تحقق من الاتصال وحاول مرة أخرى.'
+          : 'Could not load the driver profile. Check your connection and try again.');
+      } finally {
+        if (requestController.current === controller) {
+          requestController.current = null;
+          inFlight.current = null;
+        }
+        if (mounted.current && focused.current && generation === focusGeneration.current
+          && uidRef.current === uid && canEditRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    })();
+    inFlight.current = pending;
+    return pending;
+  }, [applyProfile]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      focused.current = false;
+      focusGeneration.current += 1;
+      requestController.current?.abort();
+      requestController.current = null;
+      inFlight.current = null;
+      reconcileAfterSave.current = false;
+    };
+  }, []);
+
+  useFocusEffect(useCallback(() => {
+    focused.current = true;
+    focusGeneration.current += 1;
+    if (canEdit && savingRef.current) {
+      reconcileAfterSave.current = true;
+      setLoading(false);
+      setRefreshing(false);
+    } else if (canEdit) {
+      reconcileAfterSave.current = false;
+      void loadProfile('focus');
+    }
+    else {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [applyProfile, canEdit, localized]);
-
-  useFocusEffect(useCallback(() => {
-    void loadProfile(true);
-    const interval = setInterval(() => void loadProfile(false), 15_000);
-    return () => clearInterval(interval);
-  }, [loadProfile]));
+    return () => {
+      focused.current = false;
+      focusGeneration.current += 1;
+      requestController.current?.abort();
+      requestController.current = null;
+      inFlight.current = null;
+    };
+  }, [canEdit, loadProfile]));
 
   useEffect(() => {
-    void fetchMarketConfig().then(setMarkets).catch(() => {
-      setLoadError(localized(
-        'تعذر تحميل الأسواق المتاحة. حاول مرة أخرى.',
-        'Could not load available markets. Try again.',
-      ));
+    let active = true;
+    void fetchMarketConfig().then(result => {
+      if (active) setMarkets(result);
+    }).catch(() => {
+      if (!active) return;
+      setLoadError(localeRef.current === 'ar'
+        ? 'تعذر تحميل الأسواق المتاحة. حاول مرة أخرى.'
+        : 'Could not load available markets. Try again.');
     });
-  }, [localized]);
+    return () => { active = false; };
+  }, []);
 
   const selectedMarket = markets.find(item => item.code === countryCode);
   const marketEnabled = selectedMarket?.enabled === true && selectedMarket.providerOnboardingAvailable !== false;
@@ -128,23 +210,44 @@ export default function DriverProfileScreen() {
       showDialog(t('email_verification_required_title'), t('email_verification_required_driver'), [{ text: t('ok'), style: 'default' }]);
       return;
     }
+    const saveUid = user?.uid || '';
+    if (!saveUid || savingRef.current) return;
+    const saveDraftGeneration = draftGeneration.current;
+    savingRef.current = true;
     setSaving(true);
+    focusGeneration.current += 1;
+    const saveFocusGeneration = focusGeneration.current;
+    requestController.current?.abort();
+    requestController.current = null;
+    inFlight.current = null;
     try {
       const payload = buildDriverOwnerSavePayload({
         displayName, countryCode, region, city, equipmentTypes, yearsExperience: years,
         description, availabilityStatus,
       });
       const result = await saveDriverProfile(payload);
-      dirty.current = false;
-      applyProfile(result.profile, true);
+      if (!mounted.current || uidRef.current !== saveUid || !canEditRef.current) return;
+      const draftUnchanged = draftGeneration.current === saveDraftGeneration;
+      if (draftUnchanged) dirty.current = false;
+      if (!focused.current || focusGeneration.current !== saveFocusGeneration) return;
+      loadedOnce.current = true;
+      applyProfile(result.profile, draftUnchanged);
+      setLoadError('');
       showDialog(t('success'), t('profile_updated'), [{ text: t('ok'), style: 'default' }]);
     } catch (error) {
+      if (!mounted.current || !focused.current || focusGeneration.current !== saveFocusGeneration
+        || uidRef.current !== saveUid || !canEditRef.current) return;
       showDialog(t('error_title'), error instanceof WorkerError ? safeErrorMessage(error, isRTL ? 'ar' : 'en') : localized(
         'تعذر حفظ ملف السائق. حاول مرة أخرى.',
         'Could not save the driver profile. Try again.',
       ), [{ text: t('ok'), style: 'default' }]);
     } finally {
-      setSaving(false);
+      savingRef.current = false;
+      if (mounted.current && uidRef.current === saveUid) setSaving(false);
+      const shouldReconcile = reconcileAfterSave.current && mounted.current && focused.current
+        && uidRef.current === saveUid && canEditRef.current;
+      reconcileAfterSave.current = false;
+      if (shouldReconcile) void loadProfile('refresh');
     }
   };
 
@@ -170,7 +273,15 @@ export default function DriverProfileScreen() {
   }
 
   if (isAuthenticated && user?.role !== 'driver') return <SafeAreaView style={{ flex: 1, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center' }}><Text style={{ color: Colors.textPrimary }}>{localized('هذه الصفحة متاحة لحسابات السائقين فقط.', 'This page is available to driver accounts only.')}</Text></SafeAreaView>;
-  return <View style={styles.container}><SafeAreaView edges={['top', 'bottom']} style={styles.safe}><ScrollView contentContainerStyle={styles.content}>
+  return <View style={styles.container}><SafeAreaView edges={['top', 'bottom']} style={styles.safe}><ScrollView
+    contentContainerStyle={styles.content}
+    refreshControl={<RefreshControl
+      refreshing={refreshing && !loading}
+      onRefresh={() => void loadProfile('refresh')}
+      tintColor={Colors.gold}
+      colors={[Colors.gold]}
+    />}
+  >
     <Text style={[styles.title, { textAlign: isRTL ? 'right' : 'left' }]}>{t('driver_profile')}</Text>
     <View style={styles.statusCard}>
       <Text style={[styles.statusText, { textAlign: isRTL ? 'right' : 'left' }]}>
@@ -185,7 +296,14 @@ export default function DriverProfileScreen() {
     </Text></View>}
     {loadError ? <View style={styles.errorBox}>
       <Text style={[styles.errorText, { textAlign: isRTL ? 'right' : 'left' }]}>{loadError}</Text>
-      <Pressable disabled={refreshing} onPress={() => void loadProfile(false)} style={styles.retryButton}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={localized('إعادة تحميل ملف السائق', 'Reload driver profile')}
+        accessibilityState={{ disabled: refreshing }}
+        disabled={refreshing}
+        onPress={() => void loadProfile('refresh')}
+        style={styles.retryButton}
+      >
         <Text style={styles.retryText}>{refreshing ? localized('جارٍ المحاولة...', 'Retrying...') : localized('إعادة المحاولة', 'Retry')}</Text>
       </Pressable>
     </View> : null}
@@ -252,7 +370,7 @@ const styles = StyleSheet.create({
   pendingText: { color: Colors.warning },
   errorBox: { backgroundColor: 'rgba(231,76,60,0.12)', borderColor: Colors.error, borderWidth: 1, borderRadius: 12, padding: 12, gap: 10 },
   errorText: { color: Colors.error },
-  retryButton: { alignSelf: 'flex-start', borderColor: Colors.error, borderWidth: 1, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },
+  retryButton: { alignSelf: 'flex-start', minHeight: 48, justifyContent: 'center', borderColor: Colors.error, borderWidth: 1, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 8 },
   retryText: { color: Colors.error, fontWeight: '700' },
   group: { gap: 7 },
   label: { color: Colors.textSecondary, fontWeight: '600' },

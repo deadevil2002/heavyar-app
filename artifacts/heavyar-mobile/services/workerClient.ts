@@ -372,8 +372,13 @@ export function getCheckoutGateways() {
   return request<{ success: true; gateways: CheckoutGateway[] }>('/api/checkout/gateways');
 }
 
-export function getDriverProfile() {
-  return request<{ success: true; profile: DriverOwnerProfile | null }>('/api/drivers/profile');
+export function getDriverProfile(signal?: AbortSignal, expectedUid?: string) {
+  return request<{ success: true; profile: DriverOwnerProfile | null }>(
+    '/api/drivers/profile',
+    { signal },
+    true,
+    expectedUid,
+  );
 }
 
 export function saveDriverProfile(profile: Partial<DriverOwnerProfile>) {
