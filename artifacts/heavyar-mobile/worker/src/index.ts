@@ -1,5 +1,5 @@
 import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, normalizeTapEnvironment, tapCredentials, tapCustomerFromAccount, type PaymentQuote, type PaymentState, type TapEnvironment } from './payment';
-import { calculateCommercial, majorToMinor, minorToMajor, resolveRule, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
+import { calculateCommercial, majorToMinor, minorToMajor, resolveRule, verifiedStoredCommercial, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
 import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, processEmailVerificationReminderJobs, requireAdmin, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
@@ -88,6 +88,21 @@ import {
   type ServiceRfqAggregate,
 } from './service-rfq';
 import {
+  CUSTOMER_PROJECT_ID,
+  CUSTOMER_PROJECT_LINK_ID,
+  CUSTOMER_PROJECT_PAGE_SIZE,
+  CUSTOMER_PROJECT_PRODUCTION_ACTIVATION,
+  CustomerProjectError,
+  assertProjectIdempotencyKey,
+  assertProjectRevision,
+  parseCustomerProjectSource,
+  parseCustomerProjectText,
+  projectFinancialState,
+  projectPendingQuoteFinancialState,
+  projectProvisionalFinancialState,
+  type CustomerProjectSourceKind,
+} from './customer-project';
+import {
   SERVICE_MESSAGE_LIMITS,
   ServiceCommunicationError,
   createServiceMessageRecord,
@@ -154,7 +169,7 @@ export interface Env {
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; accountProfileRaw?: { data: any; updateTime?: string } | null; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
-type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel' | 'service_message_send' | 'service_execution_create' | 'service_execution_transition' | 'service_evidence_intent' | 'service_evidence_upload';
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel' | 'service_message_send' | 'service_execution_create' | 'service_execution_transition' | 'service_evidence_intent' | 'service_evidence_upload' | 'customer_project_mutation';
 type AuthenticatedMutationRateLimitDecision =
   | { status: 'allowed' }
   | { status: 'limited'; retryAfterSeconds: number }
@@ -181,6 +196,7 @@ let capturedTransporterQueries: any[] | undefined;
 let transporterDiscoveryActivationOverride: boolean | undefined;
 let serviceRfqActivationOverride: boolean | undefined;
 let serviceExecutionActivationOverride: boolean | undefined;
+let customerProjectActivationOverride: boolean | undefined;
 let serviceExecutionBindingOverride: ((sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) | undefined;
 let serviceMessageQueryOverride: any[] | undefined;
 let publicEquipmentLimiterOverride: ((ipHash: string) => Promise<boolean | null>) | undefined;
@@ -188,7 +204,7 @@ let authenticatedMutationLimiterOverride: ((uid: string, scope: AuthenticatedMut
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
 const paymentCreateInflight = new Map<string, Promise<Response>>();
-  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, setServiceExecutionActivation(value?: boolean) { serviceExecutionActivationOverride = value; }, setServiceExecutionBinding(resolver?: (sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) { serviceExecutionBindingOverride = resolver; }, setServiceMessageRows(rows?: any[]) { serviceMessageQueryOverride = rows; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
+  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, setServiceExecutionActivation(value?: boolean) { serviceExecutionActivationOverride = value; }, setCustomerProjectActivation(value?: boolean) { customerProjectActivationOverride = value; }, setServiceExecutionBinding(resolver?: (sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) { serviceExecutionBindingOverride = resolver; }, setServiceMessageRows(rows?: any[]) { serviceMessageQueryOverride = rows; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -713,6 +729,7 @@ async function allowAuthenticatedMutation(env: Env, uid: string, scope: Authenti
     service_execution_transition: { windowMs: 60_000, limit: 30 },
     service_evidence_intent: { windowMs: 10 * 60_000, limit: 10 },
     service_evidence_upload: { windowMs: 10 * 60_000, limit: 30 },
+    customer_project_mutation: { windowMs: 60_000, limit: 30 },
   };
   const { windowMs, limit } = policy[scope];
   const id = await hashedId(`authenticated-mutation:${scope}:${uid}`);
@@ -2880,21 +2897,6 @@ async function fullySettled(env: Env, requestId: string) {
   return !!invoice && payment?.state === 'paid' && payment?.invoiceId === request.invoiceId;
 }
 
-function verifiedStoredCommercial(snapshot: any, currency: string): CommercialSnapshot | null {
-  if (!snapshot || typeof snapshot !== 'object' || snapshot.currency !== currency) return null;
-  const integerFields = [
-    'baseAmountMinor', 'platformFeeMinor', 'customerFeeMinor', 'providerFeeMinor',
-    'providerReceivableMinor', 'customerPayableMinor',
-  ] as const;
-  if (integerFields.some(field => !Number.isSafeInteger(snapshot[field]) || snapshot[field] < 0) ||
-      snapshot.taxAmountMinor !== null && (!Number.isSafeInteger(snapshot.taxAmountMinor) || snapshot.taxAmountMinor < 0) ||
-      snapshot.taxRateBps !== undefined && snapshot.taxRateBps !== null && (!Number.isSafeInteger(snapshot.taxRateBps) || snapshot.taxRateBps < 0 || snapshot.taxRateBps >= 10_000) ||
-      snapshot.gatewayFeeMinor !== null && (!Number.isSafeInteger(snapshot.gatewayFeeMinor) || snapshot.gatewayFeeMinor < 0) ||
-      snapshot.customerFeeMinor + snapshot.providerFeeMinor !== snapshot.platformFeeMinor ||
-      snapshot.providerReceivableMinor !== snapshot.baseAmountMinor - snapshot.providerFeeMinor ||
-      snapshot.customerPayableMinor !== snapshot.baseAmountMinor + snapshot.customerFeeMinor + (snapshot.taxAmountMinor ?? 0)) return null;
-  return snapshot as CommercialSnapshot;
-}
 function v2FinalPaymentSnapshot(r: any, requestId?: string): CommercialSnapshot {
   if (r?.pricingModelVersion !== 2 || r?.status !== 'completed' || r?.commercialSnapshotStatus !== 'finalized') throw new Error('V2 payment is not finalized');
   const currency = String(r?.finalCommercialSnapshot?.currency || '');
@@ -7324,6 +7326,386 @@ async function driverRequest(req: Request, env: Env, u: User, id?: string) {
   await createDoc(env, `driverRequests/${requestId}`, { requesterUid: { stringValue: u.uid }, driverUid: { stringValue: resolved.uid }, status: { stringValue: 'open' }, notes: firestoreValue(notes), createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } });
   return out(env, req, { success: true, requestId, status: 'open' }, 201);
 }
+
+type CustomerProjectStored = {
+  projectId: string; customerUid: string; title: string; description: string;
+  status: 'active' | 'archived'; revision: number; requestCount: number;
+  createdAt: string; updatedAt: string; creationFingerprint: string; updateTime?: string;
+};
+
+function customerProjectDisabled(req: Request, env: Env) {
+  return out(env, req, { success: false, error: 'Customer project hub is not activated', errorCode: 'CUSTOMER_PROJECT_HUB_NOT_ACTIVATED',
+    activation: { enabled: false, reason: CUSTOMER_PROJECT_PRODUCTION_ACTIVATION } }, 404);
+}
+
+function customerProjectErrorResponse(req: Request, env: Env, error: unknown) {
+  const code = error instanceof CustomerProjectError ? error.code : 'CUSTOMER_PROJECT_UNAVAILABLE';
+  const status = code.includes('NOT_FOUND') ? 404
+    : code.includes('NOT_AUTHORIZED') || code.includes('SOURCE_NOT_OWNED') ? 403
+      : code.includes('STALE') || code.includes('CONFLICT') || code.includes('ARCHIVED') || code.includes('ALREADY_LINKED') ? 409
+        : code === 'CUSTOMER_PROJECT_UNAVAILABLE' ? 503 : 400;
+  return out(env, req, { success: false, error: code, errorCode: code }, status);
+}
+
+async function customerProjectAuthority(env: Env, user: User) {
+  const live = await serviceRfqAccountVerify(env, user).catch(() => { throw new CustomerProjectError('CUSTOMER_PROJECT_NOT_AUTHORIZED'); });
+  try { serviceRfqCustomer({ ...user, accountProfile: live.account }); }
+  catch { throw new CustomerProjectError('CUSTOMER_PROJECT_NOT_AUTHORIZED'); }
+  return live;
+}
+
+function parseStoredCustomerProject(value: any, documentId: string, updateTime?: string): CustomerProjectStored | null {
+  if (!value || value.schemaVersion !== 1 || value.projectId !== documentId || !CUSTOMER_PROJECT_ID.test(documentId) ||
+      typeof value.customerUid !== 'string' || typeof value.title !== 'string' || !value.title.trim() || value.title.length > 80 ||
+      typeof value.description !== 'string' || value.description.length > 300 || !['active', 'archived'].includes(value.status) ||
+      !Number.isSafeInteger(value.revision) || value.revision < 0 || !Number.isSafeInteger(value.requestCount) || value.requestCount < 0 ||
+      typeof value.createdAt !== 'string' || !Number.isFinite(Date.parse(value.createdAt)) || typeof value.updatedAt !== 'string' ||
+      !Number.isFinite(Date.parse(value.updatedAt)) || typeof value.creationFingerprint !== 'string' || value.creationFingerprint.length !== 43) return null;
+  return { projectId: documentId, customerUid: value.customerUid, title: value.title, description: value.description,
+    status: value.status, revision: value.revision, requestCount: value.requestCount, createdAt: value.createdAt,
+    updatedAt: value.updatedAt, creationFingerprint: value.creationFingerprint, updateTime };
+}
+
+function customerProjectFields(value: CustomerProjectStored) {
+  return {
+    schemaVersion: { integerValue: '1' }, projectId: { stringValue: value.projectId }, customerUid: { stringValue: value.customerUid },
+    title: { stringValue: value.title }, description: { stringValue: value.description }, status: { stringValue: value.status },
+    revision: { integerValue: String(value.revision) }, requestCount: { integerValue: String(value.requestCount) },
+    createdAt: { timestampValue: value.createdAt }, updatedAt: { timestampValue: value.updatedAt },
+    creationFingerprint: { stringValue: value.creationFingerprint },
+  };
+}
+
+function customerProjectProjection(value: CustomerProjectStored) {
+  const { customerUid: _customerUid, creationFingerprint: _fingerprint, updateTime: _updateTime, ...project } = value;
+  return project;
+}
+
+function customerProjectWrite(env: Env, value: CustomerProjectStored, expectedUpdateTime?: string) {
+  const fields = customerProjectFields(value);
+  return { update: { name: fullName(env, `customerProjects/${encodeURIComponent(value.projectId)}`), fields },
+    ...(expectedUpdateTime ? { updateMask: { fieldPaths: Object.keys(fields) } } : {}),
+    currentDocument: expectedUpdateTime ? { updateTime: expectedUpdateTime } : { exists: false } };
+}
+
+async function customerProjectAuditWrite(env: Env, project: CustomerProjectStored, actorUid: string, operation: string, sourceId?: string) {
+  const id = `${project.projectId}__${project.revision}`;
+  return { update: { name: fullName(env, `customerProjectAudit/${encodeURIComponent(id)}`), fields: {
+    projectId: { stringValue: project.projectId }, revision: { integerValue: String(project.revision) }, operation: { stringValue: operation },
+    actorHash: { stringValue: await hashedId(`customer-project-actor:${actorUid}`) },
+    ...(sourceId ? { sourceHash: { stringValue: await hashedId(`customer-project-source:${sourceId}`) } } : {}),
+    createdAt: { timestampValue: project.updatedAt },
+  } }, currentDocument: { exists: false } };
+}
+
+async function customerProjectQuery(env: Env, collectionId: string, fieldPath: string, value: string, cursor?: string, select?: string[]) {
+  const query: any = { ...(select ? { select: { fields: select.map(fieldPath => ({ fieldPath })) } } : {}),
+    from: [{ collectionId }], where: { fieldFilter: { field: { fieldPath }, op: 'EQUAL', value: { stringValue: value } } },
+    orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: CUSTOMER_PROJECT_PAGE_SIZE + 1 };
+  if (cursor) query.startAt = { before: false, values: [{ referenceValue: fullName(env, `${collectionId}/${encodeURIComponent(cursor)}`) }] };
+  const result = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: query }) }) as any[] || [];
+  return result.filter(row => row.document).map(row => ({ id: decodeURIComponent(String(row.document.name).split('/').pop() || ''),
+    data: decode(row.document), updateTime: row.document.updateTime as string | undefined }));
+}
+
+async function createCustomerProject(req: Request, env: Env, user: User) {
+  try {
+    const authority = await customerProjectAuthority(env, user);
+    const limited = authenticatedMutationRateLimitResponse(req, env, await allowAuthenticatedMutation(env, user.uid, 'customer_project_mutation'), 'Too many project changes');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, 32 * 1024);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['title', 'description', 'idempotencyKey'].includes(key))) throw new CustomerProjectError('INVALID_CUSTOMER_PROJECT');
+    const title = parseCustomerProjectText(body.title, 80, true), description = parseCustomerProjectText(body.description || '', 300);
+    const key = assertProjectIdempotencyKey(body.idempotencyKey), fingerprint = await hashedId(stableJson({ title, description }));
+    const projectId = `project_${await hashedId(`customer-project:${user.uid}:${key}`)}`, now = new Date().toISOString();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env); if (!transaction) throw new CustomerProjectError('CUSTOMER_PROJECT_UNAVAILABLE');
+      const priorRaw = await transactionDocument(env, `customerProjects/${encodeURIComponent(projectId)}`, transaction);
+      const prior = parseStoredCustomerProject(priorRaw?.data, projectId, priorRaw?.updateTime);
+      if (prior) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        if (prior.customerUid !== user.uid || prior.creationFingerprint !== fingerprint) throw new CustomerProjectError('CUSTOMER_PROJECT_CONFLICT');
+        return out(env, req, { success: true, project: customerProjectProjection(prior), replayed: true });
+      }
+      const project: CustomerProjectStored = { projectId, customerUid: user.uid, title, description, status: 'active', revision: 0,
+        requestCount: 0, createdAt: now, updatedAt: now, creationFingerprint: fingerprint };
+      try {
+        await commitWrites(env, [customerProjectWrite(env, project), authority.verify, await customerProjectAuditWrite(env, project, user.uid, 'project_created')], transaction);
+        return out(env, req, { success: true, project: customerProjectProjection(project), replayed: false }, 201);
+      } catch (error) { if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error; }
+    }
+    throw new CustomerProjectError('CUSTOMER_PROJECT_CONFLICT');
+  } catch (error) { return customerProjectErrorResponse(req, env, error); }
+}
+
+async function listCustomerProjects(req: Request, env: Env, user: User) {
+  try {
+    await customerProjectAuthority(env, user);
+    const url = new URL(req.url), cursor = url.searchParams.get('cursor') || undefined;
+    if ([...url.searchParams.keys()].some(key => key !== 'cursor') || cursor && !CUSTOMER_PROJECT_ID.test(cursor)) throw new CustomerProjectError('INVALID_CUSTOMER_PROJECT_PAGE');
+    const rows = await customerProjectQuery(env, 'customerProjects', 'customerUid', user.uid, cursor,
+      ['schemaVersion', 'projectId', 'customerUid', 'title', 'description', 'status', 'revision', 'requestCount', 'createdAt', 'updatedAt', 'creationFingerprint']);
+    const page = rows.slice(0, CUSTOMER_PROJECT_PAGE_SIZE), projects = page.map(row => parseStoredCustomerProject(row.data, row.id, row.updateTime))
+      .filter((item): item is CustomerProjectStored => !!item && item.customerUid === user.uid).map(customerProjectProjection);
+    return out(env, req, { success: true, projects, nextCursor: rows.length > CUSTOMER_PROJECT_PAGE_SIZE ? page.at(-1)?.id || null : null });
+  } catch (error) { return customerProjectErrorResponse(req, env, error); }
+}
+
+async function loadOwnedCustomerProject(env: Env, projectId: string, user: User, transaction?: string) {
+  const raw = transaction ? await transactionDocument(env, `customerProjects/${encodeURIComponent(projectId)}`, transaction)
+    : await getRawDoc(env, 'customerProjects', projectId);
+  const project = parseStoredCustomerProject(raw?.data, projectId, raw?.updateTime);
+  if (!project) throw new CustomerProjectError('CUSTOMER_PROJECT_NOT_FOUND');
+  if (project.customerUid !== user.uid) throw new CustomerProjectError('CUSTOMER_PROJECT_NOT_AUTHORIZED');
+  return project;
+}
+
+async function getCustomerProject(req: Request, env: Env, user: User, projectId: string) {
+  try { await customerProjectAuthority(env, user); return out(env, req, { success: true, project: customerProjectProjection(await loadOwnedCustomerProject(env, projectId, user)) }); }
+  catch (error) { return customerProjectErrorResponse(req, env, error); }
+}
+
+async function patchCustomerProject(req: Request, env: Env, user: User, projectId: string) {
+  try {
+    const authority = await customerProjectAuthority(env, user);
+    const limited = authenticatedMutationRateLimitResponse(req, env, await allowAuthenticatedMutation(env, user.uid, 'customer_project_mutation'), 'Too many project changes');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, 32 * 1024); if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['title', 'description', 'status', 'expectedRevision', 'idempotencyKey'].includes(key)) ||
+        !['active', 'archived'].includes(String(body.status))) throw new CustomerProjectError('INVALID_CUSTOMER_PROJECT');
+    const expectedRevision = assertProjectRevision(body.expectedRevision), key = assertProjectIdempotencyKey(body.idempotencyKey);
+    const title = parseCustomerProjectText(body.title, 80, true), description = parseCustomerProjectText(body.description || '', 300);
+    const fingerprint = await hashedId(stableJson({ title, description, status: body.status, expectedRevision }));
+    const mutationId = `project_mutation_${await hashedId(`customer-project-mutation:${projectId}:${user.uid}:${key}`)}`;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env); if (!transaction) throw new CustomerProjectError('CUSTOMER_PROJECT_UNAVAILABLE');
+      const [project, priorMutation] = await Promise.all([loadOwnedCustomerProject(env, projectId, user, transaction), transactionDocument(env, `customerProjectMutations/${mutationId}`, transaction)]);
+      if (priorMutation) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        if (priorMutation.data?.fingerprint !== fingerprint || priorMutation.data?.customerUid !== user.uid) throw new CustomerProjectError('CUSTOMER_PROJECT_CONFLICT');
+        return out(env, req, { success: true, project: customerProjectProjection(project), replayed: true });
+      }
+      if (project.revision !== expectedRevision) throw new CustomerProjectError('CUSTOMER_PROJECT_STALE');
+      if (project.status === 'archived' && body.status !== 'archived') throw new CustomerProjectError('CUSTOMER_PROJECT_ARCHIVED');
+      const updated = { ...project, title, description, status: body.status as 'active' | 'archived', revision: project.revision + 1, updatedAt: new Date().toISOString() };
+      try {
+        await commitWrites(env, [customerProjectWrite(env, updated, project.updateTime), authority.verify,
+          { update: { name: fullName(env, `customerProjectMutations/${mutationId}`), fields: { customerUid: { stringValue: user.uid }, projectId: { stringValue: projectId }, fingerprint: { stringValue: fingerprint }, operation: { stringValue: 'project_updated' }, createdAt: { timestampValue: updated.updatedAt } } }, currentDocument: { exists: false } },
+          await customerProjectAuditWrite(env, updated, user.uid, updated.status === 'archived' ? 'project_archived' : 'project_updated')], transaction);
+        return out(env, req, { success: true, project: customerProjectProjection(updated), replayed: false });
+      } catch (error) { if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error; }
+    }
+    throw new CustomerProjectError('CUSTOMER_PROJECT_CONFLICT');
+  } catch (error) { return customerProjectErrorResponse(req, env, error); }
+}
+
+async function customerProjectSource(env: Env, kind: CustomerProjectSourceKind, sourceId: string, user: User, transaction?: string) {
+  const collection = kind === 'rental' ? 'equipmentRequests' : 'serviceRfqs';
+  const raw = transaction ? await transactionDocument(env, `${collection}/${encodeURIComponent(sourceId)}`, transaction) : await getRawDoc(env, collection, sourceId);
+  if (!raw?.updateTime || !raw.data) throw new CustomerProjectError('CUSTOMER_PROJECT_SOURCE_NOT_FOUND');
+  const data = raw.data;
+  if (kind === 'rental' ? data.customerUid !== user.uid : parseStoredServiceRfq(data, raw.updateTime)?.aggregate.rfq.customerUid !== user.uid) {
+    throw new CustomerProjectError('CUSTOMER_PROJECT_SOURCE_NOT_OWNED');
+  }
+  return { collection, raw };
+}
+
+function selectedCustomerProjectQuote(aggregate?: ServiceRfqAggregate | null) {
+  const selection = aggregate?.provisionalSelection;
+  if (!selection) return null;
+  const quote = aggregate?.quotes.find(item => item.quoteId === selection.quoteId);
+  const snapshot = quote?.snapshots.find(item => item.quoteVersion === selection.quoteVersion);
+  return quote && snapshot && snapshot.currency === 'SAR' && Number.isSafeInteger(snapshot.quotedServicePriceMinor) && snapshot.quotedServicePriceMinor >= 0
+    ? { quote, snapshot } : null;
+}
+
+function customerProjectDisplayText(value: unknown, fallback: string, maximum = 160) {
+  const text = String(value || '').trim().replace(/\s+/g, ' ');
+  return (text || fallback).slice(0, maximum);
+}
+
+function customerProjectDisplayDate(value: unknown) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
+}
+
+function customerProjectProviderUid(kind: CustomerProjectSourceKind, data: any) {
+  if (kind === 'rental') {
+    const uid = String(data?.providerUid || '');
+    return /^[A-Za-z0-9_-]{6,128}$/.test(uid) ? uid : null;
+  }
+  const stored = parseStoredServiceRfq(data, data?.updateTime), selected = selectedCustomerProjectQuote(stored?.aggregate);
+  const uid = selected?.quote.principal.kind === 'individual' ? selected.quote.principal.providerUid : '';
+  return /^[A-Za-z0-9_-]{6,128}$/.test(uid) ? uid : null;
+}
+
+function customerProjectProviderLabels(kind: CustomerProjectSourceKind, data: any, provider?: any) {
+  const snapshot = kind === 'rental' ? data?.providerPublic : null;
+  const ar = String(snapshot?.nameAr || provider?.nameAr || snapshot?.nameEn || provider?.nameEn || provider?.displayName || '').trim().slice(0, 120);
+  const en = String(snapshot?.nameEn || provider?.nameEn || snapshot?.nameAr || provider?.nameAr || provider?.displayName || '').trim().slice(0, 120);
+  if (ar || en) return { providerLabelAr: ar || en, providerLabelEn: en || ar };
+  if (kind === 'service_rfq') {
+    const stored = parseStoredServiceRfq(data, data?.updateTime), selected = selectedCustomerProjectQuote(stored?.aggregate);
+    return selected
+      ? { providerLabelAr: 'مقدم الخدمة المختار مبدئيًا', providerLabelEn: 'Provisionally selected provider' }
+      : { providerLabelAr: 'بانتظار اختيار مقدم الخدمة', providerLabelEn: 'Awaiting provider selection' };
+  }
+  return { providerLabelAr: 'مقدم المعدة', providerLabelEn: 'Equipment provider' };
+}
+
+function customerProjectSourceProjection(kind: CustomerProjectSourceKind, sourceId: string, data: any, provider?: any) {
+  const providerLabels = customerProjectProviderLabels(kind, data, provider);
+  if (kind === 'rental') {
+    const titleAr = customerProjectDisplayText(data.equipmentSnapshot?.titleAr || data.equipmentNameAr, 'طلب تأجير معدات');
+    const titleEn = customerProjectDisplayText(data.equipmentSnapshot?.titleEn || data.equipmentNameEn, 'Equipment rental');
+    return { sourceKind: kind, sourceId, titleAr, titleEn, ...providerLabels, status: customerProjectDisplayText(data.status, 'unknown', 80),
+      startAt: customerProjectDisplayDate(data.requestedStartAt || data.startDate), endAt: customerProjectDisplayDate(data.requestedEndAt || data.endDate),
+      financial: projectFinancialState(data), route: `/request/${sourceId}` };
+  }
+  const stored = parseStoredServiceRfq(data, data.updateTime), aggregate = stored?.aggregate;
+  const requirements = aggregate?.rfq.requirementsSnapshot as any, selected = selectedCustomerProjectQuote(aggregate);
+  const schedule = selected?.snapshot.schedule;
+  return { sourceKind: kind, sourceId,
+    titleAr: aggregate?.rfq.serviceKind === 'transporter' ? 'طلب خدمة نقل' : 'طلب خدمة مشغّل',
+    titleEn: aggregate?.rfq.serviceKind === 'transporter' ? 'Transport service request' : 'Operator service request',
+    ...providerLabels, status: customerProjectDisplayText(aggregate?.rfq.status || data.status, 'unknown', 80),
+    startAt: customerProjectDisplayDate(schedule?.startAt || requirements?.requestedStartAt || requirements?.schedule?.startAt),
+    endAt: customerProjectDisplayDate(schedule?.endAt || requirements?.requestedEndAt || requirements?.schedule?.endAt),
+    financial: selected ? projectProvisionalFinancialState(selected.snapshot) : projectPendingQuoteFinancialState(),
+    route: `/service-rfq/${sourceId}` };
+}
+
+async function customerProjectProviderDocs(env: Env, sources: Array<{ kind: CustomerProjectSourceKind; data: any }>) {
+  const uids = sources.map(source => customerProjectProviderUid(source.kind, source.data)).filter((uid): uid is string => Boolean(uid));
+  return batchGetRawDocs(env, uids.map(uid => ({ collection: 'users', id: uid })));
+}
+
+async function attachCustomerProjectSource(req: Request, env: Env, user: User, projectId: string) {
+  try {
+    const authority = await customerProjectAuthority(env, user);
+    const limited = authenticatedMutationRateLimitResponse(req, env, await allowAuthenticatedMutation(env, user.uid, 'customer_project_mutation'), 'Too many project changes');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, 32 * 1024); if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['sourceKind', 'sourceId', 'expectedRevision', 'idempotencyKey'].includes(key))) throw new CustomerProjectError('INVALID_CUSTOMER_PROJECT_SOURCE');
+    const source = parseCustomerProjectSource(body.sourceKind, body.sourceId), expectedRevision = assertProjectRevision(body.expectedRevision);
+    const key = assertProjectIdempotencyKey(body.idempotencyKey);
+    const linkId = `project_link_${await hashedId(`customer-project-link:${user.uid}:${source.sourceKind}:${source.sourceId}`)}`;
+    const fingerprint = await hashedId(stableJson({ projectId, sourceKind: source.sourceKind, sourceId: source.sourceId, expectedRevision }));
+    const mutationId = `project_mutation_${await hashedId(`customer-project-attach:${projectId}:${linkId}:${user.uid}:${key}`)}`;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env); if (!transaction) throw new CustomerProjectError('CUSTOMER_PROJECT_UNAVAILABLE');
+      const [project, priorLink, ownedSource, receipt] = await Promise.all([loadOwnedCustomerProject(env, projectId, user, transaction),
+        transactionDocument(env, `customerProjectLinks/${linkId}`, transaction), customerProjectSource(env, source.sourceKind, source.sourceId, user, transaction),
+        transactionDocument(env, `customerProjectMutations/${mutationId}`, transaction)]);
+      if (receipt) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        if (receipt.data?.customerUid !== user.uid || receipt.data?.projectId !== projectId || receipt.data?.linkId !== linkId || receipt.data?.fingerprint !== fingerprint) {
+          throw new CustomerProjectError('CUSTOMER_PROJECT_CONFLICT');
+        }
+        return out(env, req, { success: true, project: customerProjectProjection(project), linkId, replayed: true });
+      }
+      if (priorLink) {
+        await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        if (priorLink.data?.projectId !== projectId || priorLink.data?.customerUid !== user.uid) throw new CustomerProjectError('CUSTOMER_PROJECT_SOURCE_ALREADY_LINKED');
+        return out(env, req, { success: true, project: customerProjectProjection(project), linkId, replayed: true });
+      }
+      if (project.status !== 'active') throw new CustomerProjectError('CUSTOMER_PROJECT_ARCHIVED');
+      if (project.revision !== expectedRevision) throw new CustomerProjectError('CUSTOMER_PROJECT_STALE');
+      const now = new Date().toISOString(), updated = { ...project, revision: project.revision + 1, requestCount: project.requestCount + 1, updatedAt: now };
+      try {
+        await commitWrites(env, [customerProjectWrite(env, updated, project.updateTime), authority.verify,
+          { verify: fullName(env, `${ownedSource.collection}/${encodeURIComponent(source.sourceId)}`), currentDocument: { updateTime: ownedSource.raw.updateTime } },
+          { update: { name: fullName(env, `customerProjectLinks/${linkId}`), fields: { schemaVersion: { integerValue: '1' }, linkId: { stringValue: linkId }, projectId: { stringValue: projectId }, customerUid: { stringValue: user.uid }, sourceKind: { stringValue: source.sourceKind }, sourceId: { stringValue: source.sourceId }, createdAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, currentDocument: { exists: false } },
+          { update: { name: fullName(env, `customerProjectMutations/${mutationId}`), fields: { customerUid: { stringValue: user.uid }, projectId: { stringValue: projectId }, linkId: { stringValue: linkId }, fingerprint: { stringValue: fingerprint }, operation: { stringValue: 'source_attached' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
+          await customerProjectAuditWrite(env, updated, user.uid, 'source_attached', source.sourceId)], transaction);
+        return out(env, req, { success: true, project: customerProjectProjection(updated), linkId, replayed: false }, 201);
+      } catch (error) { if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error; }
+    }
+    throw new CustomerProjectError('CUSTOMER_PROJECT_CONFLICT');
+  } catch (error) { return customerProjectErrorResponse(req, env, error); }
+}
+
+async function detachCustomerProjectSource(req: Request, env: Env, user: User, projectId: string, linkId: string) {
+  try {
+    if (!CUSTOMER_PROJECT_LINK_ID.test(linkId)) throw new CustomerProjectError('CUSTOMER_PROJECT_SOURCE_NOT_FOUND');
+    const authority = await customerProjectAuthority(env, user);
+    const limited = authenticatedMutationRateLimitResponse(req, env, await allowAuthenticatedMutation(env, user.uid, 'customer_project_mutation'), 'Too many project changes');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, 16 * 1024); if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['expectedRevision', 'idempotencyKey'].includes(key))) throw new CustomerProjectError('INVALID_CUSTOMER_PROJECT');
+    const expectedRevision = assertProjectRevision(body.expectedRevision), key = assertProjectIdempotencyKey(body.idempotencyKey);
+    const mutationId = `project_mutation_${await hashedId(`customer-project-detach:${projectId}:${linkId}:${user.uid}:${key}`)}`;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const transaction = await beginTransaction(env); if (!transaction) throw new CustomerProjectError('CUSTOMER_PROJECT_UNAVAILABLE');
+      const [project, link, receipt] = await Promise.all([loadOwnedCustomerProject(env, projectId, user, transaction),
+        transactionDocument(env, `customerProjectLinks/${linkId}`, transaction), transactionDocument(env, `customerProjectMutations/${mutationId}`, transaction)]);
+      if (receipt) { await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined); return out(env, req, { success: true, project: customerProjectProjection(project), replayed: true }); }
+      if (!link || link.data?.projectId !== projectId || link.data?.customerUid !== user.uid) throw new CustomerProjectError('CUSTOMER_PROJECT_SOURCE_NOT_FOUND');
+      if (project.revision !== expectedRevision) throw new CustomerProjectError('CUSTOMER_PROJECT_STALE');
+      const now = new Date().toISOString(), updated = { ...project, revision: project.revision + 1, requestCount: Math.max(0, project.requestCount - 1), updatedAt: now };
+      try {
+        await commitWrites(env, [customerProjectWrite(env, updated, project.updateTime), authority.verify,
+          { delete: fullName(env, `customerProjectLinks/${linkId}`), currentDocument: { updateTime: link.updateTime } },
+          { update: { name: fullName(env, `customerProjectMutations/${mutationId}`), fields: { customerUid: { stringValue: user.uid }, projectId: { stringValue: projectId }, operation: { stringValue: 'source_detached' }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } },
+          await customerProjectAuditWrite(env, updated, user.uid, 'source_detached', String(link.data.sourceId || ''))], transaction);
+        return out(env, req, { success: true, project: customerProjectProjection(updated), replayed: false });
+      } catch (error) { if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error; }
+    }
+    throw new CustomerProjectError('CUSTOMER_PROJECT_CONFLICT');
+  } catch (error) { return customerProjectErrorResponse(req, env, error); }
+}
+
+async function listCustomerProjectLinks(req: Request, env: Env, user: User, projectId: string) {
+  try {
+    await customerProjectAuthority(env, user); await loadOwnedCustomerProject(env, projectId, user);
+    const url = new URL(req.url), cursor = url.searchParams.get('cursor') || undefined;
+    if ([...url.searchParams.keys()].some(key => key !== 'cursor') || cursor && !CUSTOMER_PROJECT_LINK_ID.test(cursor)) throw new CustomerProjectError('INVALID_CUSTOMER_PROJECT_PAGE');
+    const rows = await customerProjectQuery(env, 'customerProjectLinks', 'projectId', projectId, cursor), page = rows.slice(0, CUSTOMER_PROJECT_PAGE_SIZE);
+    const valid = page.filter(row => row.data?.customerUid === user.uid && row.data?.linkId === row.id && CUSTOMER_PROJECT_LINK_ID.test(row.id) &&
+      ['rental', 'service_rfq'].includes(row.data?.sourceKind) && typeof row.data?.sourceId === 'string');
+    const sources = await batchGetRawDocs(env, valid.map(row => ({ collection: row.data.sourceKind === 'rental' ? 'equipmentRequests' : 'serviceRfqs', id: row.data.sourceId })));
+    const providers = await customerProjectProviderDocs(env, valid.flatMap(row => {
+      const collection = row.data.sourceKind === 'rental' ? 'equipmentRequests' : 'serviceRfqs', data = sources.get(`${collection}/${row.data.sourceId}`)?.data;
+      return data ? [{ kind: row.data.sourceKind as CustomerProjectSourceKind, data }] : [];
+    }));
+    const links = valid.map(row => {
+      const collection = row.data.sourceKind === 'rental' ? 'equipmentRequests' : 'serviceRfqs', raw = sources.get(`${collection}/${row.data.sourceId}`)?.data;
+      if (!raw || (row.data.sourceKind === 'rental' ? raw.customerUid !== user.uid : parseStoredServiceRfq(raw)?.aggregate.rfq.customerUid !== user.uid)) {
+        return { linkId: row.id, projectId, sourceKind: row.data.sourceKind, sourceId: row.data.sourceId, createdAt: row.data.createdAt,
+          item: { sourceKind: row.data.sourceKind, sourceId: row.data.sourceId, titleAr: 'طلب غير متاح', titleEn: 'Unavailable request', providerLabelAr: 'غير متاح', providerLabelEn: 'Unavailable', status: 'unavailable', startAt: null, endAt: null, financial: { state: 'unavailable', currency: null, currencyDecimals: null, amountMinor: null }, route: null } };
+      }
+      const providerUid = customerProjectProviderUid(row.data.sourceKind, raw), provider = providerUid ? providers.get(`users/${providerUid}`)?.data : undefined;
+      return { linkId: row.id, projectId, sourceKind: row.data.sourceKind, sourceId: row.data.sourceId, createdAt: row.data.createdAt,
+        item: customerProjectSourceProjection(row.data.sourceKind, row.data.sourceId, raw, provider) };
+    });
+    return out(env, req, { success: true, links, nextCursor: rows.length > CUSTOMER_PROJECT_PAGE_SIZE ? page.at(-1)?.id || null : null });
+  } catch (error) { return customerProjectErrorResponse(req, env, error); }
+}
+
+async function listEligibleCustomerProjectSources(req: Request, env: Env, user: User) {
+  try {
+    await customerProjectAuthority(env, user);
+    const url = new URL(req.url), kind = url.searchParams.get('kind'), cursor = url.searchParams.get('cursor') || undefined;
+    if (!['rental', 'service_rfq'].includes(String(kind)) || [...url.searchParams.keys()].some(key => !['kind', 'cursor'].includes(key))) throw new CustomerProjectError('INVALID_CUSTOMER_PROJECT_SOURCE');
+    const sourceKind = kind as CustomerProjectSourceKind, collection = sourceKind === 'rental' ? 'equipmentRequests' : 'serviceRfqs';
+    const idPattern = sourceKind === 'rental' ? /^[A-Za-z0-9_-]{8,128}$/ : SERVICE_RFQ_ID;
+    if (cursor && !idPattern.test(cursor)) throw new CustomerProjectError('INVALID_CUSTOMER_PROJECT_PAGE');
+    const rows = await customerProjectQuery(env, collection, 'customerUid', user.uid, cursor), page = rows.slice(0, CUSTOMER_PROJECT_PAGE_SIZE);
+    const linkIds = await Promise.all(page.map(row => hashedId(`customer-project-link:${user.uid}:${sourceKind}:${row.id}`).then(hash => `project_link_${hash}`)));
+    const linked = await batchGetRawDocs(env, linkIds.map(id => ({ collection: 'customerProjectLinks', id })));
+    const providers = await customerProjectProviderDocs(env, page.map(row => ({ kind: sourceKind, data: row.data })));
+    const items = page.map((row, index) => {
+      const providerUid = customerProjectProviderUid(sourceKind, row.data), provider = providerUid ? providers.get(`users/${providerUid}`)?.data : undefined;
+      return { ...customerProjectSourceProjection(sourceKind, row.id, row.data, provider),
+        linkedProjectId: linked.get(`customerProjectLinks/${linkIds[index]}`)?.data?.customerUid === user.uid ? linked.get(`customerProjectLinks/${linkIds[index]}`)?.data?.projectId || null : null };
+    });
+    return out(env, req, { success: true, items, nextCursor: rows.length > CUSTOMER_PROJECT_PAGE_SIZE ? page.at(-1)?.id || null : null });
+  } catch (error) { return customerProjectErrorResponse(req, env, error); }
+}
 export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
   env = { ...env, __executionCtx: executionCtx, __diagnostics: {
     requestId: crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase(),
@@ -7415,6 +7797,20 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
        if (path === '/api/operator-requests/prepare' && req.method === 'POST') return await operatorRequestPrepare(req, env, await authenticatedUser(req, env));
        if (path === '/api/transporters/search' && req.method === 'GET') return await transporterSearch(req, env);
        if (path === '/api/transport-requests/prepare' && req.method === 'POST') return await transportRequestPrepare(req, env, await authenticatedUser(req, env));
+       if ((path === '/api/customer-projects' || path.startsWith('/api/customer-projects/')) && customerProjectActivationOverride !== true) {
+         return customerProjectDisabled(req, env);
+       }
+       if (path === '/api/customer-projects' && req.method === 'POST') return await createCustomerProject(req, env, await authenticatedUser(req, env));
+       if (path === '/api/customer-projects' && req.method === 'GET') return await listCustomerProjects(req, env, await authenticatedUser(req, env));
+       if (path === '/api/customer-projects/eligible-sources' && req.method === 'GET') return await listEligibleCustomerProjectSources(req, env, await authenticatedUser(req, env));
+       const customerProjectLinksMatch = path.match(/^\/api\/customer-projects\/(project_[A-Za-z0-9_-]{43})\/links$/);
+       if (customerProjectLinksMatch && req.method === 'GET') return await listCustomerProjectLinks(req, env, await authenticatedUser(req, env), customerProjectLinksMatch[1]);
+       if (customerProjectLinksMatch && req.method === 'POST') return await attachCustomerProjectSource(req, env, await authenticatedUser(req, env), customerProjectLinksMatch[1]);
+       const customerProjectLinkMatch = path.match(/^\/api\/customer-projects\/(project_[A-Za-z0-9_-]{43})\/links\/(project_link_[A-Za-z0-9_-]{43})$/);
+       if (customerProjectLinkMatch && req.method === 'DELETE') return await detachCustomerProjectSource(req, env, await authenticatedUser(req, env), customerProjectLinkMatch[1], customerProjectLinkMatch[2]);
+       const customerProjectMatch = path.match(/^\/api\/customer-projects\/(project_[A-Za-z0-9_-]{43})$/);
+       if (customerProjectMatch && req.method === 'GET') return await getCustomerProject(req, env, await authenticatedUser(req, env), customerProjectMatch[1]);
+       if (customerProjectMatch && req.method === 'PATCH') return await patchCustomerProject(req, env, await authenticatedUser(req, env), customerProjectMatch[1]);
        if ((path === '/api/service-rfqs' || path.startsWith('/api/service-rfqs/')) && serviceRfqActivationOverride !== true) {
          return serviceRfqDisabled(req, env);
        }

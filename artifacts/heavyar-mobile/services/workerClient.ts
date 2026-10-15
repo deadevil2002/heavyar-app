@@ -93,6 +93,8 @@ function metricLabel(path: string): string {
     .replace(/\/api\/requests\/[^/]+/, '/api/requests/:id')
     .replace(/\/api\/drivers\/public\/[^/]+/, '/api/drivers/public/:id')
     .replace(/\/api\/drivers\/requests\/[^/]+/, '/api/drivers/requests/:id')
+    .replace(/\/api\/customer-projects\/[^/]+/, '/api/customer-projects/:id')
+    .replace(/\/links\/[^/]+/, '/links/:linkId')
     .replace(/\/api\/service-rfqs\/[^/]+/, '/api/service-rfqs/:id')
     .replace(/\/api\/service-executions\/[^/]+/, '/api/service-executions/:id')
     .replace(/\/evidence-media\/intents\/[^/]+/, '/evidence-media/intents/:intentId')

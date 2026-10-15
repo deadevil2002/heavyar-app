@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Settings, Package, Star, Search, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera, Trash2, Bell, Building2, HardHat } from 'lucide-react-native';
+import { Settings, Package, Star, Search, ChevronLeft, ChevronRight, LogOut, Shield, Edit3, X, Check, FileText, Briefcase, ShoppingCart, Receipt, ChevronDown, Camera, Trash2, Bell, Building2, HardHat, FolderKanban } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
@@ -230,6 +230,7 @@ export default function ProfileScreen() {
   const ChevronIcon = isRTL ? ChevronLeft : ChevronRight;
 
   const menuItems = [
+    ...(user?.role === 'customer' ? [{ icon: FolderKanban, label: isRTL ? 'مشاريعي' : 'My projects', route: '/projects' as const }] : []),
     ...(hasCapability(user?.role, 'manageDriverProfile') ? [{ icon: Briefcase, label: t('driver_profile'), route: '/driver-profile' as const }] : []),
     ...(hasCapability(user?.role, 'manageDriverProfile') ? [{ icon: HardHat, label: isRTL ? 'مسودات المشغّل والناقل' : 'Operator & transporter drafts', route: '/service-profile' as const }] : []),
     ...(hasCapability(user?.role, 'findDriver') ? [{ icon: Search, label: t('find_driver'), route: '/drivers' as const }] : []),

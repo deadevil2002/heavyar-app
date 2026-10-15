@@ -490,6 +490,22 @@ service cloud.firestore {
     match /serviceRfqAudit/{auditId} {
       allow read, write: if false;
     }
+    // M2-E5 customer projects are optional organizational containers only.
+    // The Worker owns every project/link mutation and revalidates the live
+    // customer plus the linked request in one transaction. Direct reads would
+    // bypass that account and request-participant boundary.
+    match /customerProjects/{projectId} {
+      allow read, write: if false;
+    }
+    match /customerProjectLinks/{linkId} {
+      allow read, write: if false;
+    }
+    match /customerProjectMutations/{mutationId} {
+      allow read, write: if false;
+    }
+    match /customerProjectAudit/{auditId} {
+      allow read, write: if false;
+    }
     // M2-E4 request-scoped text communication is immutable and Worker-only.
     // The Worker revalidates both the RFQ participant and the live account on
     // every list/send operation; clients cannot guess a document ID to bypass it.

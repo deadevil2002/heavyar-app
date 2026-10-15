@@ -170,6 +170,7 @@ export function formatMinorCurrency(
   amountMinor: number,
   currencyValue: string,
   locale: 'ar' | 'en',
+  fixedPrecision = false,
 ): string {
   const currency = normalizeCurrency(currencyValue);
   if (!Number.isSafeInteger(amountMinor) || amountMinor < 0) return '';
@@ -179,7 +180,8 @@ export function formatMinorCurrency(
   const whole = amount / scale;
   if (whole > BigInt(Number.MAX_SAFE_INTEGER)) return '';
   const wholeNumber = Number(whole);
-  const fraction = String(amount % scale).padStart(precision, '0').replace(/0+$/, '');
+  const exactFraction = String(amount % scale).padStart(precision, '0');
+  const fraction = fixedPrecision ? exactFraction : exactFraction.replace(/0+$/, '');
   const localeCode = locale === 'ar' ? 'ar-SA' : 'en';
   const formatter = new Intl.NumberFormat(localeCode, {
     style: 'currency',

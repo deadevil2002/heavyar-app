@@ -176,6 +176,36 @@ export function minorToMajor(value: number, currency: string): string {
   return `${amount / scale}.${(amount % scale).toString().padStart(digits, '0')}`;
 }
 
+/**
+ * Validates a persisted commercial snapshot before it is used as financial
+ * evidence. Keep this aligned with the payment settlement invariants so
+ * projections cannot reinterpret a malformed or cross-currency snapshot.
+ */
+export function verifiedStoredCommercial(snapshot: unknown, expectedCurrency: string): CommercialSnapshot | null {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
+  const value = snapshot as Record<string, unknown>;
+  const currency = typeof value.currency === 'string' ? value.currency : '';
+  if (!/^[A-Z]{3}$/.test(currency) || currency !== expectedCurrency) return null;
+  try { currencyDecimals(currency); } catch { return null; }
+  const integerFields = [
+    'baseAmountMinor', 'platformFeeMinor', 'customerFeeMinor', 'providerFeeMinor',
+    'providerReceivableMinor', 'customerPayableMinor',
+  ] as const;
+  if (integerFields.some(field => !Number.isSafeInteger(value[field]) || Number(value[field]) < 0) ||
+      value.taxAmountMinor !== null && (!Number.isSafeInteger(value.taxAmountMinor) || Number(value.taxAmountMinor) < 0) ||
+      value.taxRateBps !== undefined && value.taxRateBps !== null && (!Number.isSafeInteger(value.taxRateBps) || Number(value.taxRateBps) < 0 || Number(value.taxRateBps) >= 10_000) ||
+      value.gatewayFeeMinor !== null && (!Number.isSafeInteger(value.gatewayFeeMinor) || Number(value.gatewayFeeMinor) < 0)) return null;
+  const base = BigInt(value.baseAmountMinor as number);
+  const platformFee = BigInt(value.platformFeeMinor as number);
+  const customerFee = BigInt(value.customerFeeMinor as number);
+  const providerFee = BigInt(value.providerFeeMinor as number);
+  const providerReceivable = BigInt(value.providerReceivableMinor as number);
+  const customerPayable = BigInt(value.customerPayableMinor as number);
+  const tax = BigInt((value.taxAmountMinor as number | null) ?? 0);
+  if (customerFee + providerFee !== platformFee || providerReceivable !== base - providerFee || customerPayable !== base + customerFee + tax) return null;
+  return value as unknown as CommercialSnapshot;
+}
+
 export function validateRule(input: any): CommissionRule {
   const r = object(input, 'rule');
   exactKeys(r, RULE_KEYS, 'rule');

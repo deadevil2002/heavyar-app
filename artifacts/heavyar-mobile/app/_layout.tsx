@@ -77,6 +77,8 @@ function RootLayoutNav() {
       <Stack.Screen name="service-rfq/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="service-rfq/[id]/conversation" options={{ headerShown: false }} />
       <Stack.Screen name="service-execution/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="projects/index" options={{ headerShown: false }} />
+      <Stack.Screen name="projects/[id]" options={{ headerShown: false }} />
     </Stack>
   );
 }
