@@ -29,6 +29,14 @@
       ]
     },
     {
+      "collectionGroup": "earlyAccessSubscribers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "equipment",
       "queryScope": "COLLECTION",
       "fields": [

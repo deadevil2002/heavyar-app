@@ -673,7 +673,7 @@ async function authoritativeAccountProjection(env: Env, items: any[]) {
   } catch { throw new Error('Account verification temporarily unavailable'); }
 }
 
-type AggregateFilter = { field: string; value: unknown; op?: 'EQUAL' | 'IN' };
+type AggregateFilter = { field: string; value: unknown; op?: 'EQUAL' | 'IN' | 'GREATER_THAN' };
 type OverviewReadBudget = { aggregateQueries: number; queryOperations: number; aggregateCacheHits: number };
 class AggregateUnavailableError extends Error {
   readonly code = 'AGGREGATE_UNAVAILABLE';
@@ -780,21 +780,16 @@ async function recentAudit(env: Env, budget?: OverviewReadBudget) {
 }
 
 const EARLY_ACCESS_SEEN_RESOURCE = 'earlyAccessSubscribers';
-const EARLY_ACCESS_SEEN_LIMIT = 100;
 
 async function countUnseenEarlyAccessRegistrations(env: Env, lastSeenAt: string) {
-  const structuredQuery = {
-    from: [{ collectionId: 'earlyAccessSubscribers' }],
-    where: { fieldFilter: { field: { fieldPath: 'createdAt' }, op: 'GREATER_THAN', value: jsonValue(lastSeenAt) } },
-    orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' }],
-    limit: EARLY_ACCESS_SEEN_LIMIT,
-  };
-  const records = queryOverride
-    ? queryOverride('earlyAccessSubscribers', '', EARLY_ACCESS_SEEN_LIMIT, structuredQuery).map(record => record.data)
-    : ((await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [])
-      .flatMap(item => item.document ? [decode(item.document)] : []));
-  return records.filter(record => ['active', 'unsubscribed'].includes(String(record.status))
-    && typeof record.createdAt === 'string' && record.createdAt > lastSeenAt).length;
+  const unseenCount = await loadAggregateCollection(env, 'earlyAccessSubscribers', [
+    { field: 'createdAt', op: 'GREATER_THAN', value: lastSeenAt },
+    { field: 'status', op: 'IN', value: ['active', 'unsubscribed'] },
+  ]);
+  if (typeof unseenCount !== 'number' || !Number.isSafeInteger(unseenCount) || unseenCount < 0) {
+    throw new AggregateUnavailableError();
+  }
+  return unseenCount;
 }
 
 function earlyAccessSeenData(uid: string, prior: RawDoc | null, lastSeenAt: string) {
@@ -3465,7 +3460,15 @@ export async function handleAdmin(req: Request, env: Env, user: AdminUser) {
   }
   if (url.pathname === '/api/admin/seen-state/early-access') {
     if (!earlyAccessPermissions(user.permissionRole || user.role).read) return { error: 'Permission required', status: 403 };
-    if (req.method === 'GET') return earlyAccessUnseen(env, user);
+    if (req.method === 'GET') {
+      try { return await earlyAccessUnseen(env, user); }
+      catch (error) {
+        if (error instanceof AggregateUnavailableError) {
+          return { error: 'Early access unseen count temporarily unavailable', errorCode: 'EARLY_ACCESS_UNSEEN_UNAVAILABLE', status: 503 };
+        }
+        throw error;
+      }
+    }
     if (req.method === 'POST') return markEarlyAccessSeen(env, user);
     return { error: 'Method not allowed', status: 405 };
   }

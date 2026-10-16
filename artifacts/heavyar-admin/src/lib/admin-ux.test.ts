@@ -164,8 +164,11 @@ describe('global Early Access unseen badge contract', () => {
     const api = source('lib/api.ts');
     const sidebar = source('components/Sidebar.tsx');
     assert.match(api, /fetchApi<EarlyAccessUnseenResponse>\('\/seen-state\/early-access'\)/);
-    assert.match(api, /refetchInterval: 20_000/);
+    assert.match(api, /refetchInterval: 120_000/);
     assert.match(api, /refetchOnWindowFocus: true/);
+    assert.match(api, /refetchIntervalInBackground: false/);
+    assert.match(api, /onSuccess: data => queryClient\.setQueryData\(\['adminSeenState', 'earlyAccess'\], data\)/);
+    assert.match(source('lib/auth.tsx'), /queryClient\.clear\(\)/);
     assert.doesNotMatch(`${api}\n${sidebar}`, /localStorage|sessionStorage/);
   });
   it('renders the same accessible badge in shared desktop and mobile sidebar content', () => {

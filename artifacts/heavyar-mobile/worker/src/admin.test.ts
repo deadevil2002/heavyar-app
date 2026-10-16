@@ -44,6 +44,8 @@ describe('admin authorization and operational boundary', () => {
     __adminTest.setVerifiedEmail(undefined);
     __adminTest.setQuery(undefined);
     __adminTest.setAuthIdentityLookup(undefined);
+    __adminTest.setAggregate(undefined);
+    __adminTest.resetSecondaryStats();
   });
   afterEach(() => {
     __test.setAuth(undefined);
@@ -55,6 +57,8 @@ describe('admin authorization and operational boundary', () => {
     __adminTest.setVerifiedEmail(undefined);
     __adminTest.setQuery(undefined);
     __adminTest.setAuthIdentityLookup(undefined);
+    __adminTest.setAggregate(undefined);
+    __adminTest.resetSecondaryStats();
   });
 
   const legacyListing = (moderationStatus?: string) => ({
@@ -1380,41 +1384,78 @@ describe('admin authorization and operational boundary', () => {
 
   test('early access unseen state initializes at server time without flooding historical registrations', async () => {
     const commits: unknown[][] = [];
-    let queried = false;
+    let aggregated = false;
     __adminTest.setFirestore(() => null);
-    __adminTest.setQuery(() => { queried = true; return []; });
+    __adminTest.setAggregate(() => { aggregated = true; return 0; });
     __adminTest.captureCommits(commits);
     const actor: any = { uid: 'marketing-first', admin: true, role: 'admin', permissionRole: 'marketing', testInjected: true };
     const result: any = await handleAdmin(new Request('https://worker.test/api/admin/seen-state/early-access'), env, actor);
     expect(result.earlyAccess.unseenCount).toBe(0);
     expect(Number.isFinite(Date.parse(result.earlyAccess.lastSeenAt))).toBe(true);
-    expect(queried).toBe(false);
+    expect(aggregated).toBe(false);
     expect(JSON.stringify(commits)).toContain('adminSeenState/marketing-first');
   });
 
-  test('early access unseen count includes only genuine registrations newer than the caller watermark', async () => {
+  test('early access unseen count is exact beyond the former row cap and uses only server predicates', async () => {
     const lastSeenAt = '2026-10-09T10:00:00.000Z';
-    let seenQuery: any;
-    __adminTest.setFirestore((collection, id) => collection === 'adminSeenState' && id === 'marketing-a'
-      ? { resources: { earlyAccessSubscribers: { lastSeenAt } } } : null);
-    __adminTest.setQuery((collection, _before, _limit, query) => {
-      if (collection !== 'earlyAccessSubscribers') return [];
-      seenQuery = query;
-      return [
-        { name: 'new-1', data: { status: 'active', createdAt: '2026-10-09T10:01:00.000Z' } },
-        { name: 'new-2', data: { status: 'unsubscribed', createdAt: '2026-10-09T10:02:00.000Z' } },
-        { name: 'new-3', data: { status: 'active', createdAt: '2026-10-09T10:03:00.000Z' } },
-        { name: 'old', data: { status: 'active', createdAt: '2026-10-09T09:59:00.000Z' } },
-        { name: 'anonymous', data: { status: 'anonymized', createdAt: '2026-10-09T10:04:00.000Z' } },
-        { name: 'deleted-marker', data: { status: 'deleted', createdAt: '2026-10-09T10:05:00.000Z' } },
-      ];
+    const expectedCounts = [0, 1, 100, 101, 1_001];
+    const seenQueries: any[] = [];
+    let stateReads = 0;
+    __adminTest.setFirestore((collection, id) => {
+      if (collection !== 'adminSeenState' || id !== 'marketing-a') return null;
+      stateReads += 1;
+      return { resources: { earlyAccessSubscribers: { lastSeenAt } } };
+    });
+    __adminTest.setQuery(() => { throw new Error('full subscriber scans are forbidden'); });
+    __adminTest.setAggregate(input => {
+      expect(input.collection).toBe('earlyAccessSubscribers');
+      seenQueries.push(input.structuredQuery);
+      return expectedCounts[seenQueries.length - 1];
     });
     const actor: any = { uid: 'marketing-a', admin: true, role: 'admin', permissionRole: 'marketing', testInjected: true };
-    const result: any = await handleAdmin(new Request('https://worker.test/api/admin/seen-state/early-access'), env, actor);
-    expect(result.earlyAccess.unseenCount).toBe(3);
-    expect(seenQuery.where.fieldFilter.op).toBe('GREATER_THAN');
-    expect(seenQuery.where.fieldFilter.value.stringValue).toBe(lastSeenAt);
-    expect(seenQuery.limit).toBe(100);
+    for (const expected of expectedCounts) {
+      const result: any = await handleAdmin(new Request('https://worker.test/api/admin/seen-state/early-access'), env, actor);
+      expect(result).toEqual({ earlyAccess: { unseenCount: expected, lastSeenAt } });
+    }
+    expect(seenQueries).toHaveLength(expectedCounts.length);
+    expect(stateReads).toBe(expectedCounts.length);
+    const filters = seenQueries[0].where.compositeFilter.filters.map((item: any) => item.fieldFilter);
+    expect(filters.find((item: any) => item.field.fieldPath === 'createdAt')).toEqual({
+      field: { fieldPath: 'createdAt' },
+      op: 'GREATER_THAN',
+      value: { stringValue: lastSeenAt },
+    });
+    expect(filters.find((item: any) => item.field.fieldPath === 'status')).toEqual({
+      field: { fieldPath: 'status' },
+      op: 'IN',
+      value: { arrayValue: { values: [{ stringValue: 'active' }, { stringValue: 'unsubscribed' }] } },
+    });
+    expect(seenQueries[0].limit).toBeUndefined();
+    expect(seenQueries[0].orderBy).toBeUndefined();
+  });
+
+  test('early access unseen aggregate failures and malformed counts fail closed', async () => {
+    const lastSeenAt = '2026-10-09T10:00:00.000Z';
+    __adminTest.setFirestore((collection, id) => collection === 'adminSeenState' && id === 'marketing-a'
+      ? { resources: { earlyAccessSubscribers: { lastSeenAt } } } : null);
+    const actor: any = { uid: 'marketing-a', admin: true, role: 'admin', permissionRole: 'marketing', testInjected: true };
+    const failures = [
+      () => null,
+      () => Number.NaN,
+      () => -1,
+      () => 1.5,
+      () => { throw new Error('FAILED_PRECONDITION: missing index'); },
+    ];
+    for (const failure of failures) {
+      __adminTest.setAggregate(failure);
+      const result: any = await handleAdmin(new Request('https://worker.test/api/admin/seen-state/early-access'), env, actor);
+      expect(result).toEqual({
+        error: 'Early access unseen count temporarily unavailable',
+        errorCode: 'EARLY_ACCESS_UNSEEN_UNAVAILABLE',
+        status: 503,
+      });
+      expect(result.earlyAccess).toBeUndefined();
+    }
   });
 
   test('mark seen is server-authoritative, UID-safe, cross-device and isolated per admin', async () => {
@@ -1423,7 +1464,11 @@ describe('admin authorization and operational boundary', () => {
     const commits: unknown[][] = [];
     __adminTest.setFirestore((collection, id) => collection === 'adminSeenState' && state.has(id)
       ? { resources: { earlyAccessSubscribers: { lastSeenAt: state.get(id) } } } : null);
-    __adminTest.setQuery(() => [{ name: 'new-1', data: { status: 'active', createdAt: '2026-10-09T10:01:00.000Z' } }]);
+    __adminTest.setAggregate(input => {
+      const filters = input.structuredQuery.where.compositeFilter.filters.map((item: any) => item.fieldFilter);
+      const watermark = filters.find((item: any) => item.field.fieldPath === 'createdAt')?.value?.stringValue;
+      return watermark === initial ? 1 : 0;
+    });
     __adminTest.captureCommits(commits);
     const actorA: any = { uid: 'marketing-a', admin: true, role: 'admin', permissionRole: 'marketing', testInjected: true };
     const before: any = await handleAdmin(new Request('https://worker.test/api/admin/seen-state/early-access'), env, actorA);
@@ -1435,6 +1480,7 @@ describe('admin authorization and operational boundary', () => {
     expect(serialized).toContain('adminSeenState/marketing-a');
     expect(serialized).not.toContain('adminSeenState/marketing-b');
     expect(serialized).not.toContain('2099-01-01T00:00:00.000Z');
+    expect(serialized).toContain('test-update-time');
 
     state.set('marketing-a', marked.earlyAccess.lastSeenAt);
     const secondDevice: any = await handleAdmin(new Request('https://worker.test/api/admin/seen-state/early-access'), env, actorA);

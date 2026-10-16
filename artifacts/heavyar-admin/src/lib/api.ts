@@ -326,7 +326,7 @@ export function useEarlyAccessUnseen(enabled = true) {
     queryFn: () => fetchApi<EarlyAccessUnseenResponse>('/seen-state/early-access'),
     enabled,
     retry: false,
-    refetchInterval: 20_000,
+    refetchInterval: 120_000,
     refetchOnWindowFocus: true,
   });
 }
