@@ -1362,7 +1362,81 @@ const DELETION_RECORDS_QUERY_PAGES_PER_TICK = 4;
 const DELETION_RECORDS_PAGE_SIZE = 100;
 const DELETION_RECORDS_MAX_DELETE_WRITES = DELETION_RECORDS_QUERY_PAGES_PER_TICK * DELETION_RECORDS_PAGE_SIZE;
 const DELETION_MEDIA_DELETES_PER_TICK = 4;
+const DELETION_PREVIEW_PAGE_SIZE = 500;
+const DELETION_PREVIEW_EQUIPMENT_PAGE_SIZE = 100;
+const DELETION_PREVIEW_MAX_QUERY_OPERATIONS = 36;
+const DELETION_PREVIEW_MAX_DOCUMENTS = 12_000;
+const DELETION_PREVIEW_MAX_PROJECTED_BYTES = 8 * 1024 * 1024;
 type DeletionRecordsCursor = { collectionIndex: number; ownerFieldIndex: number; documentName?: string };
+type DeletionPreviewBudget = { queryOperations: number; documents: number; projectedBytes: number };
+
+class DeletionPreviewIncompleteError extends Error {
+  constructor(readonly errorCode: 'preview_read_budget_exceeded' | 'deletion_preview_unavailable', readonly status: 413 | 503) {
+    super(errorCode === 'preview_read_budget_exceeded'
+      ? 'Deletion preview exceeds the safe read budget; narrow the selection'
+      : 'Deletion preview could not be verified; try again later');
+  }
+}
+
+async function scanDeletionPreviewCollection(
+  env: Env,
+  collection: string,
+  fields: string[],
+  uids: string[],
+  budget: DeletionPreviewBudget,
+  visit: (data: any, targetUids: ReadonlySet<string>) => void,
+) {
+  // Firestore permits at most 30 disjunctions after converting IN/OR filters
+  // to disjunctive normal form. Chunking by field count keeps every query
+  // valid while retaining one query stream per target subset.
+  const chunkSize = Math.max(1, Math.floor(30 / fields.length));
+  const pageSize = collection === 'equipment' ? DELETION_PREVIEW_EQUIPMENT_PAGE_SIZE : DELETION_PREVIEW_PAGE_SIZE;
+  const projection = [...new Set([...fields, ...(collection === 'equipment' ? ['images'] : [])])];
+  for (let offset = 0; offset < uids.length; offset += chunkSize) {
+    const uidChunk = uids.slice(offset, offset + chunkSize), targetUids = new Set(uidChunk);
+    let cursor: string | undefined;
+    while (true) {
+      if (budget.queryOperations >= DELETION_PREVIEW_MAX_QUERY_OPERATIONS) {
+        throw new DeletionPreviewIncompleteError('preview_read_budget_exceeded', 413);
+      }
+      const values = uidChunk.map(uid => jsonValue(uid));
+      const filters = fields.map(field => ({ fieldFilter: { field: { fieldPath: field }, op: 'IN', value: { arrayValue: { values } } } }));
+      const structuredQuery: any = {
+        select: { fields: projection.map(fieldPath => ({ fieldPath })) },
+        from: [{ collectionId: collection }],
+        where: filters.length === 1 ? filters[0] : { compositeFilter: { op: 'OR', filters } },
+        orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+        limit: pageSize,
+        ...(cursor ? { startAt: { before: false, values: [{ referenceValue: cursor }] } } : {}),
+      };
+      budget.queryOperations += 1;
+      let response: any[];
+      try {
+        response = queryOverride
+          ? queryOverride(collection, cursor || '', pageSize, structuredQuery).map(item => ({ document: {
+            name: item.name || fullName(env, `${collection}/${crypto.randomUUID()}`), updateTime: item.updateTime,
+            fields: Object.fromEntries(Object.entries(item.data || {}).map(([key, value]) => [key, jsonValue(value)])),
+          } }))
+          : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery }) }) as any[] || [];
+      } catch {
+        throw new DeletionPreviewIncompleteError('deletion_preview_unavailable', 503);
+      }
+      const documents = response.flatMap(item => item?.document ? [item.document] : []);
+      budget.documents += documents.length;
+      for (const document of documents) budget.projectedBytes += enc.encode(JSON.stringify(document)).byteLength;
+      if (budget.documents > DELETION_PREVIEW_MAX_DOCUMENTS || budget.projectedBytes > DELETION_PREVIEW_MAX_PROJECTED_BYTES) {
+        throw new DeletionPreviewIncompleteError('preview_read_budget_exceeded', 413);
+      }
+      for (const document of documents) visit(decode(document), targetUids);
+      if (documents.length < pageSize) break;
+      const nextCursor = String(documents[documents.length - 1]?.name || '');
+      if (!nextCursor || nextCursor === cursor || !nextCursor.startsWith(fullName(env, `${collection}/`))) {
+        throw new DeletionPreviewIncompleteError('deletion_preview_unavailable', 503);
+      }
+      cursor = nextCursor;
+    }
+  }
+}
 
 function deletionFields(collection: string) {
   return collection === 'users' ? ['__name__'] : (deletionOwnedFields[collection] || ['uid']);
@@ -1412,76 +1486,64 @@ async function deletionPreview(req: Request, env: Env, actor: AdminUser) {
   let uids: string[]; try { uids = await deletionTargets(env, body); } catch (error) { return { error: error instanceof Error ? error.message : 'Invalid request', status: (error as any)?.status || 400, ...(error as any)?.code ? { errorCode: (error as any).code } : {} }; }
   const MAX_PREVIEW_TARGETS = 20;
   if (uids.length > MAX_PREVIEW_TARGETS) return { error: 'Deletion preview is limited to 20 exact targets; narrow the selection', status: 413, errorCode: 'preview_too_large', maxSelectable: MAX_PREVIEW_TARGETS };
-  const targetSet = new Set(uids), batches = Math.ceil(uids.length / 30);
-  // One users read, one owner read, one staff read, and one set query per
-  // impact/retention field. This keeps a normal preview below the Worker
-  // subrequest budget and rejects broad destructive previews before I/O.
-  const plannedRequests = 2 + batches + 20;
-  if (plannedRequests >= 50) return { error: 'Deletion preview exceeds the safe query budget; narrow the selection', status: 413, errorCode: 'preview_too_large', maxSelectable: MAX_PREVIEW_TARGETS };
-  const batchQuery = async (collection: string, fields: string[]) => {
-    if (queryOverride) {
-      const mocked = queryOverride(collection, '', 5000);
-      if (mocked.length || !['users', 'staffMembers'].includes(collection)) return mocked.map(item => ({ document: { name: item.name || fullName(env, `${collection}/${crypto.randomUUID()}`), updateTime: item.updateTime, fields: Object.fromEntries(Object.entries(item.data || {}).map(([key, value]) => [key, jsonValue(value)])) } }));
-      return (await Promise.all(uids.map(async uid => rawDoc(env, collection, uid)))).filter(Boolean).map((item: any, index) => ({ document: { name: fullName(env, `${collection}/${encodeURIComponent(uids[index])}`), updateTime: item.updateTime, fields: Object.fromEntries(Object.entries(item.data || {}).map(([key, value]) => [key, jsonValue(value)])) } }));
-    }
-    const values = uids.map(uid => jsonValue(uid));
-    const where = fields.length === 1 && fields[0] === '__name__'
-      ? { fieldFilter: { field: { fieldPath: '__name__' }, op: 'IN', value: { arrayValue: { values: uids.map(uid => ({ referenceValue: fullName(env, `${collection}/${encodeURIComponent(uid)}`) })) } } } }
-      : { compositeFilter: { op: 'OR', filters: fields.map(field => ({ fieldFilter: { field: { fieldPath: field }, op: 'IN', value: { arrayValue: { values } } } })) } };
-    return await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: collection }], where, limit: 5000 } }) }) as any[] || [];
-  };
-  const users = await batchQuery('users', ['__name__']);
-  const userDocs = new Map(users.filter((row: any) => row.document).map((row: any) => [String(row.document.name).split('/').pop(), { data: decode(row.document), updateTime: row.document.updateTime }]));
-  const staffRows = await batchQuery('staffMembers', ['uid']);
-  const activeStaff = new Set(staffRows.filter((row: any) => row.document).map((row: any) => ({ data: decode(row.document), uid: String(row.document.name).split('/').pop() })).filter(({ data }: any) => data.active === true || data.status === 'active' || data.staffStatus === 'active').map(({ data, uid }: any) => String(data.uid || uid)));
-  const ownerUid = await canonicalOwnerUid(env);
   const impactFields: Record<string, string[]> = { equipment: ['ownerUid'], driverProfiles: ['uid'], phoneOwners: ['uid'], equipmentRequests: ['customerUid'], notifications: ['uid'], deviceTokens: ['uid'], complaints: ['customerUid'] };
   const retainedFields: Record<string, string[]> = { payments: ['customerUid', 'providerUid'], invoices: ['customerId', 'providerId'], refunds: ['customerUid', 'providerUid'], adminAudit: ['actorUid', 'targetId'] };
-  const collectionRows = new Map<string, any[]>();
-  for (const [collection, fields] of Object.entries({ ...impactFields, ...retainedFields })) collectionRows.set(collection, await batchQuery(collection, fields));
-  const countByUser = (collection: string, fields: string[]) => {
-    const counts = new Map<string, number>(), seen = new Set<string>();
-    for (const row of collectionRows.get(collection) || []) {
-      if (!row.document) continue;
-      const data = decode(row.document), id = String(row.document.name);
-      if (seen.has(id)) continue;
-      const owners = fields.filter(field => targetSet.has(String(data[field] || '')));
-      for (const ownerField of [...new Set(owners)]) {
-        const owner = String(data[ownerField]), key = `${id}:${owner}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        counts.set(owner, (counts.get(owner) || 0) + 1);
-      }
+  try {
+    // The fixed-size batch read proves target existence and protected-account
+    // status without scanning either users or staffMembers.
+    const protectedDocs = await batchGetRawDocsInChunks(env, [
+      { collection: 'heavyarConfig', id: 'owner' },
+      ...uids.flatMap(uid => [{ collection: 'users', id: uid }, { collection: 'staffMembers', id: uid }]),
+    ]);
+    const userDocs = new Map(uids.flatMap(uid => {
+      const doc = protectedDocs.get(fullName(env, `users/${uid}`));
+      return doc ? [[uid, doc] as const] : [];
+    }));
+    const activeStaff = new Set(uids.filter(uid => {
+      const data = protectedDocs.get(fullName(env, `staffMembers/${uid}`))?.data;
+      return data?.active === true || data?.status === 'active' || data?.staffStatus === 'active';
+    }));
+    const owner = protectedDocs.get(fullName(env, 'heavyarConfig/owner'))?.data;
+    const ownerUid = String(owner?.uid || owner?.ownerUid || owner?.currentOwnerUid || owner?.currentOwner || '');
+    const budget: DeletionPreviewBudget = { queryOperations: 0, documents: 0, projectedBytes: 0 };
+    const countMaps = new Map<string, Map<string, number>>(), retainedMaps = new Map<string, Map<string, number>>();
+    const mediaByUser = new Map<string, number>();
+    for (const [collection, fields] of Object.entries({ ...impactFields, ...retainedFields })) {
+      const counts = new Map<string, number>();
+      await scanDeletionPreviewCollection(env, collection, fields, uids, budget, (data, targetUids) => {
+        const owners = new Set(fields.map(field => String(data[field] || '')).filter(uid => targetUids.has(uid)));
+        for (const uid of owners) counts.set(uid, (counts.get(uid) || 0) + 1);
+        if (collection === 'equipment') for (const uid of owners) {
+          mediaByUser.set(uid, (mediaByUser.get(uid) || 0) + (Array.isArray(data.images) ? data.images.filter((image: any) => typeof image?.publicId === 'string').length : 0));
+        }
+      });
+      (impactFields[collection] ? countMaps : retainedMaps).set(collection, counts);
     }
-    return counts;
-  };
-  const countMaps = new Map(Object.entries(impactFields).map(([collection, fields]) => [collection, countByUser(collection, fields)]));
-  const retainedMaps = new Map(Object.entries(retainedFields).map(([collection, fields]) => [collection, countByUser(collection, fields)]));
-  const equipmentRows = collectionRows.get('equipment') || [], mediaByUser = new Map<string, number>();
-  for (const row of equipmentRows.filter((item: any) => item.document)) {
-    const data = decode(row.document), uid = String(data.ownerUid || '');
-    if (!targetSet.has(uid)) continue;
-    mediaByUser.set(uid, (mediaByUser.get(uid) || 0) + (Array.isArray(data.images) ? data.images.filter((image: any) => typeof image?.publicId === 'string').length : 0));
+    const items: any[] = [], aggregate: any = { equipment: 0, driverProfile: 0, phoneAlias: 0, requests: 0, notifications: 0, deviceTokens: 0, complaints: 0, media: 0, protected: 0, skipped: 0 };
+    for (const uid of uids) {
+      const doc = userDocs.get(uid), protectedAccount = !doc || uid === actor.uid || uid === ownerUid || activeStaff.has(uid) || deletionProtected(doc.data) || ['system', 'service', 'bootstrap'].includes(uid);
+      if (!doc) { aggregate.skipped++; items.push({ uid, exists: false, protected: false }); continue; }
+      if (protectedAccount) { aggregate.protected++; aggregate.skipped++; }
+      const counts = { equipment: countMaps.get('equipment')?.get(uid) || 0, driverProfile: countMaps.get('driverProfiles')?.get(uid) || 0, phoneAlias: countMaps.get('phoneOwners')?.get(uid) || 0, requests: countMaps.get('equipmentRequests')?.get(uid) || 0, notifications: countMaps.get('notifications')?.get(uid) || 0, deviceTokens: countMaps.get('deviceTokens')?.get(uid) || 0, complaints: countMaps.get('complaints')?.get(uid) || 0, media: (typeof doc.data.avatarPublicId === 'string' ? 1 : 0) + (mediaByUser.get(uid) || 0) };
+      const retained = Object.fromEntries(Object.entries(retainedFields).map(([collection]) => [collection === 'adminAudit' ? 'audits' : collection, retainedMaps.get(collection)?.get(uid) || 0]));
+      Object.assign(aggregate, Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, aggregate[key] + value])));
+      items.push({ uid, exists: true, protected: protectedAccount, role: doc.data.role || null, email: doc.data.email || doc.data.emailLower || null, counts, retained });
+    }
+    const previewToken = crypto.randomUUID(), expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await commit(env, [{ update: { name: fullName(env, `deletionPreviewSnapshots/${encodeURIComponent(previewToken)}`), fields: {
+      previewToken: jsonValue(previewToken), uids: jsonValue(uids), counts: jsonValue(aggregate), actorUid: jsonValue(actor.uid), expiresAt: { timestampValue: expiresAt }, consumed: { booleanValue: false }, createdAt: { timestampValue: new Date().toISOString() },
+    } }, currentDocument: { exists: false } }]);
+    const retained = items.reduce((total: any, item: any) => {
+      for (const key of ['payments', 'invoices', 'refunds', 'audits']) total[key] += Number(item.retained?.[key] || 0);
+      return total;
+    }, { payments: 0, invoices: 0, refunds: 0, audits: 0 });
+    return { success: true, previewToken, expiresAt, targeted: uids.length, eligible: items.filter((item: any) => item.exists && !item.protected).length, protected: aggregate.protected, skipped: aggregate.skipped, items, counts: aggregate, retained, requiresConfirmation: `DELETE ${uids.length} USERS` };
+  } catch (error) {
+    const failure = error instanceof DeletionPreviewIncompleteError
+      ? error
+      : new DeletionPreviewIncompleteError('deletion_preview_unavailable', 503);
+    return { error: failure.message, status: failure.status, errorCode: failure.errorCode };
   }
-  const items: any[] = [], aggregate: any = { equipment: 0, driverProfile: 0, phoneAlias: 0, requests: 0, notifications: 0, deviceTokens: 0, complaints: 0, media: 0, protected: 0, skipped: 0 };
-  for (const uid of uids) {
-    const doc = userDocs.get(uid), protectedAccount = !doc || uid === actor.uid || uid === ownerUid || activeStaff.has(uid) || deletionProtected(doc.data) || ['system', 'service', 'bootstrap'].includes(uid);
-    if (!doc) { aggregate.skipped++; items.push({ uid, exists: false, protected: false }); continue; }
-    if (protectedAccount) { aggregate.protected++; aggregate.skipped++; }
-    const counts = { equipment: countMaps.get('equipment')?.get(uid) || 0, driverProfile: countMaps.get('driverProfiles')?.get(uid) || 0, phoneAlias: countMaps.get('phoneOwners')?.get(uid) || 0, requests: countMaps.get('equipmentRequests')?.get(uid) || 0, notifications: countMaps.get('notifications')?.get(uid) || 0, deviceTokens: countMaps.get('deviceTokens')?.get(uid) || 0, complaints: countMaps.get('complaints')?.get(uid) || 0, media: (typeof doc.data.avatarPublicId === 'string' ? 1 : 0) + (mediaByUser.get(uid) || 0) };
-    const retained = Object.fromEntries(Object.entries(retainedFields).map(([collection, fields]) => [collection === 'adminAudit' ? 'audits' : collection, retainedMaps.get(collection)?.get(uid) || 0]));
-    Object.assign(aggregate, Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, aggregate[key] + value])));
-    items.push({ uid, exists: true, protected: protectedAccount, role: doc.data.role || null, email: doc.data.email || doc.data.emailLower || null, counts, retained });
-  }
-  const previewToken = crypto.randomUUID(), expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  await commit(env, [{ update: { name: fullName(env, `deletionPreviewSnapshots/${encodeURIComponent(previewToken)}`), fields: {
-    previewToken: jsonValue(previewToken), uids: jsonValue(uids), counts: jsonValue(aggregate), actorUid: jsonValue(actor.uid), expiresAt: { timestampValue: expiresAt }, consumed: { booleanValue: false }, createdAt: { timestampValue: new Date().toISOString() },
-  } }, currentDocument: { exists: false } }]);
-  const retained = items.reduce((total: any, item: any) => {
-    for (const key of ['payments', 'invoices', 'refunds', 'audits']) total[key] += Number(item.retained?.[key] || 0);
-    return total;
-  }, { payments: 0, invoices: 0, refunds: 0, audits: 0 });
-  return { success: true, previewToken, expiresAt, targeted: uids.length, eligible: items.filter((item: any) => item.exists && !item.protected).length, protected: aggregate.protected, skipped: aggregate.skipped, items, counts: aggregate, retained, requiresConfirmation: `DELETE ${uids.length} USERS` };
 }
 async function enqueueDeletion(req: Request, env: Env, actor: AdminUser) {
   if (!(await mayDeleteUsers(env, actor))) return { error: 'Owner or super-admin governance permission required', status: 403 };
