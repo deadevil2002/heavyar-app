@@ -1522,14 +1522,16 @@ describe('worker security boundary', () => {
     __test.captureDriverQueries(queryShapes);
     const first: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&limit=1'), env)).json();
     expect(first.drivers.length).toBe(1);
-    expect(queryShapes[0].where.fieldFilter.field.fieldPath).toBe('active');
-    expect(queryShapes[0].where.compositeFilter).toBe(undefined);
+    expect(queryShapes[0].where.compositeFilter.filters.map((filter: any) => filter.fieldFilter.field.fieldPath))
+      .toEqual(['active', 'moderationStatus', 'countryCode']);
     expect(JSON.stringify(queryShapes[0].orderBy)).toBe(JSON.stringify([{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }]));
-    expect(first.nextCursor.startsWith('drv_')).toBe(true);
+    expect(typeof first.nextCursor).toBe('string');
     expect(first.nextCursor.includes('driver-a')).toBe(false);
     const second: any = await (await worker.fetch(new Request(`https://worker.test/api/drivers/search?countryCode=SA&limit=1&cursor=${encodeURIComponent(first.nextCursor)}`), env)).json();
     expect(second.drivers.length).toBe(1);
     expect(second.drivers[0].displayName).toBe('Bader Driver');
+    const crossFilter = await worker.fetch(new Request(`https://worker.test/api/drivers/search?countryCode=SA&region=Riyadh&limit=1&cursor=${encodeURIComponent(first.nextCursor)}`), env);
+    expect(crossFilter.status).toBe(400);
     const filtered: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&q=Ahmed&region=Riyadh&city=Riyadh&equipment=crane&availabilityStatus=available'), env)).json();
     expect(filtered.drivers.length).toBe(1);
     const privateEmail: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&q=search-me'), env)).json();
@@ -1589,8 +1591,8 @@ describe('worker security boundary', () => {
       expect(JSON.stringify(batch?.body).includes('/publicDriverRateLimits/')).toBe(true);
       expect(JSON.stringify(batch?.body).includes('198.51.100.20')).toBe(false);
       const query = calls.find(call => call.url.includes(':runQuery'))?.body.structuredQuery;
-      expect(query.where.fieldFilter.field.fieldPath).toBe('active');
-      expect(query.where.compositeFilter).toBe(undefined);
+      expect(query.where.compositeFilter.filters.map((filter: any) => filter.fieldFilter.field.fieldPath))
+        .toEqual(['active', 'moderationStatus', 'countryCode']);
       expect(JSON.stringify(query.orderBy)).toBe(JSON.stringify([{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }]));
       __test.setAuth({ uid: 'customer', admin: false, emailVerified: true });
       const list = await worker.fetch(new Request('https://worker.test/api/drivers/requests?limit=10', { headers: { Authorization: 'Bearer test' } }), runtimeEnv);
@@ -1681,7 +1683,60 @@ describe('worker security boundary', () => {
     }
   });
 
-  test('driver scan-budget exhaustion returns an opaque resumable cursor without losing later matches', async () => {
+  test('driver search applies indexed canonical filters before its bounded scan and finds matches beyond the former 100-row window', async () => {
+    const profiles = Array.from({ length: 1_005 }, (_, index) => ({
+      id: `driver-${String(index).padStart(4, '0')}`,
+      displayName: index === 1_004 ? 'Indexed Match' : `Other ${index}`,
+      countryCode: 'SA', region: index === 1_004 ? 'Riyadh' : 'Makkah', city: index === 1_004 ? 'Riyadh' : 'Jeddah',
+      equipmentTypes: [index === 1_004 ? 'crane' : 'loader'], availabilityStatus: index === 1_004 ? 'available' : 'offline',
+      trustStatus: index === 1_004 ? 'verified' : 'unverified', active: true, moderationStatus: 'approved',
+    }));
+    __test.setFirestore((collection, id) => {
+      if (collection === '__queries' && id === 'driverProfiles') return profiles;
+      if (collection === 'users') return { role: 'driver', accountStatus: 'active', emailVerified: true, countryCode: 'SA' };
+      return null;
+    });
+    const queries: any[] = [];
+    __test.captureDriverQueries(queries);
+    const response = await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&region=Riyadh&city=Riyadh&equipment=crane&availabilityStatus=available&trustStatus=verified'), env);
+    const body: any = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.drivers.map((driver: any) => driver.displayName)).toEqual(['Indexed Match']);
+    expect(body.nextCursor).toBeUndefined();
+    const query = queries[0];
+    expect(query.limit <= 101).toBe(true);
+    expect(query.where.compositeFilter.filters.map((filter: any) => [filter.fieldFilter.field.fieldPath, filter.fieldFilter.op]))
+      .toEqual([
+        ['active', 'EQUAL'], ['moderationStatus', 'EQUAL'], ['countryCode', 'EQUAL'], ['region', 'EQUAL'], ['city', 'EQUAL'],
+        ['equipmentTypes', 'ARRAY_CONTAINS'], ['availabilityStatus', 'EQUAL'], ['trustStatus', 'EQUAL'],
+      ]);
+  });
+
+  test('driver discovery revalidates live account and profile eligibility instead of trusting indexed profile fields', async () => {
+    const profile: any = {
+      id: 'driver-live', displayName: 'Live Driver', countryCode: 'SA', region: 'Riyadh', city: 'Riyadh',
+      equipmentTypes: ['crane'], availabilityStatus: 'available', trustStatus: 'unverified', active: true, moderationStatus: 'approved',
+    };
+    let account: any = { role: 'driver', accountStatus: 'active', isActive: true, emailVerified: true, countryCode: 'SA' };
+    __test.setFirestore((collection, id) => {
+      if (collection === '__queries' && id === 'driverProfiles') return [profile];
+      if (collection === 'users' && id === 'driver-live') return account;
+      return null;
+    });
+    const search = async () => (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA'), env)).json() as Promise<any>;
+    expect((await search()).drivers).toHaveLength(1);
+    account = null;
+    expect((await search()).drivers).toHaveLength(0);
+    account = { role: 'driver', accountStatus: 'suspended', isActive: false, emailVerified: true, countryCode: 'SA' };
+    expect((await search()).drivers).toHaveLength(0);
+    account = { role: 'driver', accountStatus: 'active', isActive: true, accountPurpose: 'store_review', emailVerified: true, countryCode: 'SA' };
+    expect((await search()).drivers).toHaveLength(0);
+    account = { role: 'driver', accountStatus: 'active', isActive: true, emailVerified: true, countryCode: 'SA' };
+    profile.moderationStatus = 'suspended';
+    expect((await search()).drivers).toHaveLength(0);
+  });
+
+  test('driver scan-budget exhaustion returns context-bound resumable cursors without losing substring matches', async () => {
     const profiles = Array.from({ length: 151 }, (_, index) => ({
       id: `driver-${String(index).padStart(4, '0')}`,
       displayName: index === 150 ? 'Needle Driver' : `Other ${index}`,
@@ -1692,13 +1747,19 @@ describe('worker security boundary', () => {
       if (collection === 'users') return { role: 'driver', accountStatus: 'active', emailVerified: true, countryCode: 'SA' };
       return null;
     });
-    const first: any = await (await worker.fetch(new Request('https://worker.test/api/drivers/search?countryCode=SA&q=Needle'), env)).json();
-    expect(first.drivers.length).toBe(0);
-    expect(first.nextCursor.startsWith('drv_')).toBe(true);
-    expect(first.nextCursor.includes('driver-0099')).toBe(false);
-    const second: any = await (await worker.fetch(new Request(`https://worker.test/api/drivers/search?countryCode=SA&q=Needle&cursor=${encodeURIComponent(first.nextCursor)}`), env)).json();
-    expect(second.drivers.length).toBe(1);
-    expect(second.drivers[0].displayName).toBe('Needle Driver');
+    let cursor: string | undefined;
+    let found: any[] = [];
+    let pages = 0;
+    do {
+      const suffix = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+      const page: any = await (await worker.fetch(new Request(`https://worker.test/api/drivers/search?countryCode=SA&q=Needle${suffix}`), env)).json();
+      pages += 1;
+      found = [...found, ...page.drivers];
+      cursor = page.nextCursor;
+    } while (!found.length && cursor && pages < 10);
+    expect(pages).toBe(4);
+    expect(found.map(driver => driver.displayName)).toEqual(['Needle Driver']);
+    expect(cursor).toBeUndefined();
   });
 
   test('public detail and driver requests resolve opaque identity and retain only canonical private UIDs', async () => {

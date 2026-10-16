@@ -216,6 +216,16 @@
       ]
     },
     {
+      "collectionGroup": "driverProfiles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "active", "order": "ASCENDING" },
+        { "fieldPath": "moderationStatus", "order": "ASCENDING" },
+        { "fieldPath": "countryCode", "order": "ASCENDING" },
+        { "fieldPath": "equipmentTypes", "arrayConfig": "CONTAINS" }
+      ]
+    },
+    {
       "collectionGroup": "campaigns",
       "queryScope": "COLLECTION",
       "fields": [

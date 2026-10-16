@@ -6956,6 +6956,67 @@ async function publicGatewayDiscovery(req: Request, env: Env, u: User) {
   return out(env, req, { success: true, gateways: enabled });
 }
 const DRIVER_PUBLIC_ID_PATTERN = /^drv_[A-Za-z0-9_-]{43}$/;
+const DRIVER_SEARCH_SCAN_MAX = 100;
+const DRIVER_SEARCH_CURSOR_MAX_LENGTH = 512;
+
+type DriverSearchContext = {
+  countryCode: string;
+  q: string | null;
+  region: string | null;
+  city: string | null;
+  equipmentType: string | null;
+  availabilityStatus: string | null;
+  requestedFrom: string | null;
+  requestedUntil: string | null;
+  trustStatus: string | null;
+};
+
+function driverSearchContext(value: DriverSearchContext): string {
+  return JSON.stringify([
+    'driver-search-v2', value.countryCode, value.q?.toLocaleLowerCase() || '', value.region || '', value.city || '',
+    value.equipmentType || '', value.availabilityStatus || '', value.requestedFrom || '', value.requestedUntil || '', value.trustStatus || '',
+  ]);
+}
+
+async function driverSearchFingerprint(value: DriverSearchContext): Promise<string> {
+  return hashedId(driverSearchContext(value));
+}
+
+function driverSearchCursor(fingerprint: string, publicId: string): string {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(fingerprint) || !DRIVER_PUBLIC_ID_PATTERN.test(publicId)) throw new Error('INVALID_DRIVER_CURSOR');
+  return b64u(enc.encode(JSON.stringify({ v: 2, fingerprint, publicId })));
+}
+
+function parseDriverSearchCursor(value: string | null, fingerprint: string): string | undefined | null {
+  if (value === null) return undefined;
+  if (!value || value.length > DRIVER_SEARCH_CURSOR_MAX_LENGTH) return null;
+  try {
+    const decoded = JSON.parse(new TextDecoder().decode(b64(value)));
+    if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded) || decoded.v !== 2 || decoded.fingerprint !== fingerprint ||
+        !DRIVER_PUBLIC_ID_PATTERN.test(String(decoded.publicId || '')) ||
+        Object.keys(decoded).some(key => !['v', 'fingerprint', 'publicId'].includes(key))) return null;
+    return decoded.publicId;
+  } catch {
+    return null;
+  }
+}
+
+function driverSearchWhere(value: DriverSearchContext) {
+  const field = (fieldPath: string, op: 'EQUAL' | 'ARRAY_CONTAINS', raw: string | boolean) => ({
+    fieldFilter: { field: { fieldPath }, op, value: typeof raw === 'boolean' ? { booleanValue: raw } : { stringValue: raw } },
+  });
+  const filters = [
+    field('active', 'EQUAL', true),
+    field('moderationStatus', 'EQUAL', 'approved'),
+    field('countryCode', 'EQUAL', value.countryCode),
+    ...(value.region ? [field('region', 'EQUAL', value.region)] : []),
+    ...(value.city ? [field('city', 'EQUAL', value.city)] : []),
+    ...(value.equipmentType ? [field('equipmentTypes', 'ARRAY_CONTAINS', value.equipmentType)] : []),
+    ...(value.availabilityStatus ? [field('availabilityStatus', 'EQUAL', value.availabilityStatus)] : []),
+    ...(value.trustStatus ? [field('trustStatus', 'EQUAL', value.trustStatus)] : []),
+  ];
+  return filters.length === 1 ? filters[0] : { compositeFilter: { op: 'AND', filters } };
+}
 
 async function canonicalDriverPublicId(uid: string): Promise<string> {
   return `drv_${b64u(await crypto.subtle.digest('SHA-256', enc.encode(`heavyar:driver:${uid}`)))}`;
@@ -6983,11 +7044,15 @@ async function driverQueryRows(env: Env, structuredQuery: any): Promise<Array<{ 
         row.data = { ...row.data, publicId: await canonicalDriverPublicId(uid) };
       }
     }
-    const filters = structuredQuery?.where?.compositeFilter?.filters || (structuredQuery?.where?.fieldFilter ? [structuredQuery.where] : []);
-    rows = rows.filter((row: any) => filters.every((filter: any) => {
-      const rule = filter.fieldFilter, field = rule?.field?.fieldPath, expected = val(rule?.value);
-      return !rule || (rule.op === 'EQUAL' && row.data[field] === expected);
-    }));
+    const matchesFilter = (row: any, filter: any): boolean => {
+      if (filter?.compositeFilter?.op === 'AND') return filter.compositeFilter.filters.every((part: any) => matchesFilter(row, part));
+      const rule = filter?.fieldFilter, field = rule?.field?.fieldPath, expected = val(rule?.value);
+      if (!rule) return true;
+      if (rule.op === 'EQUAL') return row.data[field] === expected;
+      if (rule.op === 'ARRAY_CONTAINS') return Array.isArray(row.data[field]) && row.data[field].includes(expected);
+      return false;
+    };
+    rows = rows.filter((row: any) => matchesFilter(row, structuredQuery?.where));
     const start = structuredQuery?.startAt?.values?.[0]?.referenceValue;
     if (start) rows = rows.filter((row: any) => row.name > start);
     return rows.slice(0, Number(structuredQuery?.limit || rows.length));
@@ -7341,18 +7406,26 @@ async function driverSearch(req: Request, env: Env) {
   const market = await countrySettings(env, countryCode);
   if (!market.enabled || !market.marketplaceAvailable) return out(env, req, { success: true, drivers: [], nextCursor: undefined });
   const verificationPolicy = await emailVerificationPolicy(env);
+  const searchContext: DriverSearchContext = {
+    countryCode, q, region, city, equipmentType, availabilityStatus, requestedFrom, requestedUntil, trustStatus,
+  };
+  const fingerprint = await driverSearchFingerprint(searchContext);
   let cursorReference: string | undefined;
   if (cursor) {
-    const resolved = await resolveDriverPublicId(env, cursor);
+    const cursorPublicId = parseDriverSearchCursor(cursor, fingerprint);
+    if (!cursorPublicId) return out(env, req, { success: false, error: 'Invalid cursor' }, 400);
+    const resolved = await resolveDriverPublicId(env, cursorPublicId);
     if (!resolved) return out(env, req, { success: false, error: 'Invalid cursor' }, 400);
     cursorReference = fullName(env, `driverProfiles/${encodeURIComponent(resolved.uid)}`);
   }
+  const scanLimit = Math.min(DRIVER_SEARCH_SCAN_MAX, Math.max(25, limit * 2));
   const query: any = { from: [{ collectionId: 'driverProfiles' }],
-    where: { fieldFilter: { field: { fieldPath: 'active' }, op: 'EQUAL', value: { booleanValue: true } } },
-    orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 100 };
+    where: driverSearchWhere(searchContext),
+    orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: scanLimit + 1 };
   if (cursorReference) query.startAt = { before: false, values: [{ referenceValue: cursorReference }] };
   const rows = await driverQueryRows(env, query);
-  const identified = rows.map(row => ({ row, uid: decodeURIComponent(row.name.split('/').pop() || '') }));
+  const queryHasMore = rows.length > scanLimit;
+  const identified = rows.slice(0, scanLimit).map(row => ({ row, uid: decodeURIComponent(row.name.split('/').pop() || '') }));
   const accounts = await driverAccounts(env, identified.map(item => item.uid));
   const drivers: any[] = [];
   let lastScanned: { uid: string; profile: any } | undefined, stoppedEarly = false;
@@ -7370,12 +7443,11 @@ async function driverSearch(req: Request, env: Env) {
     if (matches && eligible) {
       const id = await canonicalDriverPublicId(uid);
       drivers.push(publicDriverProfile({ ...raw, id }));
-      if (drivers.length === limit) { stoppedEarly = index < identified.length - 1; break; }
+      if (drivers.length === limit) { stoppedEarly = index < identified.length - 1 || queryHasMore; break; }
     }
   }
-  const budgetExhausted = rows.length === 100;
-  const continuation = (stoppedEarly || budgetExhausted) && lastScanned
-    ? await canonicalDriverPublicId(lastScanned.uid)
+  const continuation = (stoppedEarly || queryHasMore) && lastScanned
+    ? driverSearchCursor(fingerprint, await ensureDriverPublicId(env, lastScanned.uid, lastScanned.profile))
     : undefined;
   return out(env, req, { success: true, drivers, nextCursor: continuation });
 }
