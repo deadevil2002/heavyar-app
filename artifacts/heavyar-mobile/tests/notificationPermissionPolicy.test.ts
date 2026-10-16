@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getPermissionsAsync, requestPermissionsAsync } = vi.hoisted(() => ({
+const { auth, getPermissionsAsync, requestPermissionsAsync } = vi.hoisted(() => ({
+  auth: { currentUser: { uid: 'customer_uid_123', getIdToken: vi.fn(async () => 'token') } },
   getPermissionsAsync: vi.fn(),
   requestPermissionsAsync: vi.fn(),
 }));
@@ -20,7 +21,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
 }));
 vi.mock('firebase/auth', () => ({ signOut: vi.fn() }));
 vi.mock('../services/firebaseConfig', () => ({
-  getFirebaseAuth: () => ({ currentUser: { uid: 'customer_uid_123', getIdToken: vi.fn(async () => 'token') } }),
+  getFirebaseAuth: () => auth,
 }));
 vi.mock('@/constants/worker', () => ({ WORKER_BASE_URL: 'https://worker.test' }));
 vi.mock('../services/notificationUnreadPolicy', () => ({ publishNotificationRead: vi.fn() }));

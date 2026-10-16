@@ -83,13 +83,25 @@ function RootLayoutNav() {
   );
 }
 
-function NotificationNavigation() {
+export function NotificationNavigation() {
   const router = useRouter();
-  const { isAuthenticated, sessionReady } = useAuth();
-  const handled = useRef<Set<string>>(new Set());
+  const { isAuthenticated, sessionReady, user } = useAuth();
+  const sessionUid = sessionReady && isAuthenticated ? user?.uid ?? null : null;
+  const currentSessionUid = useRef<string | null>(sessionUid);
+  const sessionGeneration = useRef(0);
+  currentSessionUid.current = sessionUid;
 
   useEffect(() => {
-    if (!sessionReady || !isAuthenticated || Platform.OS === "web") return;
+    if (!sessionUid || Platform.OS === "web") return;
+    const generation = ++sessionGeneration.current;
+    const handled = new Set<string>();
+    const pushRefreshAbort = new AbortController();
+    let active = true;
+    let responseListenerRemoved = false;
+    let removePushRefresh: (() => void) | null = null;
+    const isCurrent = () => active
+      && sessionGeneration.current === generation
+      && currentSessionUid.current === sessionUid;
     Notifications.setNotificationHandler({
       handleNotification: async () => ({
         shouldShowBanner: true,
@@ -99,23 +111,38 @@ function NotificationNavigation() {
       }),
     });
     const open = (response: Notifications.NotificationResponse) => {
+      if (!isCurrent()) return;
       const data = response.notification.request.content.data as Record<string, unknown> | undefined;
       const key = `${String(data?.notificationId || '')}:${String(data?.action || '')}:${String(data?.subjectId || '')}`;
-      if (handled.current.has(key)) return;
-      handled.current.add(key);
+      if (handled.has(key)) return;
+      handled.add(key);
       const route = notificationRouteFromPayload(data);
       if (route) router.push(route as never);
       void Notifications.clearLastNotificationResponseAsync();
     };
     const subscription = Notifications.addNotificationResponseReceivedListener(open);
-    let removePushRefresh: () => void = () => {};
-    void subscribeToPushTokenRefresh().then((remove) => { removePushRefresh = remove; });
-    void Notifications.getLastNotificationResponseAsync().then((response) => { if (response) open(response); });
+    void subscribeToPushTokenRefresh(sessionUid, {
+      signal: pushRefreshAbort.signal,
+      isCurrent,
+    }).then((remove) => {
+      if (!isCurrent()) remove();
+      else removePushRefresh = remove;
+    }).catch(() => undefined);
+    void Notifications.getLastNotificationResponseAsync()
+      .then((response) => { if (response && isCurrent()) open(response); })
+      .catch(() => undefined);
     return () => {
-      subscription.remove();
-      removePushRefresh();
+      active = false;
+      if (sessionGeneration.current === generation) sessionGeneration.current += 1;
+      handled.clear();
+      pushRefreshAbort.abort();
+      if (!responseListenerRemoved) {
+        responseListenerRemoved = true;
+        subscription.remove();
+      }
+      removePushRefresh?.();
     };
-  }, [isAuthenticated, router, sessionReady]);
+  }, [router, sessionUid]);
   return null;
 }
 

@@ -9,6 +9,7 @@ import { mobilePerformance } from '@/utils/mobilePerformance';
 import { verificationDestination } from '@/constants/releaseCapabilities';
 
 const INSTALLATION_KEY = 'heavyar_installation_id';
+const INSTALLATION_GENERATION_KEY = 'heavyar_notification_registration_generation';
 const PAGE_SIZE = 20;
 
 export type NotificationCategory =
@@ -75,6 +76,136 @@ const defaultPreferences: NotificationPreferences = {
   security: true,
 };
 const INSTALLATION_TOKEN_KEY = 'heavyar_installation_push_token';
+
+type DeviceRegistrationSession = {
+  uid: string;
+  authUser: object;
+  generation: number;
+  epoch: number;
+  status: 'active' | 'revoked';
+  queue: Promise<void>;
+  pendingByToken: Map<string, Promise<DeviceRegistrationResult>>;
+  controllers: Set<AbortController>;
+  lastRegisteredToken: string | null;
+};
+
+let deviceRegistrationEpoch = 0;
+let deviceRegistrationSession: DeviceRegistrationSession | null = null;
+let pendingDeviceSession: { uid: string; authUser: object; promise: Promise<DeviceRegistrationSession> } | null = null;
+
+function abortDeviceRegistrationSession(session: DeviceRegistrationSession | null) {
+  if (!session) return;
+  session.status = 'revoked';
+  for (const controller of session.controllers) controller.abort();
+  session.controllers.clear();
+}
+
+async function nextDeviceRegistrationGeneration(): Promise<number> {
+  const stored = Number(await AsyncStorage.getItem(INSTALLATION_GENERATION_KEY));
+  const generation = Math.max(Date.now(), Number.isSafeInteger(stored) && stored > 0 ? stored + 1 : 1);
+  await AsyncStorage.setItem(INSTALLATION_GENERATION_KEY, String(generation));
+  return generation;
+}
+
+async function currentDeviceRegistrationSession(uid: string): Promise<DeviceRegistrationSession> {
+  const authUser = getFirebaseAuth().currentUser;
+  assertNotificationIdentity(uid, authUser?.uid);
+  if (!authUser) throw new Error('AUTH_REQUIRED');
+  if (deviceRegistrationSession?.uid === uid
+    && deviceRegistrationSession.authUser === authUser
+    && deviceRegistrationSession.status === 'active') return deviceRegistrationSession;
+  if (deviceRegistrationSession?.uid === uid
+    && deviceRegistrationSession.authUser === authUser
+    && deviceRegistrationSession.status === 'revoked') throw new Error('SESSION_EXPIRED');
+  if (pendingDeviceSession?.uid === uid && pendingDeviceSession.authUser === authUser) return pendingDeviceSession.promise;
+
+  abortDeviceRegistrationSession(deviceRegistrationSession);
+  deviceRegistrationSession = null;
+  const epoch = ++deviceRegistrationEpoch;
+  const promise = (async () => {
+    const generation = await nextDeviceRegistrationGeneration();
+    if (deviceRegistrationEpoch !== epoch || getFirebaseAuth().currentUser !== authUser) throw new Error('SESSION_EXPIRED');
+    const session: DeviceRegistrationSession = {
+      uid,
+      authUser,
+      generation,
+      epoch,
+      status: 'active',
+      queue: Promise.resolve(),
+      pendingByToken: new Map(),
+      controllers: new Set(),
+      lastRegisteredToken: null,
+    };
+    deviceRegistrationSession = session;
+    return session;
+  })();
+  pendingDeviceSession = { uid, authUser, promise };
+  try {
+    return await promise;
+  } finally {
+    if (pendingDeviceSession?.promise === promise) pendingDeviceSession = null;
+  }
+}
+
+function assertDeviceRegistrationSession(session: DeviceRegistrationSession, signal?: AbortSignal) {
+  assertNotificationIdentity(session.uid, getFirebaseAuth().currentUser?.uid, signal);
+  if (signal?.aborted
+    || session.status !== 'active'
+    || deviceRegistrationSession !== session
+    || deviceRegistrationEpoch !== session.epoch
+    || getFirebaseAuth().currentUser !== session.authUser) throw new Error('SESSION_EXPIRED');
+}
+
+async function registerDeviceToken(
+  session: DeviceRegistrationSession,
+  token: string,
+  platform: string,
+  signal?: AbortSignal,
+): Promise<DeviceRegistrationResult> {
+  assertDeviceRegistrationSession(session, signal);
+  if (session.lastRegisteredToken === token) return { status: 'registered', token };
+  const pending = session.pendingByToken.get(token);
+  if (pending) return pending;
+
+  const previous = session.queue;
+  const operation = (async () => {
+    await previous.catch(() => undefined);
+    assertDeviceRegistrationSession(session, signal);
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    session.controllers.add(controller);
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener('abort', abort, { once: true });
+    try {
+      const currentInstallationId = await installationId();
+      assertDeviceRegistrationSession(session, controller.signal);
+      await request('/api/notifications/devices', {
+        method: 'POST',
+        signal: controller.signal,
+        body: JSON.stringify({
+          token,
+          installationId: currentInstallationId,
+          platform,
+          registrationGeneration: session.generation,
+        }),
+      }, session.uid);
+      assertDeviceRegistrationSession(session, controller.signal);
+      await AsyncStorage.setItem(INSTALLATION_TOKEN_KEY, token);
+      assertDeviceRegistrationSession(session, controller.signal);
+      session.lastRegisteredToken = token;
+      return { status: 'registered', token } as DeviceRegistrationResult;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      session.controllers.delete(controller);
+    }
+  })();
+  session.pendingByToken.set(token, operation);
+  session.queue = operation.then(() => undefined, () => undefined);
+  void operation.finally(() => {
+    if (session.pendingByToken.get(token) === operation) session.pendingByToken.delete(token);
+  }).catch(() => undefined);
+  return operation;
+}
 
 async function installationId(): Promise<string> {
   const existing = await AsyncStorage.getItem(INSTALLATION_KEY);
@@ -154,14 +285,20 @@ export type DeviceRegistrationResult =
   | { status: 'registered'; token: string }
   | { status: 'web' | 'permission-not-granted' | 'permission-denied' | 'missing-project-id' | 'invalid-token' };
 
-export async function registerCurrentDevice(expectedUid?: string, requestPermission = false): Promise<DeviceRegistrationResult> {
+export async function registerCurrentDevice(
+  expectedUid?: string,
+  requestPermission = false,
+  options: { signal?: AbortSignal } = {},
+): Promise<DeviceRegistrationResult> {
   if (Platform.OS === 'web') return { status: 'web' };
   const auth = getFirebaseAuth();
   const uid = expectedUid ?? auth.currentUser?.uid ?? '';
   const initialUser = auth.currentUser;
+  const session = await currentDeviceRegistrationSession(uid);
   const assertCurrent = () => {
-    assertNotificationIdentity(uid, auth.currentUser?.uid);
+    assertNotificationIdentity(uid, auth.currentUser?.uid, options.signal);
     if (auth.currentUser !== initialUser) throw new Error('SESSION_EXPIRED');
+    assertDeviceRegistrationSession(session, options.signal);
   };
   assertCurrent();
   const Notifications = await import('expo-notifications');
@@ -185,16 +322,7 @@ export async function registerCurrentDevice(expectedUid?: string, requestPermiss
   const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
   assertCurrent();
   if (!/^ExpoPushToken\[[A-Za-z0-9_-]+\]$/.test(token)) return { status: 'invalid-token' };
-  const currentInstallationId = await installationId();
-  assertCurrent();
-  await request('/api/notifications/devices', {
-    method: 'POST',
-    body: JSON.stringify({ token, installationId: currentInstallationId, platform: Platform.OS }),
-  }, uid);
-  assertCurrent();
-  await AsyncStorage.setItem(INSTALLATION_TOKEN_KEY, token);
-  assertCurrent();
-  return { status: 'registered', token };
+  return registerDeviceToken(session, token, Platform.OS, options.signal);
 }
 
 /** Must be called only from an explicit user action. */
@@ -202,23 +330,114 @@ export async function enablePushNotifications(expectedUid: string) {
   return registerCurrentDevice(expectedUid, true);
 }
 
-export async function subscribeToPushTokenRefresh(): Promise<() => void> {
-  if (Platform.OS === 'web') return () => undefined;
+type PushTokenRefreshSubscriptionOptions = {
+  signal?: AbortSignal;
+  isCurrent?: () => boolean;
+};
+
+function pushTokenRefreshKey(token: { type?: unknown; data?: unknown }): string {
+  let data = '';
+  try {
+    data = typeof token.data === 'string' ? token.data : JSON.stringify(token.data ?? null);
+  } catch {
+    data = String(token.data ?? '');
+  }
+  return `${String(token.type ?? '').slice(0, 32)}:${data.slice(0, 4096)}`;
+}
+
+export async function subscribeToPushTokenRefresh(
+  expectedUid: string,
+  options: PushTokenRefreshSubscriptionOptions = {},
+): Promise<() => void> {
+  if (Platform.OS === 'web' || options.signal?.aborted) return () => undefined;
   const Notifications = await import('expo-notifications');
-  const subscription = Notifications.addPushTokenListener(() => {
-    void registerCurrentDevice().catch(() => undefined);
+  if (options.signal?.aborted
+    || !(options.isCurrent?.() ?? true)
+    || getFirebaseAuth().currentUser?.uid !== expectedUid) return () => undefined;
+
+  let disposed = false;
+  let registrationInFlight = false;
+  let activeTokenKey: string | null = null;
+  let queuedTokenKey: string | null = null;
+  let lastHandledTokenKey: string | null = null;
+  const isCurrent = () => !disposed
+    && !options.signal?.aborted
+    && (options.isCurrent?.() ?? true)
+    && getFirebaseAuth().currentUser?.uid === expectedUid;
+
+  const registerToken = (tokenKey: string): void => {
+    if (!isCurrent() || tokenKey === activeTokenKey || tokenKey === lastHandledTokenKey) return;
+    if (registrationInFlight) {
+      queuedTokenKey = tokenKey;
+      return;
+    }
+    registrationInFlight = true;
+    activeTokenKey = tokenKey;
+    void registerCurrentDevice(expectedUid, false, { signal: options.signal }).then(() => {
+      if (isCurrent()) lastHandledTokenKey = tokenKey;
+    }).catch(() => undefined).finally(() => {
+      registrationInFlight = false;
+      activeTokenKey = null;
+      const nextTokenKey = queuedTokenKey;
+      queuedTokenKey = null;
+      if (nextTokenKey) registerToken(nextTokenKey);
+    });
+  };
+
+  const subscription = Notifications.addPushTokenListener((token) => {
+    registerToken(pushTokenRefreshKey(token));
   });
-  return () => subscription.remove();
+  const remove = () => {
+    if (disposed) return;
+    disposed = true;
+    queuedTokenKey = null;
+    options.signal?.removeEventListener('abort', remove);
+    subscription.remove();
+  };
+  if (options.signal?.aborted) remove();
+  else options.signal?.addEventListener('abort', remove, { once: true });
+  return remove;
 }
 
 export async function revokeCurrentDevice(): Promise<void> {
+  const auth = getFirebaseAuth();
+  const authUser = auth.currentUser;
+  const uid = authUser?.uid ?? '';
+  assertNotificationIdentity(uid, authUser?.uid);
+  if (!authUser) throw new Error('AUTH_REQUIRED');
+  let session: DeviceRegistrationSession;
+  if (deviceRegistrationSession?.uid === uid && deviceRegistrationSession.authUser === authUser) {
+    session = deviceRegistrationSession;
+  } else if (pendingDeviceSession?.uid === uid && pendingDeviceSession.authUser === authUser) {
+    session = await pendingDeviceSession.promise;
+  } else {
+    session = await currentDeviceRegistrationSession(uid);
+  }
+  abortDeviceRegistrationSession(session);
+  deviceRegistrationEpoch += 1;
   const token = await AsyncStorage.getItem(INSTALLATION_TOKEN_KEY);
-  if (!token) return;
+  const currentInstallationId = await installationId();
   try {
-    await request('/api/notifications/devices', {
-      method: 'DELETE',
-      body: JSON.stringify({ token, installationId: await installationId(), platform: Platform.OS }),
-    });
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await request('/api/notifications/devices', {
+          method: 'DELETE',
+          body: JSON.stringify({
+            ...(token ? { token } : {}),
+            installationId: currentInstallationId,
+            platform: Platform.OS,
+            registrationGeneration: session.generation,
+          }),
+        }, uid);
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError = error;
+        if ((error as Error).message === 'SESSION_EXPIRED') throw error;
+      }
+    }
+    if (lastError) throw lastError;
     await AsyncStorage.removeItem(INSTALLATION_TOKEN_KEY);
   } catch (error) {
     if ((error as Error).message === 'SESSION_EXPIRED') await AsyncStorage.removeItem(INSTALLATION_TOKEN_KEY);

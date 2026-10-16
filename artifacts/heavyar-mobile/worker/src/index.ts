@@ -201,10 +201,11 @@ let serviceExecutionBindingOverride: ((sourceKind: ConfirmedExecutionBinding['so
 let serviceMessageQueryOverride: any[] | undefined;
 let publicEquipmentLimiterOverride: ((ipHash: string) => Promise<boolean | null>) | undefined;
 let authenticatedMutationLimiterOverride: ((uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) | undefined;
+let notificationDeviceCommitOverride: ((writes: any[], attempt: number) => Promise<void>) | undefined;
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
 const paymentCreateInflight = new Map<string, Promise<Response>>();
-  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, setServiceExecutionActivation(value?: boolean) { serviceExecutionActivationOverride = value; }, setCustomerProjectActivation(value?: boolean) { customerProjectActivationOverride = value; }, setServiceExecutionBinding(resolver?: (sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) { serviceExecutionBindingOverride = resolver; }, setServiceMessageRows(rows?: any[]) { serviceMessageQueryOverride = rows; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
+  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, setServiceExecutionActivation(value?: boolean) { serviceExecutionActivationOverride = value; }, setCustomerProjectActivation(value?: boolean) { customerProjectActivationOverride = value; }, setServiceExecutionBinding(resolver?: (sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) { serviceExecutionBindingOverride = resolver; }, setServiceMessageRows(rows?: any[]) { serviceMessageQueryOverride = rows; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, setNotificationDeviceCommit(fn?: (writes: any[], attempt: number) => Promise<void>) { notificationDeviceCommitOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), notificationDeviceTransition, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -1168,46 +1169,214 @@ async function notificationPreferences(req: Request, env: Env, u: User) {
   await (existing ? patchDoc(env, `notificationPreferences/${encodeURIComponent(u.uid)}`, fields) : createDoc(env, `notificationPreferences/${encodeURIComponent(u.uid)}`, { ...fields, ...Object.fromEntries(NOTIFICATION_CATEGORIES.map(c => [c, fields[c] || { booleanValue: true }])) }));
   return out(env, req, { success: true, preferences: { ...defaultNotificationPreferences(), ...Object.fromEntries(Object.entries(fields).filter(([k]) => NOTIFICATION_CATEGORIES.includes(k as any)).map(([k, v]: any) => [k, v.booleanValue])) } });
 }
+type NotificationDeviceState = {
+  uid?: string;
+  tokenId?: string;
+  active?: boolean;
+  registrationGeneration?: number;
+  latestGeneration?: number;
+  revokedThroughGeneration?: number;
+};
+
+type NotificationDeviceOperation = {
+  uid: string;
+  tokenId?: string;
+  generation: number;
+  revoke: boolean;
+};
+
+function storedNotificationGeneration(value: unknown): number | null {
+  if (value === undefined) return 0;
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : null;
+}
+
+function notificationDeviceTransition(
+  current: NotificationDeviceState | null | undefined,
+  operation: NotificationDeviceOperation,
+): { status: 'apply'; state: NotificationDeviceState } | { status: 'stale' | 'invalid' } {
+  if (!Number.isSafeInteger(operation.generation) || operation.generation <= 0) return { status: 'invalid' };
+  const registrationGeneration = storedNotificationGeneration(current?.registrationGeneration);
+  const latestGeneration = storedNotificationGeneration(current?.latestGeneration);
+  const revokedThroughGeneration = storedNotificationGeneration(current?.revokedThroughGeneration);
+  if (registrationGeneration === null || latestGeneration === null || revokedThroughGeneration === null) return { status: 'invalid' };
+  const latest = Math.max(registrationGeneration, latestGeneration);
+  if (!operation.revoke) {
+    if (!operation.tokenId
+      || operation.generation <= revokedThroughGeneration
+      || operation.generation < latest
+      || operation.generation === latest && current?.uid && current.uid !== operation.uid) return { status: 'stale' };
+    return { status: 'apply', state: {
+      uid: operation.uid,
+      tokenId: operation.tokenId,
+      active: true,
+      registrationGeneration: operation.generation,
+      latestGeneration: Math.max(latest, operation.generation),
+      revokedThroughGeneration,
+    } };
+  }
+  if (operation.generation < latest
+    || operation.generation === latest && current?.uid && current.uid !== operation.uid) return { status: 'stale' };
+  const mayDeactivate = !current?.uid
+    || operation.generation > latest
+    || current.uid === operation.uid && registrationGeneration <= operation.generation;
+  return { status: 'apply', state: {
+    ...current,
+    uid: current?.uid || operation.uid,
+    active: mayDeactivate ? false : current?.active === true,
+    latestGeneration: Math.max(latest, operation.generation),
+    revokedThroughGeneration: Math.max(revokedThroughGeneration, operation.generation),
+  } };
+}
+
+function notificationDeviceWrite(env: Env, path: string, fields: Record<string, any>, current: { updateTime?: string } | null | undefined, updateMask?: string[]) {
+  return {
+    update: { name: fullName(env, path), fields },
+    ...(updateMask ? { updateMask: { fieldPaths: updateMask } } : {}),
+    currentDocument: current?.updateTime ? { updateTime: current.updateTime } : { exists: false },
+  };
+}
+
 async function registerDevice(req: Request, env: Env, u: User, revoke = false) {
   let body: any; try { body = await req.json(); } catch { return out(env, req, { success: false, error: 'Invalid device token' }, 400); }
   const token = String(body?.token || ''), platform = body?.platform === 'ios' || body?.platform === 'android' || body?.platform === 'web' ? body.platform : '';
   const installationId = String(body?.installationId || '');
-  if (!token || token.length > 4096 || (!revoke && !/^Expo(nent)?PushToken\[[^\]]{8,4000}\]$/.test(token)) || (!revoke && !platform) || !/^[A-Za-z0-9._:-]{8,200}$/.test(installationId)) return out(env, req, { success: false, error: 'Invalid device token' }, 400);
-  const tokenId = await hashedId(token), installationKey = await hashedId(installationId), now = new Date().toISOString(), path = `deviceTokens/${tokenId}`;
-  const expiresAt = new Date(Date.now() + (revoke ? 30 : 180) * 86400000).toISOString();
-  const ownershipWrites: any[] = [];
-  const canonicalInstallation = await getRawDoc(env, 'notificationInstallations', installationKey);
-  const canonicalOwner = await getRawDoc(env, 'notificationTokenOwners', tokenId);
-  if (!revoke) {
-    const prior = firestoreOverride ? [] : await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'deviceTokens' }], where: { compositeFilter: { op: 'OR', filters: [
-      { fieldFilter: { field: { fieldPath: 'token' }, op: 'EQUAL', value: { stringValue: token } } },
-      { fieldFilter: { field: { fieldPath: 'installationId' }, op: 'EQUAL', value: { stringValue: installationId } } },
-    ] } }, limit: 20 } }) });
-    const transfers = (prior || []).filter((x: any) => decode(x.document || x).uid !== u.uid && decode(x.document || x).active === true);
-    for (const item of transfers) {
-      ownershipWrites.push({ update: { name: item.document?.name, fields: { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } } }, updateMask: { fieldPaths: ['active', 'revokedAt', 'updatedAt'] }, currentDocument: { updateTime: item.document?.updateTime } });
+  // The request field is retained for wire compatibility only. Device authority
+  // is fenced exclusively by Firebase's signed auth_time; client clocks,
+  // counters and refreshed-token iat values never advance this boundary.
+  const generation = Number(u.authTime || 0);
+  const receivedAt = Date.now();
+  if (token.length > 4096
+    || (!revoke && !/^Expo(nent)?PushToken\[[^\]]{8,4000}\]$/.test(token))
+    || (!revoke && !platform)
+    || !/^[A-Za-z0-9._:-]{8,200}$/.test(installationId)
+    || !Number.isSafeInteger(generation)
+    || generation <= 0
+    || generation > receivedAt) return out(env, req, { success: false, error: 'Authenticated session freshness is invalid', errorCode: 'DEVICE_SESSION_FRESHNESS_INVALID' }, 401);
+
+  const tokenId = token ? await hashedId(token) : '', installationKey = await hashedId(installationId);
+  const installationPath = `notificationInstallations/${installationKey}`;
+  const now = new Date().toISOString(), expiresAt = new Date(Date.now() + (revoke ? 30 : 180) * 86400000).toISOString();
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    const read = (collection: string, id: string) => transaction
+      ? transactionDocument(env, `${collection}/${encodeURIComponent(id)}`, transaction)
+      : getRawDoc(env, collection, id);
+    const canonicalInstallation = await read('notificationInstallations', installationKey);
+    const canonicalInstallationTokenId = String(canonicalInstallation?.data?.tokenId || '');
+    const canonicalInstallationGeneration = Math.max(
+      Number(canonicalInstallation?.data?.registrationGeneration || 0),
+      Number(canonicalInstallation?.data?.latestGeneration || 0),
+    );
+    const operationGeneration = generation;
+    const revokeCanonicalToken = revoke && canonicalInstallationTokenId
+      && (canonicalInstallation?.data?.uid === u.uid || operationGeneration > canonicalInstallationGeneration);
+    const effectiveTokenId = revoke ? revokeCanonicalToken ? canonicalInstallationTokenId : tokenId : tokenId;
+    const canonicalOwner = effectiveTokenId ? await read('notificationTokenOwners', effectiveTokenId) : null;
+    const currentToken = effectiveTokenId ? await read('deviceTokens', effectiveTokenId) : null;
+    const priorInstallationTokenId = String(canonicalInstallation?.data?.tokenId || '');
+    const priorToken = priorInstallationTokenId && priorInstallationTokenId !== effectiveTokenId
+      ? await read('deviceTokens', priorInstallationTokenId) : null;
+    const priorTokenOwner = priorInstallationTokenId && priorInstallationTokenId !== effectiveTokenId
+      ? await read('notificationTokenOwners', priorInstallationTokenId) : null;
+    const ownerInstallationId = String(canonicalOwner?.data?.installationId || '');
+    const ownerInstallationKey = ownerInstallationId && ownerInstallationId !== installationId ? await hashedId(ownerInstallationId) : '';
+    const priorOwnerInstallation = ownerInstallationKey ? await read('notificationInstallations', ownerInstallationKey) : null;
+
+    const installationTransition = notificationDeviceTransition(canonicalInstallation?.data, {
+      uid: u.uid,
+      ...(effectiveTokenId ? { tokenId: effectiveTokenId } : {}),
+      generation: operationGeneration,
+      revoke,
+    });
+    if (installationTransition.status !== 'apply') {
+      if (transaction) await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+      return out(env, req, { success: false, error: 'Device registration generation is no longer valid', errorCode: 'DEVICE_REGISTRATION_REVOKED' }, 409);
+    }
+    let ownerTransitionState: NotificationDeviceState | undefined;
+    let tokenTransitionState: NotificationDeviceState | undefined;
+    if (!revoke) {
+      const ownerTransition = notificationDeviceTransition(canonicalOwner?.data, { uid: u.uid, tokenId, generation: operationGeneration, revoke: false });
+      const tokenTransition = notificationDeviceTransition(currentToken?.data, { uid: u.uid, tokenId, generation: operationGeneration, revoke: false });
+      if (ownerTransition.status !== 'apply' || tokenTransition.status !== 'apply') {
+        if (transaction) await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+        return out(env, req, { success: false, error: 'Device registration generation is no longer valid', errorCode: 'DEVICE_REGISTRATION_REVOKED' }, 409);
+      }
+      ownerTransitionState = ownerTransition.state;
+      tokenTransitionState = tokenTransition.state;
+    }
+
+    const writes: any[] = [];
+    const installationExpiresAt = revoke
+      && installationTransition.state.active === true
+      && typeof canonicalInstallation?.data?.expiresAt === 'string'
+      ? canonicalInstallation.data.expiresAt
+      : expiresAt;
+    const installationFields: Record<string, any> = {
+      installationId: { stringValue: installationId },
+      uid: { stringValue: String(installationTransition.state.uid || u.uid) },
+      active: { booleanValue: installationTransition.state.active === true },
+      registrationGeneration: { integerValue: String(installationTransition.state.registrationGeneration || 0) },
+      latestGeneration: { integerValue: String(installationTransition.state.latestGeneration || operationGeneration) },
+      revokedThroughGeneration: { integerValue: String(installationTransition.state.revokedThroughGeneration || 0) },
+      updatedAt: { timestampValue: now },
+      expiresAt: { timestampValue: installationExpiresAt },
+      ...(installationTransition.state.tokenId ? { tokenId: { stringValue: installationTransition.state.tokenId } } : {}),
+      ...(!installationTransition.state.active ? { revokedAt: { timestampValue: now } } : {}),
+    };
+    writes.push(notificationDeviceWrite(env, installationPath, installationFields, canonicalInstallation));
+
+    const shouldDeactivateToken = revoke
+      && effectiveTokenId
+      && (canonicalOwner?.data?.uid === u.uid || revokeCanonicalToken)
+      && Number(canonicalOwner?.data?.registrationGeneration || 0) <= operationGeneration;
+    if (!revoke && effectiveTokenId) {
+      const tokenFields: Record<string, any> = {
+        uid: { stringValue: u.uid }, token: { stringValue: token }, installationId: { stringValue: installationId }, platform: { stringValue: platform },
+        active: { booleanValue: true }, registrationGeneration: { integerValue: String(operationGeneration) }, latestGeneration: { integerValue: String(tokenTransitionState?.latestGeneration || operationGeneration) },
+        revokedThroughGeneration: { integerValue: String(tokenTransitionState?.revokedThroughGeneration || 0) },
+        updatedAt: { timestampValue: now }, lastSeenAt: { timestampValue: now }, expiresAt: { timestampValue: expiresAt },
+        ...(currentToken ? {} : { createdAt: { timestampValue: now } }),
+      };
+      const ownerFields = {
+        tokenHash: { stringValue: effectiveTokenId }, uid: { stringValue: u.uid }, installationId: { stringValue: installationId }, active: { booleanValue: true },
+        registrationGeneration: { integerValue: String(operationGeneration) }, latestGeneration: { integerValue: String(ownerTransitionState?.latestGeneration || operationGeneration) },
+        revokedThroughGeneration: { integerValue: String(ownerTransitionState?.revokedThroughGeneration || 0) },
+        updatedAt: { timestampValue: now }, expiresAt: { timestampValue: expiresAt },
+      };
+      writes.push(notificationDeviceWrite(env, `deviceTokens/${effectiveTokenId}`, tokenFields, currentToken));
+      writes.push(notificationDeviceWrite(env, `notificationTokenOwners/${effectiveTokenId}`, ownerFields, canonicalOwner));
+    } else if (shouldDeactivateToken) {
+      const revokedFields = { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now }, revokedThroughGeneration: { integerValue: String(operationGeneration) } };
+      if (currentToken) writes.push(notificationDeviceWrite(env, `deviceTokens/${effectiveTokenId}`, revokedFields, currentToken, Object.keys(revokedFields)));
+      if (canonicalOwner) writes.push(notificationDeviceWrite(env, `notificationTokenOwners/${effectiveTokenId}`, revokedFields, canonicalOwner, Object.keys(revokedFields)));
+    }
+
+    if (!revoke && priorInstallationTokenId && priorInstallationTokenId !== effectiveTokenId) {
+      const revokedFields = { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } };
+      if (priorToken) writes.push(notificationDeviceWrite(env, `deviceTokens/${priorInstallationTokenId}`, revokedFields, priorToken, Object.keys(revokedFields)));
+      if (priorTokenOwner?.data?.installationId === installationId) writes.push(notificationDeviceWrite(env, `notificationTokenOwners/${priorInstallationTokenId}`, revokedFields, priorTokenOwner, Object.keys(revokedFields)));
+    }
+    if (!revoke && priorOwnerInstallation?.data?.tokenId === effectiveTokenId) {
+      const revokedFields = { active: { booleanValue: false }, revokedAt: { timestampValue: now }, updatedAt: { timestampValue: now } };
+      writes.push(notificationDeviceWrite(env, `notificationInstallations/${ownerInstallationKey}`, revokedFields, priorOwnerInstallation, Object.keys(revokedFields)));
+    }
+
+    if (firestoreWrites) {
+      for (const write of writes) firestoreWrites.push({ path: String(write.update?.name || '').split('/documents/')[1] || '', fields: write.update?.fields || {} });
+      return out(env, req, { success: true, active: !revoke });
+    }
+    try {
+      if (notificationDeviceCommitOverride) await notificationDeviceCommitOverride(writes, attempt);
+      else await commitWrites(env, writes, transaction);
+      return out(env, req, { success: true, active: !revoke });
+    } catch (error) {
+      if (!(error instanceof FirestorePreconditionError) || attempt === 4) {
+        return out(env, req, { success: false, error: 'Device ownership changed; retry registration' }, error instanceof FirestorePreconditionError ? 409 : 503);
+      }
     }
   }
-  const current = await getRawDoc(env, 'deviceTokens', tokenId);
-  const fields: Record<string, any> = { uid: { stringValue: u.uid }, token: { stringValue: token }, installationId: { stringValue: installationId }, platform: { stringValue: platform }, active: { booleanValue: !revoke }, updatedAt: { timestampValue: now }, lastSeenAt: { timestampValue: now }, expiresAt: { timestampValue: expiresAt } };
-  if (revoke) fields.revokedAt = { timestampValue: now };
-  ownershipWrites.push(current
-    ? { update: { name: fullName(env, path), fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { exists: true } }
-    : { update: { name: fullName(env, path), fields: { ...fields, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } });
-  const installationFields = { installationId: { stringValue: installationId }, uid: { stringValue: u.uid }, tokenId: { stringValue: tokenId }, active: { booleanValue: !revoke }, updatedAt: { timestampValue: now }, expiresAt: { timestampValue: expiresAt } };
-  const ownerFields = { tokenHash: { stringValue: tokenId }, uid: { stringValue: u.uid }, installationId: { stringValue: installationId }, active: { booleanValue: !revoke }, updatedAt: { timestampValue: now }, expiresAt: { timestampValue: expiresAt } };
-  ownershipWrites.push({ update: { name: fullName(env, `notificationInstallations/${installationKey}`), fields: installationFields }, ...(canonicalInstallation?.updateTime ? { currentDocument: { updateTime: canonicalInstallation.updateTime } } : { currentDocument: { exists: false } }) });
-  ownershipWrites.push({ update: { name: fullName(env, `notificationTokenOwners/${tokenId}`), fields: ownerFields }, ...(canonicalOwner?.updateTime ? { currentDocument: { updateTime: canonicalOwner.updateTime } } : { currentDocument: { exists: false } }) });
-  if (firestoreWrites) {
-    for (const write of ownershipWrites) firestoreWrites.push({ path: String(write.update?.name || '').split('/documents/')[1] || '', fields: write.update?.fields || {} });
-  } else {
-    let committed = false;
-    for (let attempt = 0; attempt < 2 && !committed; attempt += 1) {
-      try { await commitWrites(env, ownershipWrites); committed = true; }
-      catch { if (attempt === 1) return out(env, req, { success: false, error: 'Device ownership changed; retry registration' }, 409); }
-    }
-  }
-  return out(env, req, { success: true, active: !revoke });
+  return out(env, req, { success: false, error: 'Device ownership changed; retry registration' }, 409);
 }
 async function enqueueNotifications(env: Env, full: (path: string) => string, uid: string | undefined, event: NotificationEvent, subjectId: string | undefined, now: string, occurrenceId?: string) {
   return uid ? [await notificationWrite(full, uid, event, now, subjectId, occurrenceId)] : [];
@@ -1294,7 +1463,7 @@ async function retryDueNotificationDeliveries(env: Env) {
       const tokenDoc = await getRawDoc(env, 'deviceTokens', delivery.tokenHash);
       const owner = await getDoc(env, 'notificationTokenOwners', delivery.tokenHash);
       const installation = tokenDoc?.data?.installationId && await getDoc(env, 'notificationInstallations', await hashedId(String(tokenDoc.data.installationId)));
-      if (!tokenDoc?.data?.token || owner?.uid !== delivery.uid || owner?.active !== true || installation?.uid !== delivery.uid || installation?.tokenId !== delivery.tokenHash) continue;
+      if (!tokenDoc?.data?.token || owner?.uid !== delivery.uid || owner?.active !== true || installation?.uid !== delivery.uid || installation?.active !== true || installation?.tokenId !== delivery.tokenHash) continue;
       const action = inbox.data.action && typeof inbox.data.action === 'object' ? inbox.data.action : {};
       const push = await scheduledExternalFetch(env, 'push_provider', 'https://exp.host/--/api/v2/push/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify([{ to: tokenDoc.data.token, title: String(inbox.data.titleEn || ''), body: String(inbox.data.bodyEn || ''), data: { notificationId: delivery.notificationId, action: String(action.type || 'profile'), subjectId: String(action.subjectId || '') } }]) });
       const ticket = (await push.json().catch(() => ({})) as any)?.data?.[0] || {}, nextAt = new Date(Date.now() + Math.min(3600000, 60000 * (2 ** attempts))).toISOString();

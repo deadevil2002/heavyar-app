@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import worker, { __test, type Env } from './index';
+import worker, { __test, FirestorePreconditionError, type Env } from './index';
 import { buildLegacyCatalog } from './commercial';
 import { defaultNotificationPreferences, notificationFields, notificationWrite } from './notifications';
 
@@ -12,7 +12,7 @@ const request = (path: string, init: RequestInit = {}) => new Request(`https://w
   ...init, headers: { Authorization: 'Bearer test', 'Content-Type': 'application/json', ...(init.headers || {}) },
 });
 
-afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setDeliveryQuery(undefined); __test.setReservationConflict(false); });
+afterEach(() => { __test.setAuth(undefined); __test.setFirestore(undefined); __test.captureWrites(undefined); __test.captureCommits(undefined); __test.setNotificationDeviceCommit(undefined); __test.setDeliveryQuery(undefined); __test.setReservationConflict(false); });
 
 describe('trusted notification foundation', () => {
   test('notification payload has localized safe copy and allowlisted action', async () => {
@@ -69,12 +69,14 @@ describe('trusted notification foundation', () => {
     expect((writes[0] as any)[0].update.fields.moderationStatus.stringValue).toBe('approved');
   });
   test('device registration is UID-bound and stores no client-controlled UID', async () => {
-    __test.setAuth({ uid: 'u1', admin: false });
+    __test.setAuth({ uid: 'u1', admin: false, authTime: 123 });
     __test.setFirestore(() => null);
     const writes: any[] = []; __test.captureWrites(writes);
     const response = await worker.fetch(request('/api/notifications/devices', { method: 'POST', body: JSON.stringify({ uid: 'u2', token: 'ExpoPushToken[123456789]', platform: 'android', installationId: 'install-1234' }) }), env);
     expect(response.status).toBe(200);
     expect(JSON.stringify(writes).includes('u2')).toBe(false);
+    const installation = writes.find(write => write.path.startsWith('notificationInstallations/'));
+    expect(installation.fields.registrationGeneration.integerValue).toBe('123');
   });
   test('notification writes are idempotently keyed by UID, event, and subject', async () => {
     const write: any = await notificationWrite((path) => `projects/p/documents/${path}`, 'u1', 'rental_accepted', new Date(0).toISOString(), 'req-1');
@@ -141,10 +143,229 @@ describe('trusted notification foundation', () => {
     const response = await worker.fetch(request('/api/notifications/n_abc/read', { method: 'POST', body: '{}' }), env);
     expect(response.status).toBe(404);
   });
-  test('device delete is authenticated and does not accept missing token', async () => {
-    __test.setAuth({ uid: 'u1', admin: false });
-    const response = await worker.fetch(request('/api/notifications/devices', { method: 'DELETE', body: JSON.stringify({ installationId: 'install-1234' }) }), env);
-    expect(response.status).toBe(400);
+  test('device delete fences the installation even before a push token is persisted', async () => {
+    __test.setAuth({ uid: 'u1', admin: false, authTime: 100 });
+    __test.setFirestore(() => null);
+    const writes: any[] = []; __test.captureWrites(writes);
+    const response = await worker.fetch(request('/api/notifications/devices', { method: 'DELETE', body: JSON.stringify({ installationId: 'install-1234', registrationGeneration: Number.MAX_SAFE_INTEGER }) }), env);
+    expect(response.status).toBe(200);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].path).toMatch(/^notificationInstallations\//);
+    expect(writes[0].fields.active.booleanValue).toBe(false);
+    expect(writes[0].fields.revokedThroughGeneration.integerValue).toBe('100');
+  });
+  test('device generation fence rejects a delayed POST after logout revocation', () => {
+    const accepted = __test.notificationDeviceTransition(null, { uid: 'A', tokenId: 'token-A', generation: 100, revoke: false });
+    expect(accepted.status).toBe('apply');
+    if (accepted.status !== 'apply') throw new Error('expected registration');
+    const staleSnapshot = accepted.state;
+    const revoked = __test.notificationDeviceTransition(accepted.state, { uid: 'A', generation: 100, revoke: true });
+    expect(revoked.status).toBe('apply');
+    if (revoked.status !== 'apply') throw new Error('expected revocation');
+    expect(__test.notificationDeviceTransition(staleSnapshot, { uid: 'A', tokenId: 'token-A', generation: 100, revoke: false }).status).toBe('apply');
+    expect(__test.notificationDeviceTransition(revoked.state, { uid: 'A', tokenId: 'token-A', generation: 100, revoke: false }).status).toBe('stale');
+    expect(revoked.state.active).toBe(false);
+  });
+  test('device endpoint rejects a replayed revoked generation without writing', async () => {
+    __test.setAuth({ uid: 'A', admin: false, authTime: 100 });
+    __test.setFirestore((collection) => collection === 'notificationInstallations' ? {
+      uid: 'A', tokenId: 'token-A', active: false, registrationGeneration: 100,
+      latestGeneration: 100, revokedThroughGeneration: 100,
+    } : null);
+    const writes: any[] = []; __test.captureWrites(writes);
+    const response = await worker.fetch(request('/api/notifications/devices', { method: 'POST', body: JSON.stringify({
+      token: 'ExpoPushToken[123456789]', platform: 'android', installationId: 'install-1234',
+    }) }), env);
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).errorCode).toBe('DEVICE_REGISTRATION_REVOKED');
+    expect(writes).toHaveLength(0);
+  });
+  test('revoked authenticated session cannot use a client maximum generation or refreshed-token iat to reactivate', async () => {
+    __test.setAuth({ uid: 'A', admin: false, authTime: 100 });
+    const revoked = {
+      uid: 'A', tokenId: 'token-A', active: false, registrationGeneration: 100,
+      latestGeneration: 100, revokedThroughGeneration: 100,
+    };
+    __test.setFirestore((collection) => collection === 'notificationInstallations' ? revoked : null);
+    const writes: any[] = []; __test.captureWrites(writes);
+    const response = await worker.fetch(request('/api/notifications/devices', { method: 'POST', body: JSON.stringify({
+      token: 'ExpoPushToken[123456789]', platform: 'android', installationId: 'install-1234',
+      registrationGeneration: Number.MAX_SAFE_INTEGER, iat: Number.MAX_SAFE_INTEGER,
+    }) }), env);
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).errorCode).toBe('DEVICE_REGISTRATION_REVOKED');
+    expect(writes).toHaveLength(0);
+    expect(revoked.active).toBe(false);
+  });
+  test('stale A session cannot reclaim B installation ownership with a larger client generation', async () => {
+    const pushToken = 'ExpoPushToken[cross_account_token]';
+    const tokenId = await __test.hashId(pushToken);
+    const installation = { uid: 'B', tokenId, active: true, registrationGeneration: 200, latestGeneration: 200, revokedThroughGeneration: 100 };
+    const owner = { uid: 'B', tokenHash: tokenId, installationId: 'install-1234', active: true, registrationGeneration: 200, latestGeneration: 200, revokedThroughGeneration: 100 };
+    const token = { uid: 'B', token: pushToken, installationId: 'install-1234', active: true, registrationGeneration: 200, latestGeneration: 200, revokedThroughGeneration: 100 };
+    __test.setAuth({ uid: 'A', admin: false, authTime: 100 });
+    __test.setFirestore((collection) => collection === 'notificationInstallations' ? installation
+      : collection === 'notificationTokenOwners' ? owner
+      : collection === 'deviceTokens' ? token
+      : null);
+    const writes: any[] = []; __test.captureWrites(writes);
+    const response = await worker.fetch(request('/api/notifications/devices', { method: 'POST', body: JSON.stringify({
+      token: pushToken, platform: 'android', installationId: 'install-1234', registrationGeneration: Number.MAX_SAFE_INTEGER,
+    }) }), env);
+    expect(response.status).toBe(409);
+    expect(writes).toHaveLength(0);
+    expect(installation).toMatchObject({ uid: 'B', active: true });
+    expect(owner).toMatchObject({ uid: 'B', active: true });
+    expect(token).toMatchObject({ uid: 'B', active: true });
+  });
+  test('fresh authenticated session can transactionally replace prior installation ownership', async () => {
+    const oldToken = 'ExpoPushToken[prior_owner_token]';
+    const newToken = 'ExpoPushToken[fresh_owner_token]';
+    const oldTokenId = await __test.hashId(oldToken);
+    const newTokenId = await __test.hashId(newToken);
+    __test.setAuth({ uid: 'A', admin: false, authTime: 300 });
+    __test.setFirestore((collection, id) => collection === 'notificationInstallations' ? {
+      uid: 'B', tokenId: oldTokenId, active: true, registrationGeneration: 200, latestGeneration: 200, revokedThroughGeneration: 100,
+    } : collection === 'notificationTokenOwners' && id === oldTokenId ? {
+      uid: 'B', tokenHash: oldTokenId, installationId: 'install-1234', active: true, registrationGeneration: 200, latestGeneration: 200,
+    } : collection === 'deviceTokens' && id === oldTokenId ? {
+      uid: 'B', token: oldToken, installationId: 'install-1234', active: true, registrationGeneration: 200, latestGeneration: 200,
+    } : collection === 'notificationTokenOwners' && id === newTokenId ? null
+    : collection === 'deviceTokens' && id === newTokenId ? null
+    : null);
+    const writes: any[] = []; __test.captureWrites(writes);
+    const response = await worker.fetch(request('/api/notifications/devices', { method: 'POST', body: JSON.stringify({
+      token: newToken, platform: 'android', installationId: 'install-1234', registrationGeneration: 1,
+    }) }), env);
+    expect(response.status).toBe(200);
+    const installationWrite = writes.find(write => write.path.startsWith('notificationInstallations/'));
+    const newTokenWrite = writes.find(write => write.path === `deviceTokens/${newTokenId}`);
+    const newOwnerWrite = writes.find(write => write.path === `notificationTokenOwners/${newTokenId}`);
+    const oldTokenWrite = writes.find(write => write.path === `deviceTokens/${oldTokenId}`);
+    const oldOwnerWrite = writes.find(write => write.path === `notificationTokenOwners/${oldTokenId}`);
+    expect(installationWrite.fields).toMatchObject({ uid: { stringValue: 'A' }, active: { booleanValue: true }, registrationGeneration: { integerValue: '300' } });
+    expect(newTokenWrite.fields).toMatchObject({ uid: { stringValue: 'A' }, active: { booleanValue: true }, registrationGeneration: { integerValue: '300' } });
+    expect(newOwnerWrite.fields).toMatchObject({ uid: { stringValue: 'A' }, active: { booleanValue: true }, registrationGeneration: { integerValue: '300' } });
+    expect(oldTokenWrite.fields.active.booleanValue).toBe(false);
+    expect(oldOwnerWrite.fields.active.booleanValue).toBe(false);
+  });
+  test('same-second reauthentication and future-looking auth_time fail closed', async () => {
+    __test.setFirestore((collection) => collection === 'notificationInstallations' ? {
+      uid: 'A', tokenId: 'token-A', active: false, registrationGeneration: 100, latestGeneration: 100, revokedThroughGeneration: 100,
+    } : null);
+    const writes: any[] = []; __test.captureWrites(writes);
+    __test.setAuth({ uid: 'A', admin: false, authTime: 100 });
+    const sameSecond = await worker.fetch(request('/api/notifications/devices', { method: 'POST', body: JSON.stringify({
+      token: 'ExpoPushToken[same_second_token]', platform: 'android', installationId: 'install-1234', registrationGeneration: Number.MAX_SAFE_INTEGER,
+    }) }), env);
+    expect(sameSecond.status).toBe(409);
+    expect(writes).toHaveLength(0);
+
+    __test.setAuth({ uid: 'A', admin: false, authTime: Date.now() + 60_000 });
+    const future = await worker.fetch(request('/api/notifications/devices', { method: 'POST', body: JSON.stringify({
+      token: 'ExpoPushToken[future_auth_token]', platform: 'android', installationId: 'install-future',
+    }) }), env);
+    expect(future.status).toBe(401);
+    expect((await future.json() as any).errorCode).toBe('DEVICE_SESSION_FRESHNESS_INVALID');
+    expect(writes).toHaveLength(0);
+  });
+  test('active authenticated session can rotate its Expo push token without client authority', async () => {
+    const oldToken = 'ExpoPushToken[active_old_token]';
+    const newToken = 'ExpoPushToken[active_new_token]';
+    const oldTokenId = await __test.hashId(oldToken);
+    const newTokenId = await __test.hashId(newToken);
+    __test.setAuth({ uid: 'A', admin: false, authTime: 200 });
+    __test.setFirestore((collection, id) => collection === 'notificationInstallations' ? {
+      uid: 'A', tokenId: oldTokenId, active: true, registrationGeneration: 200, latestGeneration: 200, revokedThroughGeneration: 100,
+    } : collection === 'notificationTokenOwners' && id === oldTokenId ? {
+      uid: 'A', tokenHash: oldTokenId, installationId: 'install-1234', active: true, registrationGeneration: 200, latestGeneration: 200,
+    } : collection === 'deviceTokens' && id === oldTokenId ? {
+      uid: 'A', token: oldToken, installationId: 'install-1234', active: true, registrationGeneration: 200, latestGeneration: 200,
+    } : null);
+    const writes: any[] = []; __test.captureWrites(writes);
+    const response = await worker.fetch(request('/api/notifications/devices', { method: 'POST', body: JSON.stringify({
+      token: newToken, platform: 'android', installationId: 'install-1234', registrationGeneration: Number.MAX_SAFE_INTEGER,
+    }) }), env);
+    expect(response.status).toBe(200);
+    expect(writes.find(write => write.path === `deviceTokens/${newTokenId}`).fields.registrationGeneration.integerValue).toBe('200');
+    expect(writes.find(write => write.path === `deviceTokens/${oldTokenId}`).fields.active.booleanValue).toBe(false);
+  });
+  test('stale account revocation cannot deactivate the current owner projections', async () => {
+    const pushToken = 'ExpoPushToken[current_owner_token]';
+    const tokenId = await __test.hashId(pushToken);
+    __test.setAuth({ uid: 'A', admin: false, authTime: 100 });
+    __test.setFirestore((collection) => collection === 'notificationInstallations' ? {
+      uid: 'B', tokenId, active: true, registrationGeneration: 200, latestGeneration: 200, revokedThroughGeneration: 0,
+    } : collection === 'notificationTokenOwners' ? {
+      uid: 'B', tokenHash: tokenId, installationId: 'install-1234', active: true, registrationGeneration: 200, latestGeneration: 200,
+    } : collection === 'deviceTokens' ? {
+      uid: 'B', token: pushToken, installationId: 'install-1234', active: true, registrationGeneration: 200, latestGeneration: 200,
+    } : null);
+    const writes: any[] = []; __test.captureWrites(writes);
+    const response = await worker.fetch(request('/api/notifications/devices', { method: 'DELETE', body: JSON.stringify({
+      token: pushToken, installationId: 'install-1234', registrationGeneration: Number.MAX_SAFE_INTEGER,
+    }) }), env);
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).errorCode).toBe('DEVICE_REGISTRATION_REVOKED');
+    expect(writes).toHaveLength(0);
+  });
+  test('device endpoint re-reads the revocation fence after a Firestore precondition conflict', async () => {
+    __test.setAuth({ uid: 'A', admin: false, authTime: 100 });
+    let installation: any = null;
+    __test.setFirestore((collection) => collection === 'notificationInstallations' ? installation : null);
+    let commitAttempts = 0;
+    __test.setNotificationDeviceCommit(async () => {
+      commitAttempts += 1;
+      installation = {
+        uid: 'A', tokenId: 'token-A', active: false, registrationGeneration: 100,
+        latestGeneration: 100, revokedThroughGeneration: 100,
+      };
+      throw new FirestorePreconditionError();
+    });
+    const response = await worker.fetch(request('/api/notifications/devices', { method: 'POST', body: JSON.stringify({
+      token: 'ExpoPushToken[123456789]', platform: 'android', installationId: 'install-1234', registrationGeneration: 100,
+    }) }), env);
+    expect(response.status).toBe(409);
+    expect((await response.json() as any).errorCode).toBe('DEVICE_REGISTRATION_REVOKED');
+    expect(commitAttempts).toBe(1);
+    expect(installation.active).toBe(false);
+  });
+  test('legacy generation-less clients refresh an active token under the same authenticated session', async () => {
+    __test.setAuth({ uid: 'A', admin: false, authTime: 100 });
+    __test.setFirestore((collection) => collection === 'notificationInstallations' ? {
+      uid: 'A', tokenId: 'old-token', active: true, registrationGeneration: 100,
+      latestGeneration: 100, revokedThroughGeneration: 0,
+    } : null);
+    const writes: any[] = []; __test.captureWrites(writes);
+    const response = await worker.fetch(request('/api/notifications/devices', { method: 'POST', body: JSON.stringify({
+      token: 'ExpoPushToken[123456789]', platform: 'android', installationId: 'install-1234',
+    }) }), env);
+    expect(response.status).toBe(200);
+    const installation = writes.find(write => write.path.startsWith('notificationInstallations/'));
+    expect(installation.fields.registrationGeneration.integerValue).toBe('100');
+  });
+  test('device generation ordering handles POST-before-DELETE and replay idempotently', () => {
+    const registered = __test.notificationDeviceTransition(null, { uid: 'A', tokenId: 'token-A', generation: 10, revoke: false });
+    if (registered.status !== 'apply') throw new Error('expected registration');
+    const revoked = __test.notificationDeviceTransition(registered.state, { uid: 'A', generation: 10, revoke: true });
+    if (revoked.status !== 'apply') throw new Error('expected revocation');
+    const duplicateRevoke = __test.notificationDeviceTransition(revoked.state, { uid: 'A', generation: 10, revoke: true });
+    expect(duplicateRevoke.status).toBe('apply');
+    if (duplicateRevoke.status !== 'apply') throw new Error('expected idempotent revocation');
+    expect(duplicateRevoke.state.active).toBe(false);
+    expect(__test.notificationDeviceTransition(duplicateRevoke.state, { uid: 'A', tokenId: 'token-A', generation: 10, revoke: false }).status).toBe('stale');
+  });
+  test('device generation ordering rejects stale A after B and accepts a changed token in B session', () => {
+    const firstA = __test.notificationDeviceTransition(null, { uid: 'A', tokenId: 'token-A1', generation: 10, revoke: false });
+    if (firstA.status !== 'apply') throw new Error('expected A registration');
+    const revokeA = __test.notificationDeviceTransition(firstA.state, { uid: 'A', generation: 10, revoke: true });
+    if (revokeA.status !== 'apply') throw new Error('expected A revocation');
+    const registerB = __test.notificationDeviceTransition(revokeA.state, { uid: 'B', tokenId: 'token-B', generation: 20, revoke: false });
+    if (registerB.status !== 'apply') throw new Error('expected B registration');
+    expect(__test.notificationDeviceTransition(registerB.state, { uid: 'A', tokenId: 'token-A1', generation: 10, revoke: false }).status).toBe('stale');
+    const changedB = __test.notificationDeviceTransition(registerB.state, { uid: 'B', tokenId: 'token-B2', generation: 20, revoke: false });
+    if (changedB.status !== 'apply') throw new Error('expected token refresh');
+    expect(changedB.state.tokenId).toBe('token-B2');
   });
   test('notification event copy is localized and has no provider token', () => {
     const fields: any = notificationFields('u', 'n', 'rental_completed', 't', 'r');
@@ -239,7 +460,7 @@ describe('trusted notification foundation', () => {
       if (collection === 'notifications') return { titleEn: 'Decoded title', bodyEn: 'Decoded body', action: { type: 'payment', subjectId: 'request-9' } };
       if (collection === 'deviceTokens') return { token: 'ExpoPushToken[retry-device]', installationId: 'install-retry' };
       if (collection === 'notificationTokenOwners') return { uid: 'retry-user', tokenHash, active: true };
-      if (collection === 'notificationInstallations') return { uid: 'retry-user', tokenId: tokenHash };
+      if (collection === 'notificationInstallations') return { uid: 'retry-user', tokenId: tokenHash, active: true };
       return null;
     });
     __test.setDeliveryQuery([{ document: { name: 'projects/p/documents/notificationDeliveries/delivery-1', updateTime: 'old-time', fields: {
