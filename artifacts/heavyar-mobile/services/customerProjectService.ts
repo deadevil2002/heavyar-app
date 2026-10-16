@@ -148,9 +148,19 @@ export function customerProjectOperationKey(scope: string) {
 export function customerProjectScheduleConflicts(items: CustomerProjectSource[]) {
   const scheduled = items.flatMap(item => item.startAt && item.endAt && Date.parse(item.startAt) < Date.parse(item.endAt) && !['cancelled', 'expired', 'completed', 'rejected'].includes(item.status)
     ? [{ sourceId: item.sourceId, start: Date.parse(item.startAt), end: Date.parse(item.endAt) }] : []);
+  scheduled.sort((left, right) => left.start - right.start || left.end - right.end);
   const conflicts = new Set<string>();
-  for (let i = 0; i < scheduled.length; i += 1) for (let j = i + 1; j < scheduled.length; j += 1) {
-    if (scheduled[i].start < scheduled[j].end && scheduled[j].start < scheduled[i].end) { conflicts.add(scheduled[i].sourceId); conflicts.add(scheduled[j].sourceId); }
+  let latestEnd = Number.NEGATIVE_INFINITY;
+  let latestEndSourceId: string | null = null;
+  for (const interval of scheduled) {
+    if (latestEndSourceId && interval.start < latestEnd) {
+      conflicts.add(latestEndSourceId);
+      conflicts.add(interval.sourceId);
+    }
+    if (interval.end > latestEnd) {
+      latestEnd = interval.end;
+      latestEndSourceId = interval.sourceId;
+    }
   }
   return conflicts;
 }

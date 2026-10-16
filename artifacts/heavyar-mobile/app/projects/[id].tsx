@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, ScrollView } from 'react-native';
+import { Alert, FlatList, type ListRenderItemInfo } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { AlertTriangle, Archive, CalendarDays, ChevronLeft, ChevronRight, FolderPlus, HardHat, Package, Trash2, Truck } from 'lucide-react-native';
@@ -17,6 +17,33 @@ import {
   HeavyarLoadingState, HeavyarScreen, HeavyarSegment, HeavyarSegmentText, HeavyarSegmentedControl, HeavyarSurface, HeavyarTitle,
   useHeavyarDirection,
 } from '@/components/ui/heavyar';
+
+type ProjectHubRow =
+  | { key: 'summary'; type: 'summary' }
+  | { key: 'conflict-warning'; type: 'conflict-warning' }
+  | { key: 'links-heading'; type: 'links-heading' }
+  | { key: 'links-empty'; type: 'links-empty' }
+  | { key: `link:${string}`; type: 'link'; link: CustomerProjectLink }
+  | { key: 'links-more'; type: 'links-more' }
+  | { key: 'candidates-heading'; type: 'candidates-heading' }
+  | { key: `candidate:${string}:${string}`; type: 'candidate'; candidate: EligibleProjectSource }
+  | { key: 'candidates-more'; type: 'candidates-more' };
+
+function appendUnique<T>(current: T[], incoming: T[], keyOf: (item: T) => string) {
+  const keys = new Set(current.map(keyOf));
+  const result = [...current];
+  for (const item of incoming) {
+    const key = keyOf(item);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    result.push(item);
+  }
+  return result;
+}
+
+function ProjectHubRowSeparator() {
+  return <YStack height={14} />;
+}
 
 export default function CustomerProjectDetailRoute() {
   const { user } = useAuth();
@@ -55,7 +82,7 @@ function CustomerProjectDetail() {
     try {
       const [nextProject, nextLinks] = await Promise.all([getCustomerProject(projectId, uid, active.signal), listCustomerProjectLinks(projectId, uid, undefined, active.signal)]);
       if (!guard.current.isCurrent(active)) return;
-      setProject(nextProject); setLinks(nextLinks.links); setLinksCursor(nextLinks.nextCursor); setTitle(nextProject.title); setDescription(nextProject.description); setState('ready');
+      setProject(nextProject); setLinks(appendUnique([], nextLinks.links, link => link.linkId)); setLinksCursor(nextLinks.nextCursor); setTitle(nextProject.title); setDescription(nextProject.description); setState('ready');
     } catch { if (guard.current.isCurrent(active)) setState('error'); }
   };
 
@@ -65,7 +92,7 @@ function CustomerProjectDetail() {
     try {
       const result = await listCustomerProjectLinks(projectId, uid, linksCursor, active.signal);
       if (!guard.current.isCurrent(active)) return;
-      setLinks(current => [...current, ...result.links.filter(link => !current.some(existing => existing.linkId === link.linkId))]);
+      setLinks(current => appendUnique(current, result.links, link => link.linkId));
       setLinksCursor(result.nextCursor); setLinksLoadingMore(false);
     } catch { if (guard.current.isCurrent(active)) setLinksLoadingMore(false); }
   };
@@ -77,7 +104,7 @@ function CustomerProjectDetail() {
     try {
       const result = await listEligibleProjectSources(nextKind, uid, cursor, active.signal);
       if (!guard.current.isCurrent(active)) return;
-      setCandidates(current => cursor ? [...current, ...result.items.filter(item => !current.some(existing => existing.sourceId === item.sourceId))] : result.items);
+      setCandidates(current => appendUnique(cursor ? current : [], result.items, item => item.sourceId));
       setCandidatesCursor(result.nextCursor); setCandidatesLoadingMore(false); setCandidatesState('ready');
     } catch { if (guard.current.isCurrent(active)) { setCandidatesLoadingMore(false); if (!cursor) setCandidatesState('error'); } }
   };
@@ -131,6 +158,75 @@ function CustomerProjectDetail() {
   };
   const formatDate = (value: string | null) => value ? new Date(value).toLocaleString(language === 'ar' ? 'ar-SA' : 'en-SA', { dateStyle: 'medium', timeStyle: 'short' }) : (isRTL ? 'غير محدد' : 'Not set');
 
+  const rows = useMemo<ProjectHubRow[]>(() => {
+    const next: ProjectHubRow[] = [{ key: 'summary', type: 'summary' }];
+    if (conflicts.size) next.push({ key: 'conflict-warning', type: 'conflict-warning' });
+    next.push({ key: 'links-heading', type: 'links-heading' });
+    if (links.length) {
+      next.push(...links.map(link => ({ key: `link:${link.linkId}` as const, type: 'link' as const, link })));
+    } else {
+      next.push({ key: 'links-empty', type: 'links-empty' });
+    }
+    if (linksCursor) next.push({ key: 'links-more', type: 'links-more' });
+    if (project?.status === 'active') {
+      next.push({ key: 'candidates-heading', type: 'candidates-heading' });
+      next.push(...candidates.map(candidate => ({ key: `candidate:${kind}:${candidate.sourceId}` as const, type: 'candidate' as const, candidate })));
+      if (candidatesCursor) next.push({ key: 'candidates-more', type: 'candidates-more' });
+    }
+    return next;
+  }, [candidates, candidatesCursor, conflicts, kind, links, linksCursor, project?.status]);
+
+  const renderProjectRow = ({ item: row }: ListRenderItemInfo<ProjectHubRow>) => {
+    if (!project) return null;
+    if (row.type === 'summary') return <HeavyarSurface density="compact" gap="$sm" tone="raised">
+      <XStack items="center" flexDirection={direction.rowDirection} justify="space-between"><Text color="$color" fontWeight="800">{isRTL ? 'ملخص المشروع' : 'Project summary'}</Text>
+        <HeavyarBadge tone={project.status === 'active' ? 'accent' : 'neutral'}><HeavyarBadgeText>{project.status === 'active' ? (isRTL ? 'نشط' : 'Active') : (isRTL ? 'مؤرشف' : 'Archived')}</HeavyarBadgeText></HeavyarBadge></XStack>
+      {editing ? <><Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? 'اسم المشروع' : 'Project name'}</Text><HeavyarInput value={title} maxLength={80} onChangeText={setTitle} style={{ textAlign: direction.textAlign }} />
+        <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? 'ملاحظة مختصرة' : 'Short note'}</Text><HeavyarInput value={description} maxLength={300} onChangeText={setDescription} style={{ textAlign: direction.textAlign }} />
+        <XStack flexDirection={direction.rowDirection} gap="$sm"><HeavyarButton flex={1} tone="secondary" onPress={() => setEditing(false)}><HeavyarButtonText tone="secondary">{isRTL ? 'إلغاء' : 'Cancel'}</HeavyarButtonText></HeavyarButton>
+          <HeavyarButton flex={1} disabled={!title.trim() || busy} onPress={() => void save()}><HeavyarButtonText>{isRTL ? 'حفظ' : 'Save'}</HeavyarButtonText></HeavyarButton></XStack></> : <>
+        {project.description ? <Text color="$colorMuted" fontSize={13} text={direction.textAlign}>{project.description}</Text> : null}
+        <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? `${project.requestCount} طلب · مراجعة ${project.revision}` : `${project.requestCount} request(s) · revision ${project.revision}`}</Text>
+        <XStack flexDirection={direction.rowDirection} gap="$sm"><HeavyarButton flex={1} tone="secondary" onPress={() => setEditing(true)}><HeavyarButtonText tone="secondary">{isRTL ? 'تعديل الاسم' : 'Rename'}</HeavyarButtonText></HeavyarButton>
+          {project.status === 'active' ? <HeavyarButton flex={1} tone="outline" onPress={archive}><Archive color={Colors.gold} size={17} /><HeavyarButtonText tone="outline">{isRTL ? 'أرشفة' : 'Archive'}</HeavyarButtonText></HeavyarButton> : null}</XStack></>}
+    </HeavyarSurface>;
+    if (row.type === 'conflict-warning') return <HeavyarSurface density="compact" tone="subtle" gap="$sm"><XStack items="center" flexDirection={direction.rowDirection} gap="$sm"><AlertTriangle color={Colors.gold} size={20} /><Text color="$color" fontWeight="800" flex={1} text={direction.textAlign}>{isRTL ? 'تنبيه تعارض زمني' : 'Schedule overlap warning'}</Text></XStack>
+      <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? 'بعض الطلبات الظاهرة تتداخل زمنيًا. التنبيه معلوماتي ولا يغير أي حجز.' : 'Some visible requests overlap. This is informational and does not change any booking.'}</Text></HeavyarSurface>;
+    if (row.type === 'links-heading') return <XStack items="center" flexDirection={direction.rowDirection} gap="$sm"><CalendarDays color={Colors.gold} size={20} /><Text color="$color" fontSize={18} fontWeight="800" flex={1} text={direction.textAlign}>{isRTL ? 'الطلبات والجدول' : 'Requests & schedule'}</Text></XStack>;
+    if (row.type === 'links-empty') return <HeavyarEmptyState icon={CalendarDays} title={isRTL ? 'لا توجد طلبات مرتبطة' : 'No linked requests'} message={isRTL ? 'أضف أي عدد من طلبات التأجير أو الخدمات المستقلة.' : 'Add any number of independent rental or service requests.'} />;
+    if (row.type === 'link') {
+      const { link } = row, item = link.item, Icon = item.sourceKind === 'rental' ? Package : item.titleEn.includes('Transport') ? Truck : HardHat;
+      return <HeavyarSurface density="compact" gap="$sm" borderColor={conflicts.has(item.sourceId) ? '$warning' : '$borderColor'}>
+        <XStack items="center" flexDirection={direction.rowDirection} gap="$sm"><YStack bg="$accentSoft" p="$sm" rounded="$md"><Icon color={Colors.gold} size={19} /></YStack>
+          <YStack flex={1} items={isRTL ? 'flex-end' : 'flex-start'}><Text color="$color" fontWeight="800" text={direction.textAlign}>{isRTL ? item.titleAr : item.titleEn}</Text><Text color="$colorMuted" fontSize={11}>{item.status}</Text></YStack>
+          <HeavyarIconButton tone="ghost" onPress={() => detach(link)} accessibilityRole="button" accessibilityLabel={isRTL ? 'إزالة الطلب من المشروع' : 'Remove request from project'}><Trash2 color={Colors.error} size={18} /></HeavyarIconButton></XStack>
+        <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? 'مقدم الخدمة: ' : 'Provider: '}{isRTL ? item.providerLabelAr : item.providerLabelEn}</Text>
+        <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{formatDate(item.startAt)} → {formatDate(item.endAt)}</Text>
+        <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{money(item)} · {isRTL ? 'المبلغ يخص هذا الطلب فقط' : 'Amount belongs to this request only'}</Text>
+        {item.route ? <HeavyarButton tone="secondary" compact onPress={() => router.push(item.route as never)}><HeavyarButtonText tone="secondary">{isRTL ? 'فتح الطلب الأصلي' : 'Open original request'}</HeavyarButtonText></HeavyarButton> : null}
+      </HeavyarSurface>;
+    }
+    if (row.type === 'links-more') return <HeavyarButton tone="secondary" disabled={linksLoadingMore} onPress={() => void loadMoreLinks()}><HeavyarButtonText tone="secondary">
+      {linksLoadingMore ? (isRTL ? 'جارٍ التحميل…' : 'Loading…') : (isRTL ? 'عرض طلبات إضافية' : 'Load more requests')}
+    </HeavyarButtonText></HeavyarButton>;
+    if (row.type === 'candidates-heading') return <HeavyarSurface density="compact" gap="$sm" tone="subtle"><Text color="$color" fontWeight="800" text={direction.textAlign}>{isRTL ? 'إضافة طلب مستقل' : 'Add independent request'}</Text>
+      <HeavyarSegmentedControl><HeavyarSegment selected={kind === 'rental'} onPress={() => { setKind('rental'); setCandidates([]); setCandidatesCursor(null); setCandidatesState('idle'); }}><HeavyarSegmentText selected={kind === 'rental'}>{isRTL ? 'تأجير معدات' : 'Rental'}</HeavyarSegmentText></HeavyarSegment>
+        <HeavyarSegment selected={kind === 'service_rfq'} onPress={() => { setKind('service_rfq'); setCandidates([]); setCandidatesCursor(null); setCandidatesState('idle'); }}><HeavyarSegmentText selected={kind === 'service_rfq'}>{isRTL ? 'مشغّل / نقل' : 'Operator / transport'}</HeavyarSegmentText></HeavyarSegment></HeavyarSegmentedControl>
+      {candidatesState === 'idle' ? <HeavyarButton tone="secondary" onPress={() => void loadCandidates()}><HeavyarButtonText tone="secondary">{isRTL ? 'عرض الطلبات المتاحة' : 'Show available requests'}</HeavyarButtonText></HeavyarButton> : candidatesState === 'loading' ? <HeavyarLoadingState label={isRTL ? 'جارٍ تحميل الطلبات…' : 'Loading requests…'} /> : candidatesState === 'error' ? <YStack gap="$sm">
+        <Text color="$danger" fontSize={12} text={direction.textAlign}>{isRTL ? 'تعذر تحميل الطلبات.' : 'Requests could not be loaded.'}</Text>
+        <HeavyarButton tone="secondary" onPress={() => void loadCandidates()}><HeavyarButtonText tone="secondary">{isRTL ? 'إعادة المحاولة' : 'Retry'}</HeavyarButtonText></HeavyarButton>
+      </YStack> : !candidates.length ? <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? 'لا توجد طلبات مناسبة.' : 'No eligible requests.'}</Text> : null}
+    </HeavyarSurface>;
+    if (row.type === 'candidate') {
+      const { candidate } = row;
+      return <HeavyarSurface density="compact" tone="subtle"><XStack items="center" flexDirection={direction.rowDirection} gap="$sm"><YStack flex={1} items={isRTL ? 'flex-end' : 'flex-start'}><Text color="$color" fontWeight="700" text={direction.textAlign}>{isRTL ? candidate.titleAr : candidate.titleEn}</Text><Text color="$colorMuted" fontSize={11}>{isRTL ? candidate.providerLabelAr : candidate.providerLabelEn} · {candidate.status}</Text></YStack>
+        <HeavyarButton compact tone={candidate.linkedProjectId ? 'outline' : 'primary'} disabled={!!candidate.linkedProjectId || busy} onPress={() => void attach(candidate)}><HeavyarButtonText tone={candidate.linkedProjectId ? 'outline' : 'primary'}>{candidate.linkedProjectId ? (isRTL ? 'مرتبط' : 'Linked') : (isRTL ? 'إضافة' : 'Add')}</HeavyarButtonText></HeavyarButton></XStack></HeavyarSurface>;
+    }
+    return <HeavyarButton tone="secondary" disabled={candidatesLoadingMore} onPress={() => void loadCandidates(kind, candidatesCursor || undefined)}><HeavyarButtonText tone="secondary">
+      {candidatesLoadingMore ? (isRTL ? 'جارٍ التحميل…' : 'Loading…') : (isRTL ? 'عرض المزيد' : 'Load more')}
+    </HeavyarButtonText></HeavyarButton>;
+  };
+
   return <HeavyarScreen><SafeAreaView style={{ flex: 1 }} edges={['top', 'bottom']}>
     <XStack items="center" flexDirection={direction.rowDirection} gap="$md" px="$md" py="$sm">
       <HeavyarIconButton tone="subtle" circular onPress={() => router.back()} accessibilityRole="button" accessibilityLabel={isRTL ? 'رجوع' : 'Back'}><BackIcon color={Colors.gold} size={20} /></HeavyarIconButton>
@@ -140,51 +236,18 @@ function CustomerProjectDetail() {
     {state === 'loading' ? <HeavyarLoadingState label={isRTL ? 'جارٍ تجهيز المشروع…' : 'Preparing project…'} /> : state === 'error' || !project ?
       <YStack px="$md"><HeavyarEmptyState icon={FolderPlus} title={isRTL ? 'تعذر فتح المشروع' : 'Project could not be opened'} message={isRTL ? 'لا نعرض بيانات محفوظة من حساب سابق.' : 'No cached data from a previous account is shown.'}
         action={<HeavyarButton tone="secondary" onPress={() => void load()}><HeavyarButtonText tone="secondary">{isRTL ? 'إعادة المحاولة' : 'Retry'}</HeavyarButtonText></HeavyarButton>} /></YStack> :
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 36, gap: 14 }} showsVerticalScrollIndicator={false}>
-        <HeavyarSurface density="compact" gap="$sm" tone="raised">
-          <XStack items="center" flexDirection={direction.rowDirection} justify="space-between"><Text color="$color" fontWeight="800">{isRTL ? 'ملخص المشروع' : 'Project summary'}</Text>
-            <HeavyarBadge tone={project.status === 'active' ? 'accent' : 'neutral'}><HeavyarBadgeText>{project.status === 'active' ? (isRTL ? 'نشط' : 'Active') : (isRTL ? 'مؤرشف' : 'Archived')}</HeavyarBadgeText></HeavyarBadge></XStack>
-          {editing ? <><Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? 'اسم المشروع' : 'Project name'}</Text><HeavyarInput value={title} maxLength={80} onChangeText={setTitle} style={{ textAlign: direction.textAlign }} />
-            <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? 'ملاحظة مختصرة' : 'Short note'}</Text><HeavyarInput value={description} maxLength={300} onChangeText={setDescription} style={{ textAlign: direction.textAlign }} />
-            <XStack flexDirection={direction.rowDirection} gap="$sm"><HeavyarButton flex={1} tone="secondary" onPress={() => setEditing(false)}><HeavyarButtonText tone="secondary">{isRTL ? 'إلغاء' : 'Cancel'}</HeavyarButtonText></HeavyarButton>
-              <HeavyarButton flex={1} disabled={!title.trim() || busy} onPress={() => void save()}><HeavyarButtonText>{isRTL ? 'حفظ' : 'Save'}</HeavyarButtonText></HeavyarButton></XStack></> : <>
-            {project.description ? <Text color="$colorMuted" fontSize={13} text={direction.textAlign}>{project.description}</Text> : null}
-            <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? `${project.requestCount} طلب · مراجعة ${project.revision}` : `${project.requestCount} request(s) · revision ${project.revision}`}</Text>
-            <XStack flexDirection={direction.rowDirection} gap="$sm"><HeavyarButton flex={1} tone="secondary" onPress={() => setEditing(true)}><HeavyarButtonText tone="secondary">{isRTL ? 'تعديل الاسم' : 'Rename'}</HeavyarButtonText></HeavyarButton>
-              {project.status === 'active' ? <HeavyarButton flex={1} tone="outline" onPress={archive}><Archive color={Colors.gold} size={17} /><HeavyarButtonText tone="outline">{isRTL ? 'أرشفة' : 'Archive'}</HeavyarButtonText></HeavyarButton> : null}</XStack></>}
-        </HeavyarSurface>
-
-        {conflicts.size ? <HeavyarSurface density="compact" tone="subtle" gap="$sm"><XStack items="center" flexDirection={direction.rowDirection} gap="$sm"><AlertTriangle color={Colors.gold} size={20} /><Text color="$color" fontWeight="800" flex={1} text={direction.textAlign}>{isRTL ? 'تنبيه تعارض زمني' : 'Schedule overlap warning'}</Text></XStack>
-          <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? 'بعض الطلبات الظاهرة تتداخل زمنيًا. التنبيه معلوماتي ولا يغير أي حجز.' : 'Some visible requests overlap. This is informational and does not change any booking.'}</Text></HeavyarSurface> : null}
-
-        <XStack items="center" flexDirection={direction.rowDirection} gap="$sm"><CalendarDays color={Colors.gold} size={20} /><Text color="$color" fontSize={18} fontWeight="800" flex={1} text={direction.textAlign}>{isRTL ? 'الطلبات والجدول' : 'Requests & schedule'}</Text></XStack>
-        {!links.length ? <HeavyarEmptyState icon={CalendarDays} title={isRTL ? 'لا توجد طلبات مرتبطة' : 'No linked requests'} message={isRTL ? 'أضف أي عدد من طلبات التأجير أو الخدمات المستقلة.' : 'Add any number of independent rental or service requests.'} /> : links.map(link => {
-          const item = link.item, Icon = item.sourceKind === 'rental' ? Package : item.titleEn.includes('Transport') ? Truck : HardHat;
-          return <HeavyarSurface key={link.linkId} density="compact" gap="$sm" borderColor={conflicts.has(item.sourceId) ? '$warning' : '$borderColor'}>
-            <XStack items="center" flexDirection={direction.rowDirection} gap="$sm"><YStack bg="$accentSoft" p="$sm" rounded="$md"><Icon color={Colors.gold} size={19} /></YStack>
-              <YStack flex={1} items={isRTL ? 'flex-end' : 'flex-start'}><Text color="$color" fontWeight="800" text={direction.textAlign}>{isRTL ? item.titleAr : item.titleEn}</Text><Text color="$colorMuted" fontSize={11}>{item.status}</Text></YStack>
-              <HeavyarIconButton tone="ghost" onPress={() => detach(link)} accessibilityRole="button" accessibilityLabel={isRTL ? 'إزالة الطلب من المشروع' : 'Remove request from project'}><Trash2 color={Colors.error} size={18} /></HeavyarIconButton></XStack>
-            <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? 'مقدم الخدمة: ' : 'Provider: '}{isRTL ? item.providerLabelAr : item.providerLabelEn}</Text>
-            <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{formatDate(item.startAt)} → {formatDate(item.endAt)}</Text>
-            <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{money(item)} · {isRTL ? 'المبلغ يخص هذا الطلب فقط' : 'Amount belongs to this request only'}</Text>
-            {item.route ? <HeavyarButton tone="secondary" compact onPress={() => router.push(item.route as never)}><HeavyarButtonText tone="secondary">{isRTL ? 'فتح الطلب الأصلي' : 'Open original request'}</HeavyarButtonText></HeavyarButton> : null}
-          </HeavyarSurface>;
-        })}
-        {linksCursor ? <HeavyarButton tone="secondary" disabled={linksLoadingMore} onPress={() => void loadMoreLinks()}><HeavyarButtonText tone="secondary">
-          {linksLoadingMore ? (isRTL ? 'جارٍ التحميل…' : 'Loading…') : (isRTL ? 'عرض طلبات إضافية' : 'Load more requests')}
-        </HeavyarButtonText></HeavyarButton> : null}
-
-        {project.status === 'active' ? <HeavyarSurface density="compact" gap="$sm" tone="subtle"><Text color="$color" fontWeight="800" text={direction.textAlign}>{isRTL ? 'إضافة طلب مستقل' : 'Add independent request'}</Text>
-          <HeavyarSegmentedControl><HeavyarSegment selected={kind === 'rental'} onPress={() => { setKind('rental'); setCandidates([]); setCandidatesCursor(null); setCandidatesState('idle'); }}><HeavyarSegmentText selected={kind === 'rental'}>{isRTL ? 'تأجير معدات' : 'Rental'}</HeavyarSegmentText></HeavyarSegment>
-            <HeavyarSegment selected={kind === 'service_rfq'} onPress={() => { setKind('service_rfq'); setCandidates([]); setCandidatesCursor(null); setCandidatesState('idle'); }}><HeavyarSegmentText selected={kind === 'service_rfq'}>{isRTL ? 'مشغّل / نقل' : 'Operator / transport'}</HeavyarSegmentText></HeavyarSegment></HeavyarSegmentedControl>
-          {candidatesState === 'idle' ? <HeavyarButton tone="secondary" onPress={() => void loadCandidates()}><HeavyarButtonText tone="secondary">{isRTL ? 'عرض الطلبات المتاحة' : 'Show available requests'}</HeavyarButtonText></HeavyarButton> : candidatesState === 'loading' ? <HeavyarLoadingState label={isRTL ? 'جارٍ تحميل الطلبات…' : 'Loading requests…'} /> : candidatesState === 'error' ?
-            <Text color="$danger" fontSize={12} text={direction.textAlign}>{isRTL ? 'تعذر تحميل الطلبات.' : 'Requests could not be loaded.'}</Text> : !candidates.length ?
-              <Text color="$colorMuted" fontSize={12} text={direction.textAlign}>{isRTL ? 'لا توجد طلبات مناسبة.' : 'No eligible requests.'}</Text> : candidates.map(item => <XStack key={item.sourceId} items="center" flexDirection={direction.rowDirection} gap="$sm" py="$xs"><YStack flex={1} items={isRTL ? 'flex-end' : 'flex-start'}><Text color="$color" fontWeight="700" text={direction.textAlign}>{isRTL ? item.titleAr : item.titleEn}</Text><Text color="$colorMuted" fontSize={11}>{isRTL ? item.providerLabelAr : item.providerLabelEn} · {item.status}</Text></YStack>
-                <HeavyarButton compact tone={item.linkedProjectId ? 'outline' : 'primary'} disabled={!!item.linkedProjectId || busy} onPress={() => void attach(item)}><HeavyarButtonText tone={item.linkedProjectId ? 'outline' : 'primary'}>{item.linkedProjectId ? (isRTL ? 'مرتبط' : 'Linked') : (isRTL ? 'إضافة' : 'Add')}</HeavyarButtonText></HeavyarButton></XStack>)}
-          {candidatesCursor ? <HeavyarButton tone="secondary" disabled={candidatesLoadingMore} onPress={() => void loadCandidates(kind, candidatesCursor)}><HeavyarButtonText tone="secondary">
-            {candidatesLoadingMore ? (isRTL ? 'جارٍ التحميل…' : 'Loading…') : (isRTL ? 'عرض المزيد' : 'Load more')}
-          </HeavyarButtonText></HeavyarButton> : null}
-        </HeavyarSurface> : null}
-      </ScrollView>}
+      <FlatList
+        data={rows}
+        renderItem={renderProjectRow}
+        keyExtractor={row => row.key}
+        ItemSeparatorComponent={ProjectHubRowSeparator}
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        keyboardShouldPersistTaps="handled"
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 36 }}
+        showsVerticalScrollIndicator={false}
+      />}
   </SafeAreaView></HeavyarScreen>;
 }
