@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { QuotaCircuit, isQuotaResponse, deletionInterval, detailInterval, liveLists, authorizationFingerprint } from './query-policy';
+import { QuotaCircuit, isQuotaResponse, deletionInterval, detailInterval, listInterval, liveLists, authorizationFingerprint } from './query-policy';
 import { actionRefreshKeys, refreshQueries } from './admin-feedback';
 import { SafeApiError, userErrorMessage } from './error-messages';
 
@@ -57,6 +57,50 @@ describe('Admin read budgets', () => {
     for (const key of ['config', 'provider-configs', 'audit', 'verificationEvents', 'commercialRules', 'seoAdminView']) assert.equal(liveLists.has(key), false);
     assert.match(source('lib/seo-api.ts'), /refetchInterval: false/);
     assert.match(source('lib/api.ts').split('export function useCommercialRules()')[1].split('export function')[0], /refetchInterval: false/);
+  });
+  it('assigns every live list a deterministic cadence without polling immutable resources', () => {
+    assert.deepEqual([...liveLists].sort(), [
+      'complaints', 'drivers', 'equipment', 'invoices', 'payments', 'providers', 'refunds', 'requests',
+      'users', 'verification', 'verificationAttempts', 'verificationProfiles',
+    ]);
+    for (const resource of ['users', 'providers', 'drivers', 'equipment', 'invoices']) {
+      assert.equal(listInterval(resource), 120_000, resource);
+    }
+    for (const resource of ['requests', 'payments', 'refunds', 'complaints', 'verification', 'verificationProfiles', 'verificationAttempts']) {
+      assert.equal(listInterval(resource), 30_000, resource);
+    }
+    for (const resource of ['config', 'provider-configs', 'audit', 'verificationEvents']) assert.equal(listInterval(resource), false, resource);
+  });
+  it('polls active operational states quickly and terminal filtered history slowly', () => {
+    const active: [string, Record<string, unknown>][] = [
+      ['requests', { status: 'in_progress' }], ['payments', { state: 'authorized' }],
+      ['refunds', { state: 'requested' }], ['complaints', { status: 'under_review' }],
+      ['verification', { status: 'pending' }], ['verificationProfiles', { 'overallTrust.status': 'manual_review' }],
+      ['verificationAttempts', { status: 'PENDING' }],
+    ];
+    for (const [resource, filters] of active) assert.equal(listInterval(resource, filters), 15_000, resource);
+    for (const [resource, filters] of [
+      ['requests', { status: 'completed' }], ['payments', { state: 'paid' }], ['refunds', { state: 'completed' }],
+      ['complaints', { status: 'closed' }], ['verificationProfiles', { 'overallTrust.status': 'verified' }],
+      ['verificationAttempts', { status: 'rejected' }],
+    ] as [string, Record<string, unknown>][]) assert.equal(listInterval(resource, filters), 120_000, resource);
+  });
+  it('uses loaded active rows while empty queues remain discoverable', () => {
+    assert.equal(listInterval('requests', {}, []), 30_000);
+    assert.equal(listInterval('requests', { cursor: 'page-2' }, [{ status: 'completed' }]), 30_000);
+    assert.equal(listInterval('requests', { cursor: 'page-2' }, [{ status: 'accepted' }]), 15_000);
+    assert.equal(listInterval('verificationProfiles', {}, [{ overallTrust: { status: 'manual_review' } }]), 15_000);
+    assert.equal(listInterval('payments', { state: 'paid', cursor: 'next' }, [{ state: 'processing' }]), 120_000);
+  });
+  it('reduces calculated visible request cadence while retaining active freshness', () => {
+    const perMinute = (interval: number | false) => interval === false ? 0 : 60_000 / interval;
+    assert.equal(perMinute(listInterval('requests', { status: 'pending' })), 4);
+    assert.equal(perMinute(listInterval('requests')), 2);
+    assert.equal(perMinute(listInterval('users')), 0.5);
+    assert.equal(perMinute(listInterval('requests', { status: 'completed' })), 0.5);
+    const api = source('lib/api.ts');
+    assert.match(api, /refetchInterval: query => listInterval\(key, params,/);
+    assert.match(api, /queryKey: \[key, params\]/);
   });
   it('polls only loaded, genuinely active detail workflows', () => {
     assert.equal(detailInterval('users', { status: 'pending' }), false);

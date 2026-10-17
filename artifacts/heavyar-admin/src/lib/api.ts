@@ -1,5 +1,5 @@
 import { QueryClient, useQuery, useMutation, focusManager } from '@tanstack/react-query';
-import { quotaCircuit, isQuotaResponse, liveLists, detailInterval, deletionInterval } from './query-policy';
+import { quotaCircuit, isQuotaResponse, listInterval, detailInterval, deletionInterval } from './query-policy';
 import { getFirebaseAuth } from './firebase';
 import { adminListParams } from './operations-contract';
 import { SafeApiError } from './error-messages';
@@ -361,7 +361,7 @@ export function useListQuery<T>(key: string, endpoint: string, params: Record<st
       const qs = searchParams.toString();
       return fetchApi<PaginatedResponse<T>>(`${endpoint}${qs ? '?' + qs : ''}`);
     },
-    refetchInterval: liveLists.has(key) ? 15_000 : false,
+    refetchInterval: query => listInterval(key, params, (query.state.data as PaginatedResponse<T> | undefined)?.items),
   });
 }
 
