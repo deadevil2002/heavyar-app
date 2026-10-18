@@ -88,6 +88,18 @@ import {
   type ServiceRfqAggregate,
 } from './service-rfq';
 import {
+  SERVICE_CONTRACT_PRODUCTION_ACTIVATION,
+  SERVICE_CONTRACT_TEST_TERMS_VERSION,
+  ServiceContractError,
+  acceptTestOnlyServiceContract,
+  cancelTestOnlyServiceContract,
+  isServiceContractAggregate,
+  serviceContractParticipantRole,
+  serviceContractPrivateView,
+  type ServiceContractActorRole,
+  type ServiceContractAggregate,
+} from './service-contract';
+import {
   CUSTOMER_PROJECT_ID,
   CUSTOMER_PROJECT_LINK_ID,
   CUSTOMER_PROJECT_PAGE_SIZE,
@@ -169,7 +181,7 @@ export interface Env {
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; accountProfileRaw?: { data: any; updateTime?: string } | null; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
-type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel' | 'service_message_send' | 'service_execution_create' | 'service_execution_transition' | 'service_evidence_intent' | 'service_evidence_upload' | 'customer_project_mutation';
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel' | 'service_contract_accept' | 'service_message_send' | 'service_execution_create' | 'service_execution_transition' | 'service_evidence_intent' | 'service_evidence_upload' | 'customer_project_mutation';
 type AuthenticatedMutationRateLimitDecision =
   | { status: 'allowed' }
   | { status: 'limited'; retryAfterSeconds: number }
@@ -195,6 +207,7 @@ let operatorDiscoveryActivationOverride: boolean | undefined;
 let capturedTransporterQueries: any[] | undefined;
 let transporterDiscoveryActivationOverride: boolean | undefined;
 let serviceRfqActivationOverride: boolean | undefined;
+let serviceContractActivationOverride: boolean | undefined;
 let serviceExecutionActivationOverride: boolean | undefined;
 let customerProjectActivationOverride: boolean | undefined;
 let serviceExecutionBindingOverride: ((sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) | undefined;
@@ -205,7 +218,7 @@ let notificationDeviceCommitOverride: ((writes: any[], attempt: number) => Promi
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
 const paymentCreateInflight = new Map<string, Promise<Response>>();
-  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, setServiceExecutionActivation(value?: boolean) { serviceExecutionActivationOverride = value; }, setCustomerProjectActivation(value?: boolean) { customerProjectActivationOverride = value; }, setServiceExecutionBinding(resolver?: (sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) { serviceExecutionBindingOverride = resolver; }, setServiceMessageRows(rows?: any[]) { serviceMessageQueryOverride = rows; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, setNotificationDeviceCommit(fn?: (writes: any[], attempt: number) => Promise<void>) { notificationDeviceCommitOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), notificationDeviceTransition, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
+  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, setServiceContractActivation(value?: boolean) { serviceContractActivationOverride = value; }, setServiceExecutionActivation(value?: boolean) { serviceExecutionActivationOverride = value; }, setCustomerProjectActivation(value?: boolean) { customerProjectActivationOverride = value; }, setServiceExecutionBinding(resolver?: (sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) { serviceExecutionBindingOverride = resolver; }, setServiceMessageRows(rows?: any[]) { serviceMessageQueryOverride = rows; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, setNotificationDeviceCommit(fn?: (writes: any[], attempt: number) => Promise<void>) { notificationDeviceCommitOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), notificationDeviceTransition, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -725,6 +738,7 @@ async function allowAuthenticatedMutation(env: Env, uid: string, scope: Authenti
     service_rfq_quote: { windowMs: 60_000, limit: 30 },
     service_rfq_select: { windowMs: 60_000, limit: 20 },
     service_rfq_cancel: { windowMs: 60_000, limit: 20 },
+    service_contract_accept: { windowMs: 60_000, limit: 20 },
     service_message_send: { windowMs: 60_000, limit: 30 },
     service_execution_create: { windowMs: 10 * 60_000, limit: 10 },
     service_execution_transition: { windowMs: 60_000, limit: 30 },
@@ -5387,6 +5401,177 @@ function providerQuoteSummaries(aggregate: ServiceRfqAggregate, principal: Provi
   });
 }
 
+const SERVICE_CONTRACT_JSON_LIMIT_BYTES = 256 * 1024;
+
+type ServiceContractStored = {
+  aggregate: ServiceContractAggregate;
+  updateTime?: string;
+};
+
+async function serviceContractId(rfqId: string) {
+  return `contract_${await hashedId(`service-contract:${rfqId}`)}`;
+}
+
+function parseStoredServiceContract(value: any, updateTime?: string): ServiceContractStored | null {
+  if (!value || value.schemaVersion !== 1 || typeof value.aggregateJson !== 'string' ||
+      new TextEncoder().encode(value.aggregateJson).byteLength > SERVICE_CONTRACT_JSON_LIMIT_BYTES) return null;
+  try {
+    const aggregate = JSON.parse(value.aggregateJson) as ServiceContractAggregate;
+    if (!isServiceContractAggregate(aggregate) || value.contractId !== aggregate.snapshot.contractId ||
+        value.rfqId !== aggregate.snapshot.rfqId || value.customerUid !== aggregate.snapshot.customerUid ||
+        value.providerScope !== serviceProviderScope(aggregate.snapshot.providerPrincipal) ||
+        value.status !== aggregate.status || value.revision !== aggregate.revision) return null;
+    return { aggregate, updateTime };
+  } catch { return null; }
+}
+
+function serviceContractFields(aggregate: ServiceContractAggregate) {
+  const aggregateJson = JSON.stringify(aggregate);
+  if (new TextEncoder().encode(aggregateJson).byteLength > SERVICE_CONTRACT_JSON_LIMIT_BYTES) {
+    throw new ServiceContractError('CONTRACT_STORAGE_LIMIT_REACHED');
+  }
+  return {
+    schemaVersion: { integerValue: '1' },
+    contractId: { stringValue: aggregate.snapshot.contractId },
+    rfqId: { stringValue: aggregate.snapshot.rfqId },
+    customerUid: { stringValue: aggregate.snapshot.customerUid },
+    providerScope: { stringValue: serviceProviderScope(aggregate.snapshot.providerPrincipal) },
+    status: { stringValue: aggregate.status },
+    revision: { integerValue: String(aggregate.revision) },
+    createdAt: { timestampValue: aggregate.snapshot.createdAt },
+    updatedAt: { timestampValue: aggregate.updatedAt },
+    acceptanceExpiresAt: { timestampValue: aggregate.snapshot.acceptanceExpiresAt },
+    aggregateJson: { stringValue: aggregateJson },
+  };
+}
+
+function serviceContractWrite(env: Env, stored: ServiceContractStored, expectedUpdateTime?: string) {
+  const fields = serviceContractFields(stored.aggregate);
+  return {
+    update: { name: fullName(env, `serviceContracts/${encodeURIComponent(stored.aggregate.snapshot.contractId)}`), fields },
+    ...(expectedUpdateTime ? { updateMask: { fieldPaths: Object.keys(fields) } } : {}),
+    currentDocument: expectedUpdateTime ? { updateTime: expectedUpdateTime } : { exists: false },
+  };
+}
+
+async function serviceContractAuditWrite(env: Env, aggregate: ServiceContractAggregate, actorUid: string, operation: string) {
+  const auditId = `${aggregate.snapshot.contractId}__${aggregate.revision}`;
+  return {
+    update: { name: fullName(env, `serviceContractAudit/${encodeURIComponent(auditId)}`), fields: {
+      contractId: { stringValue: aggregate.snapshot.contractId },
+      rfqId: { stringValue: aggregate.snapshot.rfqId },
+      revision: { integerValue: String(aggregate.revision) },
+      status: { stringValue: aggregate.status },
+      operation: { stringValue: operation },
+      actorHash: { stringValue: await hashedId(`service-contract-actor:${actorUid}`) },
+      createdAt: { timestampValue: aggregate.updatedAt },
+    } },
+    currentDocument: { exists: false },
+  };
+}
+
+async function loadOptionalServiceContract(env: Env, rfqId: string) {
+  const contractId = await serviceContractId(rfqId);
+  const raw = await getRawDoc(env, 'serviceContracts', contractId);
+  if (!raw) return null;
+  const stored = parseStoredServiceContract(raw.data, raw.updateTime);
+  if (!stored) throw new ServiceContractError('SERVICE_CONTRACT_UNAVAILABLE');
+  return stored;
+}
+
+function selectedServiceQuote(aggregate: ServiceRfqAggregate) {
+  const selection = aggregate.provisionalSelection;
+  const quote = selection && aggregate.quotes.find(item => item.quoteId === selection.quoteId && item.currentVersion === selection.quoteVersion);
+  if (!selection || !quote) throw new ServiceContractError('CONTRACT_SELECTION_NOT_READY');
+  return quote;
+}
+
+async function serviceContractAuthorities(env: Env, aggregate: ServiceRfqAggregate, user: User) {
+  const quote = selectedServiceQuote(aggregate);
+  if (quote.principal.kind !== 'individual') throw new ServiceContractError('CONTRACT_PROVIDER_NOT_AUTHORIZED');
+  const customerAccount = await serviceRfqAccountVerify(env, { uid: aggregate.rfq.customerUid, admin: false });
+  const customer = serviceRfqCustomer({ uid: aggregate.rfq.customerUid, admin: false, accountProfile: customerAccount.account });
+  const providerUser = user.uid === quote.principal.providerUid ? user : { uid: quote.principal.providerUid, admin: false };
+  const provider = await providerAuthorityForRfq(env, aggregate, providerUser);
+  const actorRole: ServiceContractActorRole = user.uid === aggregate.rfq.customerUid
+    ? 'customer'
+    : user.uid === quote.principal.providerUid ? 'provider' : (() => { throw new ServiceContractError('CONTRACT_ACTOR_NOT_AUTHORIZED'); })();
+  return { customer, provider: provider.authority, actorRole, verifies: [customerAccount.verify, ...provider.verifies] };
+}
+
+async function serviceContractViewForRfq(
+  env: Env,
+  aggregate: ServiceRfqAggregate,
+  user: User,
+  providerAuthority?: FutureProviderAuthority,
+) {
+  const stored = await loadOptionalServiceContract(env, aggregate.rfq.rfqId);
+  if (!stored) return null;
+  const role = serviceContractParticipantRole(stored.aggregate, user.uid, providerAuthority);
+  if (!role) return null;
+  return serviceContractPrivateView(stored.aggregate, role, new Date().toISOString());
+}
+
+async function mutateServiceContract(
+  env: Env,
+  rfqId: string,
+  actorUid: string,
+  operation: string,
+  mutate: (rfq: ServiceRfqAggregate, contract: ServiceContractAggregate | null) => Promise<{
+    aggregate: ServiceContractAggregate;
+    verifies?: any[];
+  }>,
+) {
+  const contractId = await serviceContractId(rfqId);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const transaction = await beginTransaction(env);
+    if (!transaction) throw new ServiceContractError('SERVICE_CONTRACT_UNAVAILABLE');
+    const rfqRaw = await transactionDocument(env, `serviceRfqs/${encodeURIComponent(rfqId)}`, transaction);
+    const rfqStored = parseStoredServiceRfq(rfqRaw?.data, rfqRaw?.updateTime);
+    if (!rfqStored?.updateTime) throw new ServiceContractError('RFQ_NOT_FOUND');
+    const contractRaw = await transactionDocument(env, `serviceContracts/${encodeURIComponent(contractId)}`, transaction);
+    const contractStored = contractRaw ? parseStoredServiceContract(contractRaw.data, contractRaw.updateTime) : null;
+    if (contractRaw && !contractStored) throw new ServiceContractError('SERVICE_CONTRACT_UNAVAILABLE');
+    const result = await mutate(rfqStored.aggregate, contractStored?.aggregate || null);
+    if (contractStored && result.aggregate === contractStored.aggregate) {
+      await fs(env, ':rollback', { method: 'POST', body: JSON.stringify({ transaction }) }).catch(() => undefined);
+      return contractStored;
+    }
+    try {
+      await commitWrites(env, [
+        serviceContractWrite(env, { aggregate: result.aggregate }, contractStored?.updateTime),
+        { verify: fullName(env, `serviceRfqs/${encodeURIComponent(rfqId)}`), currentDocument: { updateTime: rfqStored.updateTime } },
+        ...(result.verifies || []),
+        await serviceContractAuditWrite(env, result.aggregate, actorUid, operation),
+      ], transaction);
+      if (env.__diagnostics) env.__diagnostics.cas = 'succeeded';
+      return { aggregate: result.aggregate };
+    } catch (error) {
+      if (env.__diagnostics) env.__diagnostics.cas = error instanceof FirestorePreconditionError ? 'conflict' : 'failed';
+      if (!(error instanceof FirestorePreconditionError) || attempt === 4) throw error;
+    }
+  }
+  throw new ServiceContractError('SERVICE_CONTRACT_CONFLICT');
+}
+
+function serviceContractErrorResponse(req: Request, env: Env, error: unknown) {
+  const code = error instanceof ServiceContractError || error instanceof ServiceRfqError ? error.code : 'SERVICE_CONTRACT_UNAVAILABLE';
+  const status = code.includes('NOT_FOUND') ? 404
+    : code.includes('NOT_AUTHORIZED') ? 403
+      : code.includes('STALE') || code.includes('CONFLICT') || code.includes('ALREADY') || code.includes('TRANSITION') ? 409
+        : code === 'SERVICE_CONTRACT_UNAVAILABLE' ? 503 : 400;
+  return out(env, req, { success: false, error: code, errorCode: code }, status);
+}
+
+function serviceContractDisabled(req: Request, env: Env) {
+  return out(env, req, {
+    success: false,
+    error: 'Service contract acceptance is not activated',
+    errorCode: 'SERVICE_CONTRACT_NOT_ACTIVATED',
+    activation: { enabled: false, reason: SERVICE_CONTRACT_PRODUCTION_ACTIVATION },
+  }, 404);
+}
+
 async function serviceRfqView(env: Env, aggregate: ServiceRfqAggregate, user: User) {
   const now = new Date().toISOString();
   if (aggregate.rfq.customerUid === user.uid) {
@@ -5396,6 +5581,7 @@ async function serviceRfqView(env: Env, aggregate: ServiceRfqAggregate, user: Us
         targetProfileIds: aggregate.rfq.invitedProviders.map(item => item.profileId), provisionalSelection: aggregate.provisionalSelection },
       comparison: { contractVersion: 1, rfqId: aggregate.rfq.rfqId, rfqVersion: 1, serviceKind: aggregate.rfq.serviceKind,
         ...pageSyntheticQuoteSummaries(aggregate, { kind: 'customer', customer }, { now }) },
+      contract: await serviceContractViewForRfq(env, aggregate, user),
     };
   }
   const provider = await providerAuthorityForRfq(env, aggregate, user);
@@ -5406,6 +5592,7 @@ async function serviceRfqView(env: Env, aggregate: ServiceRfqAggregate, user: Us
         ? aggregate.provisionalSelection : null },
     comparison: { contractVersion: 1, rfqId: aggregate.rfq.rfqId, rfqVersion: 1, serviceKind: aggregate.rfq.serviceKind,
       quotes: providerQuoteSummaries(aggregate, provider.authority.principal, now), nextCursor: null },
+    contract: await serviceContractViewForRfq(env, aggregate, user, provider.authority),
   };
 }
 
@@ -5687,6 +5874,79 @@ async function withdrawServiceQuote(req: Request, env: Env, user: User, rfqId: s
     });
     return out(env, req, { success: true, ...(await serviceRfqView(env, stored.aggregate, user)) });
   } catch (error) { return serviceRfqErrorResponse(req, env, error); }
+}
+
+async function acceptServiceContract(req: Request, env: Env, user: User, rfqId: string) {
+  if (serviceContractActivationOverride !== true) return serviceContractDisabled(req, env);
+  try {
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'service_contract_accept');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many contract acceptance attempts');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, SERVICE_RFQ_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['quoteId', 'quoteVersion', 'termsVersion', 'expectedContractRevision', 'idempotencyKey'].includes(key)) ||
+        !SERVICE_QUOTE_ID.test(String(body.quoteId || '')) || !Number.isSafeInteger(body.quoteVersion) || body.quoteVersion < 1 ||
+        body.termsVersion !== SERVICE_CONTRACT_TEST_TERMS_VERSION || !Number.isSafeInteger(body.expectedContractRevision) ||
+        body.expectedContractRevision < 0 || typeof body.idempotencyKey !== 'string') {
+      throw new ServiceContractError('INVALID_CONTRACT_ACCEPTANCE');
+    }
+    await mutateServiceContract(env, rfqId, user.uid, 'contract_acceptance_recorded', async (rfq, existing) => {
+      const authorities = await serviceContractAuthorities(env, rfq, user);
+      return {
+        aggregate: acceptTestOnlyServiceContract(existing, rfq, {
+          contractId: await serviceContractId(rfqId),
+          actorRole: authorities.actorRole,
+          actorUid: user.uid,
+          customer: authorities.customer,
+          provider: authorities.provider,
+          quoteId: body.quoteId,
+          quoteVersion: body.quoteVersion,
+          termsVersion: body.termsVersion,
+          expectedContractRevision: body.expectedContractRevision,
+          idempotencyKey: body.idempotencyKey,
+          now: new Date().toISOString(),
+        }),
+        verifies: authorities.verifies,
+      };
+    });
+    const rfq = await loadServiceRfq(env, rfqId);
+    return out(env, req, { success: true, ...(await serviceRfqView(env, rfq.aggregate, user)) });
+  } catch (error) { return serviceContractErrorResponse(req, env, error); }
+}
+
+async function cancelServiceContract(req: Request, env: Env, user: User, rfqId: string) {
+  if (serviceContractActivationOverride !== true) return serviceContractDisabled(req, env);
+  try {
+    const limit = await allowAuthenticatedMutation(env, user.uid, 'service_contract_accept');
+    const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many contract cancellation attempts');
+    if (limited) return limited;
+    const parsed = await readBoundedJson(req, SERVICE_RFQ_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    const body = parsed.status === 'ok' && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? parsed.value as any : null;
+    if (!body || !Object.keys(body).every(key => ['expectedContractRevision', 'idempotencyKey'].includes(key)) ||
+        !Number.isSafeInteger(body.expectedContractRevision) || body.expectedContractRevision < 0 || typeof body.idempotencyKey !== 'string') {
+      throw new ServiceContractError('INVALID_CONTRACT_CANCELLATION');
+    }
+    await mutateServiceContract(env, rfqId, user.uid, 'contract_cancelled', async (rfq, existing) => {
+      if (!existing) throw new ServiceContractError('CONTRACT_NOT_FOUND');
+      const authorities = await serviceContractAuthorities(env, rfq, user);
+      return {
+        aggregate: cancelTestOnlyServiceContract(existing, rfq, {
+          actorRole: authorities.actorRole,
+          actorUid: user.uid,
+          customer: authorities.customer,
+          provider: authorities.provider,
+          expectedContractRevision: body.expectedContractRevision,
+          idempotencyKey: body.idempotencyKey,
+          now: new Date().toISOString(),
+        }),
+        verifies: authorities.verifies,
+      };
+    });
+    const rfq = await loadServiceRfq(env, rfqId);
+    return out(env, req, { success: true, ...(await serviceRfqView(env, rfq.aggregate, user)) });
+  } catch (error) { return serviceContractErrorResponse(req, env, error); }
 }
 
 const SERVICE_MESSAGE_ID = /^service_message_[A-Za-z0-9_-]{43}$/;
@@ -8069,6 +8329,10 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
        if (serviceRfqSelectionMatch && req.method === 'POST') return await selectServiceQuote(req, env, await authenticatedUser(req, env), serviceRfqSelectionMatch[1]);
        const serviceRfqCancelMatch = path.match(/^\/api\/service-rfqs\/(rfq_[A-Za-z0-9_-]{43})\/cancel$/);
        if (serviceRfqCancelMatch && req.method === 'POST') return await cancelServiceRfq(req, env, await authenticatedUser(req, env), serviceRfqCancelMatch[1]);
+       const serviceContractAcceptMatch = path.match(/^\/api\/service-rfqs\/(rfq_[A-Za-z0-9_-]{43})\/contract\/accept$/);
+       if (serviceContractAcceptMatch && req.method === 'POST') return await acceptServiceContract(req, env, await authenticatedUser(req, env), serviceContractAcceptMatch[1]);
+       const serviceContractCancelMatch = path.match(/^\/api\/service-rfqs\/(rfq_[A-Za-z0-9_-]{43})\/contract\/cancel$/);
+       if (serviceContractCancelMatch && req.method === 'POST') return await cancelServiceContract(req, env, await authenticatedUser(req, env), serviceContractCancelMatch[1]);
        const serviceRfqMessagesMatch = path.match(/^\/api\/service-rfqs\/(rfq_[A-Za-z0-9_-]{43})\/messages$/);
        if (serviceRfqMessagesMatch && req.method === 'GET') return await listServiceMessages(req, env, await authenticatedUser(req, env), serviceRfqMessagesMatch[1]);
        if (serviceRfqMessagesMatch && req.method === 'POST') return await sendServiceMessage(req, env, await authenticatedUser(req, env), serviceRfqMessagesMatch[1]);

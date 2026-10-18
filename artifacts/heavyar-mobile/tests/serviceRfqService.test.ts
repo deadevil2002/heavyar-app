@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { request } from '@/services/workerClient';
 import {
+  acceptServiceContract,
   createServiceRfq,
+  decodeServiceContractView,
   decodeServiceRfqDetail,
   decodeServiceRfqList,
   ServiceRfqScopeGuard,
@@ -80,5 +82,45 @@ describe('M2-E1 mobile durable RFQ boundary', () => {
     expect(guard.isCurrent(provider)).toBe(true);
     guard.cancel();
     expect(guard.isCurrent(provider)).toBe(false);
+  });
+
+  it('strictly decodes a private pending-payment contract without accepting identities or payment claims', () => {
+    const contract = {
+      contractVersion: 1, contractId: `contract_${'C'.repeat(43)}`, rfqId: RFQ_ID, rfqRevisionAtSelection: 3, serviceKind: 'operator',
+      status: 'pending_payment', revision: 2, participantRole: 'customer',
+      selectedQuote: {
+        quoteId: QUOTE_ID, quoteVersion: 1, serviceScope: quote.serviceScope, schedule: quote.schedule,
+        inclusions: quote.inclusions, exclusions: quote.exclusions, currency: 'SAR', quotedServicePriceMinor: 120_000,
+        expiresAt: quote.expiresAt,
+      },
+      requirementsSnapshot: { equipmentSkill: 'excavators', workSite: { lat: 24.7, lng: 46.6 } },
+      terms: { version: 'synthetic-local-test-v1', source: 'synthetic_local_test_only', approvedForProduction: false },
+      customerAcceptance: { acceptedAt: '2026-10-18T08:00:00.000Z', termsVersion: 'synthetic-local-test-v1' },
+      providerAcceptance: { acceptedAt: '2026-10-18T08:01:00.000Z', termsVersion: 'synthetic-local-test-v1' },
+      paymentState: 'not_verified', bookingState: 'not_confirmed', executionAuthorized: false, settlementEnabled: false,
+      createdAt: '2026-10-18T08:00:00.000Z', updatedAt: '2026-10-18T08:01:00.000Z',
+      acceptanceExpiresAt: quote.expiresAt, productionEnabled: false, legallyBinding: false,
+    };
+    expect(decodeServiceContractView(contract)?.selectedQuote.quotedServicePriceMinor).toBe(120_000);
+    expect(() => decodeServiceContractView({ ...contract, customerUid: 'private-identity' })).toThrow();
+    expect(() => decodeServiceContractView({ ...contract, paymentState: 'verified' })).toThrow();
+    expect(() => decodeServiceContractView({ ...contract, executionAuthorized: true })).toThrow();
+    expect(() => decodeServiceContractView({ ...contract, status: 'pending_payment', providerAcceptance: null })).toThrow();
+  });
+
+  it('submits only selected identifiers, terms version, revision, and idempotency key', async () => {
+    mockedRequest.mockResolvedValue({ ...detail, contract: null, rfq: {
+      ...detail.rfq, status: 'provisionally_selected', provisionalSelection: { quoteId: QUOTE_ID, quoteVersion: 1, selectedAt: '2026-10-18T08:00:00.000Z' },
+    } });
+    await acceptServiceContract(RFQ_ID, QUOTE_ID, 1, 0, 'accept-contract-0001', 'customer-uid');
+    const call = mockedRequest.mock.calls[0];
+    expect(call[0]).toBe(`/api/service-rfqs/${RFQ_ID}/contract/accept`);
+    const body = JSON.parse(String(call[1]?.body));
+    expect(body).toEqual({
+      quoteId: QUOTE_ID, quoteVersion: 1, termsVersion: 'synthetic-local-test-v1', expectedContractRevision: 0,
+      idempotencyKey: 'accept-contract-0001',
+    });
+    expect(body).not.toHaveProperty('amount');
+    expect(body).not.toHaveProperty('actorUid');
   });
 });

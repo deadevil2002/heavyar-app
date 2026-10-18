@@ -5,6 +5,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ban, ChevronLeft, ChevronRight, HardHat, MessageCircle, Save, ShieldCheck, Truck } from 'lucide-react-native';
 import { Text, XStack, YStack } from 'tamagui';
 import ServiceQuoteComparison from '@/components/ServiceQuoteComparison';
+import ServiceContractAcceptance from '@/components/ServiceContractAcceptance';
 import {
   HeavyarBadge,
   HeavyarBadgeText,
@@ -23,6 +24,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import {
   cancelServiceRfq,
+  acceptServiceContract,
   getServiceRfq,
   reviseServiceQuote,
   selectServiceQuote,
@@ -112,6 +114,18 @@ function ServiceRfqDetailBody({ rfqId }: { rfqId: string }) {
   const cancel = () => detail && void run('cancel', (uid, signal) => cancelServiceRfq(
     detail.rfq.rfqId, detail.rfq.revision, serviceRfqIdempotencyKey('cancel'), uid, signal,
   ));
+  const selectedQuote = detail?.rfq.provisionalSelection
+    ? detail.comparison.quotes.find(item => item.quoteId === detail.rfq.provisionalSelection?.quoteId && item.quoteVersion === detail.rfq.provisionalSelection.quoteVersion)
+    : undefined;
+  const acceptContract = () => detail && selectedQuote && void run('accept-contract', (uid, signal) => acceptServiceContract(
+    detail.rfq.rfqId,
+    selectedQuote.quoteId,
+    selectedQuote.quoteVersion,
+    detail.contract?.revision || 0,
+    serviceRfqIdempotencyKey('accept-contract'),
+    uid,
+    signal,
+  ));
   const Icon = detail?.rfq.serviceKind === 'transporter' ? Truck : HardHat;
 
   return <HeavyarScreen><SafeAreaView style={{ flex: 1 }} edges={['top', 'bottom']}>
@@ -145,6 +159,14 @@ function ServiceRfqDetailBody({ rfqId }: { rfqId: string }) {
                 <MessageCircle color={Colors.gold} size={18} /><HeavyarButtonText tone="secondary">{message('فتح المحادثة', 'Open conversation')}</HeavyarButtonText>
               </HeavyarButton>}
           </HeavyarSurface>
+
+          {selectedQuote ? <ServiceContractAcceptance
+            access={detail.access}
+            selectedQuote={selectedQuote}
+            contract={detail.contract}
+            busy={busy === 'accept-contract'}
+            onAccept={acceptContract}
+          /> : null}
 
           {detail.access === 'customer' ? <>
             <ServiceQuoteComparison serviceKind={detail.rfq.serviceKind} state="ready" quotes={detail.comparison.quotes}

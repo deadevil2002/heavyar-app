@@ -140,8 +140,8 @@ const eligibleProfile = (ownerUid: string, name: string) => ({
 function authenticate(uid: string, account: any) { __test.setAuth({ uid, admin: false, emailVerified: true, accountProfile: account }); }
 
 describe('M2-E1 durable private RFQ Worker workflow', () => {
-  beforeEach(() => { __test.setFirestore(undefined); __test.captureCommits(undefined); __test.resetMutationLimits(); __test.setServiceRfqActivation(true); });
-  afterEach(() => { globalThis.fetch = originalFetch; __test.setAuth(undefined); __test.setServiceRfqActivation(undefined); __test.resetMutationLimits(); });
+  beforeEach(() => { __test.setFirestore(undefined); __test.captureCommits(undefined); __test.resetMutationLimits(); __test.setServiceRfqActivation(true); __test.setServiceContractActivation(true); });
+  afterEach(() => { globalThis.fetch = originalFetch; __test.setAuth(undefined); __test.setServiceRfqActivation(undefined); __test.setServiceContractActivation(undefined); __test.setServiceExecutionActivation(undefined); __test.setServiceExecutionBinding(undefined); __test.resetMutationLimits(); });
 
   test('keeps every Production route closed before authentication or Firestore access', async () => {
     __test.setServiceRfqActivation(undefined);
@@ -370,5 +370,106 @@ describe('M2-E1 durable private RFQ Worker workflow', () => {
     expect(outbox.some(item => item.event === 'service_message_received')).toBe(true);
     expect(JSON.stringify(outbox)).not.toContain('Arrival window confirmed.');
     expect(JSON.stringify(outbox)).not.toContain('work-site arrival');
+  });
+
+  test('records both participant acceptances privately and cannot imply payment or execution authority', async () => {
+    const store = firestoreHarness(); globalThis.fetch = store.fetch;
+    store.put(`operatorDiscoveryProfiles/${profileA}`, eligibleProfile(providerA, 'Provider A'));
+    store.put(`users/${providerA}`, providerAccount); store.put(`users/${customerUid}`, customerAccount);
+    authenticate(customerUid, customerAccount);
+    const created: any = await (await call('/api/service-rfqs', 'POST', {
+      draft: requestDraft, targetProfileIds: [profileA], idempotencyKey: 'create-contract-rfq-0001',
+    })).json();
+    const rfqId = created.rfq.rfqId;
+    authenticate(providerA, providerAccount);
+    const submitted: any = await (await call(`/api/service-rfqs/${rfqId}/quotes`, 'POST', {
+      quote, expectedRfqRevision: 1, idempotencyKey: 'submit-contract-quote-0001',
+    })).json();
+    const quoteId = submitted.comparison.quotes[0].quoteId;
+    authenticate(customerUid, customerAccount);
+    const selection: any = await (await call(`/api/service-rfqs/${rfqId}/selection`, 'POST', {
+      quoteId, expectedRfqRevision: 2, idempotencyKey: 'select-contract-quote-0001',
+    })).json();
+    expect(selection.binding).toBe('non_binding_preliminary_selection');
+    expect(selection.contract).toBeNull();
+
+    __test.setServiceContractActivation(undefined);
+    const disabled = await call(`/api/service-rfqs/${rfqId}/contract/accept`, 'POST', {
+      quoteId, quoteVersion: 1, termsVersion: 'synthetic-local-test-v1', expectedContractRevision: 0,
+      idempotencyKey: 'customer-contract-accept-0001',
+    });
+    expect(disabled.status).toBe(404);
+    expect((await disabled.json() as any).errorCode).toBe('SERVICE_CONTRACT_NOT_ACTIVATED');
+    expect([...store.documents.keys()].some(path => path.startsWith('serviceContracts/'))).toBe(false);
+    __test.setServiceContractActivation(true);
+
+    const wrongQuote = await call(`/api/service-rfqs/${rfqId}/contract/accept`, 'POST', {
+      quoteId: `quote_${'X'.repeat(43)}`, quoteVersion: 1, termsVersion: 'synthetic-local-test-v1', expectedContractRevision: 0,
+      idempotencyKey: 'customer-contract-wrong-0001',
+    });
+    expect(wrongQuote.status).toBe(400);
+
+    store.beforeNextCommit(() => {
+      const raw = store.requiredData(`serviceRfqs/${rfqId}`);
+      store.put(`serviceRfqs/${rfqId}`, raw);
+    });
+    const customerAccepted = await call(`/api/service-rfqs/${rfqId}/contract/accept`, 'POST', {
+      quoteId, quoteVersion: 1, termsVersion: 'synthetic-local-test-v1', expectedContractRevision: 0,
+      idempotencyKey: 'customer-contract-accept-0001',
+    });
+    expect(customerAccepted.status).toBe(200);
+    const customerView: any = await customerAccepted.json();
+    expect(customerView.contract.status).toBe('awaiting_acceptances');
+    expect(customerView.contract.customerAcceptance).not.toBeNull();
+    expect(customerView.contract.providerAcceptance).toBeNull();
+    expect(customerView.contract.paymentState).toBe('not_verified');
+    expect(customerView.contract.bookingState).toBe('not_confirmed');
+    expect(customerView.contract.executionAuthorized).toBe(false);
+    expect(customerView.contract.settlementEnabled).toBe(false);
+    expect(customerView.contract.legallyBinding).toBe(false);
+    expect(JSON.stringify(customerView.contract)).not.toContain(customerUid);
+    expect(JSON.stringify(customerView.contract)).not.toContain(providerA);
+    expect(JSON.stringify(customerView.contract)).toContain('Private gate');
+    const contractId = customerView.contract.contractId;
+
+    const replay: any = await (await call(`/api/service-rfqs/${rfqId}/contract/accept`, 'POST', {
+      quoteId, quoteVersion: 1, termsVersion: 'synthetic-local-test-v1', expectedContractRevision: 0,
+      idempotencyKey: 'customer-contract-accept-0001',
+    })).json();
+    expect(replay.contract.revision).toBe(1);
+
+    authenticate('customer-qa-other', customerAccount);
+    expect((await call(`/api/service-rfqs/${rfqId}`)).status).toBe(403);
+    expect((await call(`/api/service-rfqs/${rfqId}/contract/accept`, 'POST', {
+      quoteId, quoteVersion: 1, termsVersion: 'synthetic-local-test-v1', expectedContractRevision: 1,
+      idempotencyKey: 'outside-contract-accept-0001',
+    })).status).toBe(403);
+
+    store.put(`users/${providerA}`, { ...providerAccount, accountStatus: 'restricted' });
+    authenticate(providerA, providerAccount);
+    expect((await call(`/api/service-rfqs/${rfqId}/contract/accept`, 'POST', {
+      quoteId, quoteVersion: 1, termsVersion: 'synthetic-local-test-v1', expectedContractRevision: 1,
+      idempotencyKey: 'provider-contract-restricted-0001',
+    })).status).toBe(403);
+    store.put(`users/${providerA}`, providerAccount);
+    const completed = await call(`/api/service-rfqs/${rfqId}/contract/accept`, 'POST', {
+      quoteId, quoteVersion: 1, termsVersion: 'synthetic-local-test-v1', expectedContractRevision: 1,
+      idempotencyKey: 'provider-contract-accept-0001',
+    });
+    expect(completed.status).toBe(200);
+    const providerView: any = await completed.json();
+    expect(providerView.contract.status).toBe('pending_payment');
+    expect(providerView.contract.participantRole).toBe('provider');
+    expect(providerView.contract.selectedQuote.quotedServicePriceMinor).toBe(130_000);
+    expect(providerView.contract.paymentState).toBe('not_verified');
+    expect([...store.documents.keys()].filter(path => path.startsWith('serviceContractAudit/'))).toHaveLength(2);
+
+    __test.setServiceExecutionActivation(true);
+    const execution = await call('/api/service-executions', 'POST', {
+      sourceKind: 'service_contract', sourceId: contractId, idempotencyKey: 'execute-unpaid-contract-0001',
+    });
+    expect(execution.status).toBe(400);
+    expect([...store.documents.keys()].some(path => path.startsWith('serviceExecutions/'))).toBe(false);
+    expect(store.requiredData(`serviceContracts/${contractId}`).status).toBe('pending_payment');
   });
 });

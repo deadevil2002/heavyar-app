@@ -490,6 +490,14 @@ service cloud.firestore {
     match /serviceRfqAudit/{auditId} {
       allow read, write: if false;
     }
+    // Launch Packet 1 acceptance snapshots and audit evidence are private and
+    // Worker-authoritative. Participant access is revalidated by the Worker.
+    match /serviceContracts/{contractId} {
+      allow read, write: if false;
+    }
+    match /serviceContractAudit/{auditId} {
+      allow read, write: if false;
+    }
     // M2-E5 customer projects are optional organizational containers only.
     // The Worker owns every project/link mutation and revalidates the live
     // customer plus the linked request in one transaction. Direct reads would
