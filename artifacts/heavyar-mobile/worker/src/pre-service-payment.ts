@@ -1,4 +1,7 @@
-import { minorToMajor, verifiedStoredCommercial, type CommercialSnapshot } from './commercial';
+import {
+  approvedCommercialSnapshot, commercialServiceKind, minorToMajor, verifiedStoredCommercial,
+  type CommercialCatalog, type CommercialServiceKind, type CommercialSnapshot,
+} from './commercial';
 import type { ServiceContractAggregate } from './service-contract';
 import type { ProviderPayment, TapEnvironment, TapMarketplaceSplit } from './payment';
 
@@ -193,20 +196,20 @@ function validateDestination(
 function validateCommercial(
   value: unknown,
   providerUid: string,
+  expectedServiceKind: CommercialServiceKind,
+  approvedCatalog: CommercialCatalog,
   expectedBaseAmountMinor?: number,
-  requireApprovedRentalPolicy = false,
 ): CommercialSnapshot {
   const snapshot = verifiedStoredCommercial(value, 'SAR');
   if (!snapshot || snapshot.providerUid !== providerUid || snapshot.countryCode !== 'SA' ||
       snapshot.currency !== 'SAR' || snapshot.gatewayFeeMinor !== null ||
+      commercialServiceKind(snapshot) !== expectedServiceKind ||
       expectedBaseAmountMinor !== undefined && snapshot.baseAmountMinor !== expectedBaseAmountMinor) {
     fail('COMMERCIAL_SNAPSHOT_INVALID');
   }
-  if (requireApprovedRentalPolicy && (snapshot.ruleVersion !== 'legacy-commission-v1' ||
-      snapshot.ruleStatus !== 'active' || snapshot.mode !== 'percentage' || snapshot.percentageBps !== 1000 ||
-      snapshot.fixedAmountMinor !== 0 || snapshot.payer !== 'provider' || snapshot.customerShareBps !== 0 ||
-      snapshot.platformFeeMinor !== snapshot.providerFeeMinor || snapshot.customerFeeMinor !== 0)) {
-    fail('RENTAL_COMMISSION_POLICY_NOT_APPROVED');
+  if (!approvedCommercialSnapshot(snapshot, approvedCatalog, expectedServiceKind)) {
+    fail(expectedServiceKind === 'equipment_rental'
+      ? 'RENTAL_COMMISSION_POLICY_NOT_APPROVED' : 'SERVICE_COMMISSION_POLICY_NOT_APPROVED');
   }
   return snapshot;
 }
@@ -265,6 +268,7 @@ export function buildRentalPreServicePaymentPlan(input: {
   actorUid: string;
   environment: TapEnvironment;
   destination: unknown;
+  commercialCatalog: CommercialCatalog;
   now: string;
   allowExistingAttempt?: boolean;
 }): PreServicePaymentPlan {
@@ -292,8 +296,8 @@ export function buildRentalPreServicePaymentPlan(input: {
   if (!pricing || !Number.isSafeInteger(baseAmountMinor) || baseAmountMinor <= 0 ||
       typeof pricing.snapshotId !== 'string' || pricing.snapshotId !== `rental-v2:${sourceId}:locked` ||
       request.commercialSnapshotStatus !== 'estimated') fail('RENTAL_PAYMENT_QUOTE_NOT_LOCKED');
-  const commercial = validateCommercial(request.commercialSnapshot, providerUid, baseAmountMinor, true);
-  const pricingCommercial = validateCommercial(pricing.commercialTerms, providerUid, baseAmountMinor, true);
+  const commercial = validateCommercial(request.commercialSnapshot, providerUid, 'equipment_rental', input.commercialCatalog, baseAmountMinor);
+  const pricingCommercial = validateCommercial(pricing.commercialTerms, providerUid, 'equipment_rental', input.commercialCatalog, baseAmountMinor);
   if (stableJson(commercial) !== stableJson(pricingCommercial)) fail('RENTAL_PAYMENT_QUOTE_NOT_LOCKED');
   const destination = validateDestination(input.destination, providerUid, input.environment, input.now);
   return plan({
@@ -308,6 +312,7 @@ export function buildServicePreServicePaymentPlan(input: {
   environment: TapEnvironment;
   destination: unknown;
   approvedTerms: ApprovedServiceCommercialTerms | null;
+  commercialCatalog: CommercialCatalog;
   now: string;
 }): PreServicePaymentPlan {
   const contract = input.contract;
@@ -333,7 +338,9 @@ export function buildServicePreServicePaymentPlan(input: {
     fail('SERVICE_COMMISSION_POLICY_NOT_APPROVED');
   }
   const quotedMinor = contract.snapshot.quoteSnapshot.quotedServicePriceMinor;
-  const commercial = validateCommercial(approved.commercialSnapshot, providerUid, quotedMinor, false);
+  const commercial = validateCommercial(approved.commercialSnapshot, providerUid, contract.snapshot.serviceKind,
+    input.commercialCatalog, quotedMinor);
+  if (approved.approvalId !== `commercial:${commercial.ruleVersion}`) fail('SERVICE_COMMISSION_POLICY_NOT_APPROVED');
   const destination = validateDestination(input.destination, providerUid, input.environment, input.now);
   return plan({
     kind, sourceId: contract.snapshot.contractId, sourceRevision: contract.revision,

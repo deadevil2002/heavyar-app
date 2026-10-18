@@ -4,8 +4,12 @@ import { mockCategories } from '../../mocks/categories';
 export type CommissionMode = 'percentage' | 'fixed' | 'percentage_fixed';
 export type CommissionPayer = 'customer' | 'provider' | 'split';
 export type CommissionStatus = 'draft' | 'active' | 'scheduled' | 'retired';
+export type CommercialServiceKind = 'equipment_rental' | 'operator' | 'transporter';
+export type CostEvidence = 'manual_estimate' | 'unknown';
 
 export interface CommissionRule {
+  /** Missing only on historical equipment rules created before service kinds existed. */
+  serviceKind?: CommercialServiceKind;
   version: string;
   status: CommissionStatus;
   effectiveFrom: string;
@@ -32,6 +36,8 @@ export interface CommercialCatalog {
 }
 
 export interface CommercialSnapshot {
+  /** Missing historical snapshots are explicitly interpreted as equipment rental. */
+  serviceKind?: CommercialServiceKind;
   ruleVersion: string;
   ruleStatus: CommissionStatus;
   ruleEffectiveFrom?: string;
@@ -63,6 +69,31 @@ export interface CommercialSnapshot {
   taxReference?: string;
 }
 
+export interface ProfitabilityInput {
+  processingCostMinor: number | null;
+  processingCostEvidence: CostEvidence;
+  operationalCostMinor: number | null;
+  operationalCostEvidence: CostEvidence;
+  commissionVatTreatment: 'unknown' | 'not_applicable' | 'exclusive' | 'inclusive';
+  commissionVatRateBps: number | null;
+}
+
+export interface ProfitabilityPreview {
+  currency: string;
+  commissionRevenueMinor: number;
+  processingCost: { amountMinor: number | null; evidence: CostEvidence };
+  operationalCost: { amountMinor: number | null; evidence: CostEvidence };
+  commissionVat: {
+    amountMinor: number | null;
+    evidence: CostEvidence;
+    treatment: ProfitabilityInput['commissionVatTreatment'];
+    rateBps: number | null;
+  };
+  estimatedContributionMinor: number | null;
+  warning: 'unknown_costs' | 'negative_contribution' | null;
+  auditedNetProfit: false;
+}
+
 export type CommercialChangeCommand = {
   action: 'create' | 'publish' | 'retire';
   expectedRevision: number;
@@ -91,11 +122,13 @@ const COUNTRIES: Set<string> = new Set(GCC_COUNTRIES.map(c => c.code));
 const CURRENCIES: Set<string> = new Set(GCC_COUNTRIES.map(c => c.currency));
 const CATEGORIES: Set<string> = new Set(mockCategories.map(c => c.id));
 const RULE_KEYS = new Set([
+  'serviceKind',
   'version', 'status', 'effectiveFrom', 'effectiveTo', 'createdAt', 'createdBy',
   'updatedAt', 'updatedBy', 'notes', 'mode', 'percentageBps', 'fixedAmountMinor',
   'minimumFeeMinor', 'maximumFeeMinor', 'payer', 'customerShareBps', 'scope', 'currency',
 ]);
 const TERM_KEYS = new Set([
+  'serviceKind',
   'effectiveFrom', 'effectiveTo', 'notes', 'mode', 'percentageBps',
   'fixedAmountMinor', 'minimumFeeMinor', 'maximumFeeMinor', 'payer',
   'customerShareBps', 'scope', 'currency',
@@ -103,6 +136,12 @@ const TERM_KEYS = new Set([
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UTC = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/;
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+
+export const APPROVED_COMMISSION_DEFAULTS = Object.freeze({
+  equipment_rental: Object.freeze({ percentageBps: 1_000, payer: 'provider' as const, countryCode: 'SA', currency: 'SAR' }),
+  operator: Object.freeze({ percentageBps: 800, payer: 'provider' as const, countryCode: 'SA', currency: 'SAR' }),
+  transporter: Object.freeze({ percentageBps: 800, payer: 'provider' as const, countryCode: 'SA', currency: 'SAR' }),
+});
 
 function object(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -143,6 +182,10 @@ function enumValue<T extends string>(value: unknown, allowed: readonly T[], labe
 }
 function safe(big: bigint, label: string): number {
   if (big < 0n || big > MAX_SAFE) throw new Error(`${label} is outside the safe integer range`);
+  return Number(big);
+}
+function safeSigned(big: bigint, label: string): number {
+  if (big < -MAX_SAFE || big > MAX_SAFE) throw new Error(`${label} is outside the safe integer range`);
   return Number(big);
 }
 function halfUp(numerator: bigint, denominator: bigint): bigint {
@@ -186,6 +229,7 @@ export function verifiedStoredCommercial(snapshot: unknown, expectedCurrency: st
   const value = snapshot as Record<string, unknown>;
   const currency = typeof value.currency === 'string' ? value.currency : '';
   if (!/^[A-Z]{3}$/.test(currency) || currency !== expectedCurrency) return null;
+  if (value.serviceKind !== undefined && !['equipment_rental', 'operator', 'transporter'].includes(String(value.serviceKind))) return null;
   try { currencyDecimals(currency); } catch { return null; }
   const integerFields = [
     'baseAmountMinor', 'platformFeeMinor', 'customerFeeMinor', 'providerFeeMinor',
@@ -212,6 +256,8 @@ export function validateRule(input: any): CommissionRule {
   const version = text(r.version, 'version');
   if (version !== 'legacy-commission-v1' && !UUID.test(version)) throw new Error('version must be a UUID');
   const effectiveFrom = iso(r.effectiveFrom, 'effectiveFrom');
+  const serviceKind = r.serviceKind === undefined ? undefined
+    : enumValue(r.serviceKind, ['equipment_rental', 'operator', 'transporter'] as const, 'serviceKind');
   const scope = object(r.scope, 'scope');
   exactKeys(scope, new Set(['countryCode', 'categoryId', 'providerUid']), 'scope');
   const countryCode = scope.countryCode === null ? null : text(scope.countryCode, 'countryCode').toUpperCase();
@@ -220,6 +266,7 @@ export function validateRule(input: any): CommissionRule {
   if (countryCode !== null && !COUNTRIES.has(countryCode)) throw new Error('Invalid GCC countryCode');
   if (categoryId !== null && !CATEGORIES.has(categoryId)) throw new Error('Invalid canonical categoryId');
   if (providerUid && (countryCode || categoryId)) throw new Error('Provider scope cannot mix country or category');
+  if (serviceKind && serviceKind !== 'equipment_rental' && categoryId) throw new Error('Service rules cannot use equipment category scope');
   if (providerUid && providerUid.length > 128) throw new Error('providerUid exceeds 128 characters');
   const currency = text(r.currency, 'currency').toUpperCase();
   if (currency !== '*' && !CURRENCIES.has(currency)) throw new Error('Invalid GCC currency');
@@ -242,6 +289,7 @@ export function validateRule(input: any): CommissionRule {
   if (payer === 'customer' && customerShareBps !== 10_000) throw new Error('Customer payer requires 10000 customerShareBps');
   if (payer === 'provider' && customerShareBps !== 0) throw new Error('Provider payer requires 0 customerShareBps');
   return {
+    ...(serviceKind ? { serviceKind } : {}),
     version,
     status: enumValue(r.status, ['draft', 'active', 'scheduled', 'retired'] as const, 'status'),
     effectiveFrom,
@@ -282,8 +330,50 @@ export function buildLegacyCatalog(platformFeeRate = 0.10): CommercialCatalog {
   };
 }
 
+/**
+ * Owner-approved source defaults for a first explicit persisted catalog.
+ * The untouched legacy rule remains the equipment fallback; the additional
+ * Saudi rules are separate immutable versions and are never written unless an
+ * owner/super-admin performs the existing initialization mutation.
+ */
+export function buildApprovedCommercialCatalog(platformFeeRate = 0.10): CommercialCatalog {
+  const legacy = buildLegacyCatalog(platformFeeRate);
+  const base = legacy.rules[0];
+  const approved = [
+    {
+      ...base, serviceKind: 'equipment_rental' as const,
+      version: '10000000-0000-4000-8000-000000000010',
+      scope: { countryCode: 'SA', categoryId: null, providerUid: null }, currency: 'SAR',
+      percentageBps: APPROVED_COMMISSION_DEFAULTS.equipment_rental.percentageBps,
+      notes: 'Owner-approved Saudi equipment rental commission: 10% provider-paid.',
+    },
+    {
+      ...base, serviceKind: 'operator' as const,
+      version: '10000000-0000-4000-8000-000000000011',
+      scope: { countryCode: 'SA', categoryId: null, providerUid: null }, currency: 'SAR',
+      percentageBps: APPROVED_COMMISSION_DEFAULTS.operator.percentageBps,
+      notes: 'Owner-approved Saudi operator service commission: 8% service-provider-paid.',
+    },
+    {
+      ...base, serviceKind: 'transporter' as const,
+      version: '10000000-0000-4000-8000-000000000012',
+      scope: { countryCode: 'SA', categoryId: null, providerUid: null }, currency: 'SAR',
+      percentageBps: APPROVED_COMMISSION_DEFAULTS.transporter.percentageBps,
+      notes: 'Owner-approved Saudi transporter service commission: 8% transporter-paid.',
+    },
+  ].map(validateRule);
+  return { revision: legacy.revision, rules: [legacy.rules[0], ...approved] };
+}
+
+export function commercialServiceKind(value: Pick<CommissionRule, 'serviceKind'> | Pick<CommercialSnapshot, 'serviceKind'>): CommercialServiceKind {
+  return value.serviceKind ?? 'equipment_rental';
+}
+
 type ResolutionInput = {
+  serviceKind?: CommercialServiceKind;
   countryCode: string; categoryId: string; providerUid: string; currency: string; at?: string;
+  /** Internal historical resolution for an already accepted quote. */
+  historical?: boolean;
 };
 
 export function resolveRule(catalog: CommercialCatalog, input: ResolutionInput): CommissionRule {
@@ -291,6 +381,7 @@ export function resolveRule(catalog: CommercialCatalog, input: ResolutionInput):
   const country = input.countryCode.trim().toUpperCase();
   const category = input.categoryId.trim();
   const provider = input.providerUid.trim();
+  const serviceKind = input.serviceKind ?? 'equipment_rental';
   const currency = input.currency.trim().toUpperCase();
   if (!COUNTRIES.has(country)) throw new Error('Invalid GCC countryCode');
   if (!CATEGORIES.has(category)) throw new Error('Invalid canonical categoryId');
@@ -300,7 +391,8 @@ export function resolveRule(catalog: CommercialCatalog, input: ResolutionInput):
   if (GCC_COUNTRIES.find(c => c.code === country)?.currency !== currency) throw new Error('Context currency does not match country');
   const at = input.at === undefined ? new Date().toISOString() : iso(input.at, 'at');
   const candidates = catalog.rules.map(validateRule).filter(r =>
-    (r.status === 'active' || r.status === 'scheduled') &&
+    commercialServiceKind(r) === serviceKind &&
+    (r.status === 'active' || r.status === 'scheduled' || input.historical === true && r.status === 'retired' && r.effectiveTo !== null) &&
     r.effectiveFrom <= at && (r.effectiveTo === null || at < r.effectiveTo) &&
     (r.currency === currency || r.currency === '*') &&
     (!r.scope.providerUid || r.scope.providerUid === provider) &&
@@ -323,6 +415,7 @@ export function resolveRule(catalog: CommercialCatalog, input: ResolutionInput):
 }
 
 type CalculationInput = {
+  serviceKind?: CommercialServiceKind;
   baseAmountMinor: number;
   countryCode: string;
   categoryId: string;
@@ -340,6 +433,8 @@ export function calculateCommercial(ruleInput: CommissionRule, input: Calculatio
   const country = text(input.countryCode, 'countryCode').toUpperCase();
   const category = text(input.categoryId, 'categoryId');
   const provider = text(input.providerUid, 'providerUid');
+  const serviceKind = input.serviceKind ?? commercialServiceKind(rule);
+  if (commercialServiceKind(rule) !== serviceKind) throw new Error('Rule service kind does not match');
   if (!COUNTRIES.has(country)) throw new Error('Invalid GCC countryCode');
   if (!CATEGORIES.has(category)) throw new Error('Invalid canonical categoryId');
   if (provider.length > 128) throw new Error('providerUid exceeds 128 characters');
@@ -365,6 +460,7 @@ export function calculateCommercial(ruleInput: CommissionRule, input: Calculatio
   const customerPayable = BigInt(base) + customerFee + BigInt(tax ?? 0);
   const calculatedAt = input.calculatedAt === undefined ? new Date().toISOString() : iso(input.calculatedAt, 'calculatedAt');
   const snapshot: CommercialSnapshot = {
+    ...(rule.serviceKind || input.serviceKind ? { serviceKind } : {}),
     ruleVersion: rule.version, ruleStatus: rule.status,
     ruleEffectiveFrom: rule.effectiveFrom, ruleEffectiveTo: rule.effectiveTo,
     ruleCurrency: rule.currency, ruleNotes: rule.notes, mode: rule.mode,
@@ -383,8 +479,119 @@ export function calculateCommercial(ruleInput: CommissionRule, input: Calculatio
   return snapshot;
 }
 
+/**
+ * Proves that a locked payment snapshot came from a persisted published rule
+ * that was effective when the price was locked. Current retirement never
+ * reprices or invalidates the historical snapshot; drafts can never qualify.
+ */
+export function approvedCommercialSnapshot(
+  snapshotInput: unknown,
+  catalog: CommercialCatalog,
+  expectedServiceKind: CommercialServiceKind,
+): CommercialSnapshot | null {
+  const candidate = snapshotInput as Partial<CommercialSnapshot> | null;
+  const currency = typeof candidate?.currency === 'string' ? candidate.currency : '';
+  const snapshot = verifiedStoredCommercial(snapshotInput, currency);
+  if (!snapshot || commercialServiceKind(snapshot) !== expectedServiceKind ||
+      !['active', 'scheduled', 'retired'].includes(snapshot.ruleStatus) || !UTC.test(snapshot.calculatedAt)) return null;
+  let rules: CommissionRule[];
+  try { rules = catalog.rules.map(validateRule); } catch { return null; }
+  const rule = rules.find(item => item.version === snapshot.ruleVersion && commercialServiceKind(item) === expectedServiceKind);
+  if (!rule || rule.status === 'draft' || rule.effectiveFrom > snapshot.calculatedAt ||
+      rule.effectiveTo !== null && snapshot.calculatedAt >= rule.effectiveTo ||
+      rule.status === 'retired' && rule.effectiveTo === null) return null;
+  let recomputed: CommercialSnapshot;
+  try {
+    recomputed = calculateCommercial(rule, {
+      serviceKind: expectedServiceKind,
+      baseAmountMinor: snapshot.baseAmountMinor,
+      countryCode: snapshot.countryCode,
+      categoryId: snapshot.categoryId,
+      providerUid: snapshot.providerUid,
+      currency: snapshot.currency,
+      calculatedAt: snapshot.calculatedAt,
+      ...(snapshot.taxAmountMinor === null ? {} : { taxAmountMinor: snapshot.taxAmountMinor }),
+      ...(snapshot.taxReference === undefined ? {} : { taxReference: snapshot.taxReference }),
+      gatewayFeeMinor: snapshot.gatewayFeeMinor,
+    });
+  } catch { return null; }
+  const fields = [
+    'serviceKind', 'ruleVersion', 'mode', 'percentageBps', 'fixedAmountMinor', 'minimumFeeMinor',
+    'maximumFeeMinor', 'payer', 'customerShareBps', 'baseAmountMinor', 'platformFeeMinor',
+    'customerFeeMinor', 'providerFeeMinor', 'providerReceivableMinor', 'customerPayableMinor',
+    'taxAmountMinor', 'gatewayFeeMinor', 'currency', 'countryCode', 'categoryId', 'providerUid',
+    'calculatedAt', 'taxReference',
+  ] as const;
+  const equivalent = fields.every(field => {
+    if (field === 'serviceKind') return commercialServiceKind(recomputed) === commercialServiceKind(snapshot);
+    return recomputed[field] === snapshot[field];
+  });
+  return equivalent && recomputed.scope.countryCode === snapshot.scope?.countryCode &&
+    recomputed.scope.categoryId === snapshot.scope?.categoryId && recomputed.scope.providerUid === snapshot.scope?.providerUid
+    ? snapshot : null;
+}
+
+export function calculateProfitabilityPreview(
+  snapshotInput: CommercialSnapshot,
+  input: ProfitabilityInput,
+): ProfitabilityPreview {
+  const snapshot = verifiedStoredCommercial(snapshotInput, snapshotInput.currency);
+  if (!snapshot) throw new Error('Invalid commercial snapshot for profitability preview');
+  const cost = (amount: number | null, evidence: CostEvidence, label: string) => {
+    if (!['manual_estimate', 'unknown'].includes(evidence)) throw new Error(`Invalid ${label} evidence`);
+    if (evidence === 'unknown') {
+      if (amount !== null) throw new Error(`${label} must be null when unknown`);
+      return { amountMinor: null, evidence };
+    }
+    return { amountMinor: integer(amount, label), evidence };
+  };
+  const processingCost = cost(input.processingCostMinor, input.processingCostEvidence, 'processingCostMinor');
+  const operationalCost = cost(input.operationalCostMinor, input.operationalCostEvidence, 'operationalCostMinor');
+  const treatment = enumValue(input.commissionVatTreatment,
+    ['unknown', 'not_applicable', 'exclusive', 'inclusive'] as const, 'commissionVatTreatment');
+  let commissionVatAmount: number | null = null;
+  let commissionVatEvidence: CostEvidence = 'unknown';
+  let rateBps: number | null = null;
+  if (treatment === 'not_applicable') {
+    if (input.commissionVatRateBps !== null) throw new Error('VAT rate must be null when not applicable');
+    commissionVatAmount = 0;
+    commissionVatEvidence = 'manual_estimate';
+  } else if (treatment === 'exclusive' || treatment === 'inclusive') {
+    rateBps = integer(input.commissionVatRateBps, 'commissionVatRateBps', 1, 9_999);
+    const fee = BigInt(snapshot.platformFeeMinor);
+    commissionVatAmount = treatment === 'exclusive'
+      ? safe(halfUp(fee * BigInt(rateBps), 10_000n), 'commission VAT')
+      : safe(fee - halfUp(fee * 10_000n, BigInt(10_000 + rateBps)), 'commission VAT');
+    commissionVatEvidence = 'manual_estimate';
+  } else if (input.commissionVatRateBps !== null) {
+    throw new Error('VAT rate must be null when treatment is unknown');
+  }
+  const unknown = processingCost.amountMinor === null || operationalCost.amountMinor === null || commissionVatAmount === null;
+  const contribution = unknown ? null : safeSigned(
+    BigInt(snapshot.platformFeeMinor) - BigInt(processingCost.amountMinor!)
+      - BigInt(operationalCost.amountMinor!) - BigInt(commissionVatAmount!),
+    'estimated contribution',
+  );
+  return {
+    currency: snapshot.currency,
+    commissionRevenueMinor: snapshot.platformFeeMinor,
+    processingCost,
+    operationalCost,
+    commissionVat: {
+      amountMinor: commissionVatAmount,
+      evidence: commissionVatEvidence,
+      treatment,
+      rateBps,
+    },
+    estimatedContributionMinor: contribution,
+    warning: unknown ? 'unknown_costs' : contribution! < 0 ? 'negative_contribution' : null,
+    auditedNetProfit: false,
+  };
+}
+
 function sameSlot(a: CommissionRule, b: CommissionRule): boolean {
-  return a.currency === b.currency
+  return commercialServiceKind(a) === commercialServiceKind(b)
+    && a.currency === b.currency
     && a.scope.countryCode === b.scope.countryCode
     && a.scope.categoryId === b.scope.categoryId
     && a.scope.providerUid === b.scope.providerUid;
@@ -402,8 +609,9 @@ function cloneRule(r: CommissionRule): CommissionRule {
 function operationalStatus(r: CommissionRule, now: string): CommissionStatus {
   return r.status === 'scheduled' && r.effectiveFrom <= now ? 'active' : r.status;
 }
-function hasContinuousGlobalFallback(rules: CommissionRule[], currency: string, now: string): boolean {
+function hasContinuousGlobalFallback(rules: CommissionRule[], currency: string, now: string, serviceKind: CommercialServiceKind): boolean {
   const intervals = rules.filter(r =>
+    commercialServiceKind(r) === serviceKind &&
     !r.scope.countryCode && !r.scope.categoryId && !r.scope.providerUid
     && (operationalStatus(r, now) === 'active' || r.status === 'scheduled')
     && (r.currency === '*' || r.currency === currency)
@@ -454,7 +662,7 @@ export function applyCommercialChange(
     version = generatedVersion(actor, now, revision + 1);
     if (rules.some(r => r.version === version)) throw new Error('Generated commission version already exists');
     after = validateRule({
-      ...terms, version, status: 'draft', effectiveFrom: from,
+      ...terms, serviceKind: terms.serviceKind ?? 'equipment_rental', version, status: 'draft', effectiveFrom: from,
       effectiveTo: terms.effectiveTo ?? null,
       createdAt: now, createdBy: actor, updatedAt: now, updatedBy: actor,
       notes: terms.notes ?? '',
@@ -514,12 +722,12 @@ export function applyCommercialChange(
       changes.push({ before: cloneRule(before), after: cloneRule(after) });
     }
   }
-  const touchesGlobal = changes.some(change => {
+  const touchedGlobalKinds = new Set(changes.flatMap(change => {
     const r = change.after ?? change.before;
-    return !!r && !r.scope.countryCode && !r.scope.categoryId && !r.scope.providerUid
-      && (action === 'publish' || action === 'retire');
-  });
-  if (touchesGlobal && [...CURRENCIES].some(currency => !hasContinuousGlobalFallback(rules, currency, now))) {
+    return r && !r.scope.countryCode && !r.scope.categoryId && !r.scope.providerUid
+      && (action === 'publish' || action === 'retire') ? [commercialServiceKind(r)] : [];
+  }));
+  if ([...touchedGlobalKinds].some(kind => [...CURRENCIES].some(currency => !hasContinuousGlobalFallback(rules, currency, now, kind)))) {
     throw new Error('Change would create a gap in global fallback continuity');
   }
   const next = { revision: revision + 1, rules };

@@ -1,12 +1,48 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  applyCommercialChange, buildLegacyCatalog, calculateCommercial, majorToMinor,
-  minorToMajor, resolveRule, validateRule,
+  approvedCommercialSnapshot, applyCommercialChange, buildApprovedCommercialCatalog, buildLegacyCatalog, calculateCommercial,
+  calculateProfitabilityPreview, majorToMinor, minorToMajor, resolveRule, validateRule,
 } from './commercial';
 
 const NOW = '2026-01-01T00:00:00.000Z';
 
 describe('authoritative commercial engine', () => {
+  test('defines the three owner-approved Saudi provider-paid defaults without a 20 percent default', () => {
+    const catalog = buildApprovedCommercialCatalog();
+    const contexts = [
+      ['equipment_rental', 1000], ['operator', 800], ['transporter', 800],
+    ] as const;
+    for (const [serviceKind, percentageBps] of contexts) {
+      const rule = resolveRule(catalog, {
+        serviceKind, countryCode: 'SA', categoryId: 'other', providerUid: 'p1', currency: 'SAR', at: NOW,
+      });
+      expect(rule.percentageBps).toBe(percentageBps);
+      expect(rule.payer).toBe('provider');
+      expect(rule.scope.countryCode).toBe('SA');
+      expect(rule.currency).toBe('SAR');
+    }
+    expect(catalog.rules.some(rule => rule.percentageBps === 2000)).toBe(false);
+  });
+
+  test('isolates service kinds while preserving equipment provider/category/country precedence', () => {
+    const catalog = buildApprovedCommercialCatalog();
+    const base = catalog.rules.find(rule => rule.serviceKind === 'equipment_rental')!;
+    const providerOverride = validateRule({
+      ...base, version: '10000000-0000-4000-8000-000000000099', currency: 'SAR', percentageBps: 650,
+      scope: { countryCode: null, categoryId: null, providerUid: 'p1' },
+    });
+    const withOverride = { ...catalog, rules: [...catalog.rules, providerOverride] };
+    expect(resolveRule(withOverride, {
+      serviceKind: 'equipment_rental', countryCode: 'SA', categoryId: 'cranes', providerUid: 'p1', currency: 'SAR', at: NOW,
+    }).percentageBps).toBe(650);
+    expect(resolveRule(withOverride, {
+      serviceKind: 'operator', countryCode: 'SA', categoryId: 'other', providerUid: 'p1', currency: 'SAR', at: NOW,
+    }).percentageBps).toBe(800);
+    expect(resolveRule(buildLegacyCatalog(), {
+      countryCode: 'AE', categoryId: 'cranes', providerUid: 'p1', currency: 'AED', at: NOW,
+    }).version).toBe('legacy-commission-v1');
+  });
+
   test('legacy rule remains provider-paid 10 percent with no assumed tax', () => {
     const catalog = buildLegacyCatalog();
     const rule = resolveRule(catalog, {
@@ -238,6 +274,80 @@ describe('authoritative commercial engine', () => {
       fixedAmountMinor: 5, minimumFeeMinor: 20,
     });
     expect(calculateCommercial(combined, context).platformFeeMinor).toBe(20);
+  });
+
+  test('keeps locked old pricing immutable when a later effective rule is published', () => {
+    const catalog = buildApprovedCommercialCatalog();
+    const oldRule = resolveRule(catalog, {
+      serviceKind: 'equipment_rental', countryCode: 'SA', categoryId: 'cranes', providerUid: 'p', currency: 'SAR', at: NOW,
+    });
+    const oldSnapshot = calculateCommercial(oldRule, {
+      serviceKind: 'equipment_rental', baseAmountMinor: 100_000, countryCode: 'SA', categoryId: 'cranes',
+      providerUid: 'p', currency: 'SAR', calculatedAt: NOW,
+    });
+    const start = '2026-02-01T00:00:00.000Z';
+    const created = applyCommercialChange(catalog, {
+      action: 'create', expectedRevision: 1, reason: 'Owner-approved future rate', rule: {
+        serviceKind: 'equipment_rental', effectiveFrom: start, effectiveTo: null, notes: 'future 12 percent',
+        mode: 'percentage', percentageBps: 1200, fixedAmountMinor: 0, minimumFeeMinor: 0, maximumFeeMinor: null,
+        payer: 'provider', customerShareBps: 0, scope: { countryCode: 'SA', categoryId: null, providerUid: null }, currency: 'SAR',
+      },
+    }, 'owner', NOW);
+    const published = applyCommercialChange(created.catalog, {
+      action: 'publish', expectedRevision: 2, reason: 'Scheduled approval', version: created.audit.version,
+    }, 'owner', NOW);
+    expect(resolveRule(published.catalog, {
+      serviceKind: 'equipment_rental', countryCode: 'SA', categoryId: 'cranes', providerUid: 'p', currency: 'SAR', at: '2026-01-15T00:00:00.000Z',
+    }).percentageBps).toBe(1000);
+    expect(resolveRule(published.catalog, {
+      serviceKind: 'equipment_rental', countryCode: 'SA', categoryId: 'cranes', providerUid: 'p', currency: 'SAR', at: start,
+    }).percentageBps).toBe(1200);
+    expect(oldSnapshot.platformFeeMinor).toBe(10_000);
+    expect(oldSnapshot.providerReceivableMinor).toBe(90_000);
+  });
+
+  test('keeps an accepted service quote valid after its exact published rule is retired', () => {
+    const initial = buildApprovedCommercialCatalog();
+    const rule = resolveRule(initial, {
+      serviceKind: 'operator', countryCode: 'SA', categoryId: 'other', providerUid: 'driver-1', currency: 'SAR', at: NOW,
+    });
+    const snapshot = calculateCommercial(rule, {
+      serviceKind: 'operator', baseAmountMinor: 100_000, countryCode: 'SA', categoryId: 'other',
+      providerUid: 'driver-1', currency: 'SAR', calculatedAt: NOW,
+    });
+    const later = '2026-01-02T00:00:00.000Z';
+    const retired = applyCommercialChange(initial, {
+      action: 'retire', expectedRevision: 1, reason: 'Owner retires the service rate', version: rule.version,
+    }, 'owner', later).catalog;
+    const historicalRule = retired.rules.find(item => item.version === rule.version)!;
+    const historicalSnapshot = calculateCommercial(historicalRule, {
+      serviceKind: 'operator', baseAmountMinor: 100_000, countryCode: 'SA', categoryId: 'other',
+      providerUid: 'driver-1', currency: 'SAR', calculatedAt: NOW,
+    });
+    expect(historicalSnapshot.ruleStatus).toBe('retired');
+    expect(approvedCommercialSnapshot(historicalSnapshot, retired, 'operator')).not.toBe(null);
+    expect(approvedCommercialSnapshot(snapshot, retired, 'operator')).not.toBe(null);
+  });
+
+  test('keeps profitability costs distinct and warns for unknown or negative contribution', () => {
+    const rule = buildLegacyCatalog().rules[0];
+    const snapshot = calculateCommercial(rule, {
+      baseAmountMinor: 10_000, countryCode: 'SA', categoryId: 'other', providerUid: 'p', currency: 'SAR', calculatedAt: NOW,
+    });
+    const unknown = calculateProfitabilityPreview(snapshot, {
+      processingCostMinor: null, processingCostEvidence: 'unknown', operationalCostMinor: 100,
+      operationalCostEvidence: 'manual_estimate', commissionVatTreatment: 'unknown', commissionVatRateBps: null,
+    });
+    expect(unknown.warning).toBe('unknown_costs');
+    expect(unknown.estimatedContributionMinor).toBe(null);
+    const negative = calculateProfitabilityPreview(snapshot, {
+      processingCostMinor: 600, processingCostEvidence: 'manual_estimate', operationalCostMinor: 500,
+      operationalCostEvidence: 'manual_estimate', commissionVatTreatment: 'not_applicable', commissionVatRateBps: null,
+    });
+    expect(negative.commissionRevenueMinor).toBe(1000);
+    expect(negative.estimatedContributionMinor).toBe(-100);
+    expect(negative.warning).toBe('negative_contribution');
+    expect(negative.auditedNetProfit).toBe(false);
   });
 
   test('rejects conflicting schedules and finite global fallback gaps', () => {

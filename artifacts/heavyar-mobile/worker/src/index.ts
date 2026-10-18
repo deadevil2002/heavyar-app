@@ -1,5 +1,5 @@
 import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, normalizeTapEnvironment, tapCredentials, tapCustomerFromAccount, type PaymentQuote, type PaymentState, type ProviderPayment, type TapEnvironment } from './payment';
-import { calculateCommercial, majorToMinor, minorToMajor, resolveRule, verifiedStoredCommercial, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
+import { calculateCommercial, commercialServiceKind, majorToMinor, minorToMajor, resolveRule, verifiedStoredCommercial, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
 import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, processEmailVerificationReminderJobs, requireAdmin, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
 import { allowedNotificationEvent, defaultNotificationPreferences, notificationFields, notificationWrite, type NotificationEvent, type NotificationCategory, NOTIFICATION_CATEGORIES, isCriticalCategory } from './notifications';
@@ -1565,7 +1565,7 @@ function commercialContext(r: any, e: any) {
   // `other` is the canonical bucket for pre-category legacy listings.
   const categoryId = String(e?.category || r?.categoryId || 'other');
   const providerUid = String(e?.ownerUid || r?.providerUid || '');
-  return { currency, countryCode, categoryId, providerUid };
+  return { serviceKind: 'equipment_rental' as const, currency, countryCode, categoryId, providerUid };
 }
 type LockedCommercialSnapshot = CommercialSnapshot & {
   ruleEffectiveFrom?: string;
@@ -1629,6 +1629,7 @@ function lockedRule(snapshot: LockedCommercialSnapshot): CommissionRule {
     err('Locked commercial rule metadata unavailable');
   }
   return {
+    ...(snapshot.serviceKind ? { serviceKind: snapshot.serviceKind } : {}),
     version: snapshot.ruleVersion, status: snapshot.ruleStatus,
     effectiveFrom: snapshot.ruleEffectiveFrom || '1970-01-01T00:00:00.000Z',
     effectiveTo: snapshot.ruleEffectiveTo ?? null,
@@ -3106,7 +3107,7 @@ function v2FinalPaymentSnapshot(r: any, requestId?: string): CommercialSnapshot 
   const expectedId = requestId ? `rental-v2:${requestId}:final` : snapshotId;
   const handoff = r?.paymentHandoff;
   const lockedFields = [
-    'ruleVersion', 'ruleStatus', 'mode', 'percentageBps', 'fixedAmountMinor', 'minimumFeeMinor',
+    'serviceKind', 'ruleVersion', 'ruleStatus', 'mode', 'percentageBps', 'fixedAmountMinor', 'minimumFeeMinor',
     'maximumFeeMinor', 'payer', 'customerShareBps', 'currency', 'countryCode', 'categoryId',
     'providerUid', 'taxReference', 'taxRateBps', 'ruleEffectiveFrom', 'ruleEffectiveTo',
     'ruleCreatedAt', 'ruleCreatedBy', 'ruleUpdatedAt', 'ruleUpdatedBy', 'ruleNotes',
@@ -3134,7 +3135,8 @@ function sameStoredCommercial(left: any, right: any): boolean {
     'calculatedAt', 'taxReference', 'taxRateBps', 'ruleEffectiveFrom', 'ruleEffectiveTo',
     'ruleCreatedAt', 'ruleCreatedBy', 'ruleUpdatedAt', 'ruleUpdatedBy', 'ruleNotes',
   ];
-  return !!left && !!right && fields.every(field => left[field] === right[field]) &&
+  return !!left && !!right && commercialServiceKind(left) === commercialServiceKind(right) &&
+    fields.every(field => left[field] === right[field]) &&
     left.scope?.countryCode === right.scope?.countryCode &&
     left.scope?.categoryId === right.scope?.categoryId &&
     left.scope?.providerUid === right.scope?.providerUid;
@@ -5750,11 +5752,12 @@ async function resolvePreServicePaymentContext(
   if (body.kind === 'equipment_rental') {
     const raw = await getRawDoc(env, 'equipmentRequests', body.sourceId), rental = raw?.data;
     if (!raw || !rental || rental.customerUid !== user.uid) throw new PreServicePaymentError('PAYMENT_ACTOR_NOT_AUTHORIZED');
-    const [equipment, customer, provider, destination] = await Promise.all([
+    const [equipment, customer, provider, destination, catalog] = await Promise.all([
       getDoc(env, 'equipment', String(rental.equipmentId || '')),
       getDoc(env, 'users', String(rental.customerUid || '')),
       getDoc(env, 'users', String(rental.providerUid || '')),
       getDoc(env, 'tapProviderDestinations', String(rental.providerUid || '')),
+      commercialCatalog(env),
     ]);
     if (!equipment || String(equipment.ownerUid || '') !== String(rental.providerUid || '') ||
         !customer || !provider || customer.role !== 'customer' ||
@@ -5770,6 +5773,7 @@ async function resolvePreServicePaymentContext(
       actorUid: user.uid,
       environment,
       destination,
+      commercialCatalog: catalog,
       now,
       allowExistingAttempt,
     });
@@ -5788,23 +5792,49 @@ async function resolvePreServicePaymentContext(
   }
   const providerUid = stored.aggregate.snapshot.providerPrincipal.kind === 'individual'
     ? stored.aggregate.snapshot.providerPrincipal.providerUid : '';
-  const [customer, provider, destination, approvedTerms] = await Promise.all([
+  const [customer, provider, destination, approvedPolicy, catalog] = await Promise.all([
     getDoc(env, 'users', stored.aggregate.snapshot.customerUid),
     getDoc(env, 'users', providerUid),
     getDoc(env, 'tapProviderDestinations', providerUid),
     getDoc(env, 'servicePaymentPolicies', stored.aggregate.snapshot.serviceKind),
+    commercialCatalog(env),
   ]);
   if (!customer || !provider || customer.role !== 'customer' || provider.role !== 'driver' ||
       isSecuritySuspended(customer) || isSecuritySuspended(provider) ||
       isStoreReviewAccount(customer) || isStoreReviewAccount(provider)) {
     throw new PreServicePaymentError('PAYMENT_ACCOUNT_NOT_AUTHORIZED');
   }
+  const quoteSnapshot = stored.aggregate.snapshot.quoteSnapshot;
+  const pricingAt = String(quoteSnapshot.createdAt || stored.aggregate.snapshot.createdAt || now);
+  let approvedTerms: ApprovedServiceCommercialTerms | null = null;
+  if (approvedPolicy?.approvedForProduction === true &&
+      approvedPolicy.serviceKind === stored.aggregate.snapshot.serviceKind &&
+      approvedPolicy.legalTermsVersion === (stored.aggregate.snapshot.terms as any).version) {
+    const serviceKind = stored.aggregate.snapshot.serviceKind;
+    const rule = resolveRule(catalog, {
+      serviceKind, countryCode: 'SA', categoryId: 'other', providerUid, currency: 'SAR', at: pricingAt, historical: true,
+    });
+    const tax = taxMinor(env, quoteSnapshot.quotedServicePriceMinor, 'SAR');
+    const commercialSnapshot = calculateCommercial(rule, {
+      serviceKind, countryCode: 'SA', categoryId: 'other', providerUid, currency: 'SAR',
+      baseAmountMinor: quoteSnapshot.quotedServicePriceMinor, calculatedAt: pricingAt,
+      ...(tax.amount === undefined ? {} : { taxAmountMinor: tax.amount, taxReference: tax.reference }),
+    });
+    approvedTerms = {
+      approvalId: `commercial:${rule.version}`,
+      serviceKind,
+      approvedForProduction: true,
+      legalTermsVersion: approvedPolicy.legalTermsVersion,
+      commercialSnapshot,
+    };
+  }
   const plan = buildServicePreServicePaymentPlan({
     contract: stored.aggregate,
     actorUid: user.uid,
     environment,
     destination,
-    approvedTerms: approvedTerms as ApprovedServiceCommercialTerms | null,
+    approvedTerms,
+    commercialCatalog: catalog,
     now,
   });
   // Service payment preparation shares the same canonical resolver, but an

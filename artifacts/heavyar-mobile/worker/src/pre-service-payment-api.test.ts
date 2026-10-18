@@ -63,6 +63,7 @@ describe('Launch Packet 2 production activation boundary', () => {
       if (collection === 'equipment' && id === 'equipment_1') return { ownerUid: 'different-provider' };
       if (collection === 'users' && id === 'customer-pre-service-0001') return { role: 'customer', isActive: true, accountStatus: 'active' };
       if (collection === 'users' && id === 'provider-pre-service-0001') return { role: 'provider', isActive: true, accountStatus: 'active' };
+      if (collection === 'commercialSettings' && id === 'catalog') return buildLegacyCatalog();
       return null;
     });
     const response = await worker.fetch(request({ kind: 'equipment_rental', sourceId: 'rental_1' }), {
@@ -135,6 +136,7 @@ function destination() {
 
 function baseFirestore(source = rental(), payment?: any, storedQuote?: any) {
   return (collection: string, id: string) => {
+    if (collection === 'commercialSettings' && id === 'catalog') return buildLegacyCatalog();
     if (collection === 'paymentGateways' && id === 'tap') return { enabled: true, environment: 'TEST' };
     if (collection === 'equipmentRequests' && id === REQUEST_ID) return source;
     if (collection === 'equipment' && id === 'equipment_1') return { ownerUid: PROVIDER, currency: 'SAR', nativeCurrency: 'SAR' };
@@ -163,7 +165,7 @@ function persistedAssociationFixture(sourceOverrides: Record<string, unknown> = 
   const source = rental({ paymentStatus: 'pending_payment', paymentState: 'pending', paymentId: 'chg_pre_1', ...sourceOverrides });
   const plan = buildRentalPreServicePaymentPlan({
     requestId: REQUEST_ID, request: source, actorUid: CUSTOMER, environment: 'TEST', destination: destination(),
-    now: '2026-10-18T12:00:00.000Z', allowExistingAttempt: true,
+    commercialCatalog: buildLegacyCatalog(), now: '2026-10-18T12:00:00.000Z', allowExistingAttempt: true,
   });
   const association = preServicePaymentAssociation(plan, 'TEST');
   const quote = quoteFromCommercial(plan.commercialSnapshot, REQUEST_ID, Date.parse('2026-10-18T12:00:00.000Z'));

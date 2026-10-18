@@ -13,26 +13,37 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import { userErrorMessage } from '@/lib/error-messages';
-import { AlertCircle, Calculator, Plus, Loader2, Search, CalendarClock, History, Check } from 'lucide-react';
+import { AlertTriangle, Calculator, Plus, Loader2, Search, History, Check } from 'lucide-react';
 import { CommercialBreakdown } from '@/components/commercial-breakdown';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { parseDecimalToMinor } from '@/lib/currency-utils';
 import { extractCreatePayload } from '@/lib/commercial-form';
 
-const intendedTwentyPercentDraft = (): Partial<CommercialRule> => ({
+type ServiceKind = 'equipment_rental' | 'operator' | 'transporter';
+
+const approvedDefaults = {
+  equipment_rental: { percentageBps: 1000, payer: 'provider' as const, countryCode: 'SA' as const, currency: 'SAR' as const },
+  operator: { percentageBps: 800, payer: 'provider' as const, countryCode: 'SA' as const, currency: 'SAR' as const },
+  transporter: { percentageBps: 800, payer: 'provider' as const, countryCode: 'SA' as const, currency: 'SAR' as const },
+};
+
+const approvedDraft = (serviceKind: ServiceKind): Partial<CommercialRule> => ({
+  serviceKind,
   mode: 'percentage',
   payer: 'provider',
-  currency: '*',
-  percentageBps: 2000,
+  currency: 'SAR',
+  percentageBps: serviceKind === 'equipment_rental' ? 1000 : 800,
   fixedAmountMinor: 0,
   minimumFeeMinor: 0,
   maximumFeeMinor: null,
   customerShareBps: 0,
-  scope: { countryCode: null, categoryId: null, providerUid: null },
+  scope: { countryCode: 'SA', categoryId: null, providerUid: null },
   effectiveFrom: '',
   effectiveTo: null,
-  notes: 'HEAVYAR 20% provider-paid platform commission',
+  notes: serviceKind === 'equipment_rental'
+    ? 'HEAVYAR equipment rental: 10% provider-paid'
+    : `HEAVYAR ${serviceKind} service: 8% service-provider-paid`,
 });
 
 // Provider selector using useProviders
@@ -94,10 +105,15 @@ export default function Fees() {
 
   // Preview form state
   const [simBaseAmount, setSimBaseAmount] = useState('100.00');
+  const [simServiceKind, setSimServiceKind] = useState<ServiceKind>('equipment_rental');
   const [simCurrency, setSimCurrency] = useState('SAR');
   const [simCountry, setSimCountry] = useState('');
   const [simCategory, setSimCategory] = useState<string>('');
   const [simProvider, setSimProvider] = useState<string | null>(null);
+  const [processingCost, setProcessingCost] = useState('');
+  const [operationalCost, setOperationalCost] = useState('');
+  const [commissionVatTreatment, setCommissionVatTreatment] = useState<'unknown' | 'not_applicable' | 'exclusive' | 'inclusive'>('unknown');
+  const [commissionVatRate, setCommissionVatRate] = useState('15');
 
   // Initialize defaults based on loaded data
   useEffect(() => {
@@ -118,7 +134,7 @@ export default function Fees() {
 
   // Draft Rule form state
   const [isImmediate, setIsImmediate] = useState(true);
-  const [draftRule, setDraftRule] = useState<Partial<CommercialRule>>(intendedTwentyPercentDraft);
+  const [draftRule, setDraftRule] = useState<Partial<CommercialRule>>(() => approvedDraft('equipment_rental'));
 
   const lastRevision = useRef<number | undefined>(undefined);
 
@@ -129,11 +145,21 @@ export default function Fees() {
       if (minorAmount <= 0) throw new Error(t('مبلغ غير صالح', 'Invalid amount'));
       
       await previewSnapshot({
+        serviceKind: simServiceKind,
         baseAmountMinor: minorAmount,
         currency: simCurrency,
         countryCode: simCountry || undefined,
-        categoryId: simCategory || undefined,
+        categoryId: simServiceKind === 'equipment_rental' ? simCategory || undefined : 'other',
         providerUid: simProvider || undefined,
+        profitability: {
+          processingCostMinor: processingCost ? parseDecimalToMinor(processingCost, is3Decimals) : null,
+          processingCostEvidence: processingCost ? 'manual_estimate' : 'unknown',
+          operationalCostMinor: operationalCost ? parseDecimalToMinor(operationalCost, is3Decimals) : null,
+          operationalCostEvidence: operationalCost ? 'manual_estimate' : 'unknown',
+          commissionVatTreatment,
+          commissionVatRateBps: ['exclusive', 'inclusive'].includes(commissionVatTreatment)
+            ? parseDecimalToMinor(commissionVatRate, false) : null,
+        },
       });
     } catch (e) {
       toast({ title: t('خطأ في المحاكاة', 'Simulation Error'), description: userErrorMessage(e, language), variant: 'destructive' });
@@ -179,10 +205,11 @@ export default function Fees() {
       const minorAmount = is3Decimals ? 100000 : 10000;
       
       const res = await previewDraft({
+        serviceKind: payloadRule.serviceKind,
         baseAmountMinor: minorAmount,
         currency: previewCurrency,
         countryCode: previewCountry,
-        categoryId: payloadRule.scope.categoryId || data.categories[0]?.id,
+        categoryId: payloadRule.serviceKind === 'equipment_rental' ? payloadRule.scope.categoryId || data.categories[0]?.id : 'other',
         providerUid: payloadRule.scope.providerUid || undefined,
         draftRule: payloadRule,
       });
@@ -247,6 +274,10 @@ export default function Fees() {
     return rule.payer === 'split' ? `${t('توزيع', 'Split')} (${(rule.customerShareBps! / 100).toFixed(2)}% ${t('عميل', 'Customer')})` : rule.payer === 'customer' ? t('العميل', 'Customer') : t('المزود', 'Provider');
   };
 
+  const serviceLabel = (kind: ServiceKind) => kind === 'equipment_rental'
+    ? t('تأجير المعدات', 'Equipment rental')
+    : kind === 'operator' ? t('خدمات المشغّل', 'Operator services') : t('خدمات النقل', 'Transporter services');
+
   const moneyLabel = (minor: number, currency: string) => {
     const digits = ['KWD', 'BHD', 'OMR'].includes(currency) ? 3 : 2;
     return `${(minor / 10 ** digits).toFixed(digits)}${currency === '*' ? '' : ` ${currency}`}`;
@@ -256,12 +287,14 @@ export default function Fees() {
     rule.mode !== 'percentage' ? moneyLabel(rule.fixedAmountMinor || 0, rule.currency) : '',
   ].filter(Boolean).join(' + ');
   const scopeLabel = (rule: CommercialRule) => [
+    serviceLabel(rule.serviceKind || 'equipment_rental'),
     data.countries.find(country => country.code === rule.scope.countryCode)?.[language === 'ar' ? 'nameAr' : 'nameEn'],
     data.categories.find(category => category.id === rule.scope.categoryId)?.[language === 'ar' ? 'nameAr' : 'nameEn'],
     rule.scope.providerUid ? `${t('المزود', 'Provider')}: ${rule.scope.providerUid}` : '',
   ].filter(Boolean).join(' / ') || t('عام', 'Global');
   const priorScopeRule = confirmOpen ? data.rules
     .filter(rule => rule.status === 'active' &&
+      (rule.serviceKind || 'equipment_rental') === (confirmOpen.rule.serviceKind || 'equipment_rental') &&
       (rule.currency === confirmOpen.rule.currency || rule.currency === '*') &&
       rule.scope.countryCode === confirmOpen.rule.scope.countryCode &&
       rule.scope.categoryId === confirmOpen.rule.scope.categoryId &&
@@ -295,12 +328,29 @@ export default function Fees() {
             {t('المحاكي', 'Simulator')}
           </Button>
           {data.canManage && (
-            <Button onClick={() => { setDraftRule(intendedTwentyPercentDraft()); setIsImmediate(true); setDraftReason(''); setCreateRuleOpen(true); }}>
+            <Button onClick={() => { setDraftRule(approvedDraft('equipment_rental')); setIsImmediate(true); setDraftReason(''); setCreateRuleOpen(true); }}>
               <Plus className="h-4 w-4 me-2" />
               {t('قاعدة جديدة', 'New Rule')}
             </Button>
           )}
         </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4" aria-label={t('فئات العمولات المعتمدة', 'Approved commission categories')}>
+        {(['equipment_rental', 'operator', 'transporter'] as const).map(kind => {
+          const approved = data.approvedDefaults?.[kind] || approvedDefaults[kind];
+          const configured = data.rules.find(rule => (rule.serviceKind || 'equipment_rental') === kind &&
+            ['active', 'scheduled'].includes(rule.status) && rule.scope.countryCode === 'SA' && rule.currency === 'SAR' &&
+            rule.percentageBps === approved.percentageBps && rule.payer === 'provider');
+          return <Card key={kind}>
+            <CardHeader className="pb-2"><CardTitle className="text-base">{serviceLabel(kind)}</CardTitle></CardHeader>
+            <CardContent className="space-y-2">
+              <div className="text-3xl font-bold tabular-nums">{(approved.percentageBps / 100).toFixed(0)}%</div>
+              <p className="text-sm text-muted-foreground">{t('يدفعها مقدم الخدمة · السعودية · SAR', 'Provider-paid · Saudi Arabia · SAR')}</p>
+              <Badge variant={configured ? 'default' : 'outline'}>{configured ? t('مهيأة في القواعد', 'Configured in rules') : t('قرار معتمد — يلزم حفظ القاعدة', 'Approved baseline — rule persistence required')}</Badge>
+            </CardContent>
+          </Card>;
+        })}
       </div>
 
       {activeTab === 'simulator' && (
@@ -311,6 +361,13 @@ export default function Fees() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2 col-span-2">
+                  <Label>{t('نوع الخدمة', 'Service category')}</Label>
+                  <Select value={simServiceKind} onValueChange={value => { setSimServiceKind(value as ServiceKind); setSimProvider(null); }}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>{(['equipment_rental', 'operator', 'transporter'] as const).map(kind => <SelectItem key={kind} value={kind}>{serviceLabel(kind)}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
                 <div className="space-y-2">
                   <Label>{t('المبلغ الأساسي', 'Base Amount')}</Label>
                   <Input type="number" step="0.01" value={simBaseAmount} onChange={e => setSimBaseAmount(e.target.value)} />
@@ -333,7 +390,7 @@ export default function Fees() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
+                {simServiceKind === 'equipment_rental' && <div className="space-y-2">
                   <Label>{t('التصنيف', 'Category')}</Label>
                   <Select value={simCategory} onValueChange={setSimCategory}>
                     <SelectTrigger><SelectValue placeholder={t('أي تصنيف', 'Any Category')} /></SelectTrigger>
@@ -341,11 +398,35 @@ export default function Fees() {
                       {data.categories.map(c => <SelectItem key={c.id} value={c.id}>{language === 'ar' ? c.nameAr : c.nameEn}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                </div>
-                <div className="space-y-2 col-span-2">
+                </div>}
+                {simServiceKind === 'equipment_rental' && <div className="space-y-2 col-span-2">
                   <Label>{t('المزود (لتجربة الاستثناءات)', 'Provider (for overrides)')}</Label>
                   <ProviderSelector value={simProvider} onChange={uid => setSimProvider(uid || null)} language={language} />
+                </div>}
+                <div className="space-y-2">
+                  <Label>{t('تكلفة معالجة الدفع (تقدير)', 'Payment processing cost (estimate)')}</Label>
+                  <Input inputMode="decimal" value={processingCost} onChange={event => setProcessingCost(event.target.value)} placeholder={t('غير معروفة', 'Unknown')} />
                 </div>
+                <div className="space-y-2">
+                  <Label>{t('التكلفة التشغيلية المنسوبة (تقدير)', 'Attributable operational cost (estimate)')}</Label>
+                  <Input inputMode="decimal" value={operationalCost} onChange={event => setOperationalCost(event.target.value)} placeholder={t('غير معروفة', 'Unknown')} />
+                </div>
+                <div className="space-y-2 col-span-2">
+                  <Label>{t('معالجة ضريبة عمولة المنصة', 'Platform commission VAT treatment')}</Label>
+                  <Select value={commissionVatTreatment} onValueChange={value => setCommissionVatTreatment(value as typeof commissionVatTreatment)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="unknown">{t('غير متحقق — يتطلب مراجعة مالية', 'Unknown — finance verification required')}</SelectItem>
+                      <SelectItem value="exclusive">{t('تقدير ضريبة مضافة على العمولة', 'Estimate VAT exclusive of commission')}</SelectItem>
+                      <SelectItem value="inclusive">{t('تقدير ضريبة متضمنة في العمولة', 'Estimate VAT included in commission')}</SelectItem>
+                      <SelectItem value="not_applicable">{t('افتراض عدم الانطباق', 'Assume not applicable')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {['exclusive', 'inclusive'].includes(commissionVatTreatment) && <div className="space-y-2 col-span-2">
+                  <Label>{t('نسبة الضريبة التقديرية (%)', 'Estimated VAT rate (%)')}</Label>
+                  <Input type="number" min="0.01" max="99.99" step="0.01" value={commissionVatRate} onChange={event => setCommissionVatRate(event.target.value)} />
+                </div>}
               </div>
               <Button className="w-full" onClick={handleSimulate} disabled={isPreviewing}>
                 {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin me-2" /> : <Calculator className="h-4 w-4 me-2" />}
@@ -368,6 +449,17 @@ export default function Fees() {
                     </CardContent>
                   </Card>
                 )}
+                {previewData.profitability && <Card className={previewData.profitability.warning ? 'border-amber-500/60' : ''}>
+                  <CardHeader className="pb-2"><CardTitle className="text-base">{t('مساهمة المعاملة التقديرية', 'Estimated transaction contribution')}</CardTitle></CardHeader>
+                  <CardContent className="space-y-2 text-sm">
+                    <div className="flex justify-between"><span>{t('إيراد العمولة', 'Commission revenue')}</span><span className="font-mono tabular-nums">{moneyLabel(previewData.profitability.commissionRevenueMinor, previewData.profitability.currency)}</span></div>
+                    <div className="flex justify-between"><span>{t('معالجة الدفع — تقدير يدوي', 'Payment processing — manual estimate')}</span><span className="font-mono tabular-nums">{previewData.profitability.processingCost.amountMinor == null ? t('غير معروف', 'Unknown') : moneyLabel(previewData.profitability.processingCost.amountMinor, previewData.profitability.currency)}</span></div>
+                    <div className="flex justify-between"><span>{t('ضريبة العمولة — معالجة تقديرية', 'Commission VAT — estimated treatment')}</span><span className="font-mono tabular-nums">{previewData.profitability.commissionVat.amountMinor == null ? t('غير معروف', 'Unknown') : moneyLabel(previewData.profitability.commissionVat.amountMinor, previewData.profitability.currency)}</span></div>
+                    <div className="flex justify-between"><span>{t('تكلفة تشغيلية — تقدير يدوي', 'Operational cost — manual estimate')}</span><span className="font-mono tabular-nums">{previewData.profitability.operationalCost.amountMinor == null ? t('غير معروف', 'Unknown') : moneyLabel(previewData.profitability.operationalCost.amountMinor, previewData.profitability.currency)}</span></div>
+                    <div className="flex justify-between border-t pt-2 font-semibold"><span>{t('المساهمة التقديرية (ليست صافي ربح مدقق)', 'Estimated contribution (not audited net profit)')}</span><span className="font-mono tabular-nums">{previewData.profitability.estimatedContributionMinor == null ? '—' : moneyLabel(previewData.profitability.estimatedContributionMinor, previewData.profitability.currency)}</span></div>
+                    {previewData.profitability.warning && <div role="alert" className="flex gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-amber-900 dark:text-amber-100"><AlertTriangle className="h-4 w-4 shrink-0" /><span>{previewData.profitability.warning === 'unknown_costs' ? t('التكلفة غير مكتملة؛ لا يمكن تقدير المساهمة بأمان.', 'Costs are incomplete; contribution cannot be estimated safely.') : t('المساهمة التقديرية سالبة. لم تتم زيادة سعر العميل أو إضافة حد أدنى.', 'Estimated contribution is negative. No customer price increase or minimum fee was added.')}</span></div>}
+                  </CardContent>
+                </Card>}
               </div>
             ) : (
               <div className="h-full min-h-[300px] flex items-center justify-center border rounded-xl bg-muted/5 text-muted-foreground flex-col gap-2">
@@ -387,6 +479,7 @@ export default function Fees() {
                 <TableRow>
                   <TableHead>v</TableHead>
                   <TableHead>{t('الحالة', 'Status')}</TableHead>
+                  <TableHead>{t('الخدمة', 'Service')}</TableHead>
                   <TableHead>{t('النطاق', 'Scope')}</TableHead>
                   <TableHead>{t('الرسوم', 'Fee Config')}</TableHead>
                   <TableHead>{t('الجهة الدافعة', 'Payer')}</TableHead>
@@ -396,11 +489,12 @@ export default function Fees() {
               </TableHeader>
               <TableBody>
                 {data.rules.length === 0 ? (
-                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">{t('لا توجد قواعد مسجلة', 'No rules recorded')}</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">{t('لا توجد قواعد مسجلة', 'No rules recorded')}</TableCell></TableRow>
                 ) : data.rules.map(rule => (
                   <TableRow key={rule.version} className={rule.status === 'retired' ? 'opacity-50' : ''}>
                     <TableCell className="font-mono">{rule.version}</TableCell>
                     <TableCell>{statusBadge(rule.status)}</TableCell>
+                    <TableCell>{serviceLabel(rule.serviceKind || 'equipment_rental')}</TableCell>
                     <TableCell>
                       <div className="text-xs space-y-1">
                         <div>{rule.currency}</div>
@@ -460,7 +554,7 @@ export default function Fees() {
               {confirmOpen?.action === 'publish' ? t('تفعيل القاعدة', 'Publish Rule') : t('إيقاف القاعدة', 'Retire Rule')}
             </DialogTitle>
             <DialogDescription>
-              {t('يرجى كتابة سبب التعديل للمراجعة والتدقيق.', 'Please provide a reason for this modification for auditing purposes.')}
+              {t('راجع نوع الخدمة والقيم القديمة والجديدة وتاريخ السريان، ثم اكتب سبب التعديل.', 'Review the service, old/new values and effective date, then provide the audit reason.')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -519,12 +613,19 @@ export default function Fees() {
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>{t('قاعدة رسوم جديدة (مسودة)', 'New Fee Rule (Draft)')}</DialogTitle>
-            <DialogDescription>{t('تم تجهيز مسودة HEAVYAR المعتمدة: عمولة 20% يدفعها المزود، وحصة العميل 0%. ستبقى مسودة حتى نشرها بتأكيد مستقل.', 'The approved HEAVYAR draft is prefilled: 20% provider-paid commission and 0% customer share. It remains a draft until separately confirmed and published.')}</DialogDescription>
+            <DialogDescription>{t('تبدأ المسودة من النسبة المعتمدة للخدمة المختارة، وتبقى غير فعالة حتى نشرها بتأكيد مستقل.', 'The draft starts from the approved rate for the selected service and remains inactive until separately confirmed and published.')}</DialogDescription>
           </DialogHeader>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-4 max-h-[70vh] overflow-y-auto">
             <div className="space-y-4">
               <h4 className="font-semibold text-sm border-b pb-2">{t('النطاق', 'Scope')}</h4>
+              <div className="space-y-2">
+                <Label>{t('نوع الخدمة', 'Service category')}</Label>
+                <Select value={draftRule.serviceKind || 'equipment_rental'} onValueChange={value => setDraftRule(approvedDraft(value as ServiceKind))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{(['equipment_rental', 'operator', 'transporter'] as const).map(kind => <SelectItem key={kind} value={kind}>{serviceLabel(kind)}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
               <div className="space-y-2">
                 <Label>{t('العملة', 'Currency')}</Label>
                 <Select value={draftRule.currency} onValueChange={c => setDraftRule(prev => ({...prev, currency: c}))}>
@@ -545,7 +646,7 @@ export default function Fees() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
+              {draftRule.serviceKind === 'equipment_rental' && <div className="space-y-2">
                 <Label>{t('فئة المعدات (اختياري)', 'Equipment category (Optional)')}</Label>
                 <Select value={draftRule.scope?.categoryId || 'any'} onValueChange={category => setDraftRule(prev => ({...prev, scope: {...prev.scope, categoryId: category === 'any' ? null : category, providerUid: null}}))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -554,11 +655,11 @@ export default function Fees() {
                     {data.categories.map(category => <SelectItem key={category.id} value={category.id}>{language === 'ar' ? category.nameAr : category.nameEn}</SelectItem>)}
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="space-y-2">
+              </div>}
+              {draftRule.serviceKind === 'equipment_rental' && <div className="space-y-2">
                 <Label>{t('استثناء مزود', 'Provider Override (Optional)')}</Label>
                 <ProviderSelector value={draftRule.scope?.providerUid} onChange={uid => setDraftRule(prev => ({...prev, scope: {countryCode: null, categoryId: null, providerUid: uid || null}}))} language={language} />
-              </div>
+              </div>}
             </div>
 
             <div className="space-y-4">

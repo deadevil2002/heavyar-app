@@ -4,6 +4,7 @@ import type { CommercialRule } from './api';
 export function extractCreatePayload(draft: Partial<CommercialRule>, immediate: boolean) {
   const payer = draft.payer || 'provider';
   return {
+    serviceKind: draft.serviceKind || 'equipment_rental',
     mode: draft.mode || 'percentage', payer, currency: draft.currency || '*',
     percentageBps: draft.mode === 'fixed' ? 0 : draft.percentageBps ?? 0,
     customerShareBps: payer === 'customer' ? 10000 : payer === 'provider' ? 0 : draft.customerShareBps ?? 5000,

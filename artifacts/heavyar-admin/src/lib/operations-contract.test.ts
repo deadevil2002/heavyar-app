@@ -86,15 +86,20 @@ describe('admin operations table contract', () => {
     assert.equal(page.includes('snapshot={selected.commercialSnapshot}'), true);
     assert.equal(page.includes("t('بيئة الدفع', 'Payment environment')"), true);
   });
-  it('prefills the approved 20 percent provider-paid rule as an unpublished draft', () => {
+  it('shows the approved service rates without presenting 20 percent as the active default', () => {
     const page = readFileSync('artifacts/heavyar-admin/src/pages/fees.tsx', 'utf8');
-    assert.equal(page.includes('percentageBps: 2000'), true);
+    assert.equal(page.includes('equipment_rental: { percentageBps: 1000'), true);
+    assert.equal(page.includes('operator: { percentageBps: 800'), true);
+    assert.equal(page.includes('transporter: { percentageBps: 800'), true);
+    assert.equal(page.includes('percentageBps: 2000'), false);
     assert.equal(page.includes("payer: 'provider'"), true);
     assert.equal(page.includes('customerShareBps: 0'), true);
-    assert.equal(page.includes("currency: '*'"), true);
+    assert.equal(page.includes("currency: 'SAR'"), true);
     assert.equal(page.includes("action: 'create'"), true);
     assert.equal(page.includes("action: 'publish'"), true);
-    assert.equal(page.includes('remains a draft until separately confirmed and published'), true);
+    assert.equal(page.includes('Estimated contribution (not audited net profit)'), true);
+    assert.equal(page.includes('المساهمة التقديرية (ليست صافي ربح مدقق)'), true);
+    assert.equal(page.includes('remains inactive until separately confirmed and published'), true);
   });
   it('keeps provider and driver account bulk deletion controls wired to canonical dialogs', () => {
     for (const page of ['providers.tsx', 'drivers.tsx']) {

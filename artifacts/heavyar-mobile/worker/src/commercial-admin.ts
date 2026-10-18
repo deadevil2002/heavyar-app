@@ -1,5 +1,6 @@
 import {
-  applyCommercialChange, buildLegacyCatalog, calculateCommercial, resolveRule, validateRule,
+  APPROVED_COMMISSION_DEFAULTS, applyCommercialChange, buildApprovedCommercialCatalog,
+  calculateCommercial, calculateProfitabilityPreview, commercialServiceKind, resolveRule, validateRule,
   type CommercialCatalog, type CommercialChangeResult,
 } from './commercial';
 import { GCC_COUNTRIES } from '../../constants/gcc';
@@ -14,7 +15,7 @@ export interface CommercialAdminStore {
 export interface CommercialAdminActor { uid: string; canRead: boolean; canManage: boolean }
 export interface CommercialEnvironment { PAYMENT_PLATFORM_FEE_RATE?: string; PAYMENT_VAT_RATE?: string; FIREBASE_PROJECT_ID?: string }
 
-const precedence = ['provider', 'country_category', 'country', 'category', 'global'];
+const precedence = ['service_kind', 'provider', 'country_category', 'country', 'category', 'global'];
 const jsonBody = async (req: Request) => {
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Invalid request body');
@@ -29,6 +30,7 @@ function validCatalog(data: any): CommercialCatalog {
 export function commercialView(catalog: CommercialCatalog, actor: CommercialAdminActor, legacyFallback: boolean, now: string) {
   return {
     success: true, revision: catalog.revision, canManage: actor.canManage, legacyFallback,
+    approvedDefaults: APPROVED_COMMISSION_DEFAULTS,
     rules: catalog.rules.map(rule => ({
       ...rule,
       status: rule.status === 'draft' || rule.status === 'retired' ? rule.status
@@ -38,11 +40,12 @@ export function commercialView(catalog: CommercialCatalog, actor: CommercialAdmi
     countries: GCC_COUNTRIES, categories: mockCategories, serverTime: now, precedence,
   };
 }
-async function validProvider(store: CommercialAdminStore, uid: unknown) {
+async function validProvider(store: CommercialAdminStore, uid: unknown, serviceKind: unknown = 'equipment_rental') {
   if (uid == null || uid === '') return;
   if (typeof uid !== 'string' || uid.length > 128 || !/^[A-Za-z0-9_-]+$/.test(uid)) throw new Error('Invalid provider identifier');
   const provider = await store.read('users', uid);
-  if (!provider || provider.data.role !== 'provider' || provider.data.accountStatus === 'deletion_requested') throw new Error('Provider does not exist or is not eligible for a negotiated rule');
+  const expectedRole = serviceKind === 'equipment_rental' ? 'provider' : 'driver';
+  if (!provider || provider.data.role !== expectedRole || provider.data.accountStatus === 'deletion_requested') throw new Error('Provider does not exist or is not eligible for a negotiated rule');
 }
 
 /** Uses the same calculator as rentals; no browser amount/rate becomes a stored quote. */
@@ -60,22 +63,24 @@ export async function handleCommercialAdmin(
   const load = () => store.read('commercialSettings', 'catalog');
   const prior = env.FIREBASE_PROJECT_ID && (req.method === 'GET' || preview)
     ? await commercialReadCache.get(env.FIREBASE_PROJECT_ID, load, commercialExpiry) : await load();
-  const catalog = prior ? validCatalog(prior.data) : buildLegacyCatalog(
+  const catalog = prior ? validCatalog(prior.data) : buildApprovedCommercialCatalog(
     env.PAYMENT_PLATFORM_FEE_RATE === undefined ? 0.10 : Number(env.PAYMENT_PLATFORM_FEE_RATE));
   const now = new Date().toISOString();
   if (!preview && req.method === 'GET') return commercialView(catalog, actor, !prior, now);
   try {
     const body = await jsonBody(req);
     if (preview) {
-      const allowed = ['baseAmountMinor', 'countryCode', 'categoryId', 'providerUid', 'currency', 'at', 'draftRule'];
+      const allowed = ['serviceKind', 'baseAmountMinor', 'countryCode', 'categoryId', 'providerUid', 'currency', 'at', 'draftRule', 'profitability'];
       if (Object.keys(body).some(key => !allowed.includes(key))) throw new Error('Unsupported preview field');
       const country = GCC_COUNTRIES.find(c => c.code === body.countryCode);
       if (!country || country.currency !== body.currency) throw new Error('Country and native currency must match');
-      await validProvider(store, body.providerUid);
-      const input = { countryCode: body.countryCode, categoryId: body.categoryId, providerUid: body.providerUid || 'preview-provider', currency: body.currency, at: body.at || now };
+      const serviceKind = body.serviceKind || 'equipment_rental';
+      const categoryId = serviceKind === 'equipment_rental' ? body.categoryId : 'other';
+      await validProvider(store, body.providerUid, serviceKind);
+      const input = { serviceKind, countryCode: body.countryCode, categoryId, providerUid: body.providerUid || 'preview-provider', currency: body.currency, at: body.at || now };
       let matchedRule;
       if (body.draftRule) {
-        await validProvider(store, body.draftRule.scope?.providerUid);
+        await validProvider(store, body.draftRule.scope?.providerUid, body.draftRule.serviceKind);
         const draft = applyCommercialChange(catalog, { action: 'create', expectedRevision: catalog.revision, reason: 'Informational preview', rule: body.draftRule }, actor.uid, now);
         matchedRule = draft.audit.after!;
       } else matchedRule = resolveRule(catalog, input);
@@ -91,7 +96,9 @@ export async function handleCommercialAdmin(
         ...input, baseAmountMinor: body.baseAmountMinor, calculatedAt: now, taxAmountMinor,
         ...(taxAmountMinor === undefined ? {} : { taxReference: 'legacy-sar-vat-policy' }),
       });
-      return { success: true, snapshot, matchedRule, informationalOnly: true };
+      const profitability = body.profitability === undefined ? undefined
+        : calculateProfitabilityPreview(snapshot, body.profitability);
+      return { success: true, snapshot, matchedRule, profitability, informationalOnly: true };
     }
     if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision !== catalog.revision) {
       return { error: 'Commercial configuration changed. Reload before confirming.', errorCode: 'VERSION_PRECONDITION_FAILED', status: 412, revision: catalog.revision };
@@ -116,8 +123,11 @@ export async function handleCommercialAdmin(
       commercialReadCache.invalidate(env.FIREBASE_PROJECT_ID);
       return { ...commercialView(seeded, actor, false, now), initialized: true };
     }
-    await validProvider(store, body.rule?.scope?.providerUid);
-    if (body.version) await validProvider(store, catalog.rules.find(rule => rule.version === body.version)?.scope.providerUid);
+    await validProvider(store, body.rule?.scope?.providerUid, body.rule?.serviceKind);
+    if (body.version) {
+      const existing = catalog.rules.find(rule => rule.version === body.version);
+      await validProvider(store, existing?.scope.providerUid, existing ? commercialServiceKind(existing) : undefined);
+    }
     const change = applyCommercialChange(catalog, body as any, actor.uid, now);
     if (new TextEncoder().encode(JSON.stringify(change.catalog)).byteLength > 600_000) throw new Error('Commercial history capacity reached; no history has been removed');
     await store.save(prior, change, catalog);

@@ -30,6 +30,9 @@ describe('Commercial Admin authority and persistence', () => {
     expect(result.initialized).toBe(true);
     expect(result.rules[0].percentageBps).toBe(1000);
     expect(result.rules[0].payer).toBe('provider');
+    expect(result.rules.filter((item: any) => item.serviceKind === 'equipment_rental').some((item: any) => item.percentageBps === 1000)).toBe(true);
+    expect(result.rules.filter((item: any) => item.serviceKind === 'operator').some((item: any) => item.percentageBps === 800)).toBe(true);
+    expect(result.rules.filter((item: any) => item.serviceKind === 'transporter').some((item: any) => item.percentageBps === 800)).toBe(true);
     expect(commits[0][0].currentDocument.exists).toBe(false);
     __adminTest.setFirestore(c => c === 'commercialSettings' ? buildLegacyCatalog() : null);
     expect((await handleAdmin(request(init), env, actor('owner')) as any).status).toBe(409);
@@ -95,8 +98,9 @@ describe('Commercial Admin authority and persistence', () => {
     __adminTest.captureCommits([]);
     const rule = { ...terms(), scope: { countryCode: null, categoryId: null, providerUid: 'valid-provider' } };
     const result = await handleAdmin(request({ action: 'create', expectedRevision: 1, reason: 'Negotiated rate', rule }), env, actor('owner')) as any;
-    expect(result.rules[1].scope.providerUid).toBe('valid-provider');
-    expect(result.rules[1].status).toBe('draft');
+    const created = result.rules.find((item: any) => item.scope.providerUid === 'valid-provider');
+    expect(created?.scope.providerUid).toBe('valid-provider');
+    expect(created?.status).toBe('draft');
   });
   test('preview preserves configured legacy tax/fee separation without writes', async () => {
     __adminTest.setFirestore(() => null);
@@ -109,6 +113,31 @@ describe('Commercial Admin authority and persistence', () => {
     expect(result.snapshot.providerReceivableMinor).toBe(9000);
     expect(result.snapshot.customerPayableMinor).toBe(11500);
     expect(commits.length).toBe(0);
+  });
+  test('service previews use isolated 8 percent rules and expose fail-safe profitability warnings', async () => {
+    __adminTest.setFirestore(() => null);
+    const result = await handleAdmin(request({
+      serviceKind: 'operator', baseAmountMinor: 10000, countryCode: 'SA', categoryId: 'other', currency: 'SAR',
+      profitability: {
+        processingCostMinor: null, processingCostEvidence: 'unknown',
+        operationalCostMinor: 100, operationalCostEvidence: 'manual_estimate',
+        commissionVatTreatment: 'unknown', commissionVatRateBps: null,
+      },
+    }, '/api/admin/commercial/preview'), env, actor('auditor')) as any;
+    expect(result.snapshot.serviceKind).toBe('operator');
+    expect(result.snapshot.percentageBps).toBe(800);
+    expect(result.snapshot.providerReceivableMinor).toBe(9200);
+    expect(result.profitability.warning).toBe('unknown_costs');
+    expect(result.profitability.auditedNetProfit).toBe(false);
+  });
+  test('service-specific provider overrides require an eligible driver identity', async () => {
+    __adminTest.setFirestore(c => c === 'users' ? { role: 'provider', accountStatus: 'active' } : null);
+    const rule = { ...terms(), serviceKind: 'operator', scope: { countryCode: null, categoryId: null, providerUid: 'equipment-provider' } };
+    expect((await handleAdmin(request({ action: 'create', expectedRevision: 1, reason: 'Wrong provider type', rule }), env, actor('owner')) as any).status).toBe(400);
+    __adminTest.setFirestore(c => c === 'users' ? { role: 'driver', accountStatus: 'active' } : null);
+    __adminTest.captureCommits([]);
+    const accepted = await handleAdmin(request({ action: 'create', expectedRevision: 1, reason: 'Driver negotiation', rule }), env, actor('owner')) as any;
+    expect(accepted.rules.some((item: any) => item.serviceKind === 'operator' && item.scope.providerUid === 'equipment-provider')).toBe(true);
   });
   test('disabled country preview does not activate markets or invent tax', async () => {
     __adminTest.setFirestore(() => null);

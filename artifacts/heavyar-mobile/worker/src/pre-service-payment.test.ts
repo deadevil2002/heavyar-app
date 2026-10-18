@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildLegacyCatalog, calculateCommercial, type CommercialSnapshot } from './commercial';
+import { applyCommercialChange, buildApprovedCommercialCatalog, buildLegacyCatalog, calculateCommercial, resolveRule, type CommercialSnapshot } from './commercial';
 import type { ServiceContractAggregate } from './service-contract';
 import {
   HEAVYAR_TAP_MARKETPLACE_ID,
@@ -15,6 +15,7 @@ import {
 const NOW = '2026-10-18T12:00:00.000Z';
 const CUSTOMER = 'customer-pre-service-0001';
 const PROVIDER = 'provider-pre-service-0001';
+const CATALOG = buildApprovedCommercialCatalog();
 
 function commercial(baseAmountMinor = 100_000, overrides: Partial<CommercialSnapshot> = {}) {
   const snapshot = calculateCommercial(buildLegacyCatalog().rules[0], {
@@ -72,7 +73,21 @@ function rental(overrides: Record<string, unknown> = {}) {
 
 function rentalPlan(request = rental(), destinationRecord = destination()) {
   return buildRentalPreServicePaymentPlan({
-    requestId: 'rental_1', request, actorUid: CUSTOMER, environment: 'TEST', destination: destinationRecord, now: NOW,
+    requestId: 'rental_1', request, actorUid: CUSTOMER, environment: 'TEST', destination: destinationRecord,
+    commercialCatalog: CATALOG, now: NOW,
+  });
+}
+
+function serviceCommercial(kind: 'operator' | 'transporter') {
+  const calculatedAt = '2026-10-18T08:00:00.000Z';
+  const rule = resolveRule(CATALOG, {
+    serviceKind: kind, countryCode: 'SA', categoryId: 'other', providerUid: PROVIDER,
+    currency: 'SAR', at: calculatedAt,
+  });
+  return calculateCommercial(rule, {
+    serviceKind: kind, baseAmountMinor: 100_000, countryCode: 'SA', categoryId: 'other',
+    providerUid: PROVIDER, currency: 'SAR', calculatedAt, taxAmountMinor: 15_000,
+    taxReference: 'locked-service-vat-evidence',
   });
 }
 
@@ -155,7 +170,7 @@ describe('Launch Packet 2 pre-service payment integrity', () => {
   });
 
   test('rejects wrong actor, stale state, open-ended rental, unlocked quote, and nonzero deposit', () => {
-    expect(() => buildRentalPreServicePaymentPlan({ requestId: 'rental_1', request: rental(), actorUid: 'other-account', environment: 'TEST', destination: destination(), now: NOW })).toThrow('RENTAL_PAYMENT_PREREQUISITES_NOT_MET');
+    expect(() => buildRentalPreServicePaymentPlan({ requestId: 'rental_1', request: rental(), actorUid: 'other-account', environment: 'TEST', destination: destination(), commercialCatalog: CATALOG, now: NOW })).toThrow('RENTAL_PAYMENT_PREREQUISITES_NOT_MET');
     expect(() => rentalPlan(rental({ status: 'completed' }))).toThrow('RENTAL_PAYMENT_PREREQUISITES_NOT_MET');
     expect(() => rentalPlan(rental({ rentalMode: 'open_ended' }))).toThrow('RENTAL_PAYMENT_PREREQUISITES_NOT_MET');
     expect(() => rentalPlan(rental({ commercialSnapshotStatus: 'finalized' }))).toThrow('RENTAL_PAYMENT_QUOTE_NOT_LOCKED');
@@ -176,6 +191,39 @@ describe('Launch Packet 2 pre-service payment integrity', () => {
     }))).toThrow('COMMERCIAL_SNAPSHOT_INVALID');
   });
 
+  test('accepts an exact published versioned equipment rule without hardcoding the legacy version', () => {
+    const created = applyCommercialChange(CATALOG, {
+      action: 'create', expectedRevision: 1, reason: 'Versioned equipment rate test', rule: {
+        serviceKind: 'equipment_rental', effectiveFrom: null, effectiveTo: null, notes: '12 percent test',
+        mode: 'percentage', percentageBps: 1200, fixedAmountMinor: 0, minimumFeeMinor: 0, maximumFeeMinor: null,
+        payer: 'provider', customerShareBps: 0, scope: { countryCode: 'SA', categoryId: null, providerUid: null }, currency: 'SAR',
+      },
+    }, 'owner', '2026-10-18T08:00:00.000Z');
+    const catalog = applyCommercialChange(created.catalog, {
+      action: 'publish', expectedRevision: 2, reason: 'Publish versioned equipment rate', version: created.audit.version,
+    }, 'owner', '2026-10-18T08:00:00.000Z').catalog;
+    const rule = resolveRule(catalog, {
+      serviceKind: 'equipment_rental', countryCode: 'SA', categoryId: 'excavators', providerUid: PROVIDER,
+      currency: 'SAR', at: '2026-10-18T08:00:00.000Z',
+    });
+    const snapshot = calculateCommercial(rule, {
+      serviceKind: 'equipment_rental', baseAmountMinor: 100_000, countryCode: 'SA', categoryId: 'excavators',
+      providerUid: PROVIDER, currency: 'SAR', calculatedAt: '2026-10-18T08:00:00.000Z',
+      taxAmountMinor: 15_000, taxReference: 'locked-rental-vat-evidence',
+    });
+    const request = rental({
+      commercialSnapshot: snapshot,
+      pricingSnapshot: { snapshotId: 'rental-v2:rental_1:locked', baseAmountMinor: 100_000, commercialTerms: snapshot },
+    });
+    const plan = buildRentalPreServicePaymentPlan({
+      requestId: 'rental_1', request, actorUid: CUSTOMER, environment: 'TEST', destination: destination(),
+      commercialCatalog: catalog, now: NOW,
+    });
+    expect(plan.commercialSnapshot.ruleVersion).toBe(created.audit.version);
+    expect(plan.commercialSnapshot.percentageBps).toBe(1200);
+    expect(plan.providerReceivableMinor).toBe(88_000);
+  });
+
   test('requires an authoritative current destination for the same provider, marketplace, merchant, and environment', () => {
     for (const override of [
       { providerUid: 'other-provider' },
@@ -192,13 +240,14 @@ describe('Launch Packet 2 pre-service payment integrity', () => {
   test('operator and transporter payment bind the accepted contract, quote, and approved server policy', () => {
     for (const kind of ['operator', 'transporter'] as const) {
       const contract = approvedContract(kind);
-      const snapshot = commercial(100_000, { categoryId: kind });
+      const snapshot = serviceCommercial(kind);
       const result = buildServicePreServicePaymentPlan({
         contract, actorUid: CUSTOMER, environment: 'TEST', destination: destination(), now: NOW,
         approvedTerms: {
-          approvalId: `${kind}-commercial-v1`, serviceKind: kind, approvedForProduction: true,
+          approvalId: `commercial:${snapshot.ruleVersion}`, serviceKind: kind, approvedForProduction: true,
           legalTermsVersion: 'approved-service-terms-v1', commercialSnapshot: snapshot,
         },
+        commercialCatalog: CATALOG,
       });
       expect(result.kind).toBe(`${kind}_service`);
       expect(result.sourceId).toBe(contract.snapshot.contractId);
@@ -206,6 +255,8 @@ describe('Launch Packet 2 pre-service payment integrity', () => {
       expect(result.quoteReference).toContain(`${contract.snapshot.quoteId}:2:`);
       expect(result.paymentState).toBe('not_started');
       expect(result.executionAuthorized).toBe(false);
+      expect(result.commercialSnapshot.percentageBps).toBe(800);
+      expect(result.providerReceivableMinor).toBe(92_000);
     }
   });
 
@@ -213,24 +264,25 @@ describe('Launch Packet 2 pre-service payment integrity', () => {
     const approved = approvedContract('operator');
     expect(() => buildServicePreServicePaymentPlan({
       contract: { ...approved, snapshot: { ...approved.snapshot, terms: { version: 'synthetic-local-test-v1', source: 'synthetic_local_test_only', approvedForProduction: false } } } as ServiceContractAggregate,
-      actorUid: CUSTOMER, environment: 'TEST', destination: destination(), approvedTerms: null, now: NOW,
+      actorUid: CUSTOMER, environment: 'TEST', destination: destination(), approvedTerms: null, commercialCatalog: CATALOG, now: NOW,
     })).toThrow('SERVICE_LEGAL_TERMS_NOT_APPROVED');
     expect(() => buildServicePreServicePaymentPlan({
-      contract: approved, actorUid: CUSTOMER, environment: 'TEST', destination: destination(), approvedTerms: null, now: NOW,
+      contract: approved, actorUid: CUSTOMER, environment: 'TEST', destination: destination(), approvedTerms: null, commercialCatalog: CATALOG, now: NOW,
     })).toThrow('SERVICE_COMMISSION_POLICY_NOT_APPROVED');
   });
 
   test('rejects stale, wrong-account, already-paid, or dispatch-authorized service state', () => {
     const contract = approvedContract('transporter');
+    const transportSnapshot = serviceCommercial('transporter');
     const approvedTerms = {
-      approvalId: 'transport-commercial-v1', serviceKind: 'transporter' as const, approvedForProduction: true as const,
-      legalTermsVersion: 'approved-service-terms-v1', commercialSnapshot: commercial(100_000, { categoryId: 'transporter' }),
+      approvalId: `commercial:${transportSnapshot.ruleVersion}`, serviceKind: 'transporter' as const, approvedForProduction: true as const,
+      legalTermsVersion: 'approved-service-terms-v1', commercialSnapshot: transportSnapshot,
     };
     for (const changed of [
       { ...contract, status: 'cancelled' },
       { ...contract, paymentState: 'verified' },
       { ...contract, executionAuthorized: true },
-    ]) expect(() => buildServicePreServicePaymentPlan({ contract: changed as ServiceContractAggregate, actorUid: CUSTOMER, environment: 'TEST', destination: destination(), approvedTerms, now: NOW })).toThrow('SERVICE_PAYMENT_PREREQUISITES_NOT_MET');
-    expect(() => buildServicePreServicePaymentPlan({ contract, actorUid: 'other-account', environment: 'TEST', destination: destination(), approvedTerms, now: NOW })).toThrow('SERVICE_PAYMENT_PREREQUISITES_NOT_MET');
+    ]) expect(() => buildServicePreServicePaymentPlan({ contract: changed as ServiceContractAggregate, actorUid: CUSTOMER, environment: 'TEST', destination: destination(), approvedTerms, commercialCatalog: CATALOG, now: NOW })).toThrow('SERVICE_PAYMENT_PREREQUISITES_NOT_MET');
+    expect(() => buildServicePreServicePaymentPlan({ contract, actorUid: 'other-account', environment: 'TEST', destination: destination(), approvedTerms, commercialCatalog: CATALOG, now: NOW })).toThrow('SERVICE_PAYMENT_PREREQUISITES_NOT_MET');
   });
 });

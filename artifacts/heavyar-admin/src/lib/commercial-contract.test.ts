@@ -13,9 +13,20 @@ describe('Commercial form uses actual server contracts', () => {
     assert.equal('status' in payload, false);
     const change = applyCommercialChange(buildLegacyCatalog(), { action: 'create', expectedRevision: 1, reason: 'Contract draft', rule: payload }, 'owner-test', now);
     assert.equal(change.audit.after?.status, 'draft');
+    assert.equal(change.audit.after?.serviceKind, 'equipment_rental');
     assert.equal(change.audit.after?.fixedAmountMinor, 0);
     assert.equal(change.audit.after?.maximumFeeMinor, null);
     assert.equal(change.audit.after?.customerShareBps, 0);
+  });
+  it('preserves an explicitly selected operator or transporter service kind', () => {
+    for (const serviceKind of ['operator', 'transporter'] as const) {
+      const payload = extractCreatePayload({ serviceKind, mode: 'percentage', percentageBps: 800, payer: 'provider', currency: 'SAR', scope: { countryCode: 'SA' } }, true);
+      const change = applyCommercialChange(buildLegacyCatalog(), {
+        action: 'create', expectedRevision: 1, reason: 'Service-specific contract draft', rule: payload,
+      }, 'owner-test', now);
+      assert.equal(change.audit.after?.serviceKind, serviceKind);
+      assert.equal(change.audit.after?.percentageBps, 800);
+    }
   });
   it('all payer selections produce valid server allocation and totals', () => {
     for (const payer of ['customer', 'provider', 'split'] as const) {

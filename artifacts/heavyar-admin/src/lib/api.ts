@@ -471,6 +471,7 @@ export function useUpdateFxProviderConfig() {
 // Commercial / Fees API
 export type CommercialRule = {
   id?: string;
+  serviceKind?: 'equipment_rental' | 'operator' | 'transporter';
   version: string;
   status: 'draft' | 'active' | 'scheduled' | 'retired';
   effectiveFrom: string;
@@ -505,9 +506,16 @@ export type CommercialRulesResponse = {
   serverTime: string;
   precedence: any;
   legacyFallback: boolean;
+  approvedDefaults?: Record<'equipment_rental' | 'operator' | 'transporter', {
+    percentageBps: number;
+    payer: 'provider';
+    countryCode: 'SA';
+    currency: 'SAR';
+  }>;
 };
 
 export type CommercialSnapshot = {
+  serviceKind?: 'equipment_rental' | 'operator' | 'transporter';
   ruleVersion: string;
   baseAmountMinor: number;
   platformFeeMinor: number;
@@ -519,6 +527,22 @@ export type CommercialSnapshot = {
   gatewayFeeMinor: number | null;
   currency: string;
   calculatedAt: string;
+};
+
+export type ProfitabilityPreview = {
+  currency: string;
+  commissionRevenueMinor: number;
+  processingCost: { amountMinor: number | null; evidence: 'manual_estimate' | 'unknown' };
+  operationalCost: { amountMinor: number | null; evidence: 'manual_estimate' | 'unknown' };
+  commissionVat: {
+    amountMinor: number | null;
+    evidence: 'manual_estimate' | 'unknown';
+    treatment: 'unknown' | 'not_applicable' | 'exclusive' | 'inclusive';
+    rateBps: number | null;
+  };
+  estimatedContributionMinor: number | null;
+  warning: 'unknown_costs' | 'negative_contribution' | null;
+  auditedNetProfit: false;
 };
 
 export function useCommercialRules() {
@@ -541,8 +565,8 @@ export function useCommercialMutate() {
 
 export function useCommercialPreview() {
   return useMutation({
-    mutationFn: (data: { baseAmountMinor: number; countryCode?: string; categoryId?: string; providerUid?: string; currency: string; at?: string; draftRule?: any }) =>
-      fetchApi<{ success: boolean; snapshot: CommercialSnapshot; matchedRule?: CommercialRule }>('/commercial/preview', { method: 'POST', body: JSON.stringify(data) }),
+    mutationFn: (data: { serviceKind?: 'equipment_rental' | 'operator' | 'transporter'; baseAmountMinor: number; countryCode?: string; categoryId?: string; providerUid?: string; currency: string; at?: string; draftRule?: any; profitability?: { processingCostMinor: number | null; processingCostEvidence: 'manual_estimate' | 'unknown'; operationalCostMinor: number | null; operationalCostEvidence: 'manual_estimate' | 'unknown'; commissionVatTreatment: 'unknown' | 'not_applicable' | 'exclusive' | 'inclusive'; commissionVatRateBps: number | null } }) =>
+      fetchApi<{ success: boolean; snapshot: CommercialSnapshot; matchedRule?: CommercialRule; profitability?: ProfitabilityPreview }>('/commercial/preview', { method: 'POST', body: JSON.stringify(data) }),
   });
 }
 
