@@ -80,6 +80,9 @@ vi.mock('../services/rentalV2', () => ({
   formatMinorAmount: () => '', liveRentalEstimateMinor: () => 0,
   rentalRequestPricingState: () => ({ kind: 'legacy' }),
 }));
+vi.mock('../services/paymentService', () => ({
+  isAcceptedFixedDurationRental: () => false,
+}));
 vi.mock('../services/errorMessages', () => ({ safeErrorMessage: () => 'error' }));
 vi.mock('../utils/mobilePerformance', () => ({ mobilePerformance: { countRender: vi.fn() } }));
 vi.mock('../services/requestNavigationSnapshot', () => ({ getRequestNavigationSnapshot: () => null }));

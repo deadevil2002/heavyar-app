@@ -14,6 +14,7 @@ import { useAppDialog } from '@/hooks/useAppDialog';
 import { getFirstImageUrl } from '@/utils/imageHelpers';
 import { formatMinorAmount, liveRentalEstimateMinor, rentalRequestPricingState } from '@/services/rentalV2';
 import { safeErrorMessage } from '@/services/errorMessages';
+import { isAcceptedFixedDurationRental } from '@/services/paymentService';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 import { getRequestNavigationSnapshot } from '@/services/requestNavigationSnapshot';
 import { markRouteStage, startRouteModuleEvaluation } from '@/utils/routePerformance';
@@ -193,7 +194,10 @@ function RequestDetailContent() {
   const pricingSnapshot = pricingState.kind === 'v2' ? pricingState.snapshot : null;
 
   const canChat = request.allowChat && ['accepted', 'in_progress'].includes(request.status);
-  const canPay = !isProvider && request.status === 'completed' && request.paymentStatus === 'unpaid';
+  const canPayLegacy = request.customerUid === currentUid && request.status === 'completed' && request.paymentStatus === 'unpaid';
+  const canPreparePreServicePayment = request.paymentStatus === 'unpaid' &&
+    isAcceptedFixedDurationRental(request, currentUid);
+  const canPay = !isProvider && (canPayLegacy || canPreparePreServicePayment);
   const canRate = !isProvider && request.status === 'completed';
   const canAccept = isProvider && request.status === 'pending';
   const canStart = isProvider && request.status === 'accepted';

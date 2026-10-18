@@ -7,19 +7,37 @@ import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchRequestById } from '@/services/firestoreService';
-import { createPayment, verifyPayment } from '@/services/paymentService';
-import type { PaymentLifecycleStatus, PaymentQuote } from '@/services/paymentService';
+import {
+  createEquipmentPreServicePayment,
+  createPayment,
+  isAcceptedFixedDurationRental,
+  isEquipmentPreServiceTestReady,
+  prepareEquipmentPreServicePayment,
+  preServicePaymentUnavailableCode,
+  safeTapCheckoutUrl,
+  verifyEquipmentPreServicePayment,
+  verifyPayment,
+} from '@/services/paymentService';
+import type { CreateEquipmentPreServicePaymentResponse, PaymentLifecycleStatus, PaymentQuote } from '@/services/paymentService';
 import { EquipmentRequest } from '@/types';
 import AppDialog from '@/components/AppDialog';
 import { useAppDialog } from '@/hooks/useAppDialog';
 import { getCheckoutGateways, type CheckoutGateway } from '@/services/workerClient';
 
 type PaymentStep = 'summary' | 'processing' | 'redirecting' | 'verifying' | 'success' | 'failed';
+type PreServiceReadiness = 'legacy' | 'checking' | 'ready' | 'existing' | 'unavailable' | 'error';
 
 export default function PaymentScreen() {
+  const { requestId } = useLocalSearchParams<{ requestId: string }>();
+  const { user } = useAuth();
+  return <PaymentScreenContent key={`${user?.uid || 'guest'}:${requestId || ''}`} />;
+}
+
+function PaymentScreenContent() {
   const { requestId, paymentId: callbackPaymentId } = useLocalSearchParams<{ requestId: string; paymentId?: string }>();
   const { isRTL, t } = useLanguage();
   const { user } = useAuth();
+  const expectedUid = user?.uid || '';
   const router = useRouter();
   const { dialog, hideDialog } = useAppDialog();
 
@@ -31,55 +49,164 @@ export default function PaymentScreen() {
   const [loading, setLoading] = useState<boolean>(true);
   const [gateways, setGateways] = useState<CheckoutGateway[]>([]);
   const [gatewayLoading, setGatewayLoading] = useState<boolean>(true);
+  const [preServiceMode, setPreServiceMode] = useState(false);
+  const [preServiceReadiness, setPreServiceReadiness] = useState<PreServiceReadiness>('legacy');
+  const [preServiceUnavailable, setPreServiceUnavailable] = useState('');
   const handledCallbackPayment = useRef<string | null>(null);
   const paymentCreationInFlight = useRef(false);
+  const paymentVerificationInFlight = useRef(false);
+  const mountedRef = useRef(true);
+  const preparationAbortRef = useRef<AbortController | null>(null);
+  const paymentAbortRef = useRef<AbortController | null>(null);
 
   const BackIcon = isRTL ? ArrowRight : ArrowLeft;
 
+  const isCurrentScope = useCallback(() => mountedRef.current && !!expectedUid, [expectedUid]);
+
+  const unavailableCopy = useCallback((code: string) => {
+    if (code === 'PRE_SERVICE_PAYMENT_NOT_ACTIVATED') {
+      return isRTL
+        ? 'الدفع التجريبي المسبق لتأجير المعدات غير متاح حاليًا.'
+        : 'Equipment pre-service TEST checkout is not available yet.';
+    }
+    if (code === 'TAP_DESTINATION_UNAVAILABLE' || code === 'TAP_DESTINATION_NOT_APPROVED') {
+      return isRTL
+        ? 'وجهة Tap الخاصة بمقدم المعدة غير متاحة أو غير معتمدة للاختبار.'
+        : 'The equipment provider Tap destination is unavailable or not approved for TEST.';
+    }
+    if (code === 'RENTAL_PAYMENT_PREREQUISITES_NOT_MET' || code === 'RENTAL_PAYMENT_QUOTE_NOT_LOCKED') {
+      return isRTL
+        ? 'طلب التأجير غير مؤهل حاليًا للدفع المسبق الآمن.'
+        : 'This rental is not currently eligible for secure pre-service checkout.';
+    }
+    return isRTL
+      ? 'تعذر التحقق من جاهزية الدفع التجريبي. حاول مرة أخرى لاحقًا.'
+      : 'TEST checkout readiness could not be verified. Please try again later.';
+  }, [isRTL]);
+
+  const runPreServicePreparation = useCallback(async (
+    rental: EquipmentRequest,
+    discoveredGateways: CheckoutGateway[],
+    controller = new AbortController(),
+  ) => {
+    if (!requestId || !expectedUid || (preparationAbortRef.current && !preparationAbortRef.current.signal.aborted)) return;
+    preparationAbortRef.current?.abort();
+    preparationAbortRef.current = controller;
+    setPreServiceReadiness('checking');
+    setPreServiceUnavailable('');
+    try {
+      const result = await prepareEquipmentPreServicePayment(requestId, {
+        signal: controller.signal,
+        expectedUid,
+      });
+      if (!isCurrentScope() || controller.signal.aborted || rental.customerUid !== expectedUid) return;
+      if (!isEquipmentPreServiceTestReady(result, discoveredGateways, requestId)) {
+        setPreServiceReadiness('unavailable');
+        setPreServiceUnavailable(unavailableCopy('PRE_SERVICE_PAYMENT_UNAVAILABLE'));
+        return;
+      }
+      setQuote({
+        amount: result.plan.customerPayableMinor / 100,
+        total: result.plan.customerPayableMinor / 100,
+        currency: result.plan.currency,
+      });
+      setPreServiceReadiness('ready');
+    } catch (error) {
+      if (!isCurrentScope() || controller.signal.aborted) return;
+      const code = preServicePaymentUnavailableCode(error);
+      setPreServiceReadiness(code === 'PRE_SERVICE_PAYMENT_UNAVAILABLE' ? 'error' : 'unavailable');
+      setPreServiceUnavailable(unavailableCopy(code));
+    } finally {
+      if (preparationAbortRef.current === controller) preparationAbortRef.current = null;
+    }
+  }, [expectedUid, isCurrentScope, requestId, unavailableCopy]);
+
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
+    const controller = new AbortController();
     const load = async () => {
-      if (!requestId) return;
+      if (!requestId || !expectedUid) {
+        setLoading(false);
+        setGatewayLoading(false);
+        return;
+      }
       try {
-        const req = await fetchRequestById(requestId);
-        if (mounted) {
-          setRequest(req);
-          setLoading(false);
+        const [rental, gatewayResult] = await Promise.all([
+          fetchRequestById(requestId),
+          getCheckoutGateways(controller.signal, expectedUid),
+        ]);
+        if (!isCurrentScope() || controller.signal.aborted) return;
+        if (!rental || rental.customerUid !== expectedUid) {
+          setRequest(null);
+          return;
         }
-      } catch (e) {
-        if (mounted) setLoading(false);
+        setRequest(rental);
+        setGateways(gatewayResult.gateways);
+        const equipmentPreService = isAcceptedFixedDurationRental(rental, expectedUid) &&
+          ['unpaid', 'pending_payment'].includes(String(rental.paymentStatus));
+        setPreServiceMode(equipmentPreService);
+        if (equipmentPreService && rental.paymentStatus === 'unpaid') {
+          await runPreServicePreparation(rental, gatewayResult.gateways, controller);
+        } else if (equipmentPreService && /^[A-Za-z0-9_-]{8,200}$/.test(String(rental.paymentId || ''))) {
+          setPaymentId(String(rental.paymentId));
+          setPreServiceReadiness('existing');
+          setStep('redirecting');
+        } else {
+          setPreServiceReadiness(equipmentPreService ? 'unavailable' : 'legacy');
+          if (equipmentPreService) {
+            setPreServiceUnavailable(unavailableCopy('PRE_SERVICE_PAYMENT_UNAVAILABLE'));
+          }
+        }
+      } catch {
+        if (isCurrentScope() && !controller.signal.aborted) setRequest(null);
+      } finally {
+        if (isCurrentScope() && !controller.signal.aborted) {
+          setLoading(false);
+          setGatewayLoading(false);
+        }
       }
     };
     void load();
-    return () => { mounted = false; };
-  }, [requestId]);
-
-  useEffect(() => {
-    let mounted = true;
-    void getCheckoutGateways().then(result => {
-      if (mounted) setGateways(result.gateways);
-    }).catch(() => {
-      if (mounted) setGateways([]);
-    }).finally(() => { if (mounted) setGatewayLoading(false); });
-    return () => { mounted = false; };
-  }, []);
+    return () => {
+      mountedRef.current = false;
+      controller.abort();
+      preparationAbortRef.current?.abort();
+      paymentAbortRef.current?.abort();
+    };
+  }, [expectedUid, isCurrentScope, requestId, runPreServicePreparation, unavailableCopy]);
 
   const handleVerifyRef = React.useRef<(cId?: string) => Promise<void>>(() => Promise.resolve());
 
   const handleCreatePayment = useCallback(async () => {
-    if (!request || !requestId || !user || paymentCreationInFlight.current) return;
+    if (!request || !requestId || !user || request.customerUid !== expectedUid) return;
+    if (paymentCreationInFlight.current) return;
+    if (preServiceMode && preServiceReadiness !== 'ready') return;
 
     paymentCreationInFlight.current = true;
+    const controller = new AbortController();
+    paymentAbortRef.current?.abort();
+    paymentAbortRef.current = controller;
     setStep('processing');
     try {
+      const result = preServiceMode
+        ? await createEquipmentPreServicePayment(requestId, { signal: controller.signal, expectedUid })
+        : await createPayment({ requestId, purpose: 'equipment_request' }, { signal: controller.signal, expectedUid });
 
-      const result = await createPayment({
-        requestId,
-        purpose: 'equipment_request',
-      });
+      if (!isCurrentScope() || controller.signal.aborted) return;
 
       if (!result.success || !result.paymentId) {
         setStep('failed');
+        return;
+      }
+      const returnedPlan = preServiceMode ? (result as CreateEquipmentPreServicePaymentResponse).plan : undefined;
+      if (preServiceMode && (!returnedPlan || !isEquipmentPreServiceTestReady(
+        { success: true, plan: returnedPlan },
+        gateways,
+        requestId,
+      ))) {
+        setPreServiceReadiness('unavailable');
+        setPreServiceUnavailable(unavailableCopy('PRE_SERVICE_PAYMENT_UNAVAILABLE'));
+        setStep('summary');
         return;
       }
 
@@ -89,28 +216,43 @@ export default function PaymentScreen() {
       setPaymentId(result.paymentId);
 
       const status = String(result.status || 'pending').toLowerCase() as PaymentLifecycleStatus;
-      if (result.checkoutUrl && (status === 'pending' || status === 'requires_action')) {
-        setPaymentUrl(result.checkoutUrl);
+      const checkoutUrl = safeTapCheckoutUrl(result.checkoutUrl);
+      if (checkoutUrl && (status === 'pending' || status === 'requires_action')) {
+        setPaymentUrl(checkoutUrl);
         setStep('redirecting');
       } else {
         void handleVerifyRef.current?.(result.paymentId);
       }
-    } catch (e) {
-      setStep('failed');
-      try {
-      } catch {}
+    } catch (error) {
+      if (!isCurrentScope() || controller.signal.aborted) return;
+      if (preServiceMode) {
+        setPreServiceReadiness('unavailable');
+        setPreServiceUnavailable(unavailableCopy(preServicePaymentUnavailableCode(error)));
+        setStep('summary');
+      } else {
+        setStep('failed');
+      }
     } finally {
+      if (paymentAbortRef.current === controller) paymentAbortRef.current = null;
       paymentCreationInFlight.current = false;
     }
-  }, [request, requestId, user]);
+  }, [expectedUid, gateways, isCurrentScope, preServiceMode, preServiceReadiness, request, requestId, unavailableCopy, user]);
 
   const handleVerifyPayment = useCallback(async (cId?: string) => {
     const id = cId || paymentId;
-    if (!id || !requestId) return;
+    if (!id || !requestId || !expectedUid || paymentVerificationInFlight.current) return;
 
+    paymentVerificationInFlight.current = true;
+    const controller = new AbortController();
+    paymentAbortRef.current?.abort();
+    paymentAbortRef.current = controller;
     setStep('verifying');
     try {
-      const result = await verifyPayment(id);
+      const result = preServiceMode
+        ? await verifyEquipmentPreServicePayment(id, { signal: controller.signal, expectedUid })
+        : await verifyPayment(id, { signal: controller.signal, expectedUid });
+
+      if (!isCurrentScope() || controller.signal.aborted) return;
 
       const status = String(result.status || (result.success ? 'paid' : 'failed')).toLowerCase();
       if (result.quote) setQuote(result.quote);
@@ -127,10 +269,13 @@ export default function PaymentScreen() {
       } else {
         setStep('failed');
       }
-    } catch (e) {
-      setStep('failed');
+    } catch {
+      if (isCurrentScope() && !controller.signal.aborted) setStep('failed');
+    } finally {
+      if (paymentAbortRef.current === controller) paymentAbortRef.current = null;
+      paymentVerificationInFlight.current = false;
     }
-  }, [paymentId, requestId]);
+  }, [expectedUid, isCurrentScope, paymentId, preServiceMode, requestId]);
 
   handleVerifyRef.current = handleVerifyPayment;
 
@@ -144,16 +289,21 @@ export default function PaymentScreen() {
   }, [request, callbackPaymentId, handleVerifyPayment]);
 
   const handleOpenPaymentUrl = useCallback(async () => {
-    if (!paymentUrl) return;
+    const checkoutUrl = safeTapCheckoutUrl(paymentUrl);
+    if (!checkoutUrl) return;
     try {
       if (Platform.OS !== 'web') {
-        await Linking.openURL(paymentUrl);
+        await Linking.openURL(checkoutUrl);
       } else {
-        window.open(paymentUrl, '_blank');
+        window.open(checkoutUrl, '_blank', 'noopener,noreferrer');
       }
-    } catch (e) {
-    }
+    } catch {}
   }, [paymentUrl]);
+
+  const handleRetryPreparation = useCallback(() => {
+    if (!request || !preServiceMode || preServiceReadiness === 'checking') return;
+    void runPreServicePreparation(request, gateways);
+  }, [gateways, preServiceMode, preServiceReadiness, request, runPreServicePreparation]);
 
   if (loading) {
     return (
@@ -186,6 +336,8 @@ export default function PaymentScreen() {
   const quoteCurrency = quote?.currency ?? snapshot?.currency ?? request.currency;
   const money = (value: number | null) => value === null ? '—' : `${value.toLocaleString()} ${quoteCurrency}`;
   const testMode = gateways.some((gateway) => !['LIVE', 'PRODUCTION'].includes(gateway.environment.toUpperCase()));
+  const payDisabled = gatewayLoading || gateways.length === 0 || paymentCreationInFlight.current ||
+    (preServiceMode && preServiceReadiness !== 'ready');
 
   return (
     <View style={styles.container}>
@@ -234,7 +386,34 @@ export default function PaymentScreen() {
             <Lock size={14} color={Colors.success} />
           </View>
 
-          {step === 'summary' && (
+          {preServiceMode && preServiceReadiness === 'checking' && (
+            <View style={styles.statusCard} accessibilityLiveRegion="polite">
+              <ActivityIndicator size="large" color={Colors.gold} />
+              <Text style={styles.statusText}>
+                {isRTL ? 'جارٍ التحقق من جاهزية الدفع التجريبي…' : 'Checking TEST checkout readiness…'}
+              </Text>
+            </View>
+          )}
+
+          {preServiceMode && ['unavailable', 'error'].includes(preServiceReadiness) && (
+            <View style={styles.statusCard} accessibilityRole="alert">
+              <XCircle size={48} color={Colors.error} />
+              <Text style={styles.failedTitle}>
+                {isRTL ? 'الدفع غير متاح' : 'Checkout unavailable'}
+              </Text>
+              <Text style={styles.statusSubText}>{preServiceUnavailable}</Text>
+              <Pressable
+                style={styles.retryButton}
+                onPress={handleRetryPreparation}
+                accessibilityRole="button"
+                accessibilityLabel={isRTL ? 'إعادة التحقق من جاهزية الدفع' : 'Retry checkout readiness'}
+              >
+                <Text style={styles.retryButtonText}>{t('try_again')}</Text>
+              </Pressable>
+            </View>
+          )}
+
+          {step === 'summary' && (!preServiceMode || preServiceReadiness === 'ready') && (
             <>
               <View style={styles.infoCard}>
                 <CreditCard size={24} color={Colors.gold} />
@@ -243,7 +422,14 @@ export default function PaymentScreen() {
                 </Text>
               </View>
 
-              <Pressable style={[styles.payButton, (gatewayLoading || gateways.length === 0 || step !== 'summary') && styles.payButtonDisabled]} onPress={handleCreatePayment} disabled={gatewayLoading || gateways.length === 0 || step !== 'summary'}>
+              <Pressable
+                style={[styles.payButton, payDisabled && styles.payButtonDisabled]}
+                onPress={handleCreatePayment}
+                disabled={payDisabled}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: payDisabled, busy: paymentCreationInFlight.current }}
+                accessibilityLabel={isRTL ? 'المتابعة إلى دفع Tap التجريبي' : 'Continue to Tap TEST checkout'}
+              >
                 <CreditCard size={20} color={Colors.primary} />
                 <Text style={styles.payButtonText}>
                   {t('pay_now')}{totalWithVat === null ? '' : ` - ${money(totalWithVat)}`}
@@ -265,10 +451,12 @@ export default function PaymentScreen() {
               <Text style={styles.statusText}>{t('payment_redirecting')}</Text>
               <Text style={styles.statusSubText}>{t('payment_complete_in_browser')}</Text>
 
-              <Pressable style={styles.openUrlButton} onPress={handleOpenPaymentUrl}>
-                <ExternalLink size={18} color={Colors.primary} />
-                <Text style={styles.openUrlText}>{t('open_payment_page')}</Text>
-              </Pressable>
+              {!!paymentUrl && (
+                <Pressable style={styles.openUrlButton} onPress={handleOpenPaymentUrl} accessibilityRole="link">
+                  <ExternalLink size={18} color={Colors.primary} />
+                  <Text style={styles.openUrlText}>{t('open_payment_page')}</Text>
+                </Pressable>
+              )}
 
               <Pressable style={styles.verifyButton} onPress={() => handleVerifyPayment()}>
                 <Text style={styles.verifyButtonText}>{t('verify_payment')}</Text>

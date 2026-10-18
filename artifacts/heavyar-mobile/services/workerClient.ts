@@ -368,8 +368,13 @@ export type CheckoutGateway = {
   capabilities?: { refunds?: boolean; savedCards?: boolean; split?: boolean };
 };
 
-export function getCheckoutGateways() {
-  return request<{ success: true; gateways: CheckoutGateway[] }>('/api/checkout/gateways');
+export function getCheckoutGateways(signal?: AbortSignal, expectedUid?: string) {
+  return request<{ success: true; gateways: CheckoutGateway[] }>(
+    '/api/checkout/gateways',
+    { signal },
+    true,
+    expectedUid,
+  );
 }
 
 export function getDriverProfile(signal?: AbortSignal, expectedUid?: string) {
