@@ -1,4 +1,4 @@
-import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, normalizeTapEnvironment, tapCredentials, tapCustomerFromAccount, type PaymentQuote, type PaymentState, type TapEnvironment } from './payment';
+import { quoteForRequest, quoteFromCommercial, paymentIdForRequest, idempotencyKeyForPayment, invoiceNumberForPayment, TapPaymentProvider, canTransition, PAYMENT_STATES, stateForProvider, pricingConfig, normalizeTapEnvironment, tapCredentials, tapCustomerFromAccount, type PaymentQuote, type PaymentState, type ProviderPayment, type TapEnvironment } from './payment';
 import { calculateCommercial, majorToMinor, minorToMajor, resolveRule, verifiedStoredCommercial, type CommercialCatalog, type CommercialSnapshot, type CommissionRule } from './commercial';
 import { acceptStaffInvitation, staffInvitationDetails, AdminDocumentUnavailableError, handleAdmin, handleAdminDocument, handlePublishedSeo, handlePublicEarlyAccess, processEarlyAccessRetention, processScheduledEarlyAccessCampaigns, processScheduledCampaigns, processStaffClaimSync, processDeletionJobs, processEmailVerificationReminderJobs, requireAdmin, type AdminRole } from './admin';
 import { canApplyProviderResult, defaultVerificationPolicy, defaultVerificationProfile, deriveProviderTrust, evaluateRisk, normalizeVerificationPolicy, providerComponentNames, providerVerificationFor, type IdentityVerificationProvider, type ProviderComponents, type VerificationPolicy } from './verification';
@@ -99,6 +99,22 @@ import {
   type ServiceContractActorRole,
   type ServiceContractAggregate,
 } from './service-contract';
+import {
+  HEAVYAR_TAP_MERCHANT_ID,
+  HEAVYAR_TAP_MARKETPLACE_ID,
+  PRE_SERVICE_PAYMENT_PRODUCTION_ACTIVATION,
+  PreServicePaymentError,
+  buildRentalPreServicePaymentPlan,
+  buildServicePreServicePaymentPlan,
+  assertPreServiceProviderAssociation,
+  preServicePaymentAssociation,
+  preServicePaymentMetadata,
+  preServicePaymentPublicView,
+  type ApprovedServiceCommercialTerms,
+  type PreServicePaymentAssociation,
+  type PreServicePaymentKind,
+  type PreServicePaymentPlan,
+} from './pre-service-payment';
 import {
   CUSTOMER_PROJECT_ID,
   CUSTOMER_PROJECT_LINK_ID,
@@ -208,6 +224,7 @@ let capturedTransporterQueries: any[] | undefined;
 let transporterDiscoveryActivationOverride: boolean | undefined;
 let serviceRfqActivationOverride: boolean | undefined;
 let serviceContractActivationOverride: boolean | undefined;
+let preServicePaymentActivationOverride: boolean | undefined;
 let serviceExecutionActivationOverride: boolean | undefined;
 let customerProjectActivationOverride: boolean | undefined;
 let serviceExecutionBindingOverride: ((sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) | undefined;
@@ -218,7 +235,7 @@ let notificationDeviceCommitOverride: ((writes: any[], attempt: number) => Promi
 let capturedEquipmentQueries: any[] | undefined;
 let identityQueryOverride: ((collection: string, uid: string) => any[]) | undefined;
 const paymentCreateInflight = new Map<string, Promise<Response>>();
-  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, setServiceContractActivation(value?: boolean) { serviceContractActivationOverride = value; }, setServiceExecutionActivation(value?: boolean) { serviceExecutionActivationOverride = value; }, setCustomerProjectActivation(value?: boolean) { customerProjectActivationOverride = value; }, setServiceExecutionBinding(resolver?: (sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) { serviceExecutionBindingOverride = resolver; }, setServiceMessageRows(rows?: any[]) { serviceMessageQueryOverride = rows; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, setNotificationDeviceCommit(fn?: (writes: any[], attempt: number) => Promise<void>) { notificationDeviceCommitOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), notificationDeviceTransition, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, trustedInvoiceSource, availabilityQueriesForEquipment };
+  export const __test = { setAuth(user?: TestUser) { authOverride = user ? { email: 'customer@example.test', accountProfile: { nameEn: 'Test Customer', email: 'customer@example.test', countryCode: 'SA' }, ...user } : undefined; }, setFirestore(fn?: (collection: string, id: string) => any) { firestoreOverride = fn; }, setAssetOwned(value?: boolean) { assetOwnedOverride = value; }, captureWrites(target?: Array<{ path: string; fields: Record<string, unknown> }>) { firestoreWrites = target; }, captureCommits(target?: unknown[]) { capturedCommits = target; }, captureDriverQueries(target?: any[]) { capturedDriverQueries = target; }, captureOperatorQueries(target?: any[]) { capturedOperatorQueries = target; }, setOperatorDiscoveryActivation(value?: boolean) { operatorDiscoveryActivationOverride = value; }, captureTransporterQueries(target?: any[]) { capturedTransporterQueries = target; }, setTransporterDiscoveryActivation(value?: boolean) { transporterDiscoveryActivationOverride = value; }, setServiceRfqActivation(value?: boolean) { serviceRfqActivationOverride = value; }, setServiceContractActivation(value?: boolean) { serviceContractActivationOverride = value; }, setPreServicePaymentActivation(value?: boolean) { preServicePaymentActivationOverride = value; }, setServiceExecutionActivation(value?: boolean) { serviceExecutionActivationOverride = value; }, setCustomerProjectActivation(value?: boolean) { customerProjectActivationOverride = value; }, setServiceExecutionBinding(resolver?: (sourceKind: ConfirmedExecutionBinding['sourceKind'], sourceId: string) => ConfirmedExecutionBinding | null | Promise<ConfirmedExecutionBinding | null>) { serviceExecutionBindingOverride = resolver; }, setServiceMessageRows(rows?: any[]) { serviceMessageQueryOverride = rows; }, captureEquipmentQueries(target?: any[]) { capturedEquipmentQueries = target; }, setIdentityQuery(fn?: (collection: string, uid: string) => any[]) { identityQueryOverride = fn; }, setReservationConflict(value: boolean) { reservationConflict = value; }, setVerificationProvider(provider?: IdentityVerificationProvider) { verificationProviderOverride = provider; }, setDeliveryQuery(value?: any[]) { notificationDeliveryQueryOverride = value; }, setDeletionDevices(value?: any[]) { deletionDeviceQueryOverride = value; }, setRefreshTokenRevoke(fn?: (env: Env, uid: string) => Promise<void>) { refreshTokenRevokeOverride = fn; }, setPasswordVerifier(fn?: (email: string, password: string) => Promise<{ localId?: string }>) { passwordVerifierOverride = fn; }, setCustomToken(fn?: (uid: string) => Promise<string>) { customTokenOverride = fn; }, setPhoneLoginLimiter(fn?: (phoneHash: string, ipHash: string) => Promise<boolean | null>) { phoneLoginLimiterOverride = fn; }, setPublicDriverLimiter(fn?: (scope: PublicDiscoveryRateLimitScope, ipHash: string) => Promise<boolean | null>) { publicDriverLimiterOverride = fn; }, setPublicEquipmentLimiter(fn?: (ipHash: string) => Promise<boolean | null>) { publicEquipmentLimiterOverride = fn; }, setAuthenticatedMutationLimiter(fn?: (uid: string, scope: AuthenticatedMutationScope) => Promise<AuthenticatedMutationRateLimitDecision>) { authenticatedMutationLimiterOverride = fn; }, setNotificationDeviceCommit(fn?: (writes: any[], attempt: number) => Promise<void>) { notificationDeviceCommitOverride = fn; }, resetMutationLimits() { authenticatedMutationLimiterOverride = undefined; }, allowAuthenticatedMutation: (env: Env, uid: string, scope: AuthenticatedMutationScope, nowMs?: number) => allowAuthenticatedMutation(env, uid, scope, nowMs), notificationDeviceTransition, mintFirebaseCustomToken, firestoreUrl(env: Env, path: string) { return firestoreUrl(env, path); }, verifyToken: auth, quoteForRequest, canTransition, paymentStates: PAYMENT_STATES, hashId: hashedId, normalizeSaudiPhone, normalizeGccPhone, effectiveAuthConfig, normalizeEmailVerificationPolicy, resendFrom, resendSenderDomainValid, runRetryDelivery: retryDueNotificationDeliveries, authoritativeCommercialSnapshot, recalculateLockedCommercial, legacyRecordCommercialSnapshot, quoteFromDoc, preServiceAssociationFromPayment, trustedInvoiceSource, availabilityQueriesForEquipment };
 const TAP = 'https://api.tap.company/v2';
 const enc = new TextEncoder();
 const b64 = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
@@ -3537,6 +3554,108 @@ async function create(req: Request, env: Env, u: User) {
   try { return (await operation).clone(); }
   finally { if (paymentCreateInflight.get(key) === operation) paymentCreateInflight.delete(key); }
 }
+
+function preServiceAssociationFromPayment(payment: any): PreServicePaymentAssociation | null {
+  const currency = String(payment?.currency || '');
+  const commercialSnapshot = verifiedStoredCommercial(payment?.commercialSnapshot, currency);
+  const sourceRevision = Number(payment?.sourceRevision);
+  const customerPayableMinor = Number(payment?.customerPayableMinor);
+  const providerReceivableMinor = Number(payment?.providerReceivableMinor);
+  const marketplaceRemainderMinor = Number(payment?.marketplaceRemainderMinor);
+  const customerPayableMajor = Number(payment?.amount);
+  const kind = String(payment?.sourceKind || '') as PreServicePaymentKind;
+  if (payment?.flow !== 'pre_service' || !['equipment_rental', 'operator_service', 'transporter_service'].includes(kind) ||
+      !['TEST', 'LIVE'].includes(String(payment?.environment || '')) ||
+      !commercialSnapshot || currency !== 'SAR' || !Number.isSafeInteger(sourceRevision) || sourceRevision < 0 ||
+      ![customerPayableMinor, providerReceivableMinor, marketplaceRemainderMinor].every(Number.isSafeInteger) ||
+      customerPayableMinor <= 0 || providerReceivableMinor <= 0 || marketplaceRemainderMinor < 0 ||
+      providerReceivableMinor + marketplaceRemainderMinor !== customerPayableMinor ||
+      !Number.isFinite(customerPayableMajor) || customerPayableMajor <= 0 ||
+      Number(minorToMajor(customerPayableMinor, currency)) !== customerPayableMajor ||
+      typeof payment.sourceId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(payment.sourceId) ||
+      payment.requestId !== payment.sourceId || typeof payment.customerUid !== 'string' || !payment.customerUid ||
+      typeof payment.providerUid !== 'string' || !payment.providerUid || typeof payment.quoteReference !== 'string' || !payment.quoteReference ||
+      payment.merchantId !== HEAVYAR_TAP_MERCHANT_ID || payment.marketplaceId !== HEAVYAR_TAP_MARKETPLACE_ID ||
+      typeof payment.destinationId !== 'string' || !/^[A-Za-z0-9_-]{3,128}$/.test(payment.destinationId)) return null;
+  return {
+    version: 1,
+    flow: 'pre_service',
+    kind,
+    sourceId: payment.sourceId,
+    sourceRevision,
+    customerUid: payment.customerUid,
+    providerUid: payment.providerUid,
+    quoteReference: payment.quoteReference,
+    environment: storedPaymentEnvironment(payment),
+    merchantId: HEAVYAR_TAP_MERCHANT_ID,
+    marketplaceId: HEAVYAR_TAP_MARKETPLACE_ID,
+    destinationId: payment.destinationId,
+    currency: 'SAR',
+    customerPayableMinor,
+    providerReceivableMinor,
+    marketplaceRemainderMinor,
+    customerPayableMajor,
+    commercialSnapshot,
+  };
+}
+
+async function reconcilePreServicePayment(
+  req: Request,
+  env: Env,
+  persistedPayment: any,
+  providerPayment: ProviderPayment,
+  source: 'verify' | 'webhook',
+  actor?: User,
+) {
+  const association = preServiceAssociationFromPayment(persistedPayment);
+  if (!association || association.kind !== 'equipment_rental') {
+    return out(env, req, { success: false, error: 'Transaction association mismatch' }, 409);
+  }
+  const raw = await getRawDoc(env, 'equipmentRequests', association.sourceId);
+  const rental = raw?.data;
+  const storedQuote = await getDoc(env, 'paymentQuotes', association.sourceId);
+  let quote: PaymentQuote;
+  try { quote = quoteFromDoc(storedQuote); }
+  catch { return out(env, req, { success: false, error: 'Invalid payment quote' }, 409); }
+  if (actor && actor.uid !== association.customerUid && !actor.admin) {
+    return out(env, req, { success: false, error: 'Forbidden' }, 403);
+  }
+  const alreadyPaid = rental?.paymentStatus === 'paid' && rental?.paymentState === 'paid' && !!rental?.invoiceId;
+  const sourceRevisionMatches = Number(rental?.revision || 0) === association.sourceRevision ||
+    alreadyPaid && Number(rental?.revision || 0) >= association.sourceRevision;
+  const reservation = `reservation:${String(persistedPayment.idempotencyKey || '')}`;
+  const sourceMatches = !!raw && rental.customerUid === association.customerUid && rental.providerUid === association.providerUid &&
+    rental.pricingModelVersion === 2 && rental.pricingSnapshot?.snapshotId === association.quoteReference &&
+    sourceRevisionMatches && (alreadyPaid || rental.status === 'accepted') &&
+    (rental.paymentId === providerPayment.id || rental.paymentId === reservation) &&
+    sameStoredCommercial(rental.commercialSnapshot, association.commercialSnapshot) &&
+    quote.quoteId === persistedPayment.quoteId && quote.currency === association.currency &&
+    quote.amount === association.customerPayableMajor && sameStoredCommercial(quote.commercialSnapshot, association.commercialSnapshot) &&
+    persistedPayment.provider === 'tap' && (!persistedPayment.providerReference || persistedPayment.providerReference === providerPayment.id);
+  const metadata = preServicePaymentMetadata(association, quote.quoteId, String(persistedPayment.idempotencyKey || ''));
+  try { assertPreServiceProviderAssociation(providerPayment, association, metadata); }
+  catch { return out(env, req, { success: false, error: 'Transaction association mismatch' }, 409); }
+  if (!sourceMatches) {
+    return out(env, req, { success: false, error: 'Transaction association mismatch' }, 409);
+  }
+  const state = stateForProvider(providerPayment.status);
+  if (state === 'paid') {
+    try { await settlePaid(env, association.sourceId, raw!, quote, providerPayment, source, true); }
+    catch {
+      if (!await fullySettled(env, association.sourceId)) {
+        return out(env, req, { success: false, error: 'Payment settlement conflict' }, 409);
+      }
+    }
+  } else {
+    try { await persistProviderState(env, association.sourceId, raw!, state, providerPayment.id); }
+    catch { return out(env, req, { success: false, error: 'Invalid payment transition' }, 409); }
+  }
+  return out(env, req, { success: true, paymentId: providerPayment.id, chargeId: providerPayment.id,
+    status: state, providerStatus: providerPayment.status, canonicalStatus: state, paymentState: state,
+    isPaid: state === 'paid', amount: providerPayment.amount, currency: providerPayment.currency,
+    requestId: association.sourceId });
+}
+
 async function verify(req: Request, env: Env, u: User) {
   const body = await req.json() as { chargeId?: string; paymentId?: string }, chargeId = body.paymentId || body.chargeId;
   if (Object.keys(body).some(key => !['chargeId', 'paymentId'].includes(key))) return out(env, req, { success: false, error: 'Invalid payment request' }, 400);
@@ -3548,6 +3667,7 @@ async function verify(req: Request, env: Env, u: User) {
   try { tapRuntime = tapCredentials(env, paymentEnvironment); }
   catch { return out(env, req, { success: false, error: 'Payment unavailable' }, 503); }
   let d; try { d = await new TapPaymentProvider(tapRuntime.secret, tapRuntime.merchantId).retrieve(chargeId); } catch { return out(env, req, { success: false, error: 'Payment unavailable' }, 502); }
+  if (persistedPayment.flow === 'pre_service') return reconcilePreServicePayment(req, env, persistedPayment, d, 'verify', u);
   const m = d.metadata || {};
   const raw = await getRawDoc(env, 'equipmentRequests', m.requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
   let quote: PaymentQuote; const storedQuote = await getDoc(env, 'paymentQuotes', String(m.requestId));
@@ -3587,6 +3707,10 @@ async function tapWebhook(req: Request, env: Env) {
   try { tapRuntime = tapCredentials(env, paymentEnvironment); }
   catch { return out(env, req, { success: false, error: 'Payment unavailable' }, 503); }
   let d; try { d = await new TapPaymentProvider(tapRuntime.secret, tapRuntime.merchantId).retrieve(chargeId); } catch { return out(env, req, { success: false, error: 'Invalid transaction' }, 400); }
+  if (persistedPayment.flow === 'pre_service') {
+    if (d.id !== chargeId) return out(env, req, { success: false, error: 'Invalid transaction' }, 400);
+    return reconcilePreServicePayment(req, env, persistedPayment, d, 'webhook');
+  }
   const m = d.metadata || {}, requestId = String(m.requestId || '');
   if (!requestId || d.id !== chargeId) return out(env, req, { success: false, error: 'Invalid transaction' }, 400);
   const raw = await getRawDoc(env, 'equipmentRequests', requestId), r = raw?.data, e = r && await getDoc(env, 'equipment', r.equipmentId);
@@ -5570,6 +5694,412 @@ function serviceContractDisabled(req: Request, env: Env) {
     errorCode: 'SERVICE_CONTRACT_NOT_ACTIVATED',
     activation: { enabled: false, reason: SERVICE_CONTRACT_PRODUCTION_ACTIVATION },
   }, 404);
+}
+
+const PRE_SERVICE_PAYMENT_BODY_LIMIT_BYTES = 16 * 1024;
+
+function preServicePaymentDisabled(req: Request, env: Env) {
+  return out(env, req, {
+    success: false,
+    error: 'Pre-service payments are not activated',
+    errorCode: 'PRE_SERVICE_PAYMENT_NOT_ACTIVATED',
+    activation: { enabled: false, reason: PRE_SERVICE_PAYMENT_PRODUCTION_ACTIVATION },
+  }, 404);
+}
+
+function preServicePaymentErrorResponse(req: Request, env: Env, error: unknown) {
+  const code = error instanceof PreServicePaymentError ? error.code : 'PRE_SERVICE_PAYMENT_UNAVAILABLE';
+  const status = code.includes('ACTOR') || code.includes('ACCOUNT') ? 403
+    : code === 'PRE_SERVICE_PAYMENT_UNAVAILABLE' ? 503 : 409;
+  return out(env, req, { success: false, error: code, errorCode: code }, status);
+}
+
+type PreServicePaymentContext = {
+  kind: PreServicePaymentKind;
+  sourceId: string;
+  raw: { data: any; updateTime?: string };
+  plan: PreServicePaymentPlan;
+  association: PreServicePaymentAssociation;
+  environment: TapEnvironment;
+  customerProfile: any;
+};
+
+function parsePreServicePaymentBody(value: unknown): { kind: PreServicePaymentKind; sourceId: string } {
+  const body = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  if (!body || !Object.keys(body).every(key => ['kind', 'sourceId'].includes(key)) ||
+      !['equipment_rental', 'operator_service', 'transporter_service'].includes(String(body.kind)) ||
+      typeof body.sourceId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.sourceId)) {
+    throw new PreServicePaymentError('INVALID_PRE_SERVICE_PAYMENT');
+  }
+  return { kind: body.kind as PreServicePaymentKind, sourceId: body.sourceId };
+}
+
+async function resolvePreServicePaymentContext(
+  env: Env,
+  user: User,
+  body: { kind: PreServicePaymentKind; sourceId: string },
+  allowExistingAttempt = false,
+  requireDurableSettlement = false,
+): Promise<PreServicePaymentContext> {
+  const gateway = await getDoc(env, 'paymentGateways', 'tap');
+  const environment = normalizeTapEnvironment(gateway?.environment);
+  if (gateway?.enabled !== true || env.TAP_MERCHANT_ID !== HEAVYAR_TAP_MERCHANT_ID) {
+    throw new PreServicePaymentError('HEAVYAR_TAP_IDENTITY_UNVERIFIED');
+  }
+  const now = new Date().toISOString();
+  if (body.kind === 'equipment_rental') {
+    const raw = await getRawDoc(env, 'equipmentRequests', body.sourceId), rental = raw?.data;
+    if (!raw || !rental || rental.customerUid !== user.uid) throw new PreServicePaymentError('PAYMENT_ACTOR_NOT_AUTHORIZED');
+    const [equipment, customer, provider, destination] = await Promise.all([
+      getDoc(env, 'equipment', String(rental.equipmentId || '')),
+      getDoc(env, 'users', String(rental.customerUid || '')),
+      getDoc(env, 'users', String(rental.providerUid || '')),
+      getDoc(env, 'tapProviderDestinations', String(rental.providerUid || '')),
+    ]);
+    if (!equipment || String(equipment.ownerUid || '') !== String(rental.providerUid || '') ||
+        !customer || !provider || customer.role !== 'customer' ||
+        !['provider', 'driver'].includes(String(provider.role)) || isSecuritySuspended(customer) || isSecuritySuspended(provider) ||
+        isStoreReviewAccount(customer) || isStoreReviewAccount(provider)) {
+      throw new PreServicePaymentError('PAYMENT_ACCOUNT_NOT_AUTHORIZED');
+    }
+    await enforceOperationalAccess(env, user, equipment);
+    await enforceTrustForPayment(env, user, rental, equipment);
+    const plan = buildRentalPreServicePaymentPlan({
+      requestId: body.sourceId,
+      request: rental,
+      actorUid: user.uid,
+      environment,
+      destination,
+      now,
+      allowExistingAttempt,
+    });
+    return {
+      kind: body.kind, sourceId: body.sourceId, raw, plan,
+      association: preServicePaymentAssociation(plan, environment),
+      environment,
+      customerProfile: customer || user.accountProfile,
+    };
+  }
+  const raw = await getRawDoc(env, 'serviceContracts', body.sourceId);
+  const stored = raw ? parseStoredServiceContract(raw.data, raw.updateTime) : null;
+  if (!raw || !stored || stored.aggregate.snapshot.customerUid !== user.uid ||
+      `${stored.aggregate.snapshot.serviceKind}_service` !== body.kind) {
+    throw new PreServicePaymentError('PAYMENT_ACTOR_NOT_AUTHORIZED');
+  }
+  const providerUid = stored.aggregate.snapshot.providerPrincipal.kind === 'individual'
+    ? stored.aggregate.snapshot.providerPrincipal.providerUid : '';
+  const [customer, provider, destination, approvedTerms] = await Promise.all([
+    getDoc(env, 'users', stored.aggregate.snapshot.customerUid),
+    getDoc(env, 'users', providerUid),
+    getDoc(env, 'tapProviderDestinations', providerUid),
+    getDoc(env, 'servicePaymentPolicies', stored.aggregate.snapshot.serviceKind),
+  ]);
+  if (!customer || !provider || customer.role !== 'customer' || provider.role !== 'driver' ||
+      isSecuritySuspended(customer) || isSecuritySuspended(provider) ||
+      isStoreReviewAccount(customer) || isStoreReviewAccount(provider)) {
+    throw new PreServicePaymentError('PAYMENT_ACCOUNT_NOT_AUTHORIZED');
+  }
+  const plan = buildServicePreServicePaymentPlan({
+    contract: stored.aggregate,
+    actorUid: user.uid,
+    environment,
+    destination,
+    approvedTerms: approvedTerms as ApprovedServiceCommercialTerms | null,
+    now,
+  });
+  // Service payment preparation shares the same canonical resolver, but an
+  // approved legal/commission policy is not yet sufficient to activate a
+  // durable service booking or settlement. Fail before reserving or charging.
+  if (requireDurableSettlement) {
+    throw new PreServicePaymentError(`SERVICE_${plan.kind === 'operator_service' ? 'OPERATOR' : 'TRANSPORTER'}_PAYMENT_SETTLEMENT_NOT_APPROVED`);
+  }
+  return {
+    kind: body.kind, sourceId: body.sourceId, raw, plan,
+    association: preServicePaymentAssociation(plan, environment),
+    environment,
+    customerProfile: customer || user.accountProfile,
+  };
+}
+
+function preServicePaymentRecordMatches(
+  payment: any,
+  association: PreServicePaymentAssociation,
+  quote: PaymentQuote,
+): boolean {
+  return !!payment && payment.flow === 'pre_service' && payment.sourceKind === association.kind &&
+    payment.sourceId === association.sourceId && payment.requestId === association.sourceId &&
+    Number(payment.sourceRevision) === association.sourceRevision && payment.customerUid === association.customerUid &&
+    payment.providerUid === association.providerUid && payment.quoteReference === association.quoteReference &&
+    payment.quoteId === quote.quoteId && storedPaymentEnvironment(payment) === association.environment &&
+    payment.merchantId === association.merchantId && payment.marketplaceId === association.marketplaceId &&
+    payment.destinationId === association.destinationId && payment.currency === association.currency &&
+    Number(payment.amount) === association.customerPayableMajor &&
+    Number(payment.customerPayableMinor) === association.customerPayableMinor &&
+    Number(payment.providerReceivableMinor) === association.providerReceivableMinor &&
+    Number(payment.marketplaceRemainderMinor) === association.marketplaceRemainderMinor &&
+    sameStoredCommercial(payment.commercialSnapshot, association.commercialSnapshot);
+}
+
+function preServicePaymentFields(
+  association: PreServicePaymentAssociation,
+  quote: PaymentQuote,
+  idempotencyKey: string,
+  attempt: number,
+) {
+  return {
+    requestId: { stringValue: association.sourceId },
+    sourceId: { stringValue: association.sourceId },
+    sourceKind: { stringValue: association.kind },
+    sourceRevision: { integerValue: String(association.sourceRevision) },
+    flow: { stringValue: association.flow },
+    paymentId: { stringValue: paymentIdForRequest(association.sourceId) },
+    provider: { stringValue: 'tap' },
+    environment: { stringValue: association.environment },
+    merchantId: { stringValue: association.merchantId },
+    marketplaceId: { stringValue: association.marketplaceId },
+    destinationId: { stringValue: association.destinationId },
+    state: { stringValue: 'created' },
+    quoteId: { stringValue: quote.quoteId },
+    quoteReference: { stringValue: association.quoteReference },
+    amount: { doubleValue: association.customerPayableMajor },
+    customerPayableMinor: { integerValue: String(association.customerPayableMinor) },
+    providerReceivableMinor: { integerValue: String(association.providerReceivableMinor) },
+    marketplaceRemainderMinor: { integerValue: String(association.marketplaceRemainderMinor) },
+    currency: { stringValue: association.currency },
+    customerUid: { stringValue: association.customerUid },
+    providerUid: { stringValue: association.providerUid },
+    idempotencyKey: { stringValue: idempotencyKey },
+    attempt: { integerValue: String(attempt) },
+    commercialSnapshot: firestoreValue(association.commercialSnapshot),
+  };
+}
+
+async function markPreServicePaymentUncertain(
+  env: Env,
+  context: PreServicePaymentContext,
+  reservation: string,
+  idempotencyKey: string,
+  attempt: number,
+) {
+  const current = capturedCommits
+    ? { data: { ...context.raw.data, paymentId: reservation, paymentState: 'pending' }, updateTime: 'test-reserved' }
+    : await getRawDoc(env, 'equipmentRequests', context.sourceId);
+  if (!current?.updateTime || current.data.paymentId !== reservation || current.data.paymentState === 'processing') return;
+  const now = new Date().toISOString();
+  await commitWrites(env, [
+    { update: { name: fullName(env, `equipmentRequests/${encodeURIComponent(context.sourceId)}`), fields: {
+      paymentStatus: { stringValue: 'pending_payment' }, paymentState: { stringValue: 'processing' },
+    } }, updateMask: { fieldPaths: ['paymentStatus', 'paymentState'] }, currentDocument: { updateTime: current.updateTime } },
+    { update: { name: fullName(env, `payments/${encodeURIComponent(context.sourceId)}`), fields: {
+      state: { stringValue: 'processing' }, uncertain: { booleanValue: true },
+    } }, updateMask: { fieldPaths: ['state', 'uncertain'] }, currentDocument: { exists: true } },
+    { update: { name: fullName(env, `paymentIdempotency/${encodeURIComponent(idempotencyKey)}`), fields: {
+      state: { stringValue: 'processing' }, uncertain: { booleanValue: true },
+    } }, updateMask: { fieldPaths: ['state', 'uncertain'] }, currentDocument: { exists: true } },
+    eventWrite(env, `${context.sourceId}:pre_service_creation_uncertain_${attempt}`, context.sourceId,
+      context.raw.data, 'payment_creation_uncertain', 'processing', now),
+  ]);
+}
+
+async function createPreServicePaymentAttempt(
+  body: { kind: PreServicePaymentKind; sourceId: string },
+  req: Request,
+  env: Env,
+  user: User,
+) {
+  if (preServicePaymentActivationOverride !== true) return preServicePaymentDisabled(req, env);
+  let context: PreServicePaymentContext;
+  try {
+    context = await resolvePreServicePaymentContext(env, user, body, true, true);
+  } catch (error) {
+    return preServicePaymentErrorResponse(req, env, error);
+  }
+  const { association, plan } = context;
+  const existingPayment = await getDoc(env, 'payments', context.sourceId);
+  const storedQuote = await getDoc(env, 'paymentQuotes', context.sourceId);
+  let quote: PaymentQuote;
+  try {
+    quote = storedQuote?.quoteId ? quoteFromDoc(storedQuote) : quoteFromCommercial(plan.commercialSnapshot, context.sourceId);
+  } catch {
+    return out(env, req, { success: false, error: 'Invalid payment quote' }, 409);
+  }
+  if (quote.quoteId !== quoteFromCommercial(plan.commercialSnapshot, context.sourceId, 0).quoteId ||
+      quote.currency !== association.currency || quote.amount !== association.customerPayableMajor ||
+      !sameStoredCommercial(quote.commercialSnapshot, association.commercialSnapshot)) {
+    return out(env, req, { success: false, error: 'Invalid payment quote' }, 409);
+  }
+  if (existingPayment && !preServicePaymentRecordMatches(existingPayment, association, quote)) {
+    return out(env, req, { success: false, error: 'Payment association mismatch' }, 409);
+  }
+  const source = context.raw.data;
+  if (source.paymentStatus === 'paid' || existingPayment?.state === 'paid') {
+    return out(env, req, { success: true, paymentId: String(source.paymentId || existingPayment?.providerReference || ''),
+      status: 'paid', paymentState: 'paid', canonicalStatus: 'paid', amount: quote.amount, currency: quote.currency,
+      plan: preServicePaymentPublicView(plan), provider: 'tap' });
+  }
+  const baseIdempotency = idempotencyKeyForPayment(user.uid, context.sourceId);
+  const reservationPrefix = `reservation:${baseIdempotency}`;
+  const isReserved = source.paymentStatus === 'pending_payment' && String(source.paymentId || '').startsWith(reservationPrefix);
+  const terminalRetry = !!existingPayment && ['failed', 'cancelled', 'expired'].includes(String(existingPayment.state)) &&
+    source.paymentStatus === 'unpaid';
+  const attempt = terminalRetry ? Math.max(2, Number(existingPayment.attempt || 1) + 1) : Math.max(1, Number(existingPayment?.attempt || 1));
+  const idempotencyKey = isReserved
+    ? String(existingPayment?.idempotencyKey || String(source.paymentId).replace(/^reservation:/, ''))
+    : `${baseIdempotency}${attempt > 1 ? `:${attempt}` : ''}`;
+  const reservation = `reservation:${idempotencyKey}`;
+  if (source.paymentStatus === 'pending_payment' && source.paymentId && !String(source.paymentId).startsWith('reservation:')) {
+    const state = String(existingPayment?.state || source.paymentState || 'pending') as PaymentState;
+    return out(env, req, { success: true, paymentId: source.paymentId, chargeId: source.paymentId, status: state,
+      canonicalStatus: state, paymentState: state, checkoutUrl: String(existingPayment?.checkoutUrl || ''),
+      paymentUrl: String(existingPayment?.checkoutUrl || ''), amount: quote.amount, currency: quote.currency,
+      plan: preServicePaymentPublicView(plan), provider: 'tap' });
+  }
+  if (terminalRetry && Date.parse(quote.expiresAt) <= Date.now()) {
+    return out(env, req, { success: false, error: 'Payment quote expired' }, 409);
+  }
+  if (!context.raw.updateTime) return out(env, req, { success: false, error: 'Payment unavailable' }, 503);
+  let customer;
+  try { customer = tapCustomerFromAccount(context.customerProfile, { email: user.email }); }
+  catch { return out(env, req, { success: false, error: 'Payment profile incomplete', code: 'PAYMENT_PROFILE_INCOMPLETE' }, 409); }
+  let tapRuntime: ReturnType<typeof tapCredentials>;
+  try { tapRuntime = tapCredentials(env, association.environment); }
+  catch { return out(env, req, { success: false, error: 'Payment gateway unavailable' }, 503); }
+  const tapGateway = gatewayRegistry(env, association.environment).tap;
+  if (!tapGateway.configured || !tapGateway.adapterAvailable) {
+    return out(env, req, { success: false, error: 'Payment gateway unavailable' }, 503);
+  }
+  if (!isReserved) {
+    try {
+      if (reservationConflict) throw new Error('precondition failed');
+      const now = new Date().toISOString();
+      const writes: any[] = [
+        { update: { name: fullName(env, `equipmentRequests/${encodeURIComponent(context.sourceId)}`), fields: {
+          paymentStatus: { stringValue: 'pending_payment' }, paymentState: { stringValue: 'pending' },
+          paymentId: { stringValue: reservation }, paymentEnvironment: { stringValue: association.environment },
+        } }, updateMask: { fieldPaths: ['paymentStatus', 'paymentState', 'paymentId', 'paymentEnvironment'] }, currentDocument: { updateTime: context.raw.updateTime } },
+      ];
+      if (!existingPayment) {
+        writes.push(
+          quoteWrite(env, context.sourceId, source, quote, now),
+          { update: { name: fullName(env, `payments/${encodeURIComponent(context.sourceId)}`),
+            fields: preServicePaymentFields(association, quote, idempotencyKey, attempt) }, currentDocument: { exists: false } },
+          eventWrite(env, `${context.sourceId}:pre_service_payment_created`, context.sourceId, source, 'payment_created', 'created', now),
+        );
+      } else {
+        writes.push(
+          { update: { name: fullName(env, `payments/${encodeURIComponent(context.sourceId)}`), fields: {
+            state: { stringValue: 'created' }, idempotencyKey: { stringValue: idempotencyKey },
+            attempt: { integerValue: String(attempt) }, providerReference: { nullValue: null },
+            checkoutUrl: { nullValue: null }, uncertain: { booleanValue: false },
+          } }, updateMask: { fieldPaths: ['state', 'idempotencyKey', 'attempt', 'providerReference', 'checkoutUrl', 'uncertain'] }, currentDocument: { exists: true } },
+          eventWrite(env, `${context.sourceId}:pre_service_payment_retry_${attempt}`, context.sourceId, source, 'payment_retry', 'created', now),
+        );
+      }
+      writes.push({ update: { name: fullName(env, `paymentIdempotency/${encodeURIComponent(idempotencyKey)}`), fields: {
+        requestId: { stringValue: context.sourceId }, sourceKind: { stringValue: association.kind },
+        customerUid: { stringValue: association.customerUid }, providerUid: { stringValue: association.providerUid },
+        provider: { stringValue: 'tap' }, environment: { stringValue: association.environment },
+        key: { stringValue: idempotencyKey }, attempt: { integerValue: String(attempt) }, state: { stringValue: 'created' },
+      } }, currentDocument: { exists: false } });
+      await commitWrites(env, writes);
+    } catch {
+      const current = await getDoc(env, 'equipmentRequests', context.sourceId);
+      if (!(current?.paymentId === reservation && current.paymentStatus === 'pending_payment')) {
+        return out(env, req, { success: false, error: 'Payment reservation conflict' }, 409);
+      }
+    }
+  }
+  const metadata = preServicePaymentMetadata(association, quote.quoteId, idempotencyKey);
+  const provider = new TapPaymentProvider(tapRuntime.secret, tapRuntime.merchantId);
+  let payment: ProviderPayment;
+  try {
+    payment = await provider.create({
+      amount: quote.amount, currency: quote.currency, idempotencyKey, metadata,
+      requestId: context.sourceId, customerUid: association.customerUid, customer,
+      marketplaceSplit: plan.split,
+    });
+    assertPreServiceProviderAssociation(payment, association, metadata);
+  } catch {
+    await markPreServicePaymentUncertain(env, context, reservation, idempotencyKey, attempt).catch(() => undefined);
+    return out(env, req, { success: false, error: 'Payment status uncertain; retry verification',
+      paymentState: 'processing', canonicalStatus: 'processing', retryable: true }, 502);
+  }
+  const state = stateForProvider(payment.status);
+  if (!canTransition('created', state) || ['pending', 'requires_action', 'processing'].includes(state) && !payment.checkoutUrl) {
+    await markPreServicePaymentUncertain(env, context, reservation, idempotencyKey, attempt).catch(() => undefined);
+    return out(env, req, { success: false, error: 'Invalid provider response' }, 502);
+  }
+  const reservedRaw = capturedCommits
+    ? { data: { ...source, paymentId: reservation, paymentState: 'pending' }, updateTime: 'test-reserved' }
+    : await getRawDoc(env, 'equipmentRequests', context.sourceId);
+  if (!reservedRaw?.updateTime || reservedRaw.data.paymentId !== reservation) {
+    return out(env, req, { success: false, error: 'Payment reservation changed' }, 409);
+  }
+  if (state === 'paid') {
+    try { await settlePaid(env, context.sourceId, reservedRaw, quote, payment, 'create', true); }
+    catch {
+      if (!await fullySettled(env, context.sourceId)) {
+        return out(env, req, { success: false, paymentId: payment.id, status: 'processing',
+          paymentState: 'processing', error: 'Payment received; settlement pending', retryable: true }, 409);
+      }
+    }
+  } else {
+    const now = new Date().toISOString();
+    await commitWrites(env, [
+      { update: { name: fullName(env, `equipmentRequests/${encodeURIComponent(context.sourceId)}`), fields: {
+        paymentStatus: { stringValue: ['failed', 'cancelled', 'expired'].includes(state) ? 'unpaid' : 'pending_payment' },
+        paymentState: { stringValue: state }, paymentId: { stringValue: payment.id },
+      } }, updateMask: { fieldPaths: ['paymentStatus', 'paymentState', 'paymentId'] }, currentDocument: { updateTime: reservedRaw.updateTime } },
+      { update: { name: fullName(env, `payments/${encodeURIComponent(context.sourceId)}`), fields: {
+        state: { stringValue: state }, providerReference: { stringValue: payment.id },
+        checkoutUrl: { stringValue: String(payment.checkoutUrl || '') }, uncertain: { booleanValue: false },
+      } }, updateMask: { fieldPaths: ['state', 'providerReference', 'checkoutUrl', 'uncertain'] }, currentDocument: { exists: true } },
+      { update: { name: fullName(env, `paymentIdempotency/${encodeURIComponent(idempotencyKey)}`), fields: {
+        state: { stringValue: state }, providerReference: { stringValue: payment.id }, uncertain: { booleanValue: false },
+      } }, updateMask: { fieldPaths: ['state', 'providerReference', 'uncertain'] }, currentDocument: { exists: true } },
+      eventWrite(env, `${context.sourceId}:attempt_${attempt}:pre_service_payment_${state}`, context.sourceId,
+        source, `payment_${state}`, state, now, payment.id),
+    ]);
+  }
+  return out(env, req, { success: true, paymentId: payment.id, chargeId: payment.id, status: state,
+    providerStatus: payment.status, paymentState: state, canonicalStatus: state,
+    checkoutUrl: state === 'paid' ? '' : payment.checkoutUrl || '', paymentUrl: state === 'paid' ? '' : payment.checkoutUrl || '',
+    amount: payment.amount, currency: payment.currency, plan: preServicePaymentPublicView(plan), provider: 'tap' });
+}
+
+async function createPreServicePayment(req: Request, env: Env, user: User) {
+  if (preServicePaymentActivationOverride !== true) return preServicePaymentDisabled(req, env);
+  try {
+    const parsed = await readBoundedJson(req, PRE_SERVICE_PAYMENT_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    if (parsed.status !== 'ok') throw new PreServicePaymentError('INVALID_PRE_SERVICE_PAYMENT');
+    const body = parsePreServicePaymentBody(parsed.value);
+    const key = `pre_service:${user.uid}:${body.kind}:${body.sourceId}`;
+    const existing = paymentCreateInflight.get(key);
+    if (existing) return (await existing).clone();
+    const operation = createPreServicePaymentAttempt(body, req, env, user);
+    paymentCreateInflight.set(key, operation);
+    try { return (await operation).clone(); }
+    finally { if (paymentCreateInflight.get(key) === operation) paymentCreateInflight.delete(key); }
+  } catch (error) {
+    return preServicePaymentErrorResponse(req, env, error);
+  }
+}
+
+async function preparePreServicePayment(req: Request, env: Env, user: User) {
+  // This switch is intentionally module-local and exposed only to unit tests.
+  // No request header, query parameter, environment variable or Firestore
+  // value can activate this path in a deployed Worker.
+  if (preServicePaymentActivationOverride !== true) return preServicePaymentDisabled(req, env);
+  try {
+    const parsed = await readBoundedJson(req, PRE_SERVICE_PAYMENT_BODY_LIMIT_BYTES);
+    if (parsed.status === 'too_large') return payloadTooLargeResponse(req, env);
+    if (parsed.status !== 'ok') throw new PreServicePaymentError('INVALID_PRE_SERVICE_PAYMENT');
+    const context = await resolvePreServicePaymentContext(env, user, parsePreServicePaymentBody(parsed.value));
+    return out(env, req, { success: true, plan: preServicePaymentPublicView(context.plan) });
+  } catch (error) {
+    return preServicePaymentErrorResponse(req, env, error);
+  }
 }
 
 async function serviceRfqView(env: Env, aggregate: ServiceRfqAggregate, user: User) {
@@ -8424,6 +8954,8 @@ export default { async fetch(req: Request, env: Env, executionCtx?: { waitUntil(
       if (path === '/api/notifications/devices/revoke' && req.method === 'POST') return await registerDevice(req, env, await authenticatedUser(req, env), true);
      const notificationMatch = path.match(/^\/api\/notifications\/([^/]+)\/read$/);
       if (notificationMatch && req.method === 'POST') return await notificationRead(req, env, await authenticatedUser(req, env), decodeURIComponent(notificationMatch[1]));
+     if (path === '/api/payments/pre-service/prepare' && req.method === 'POST') return await preparePreServicePayment(req, env, await authenticatedUser(req, env));
+     if (path === '/api/payments/pre-service/create' && req.method === 'POST') return await createPreServicePayment(req, env, await authenticatedUser(req, env));
      if (path === '/api/create-payment' && req.method === 'POST') return await create(req, env, await authenticatedUser(req, env));
      if (path === '/api/verify-payment' && req.method === 'POST') return await verify(req, env, await authenticatedUser(req, env));
     if (path.startsWith('/api/admin/')) {

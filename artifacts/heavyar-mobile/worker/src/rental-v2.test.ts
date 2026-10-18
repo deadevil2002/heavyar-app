@@ -156,9 +156,11 @@ describe('Rental V2 availability and lifecycle', () => {
     )).toBe(true);
   });
 
-  it('requires provider start and counterparty completion confirmation', () => {
+  it('requires verified pre-service payment, provider start, and counterparty completion confirmation', () => {
     const base = { providerUid: 'p', customerUid: 'c', status: 'accepted' };
-    expect(v2TransitionAllowed(base, 'start', 'p')).toBe(true);
+    expect(v2TransitionAllowed(base, 'start', 'p')).toBe(false);
+    expect(v2TransitionAllowed({ ...base, paymentStatus: 'paid', paymentState: 'paid', invoiceId: 'INV-r-12345678' }, 'start', 'p')).toBe(true);
+    expect(v2TransitionAllowed({ ...base, paymentStatus: 'paid', paymentState: 'processing', invoiceId: 'INV-r-12345678' }, 'start', 'p')).toBe(false);
     expect(v2TransitionAllowed(base, 'start', 'c')).toBe(false);
     const completion = { ...base, status: 'completion_requested', completionRequestedBy: 'p' };
     expect(v2TransitionAllowed(completion, 'complete', 'p')).toBe(false);

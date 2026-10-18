@@ -76,6 +76,31 @@ describe('payment trust core', () => {
     expect(payload.currency).toBe('SAR');
     expect(tapConfig(true).environment).toBe('TEST');
   });
+  test('Tap adapter emits only a server-resolved Marketplace destination split', async () => {
+    let payload: any;
+    const provider = new TapPaymentProvider('test-credential', '68049852', (async (_url, init) => {
+      payload = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        id: 'chg_split_1', status: 'INITIATED', amount: 115, currency: 'SAR',
+        metadata: payload.metadata, transaction: { url: 'https://checkout.payments.tap.company/split' },
+        destinations: { destination: [{ id: '1234567890', amount: 90, currency: 'SAR' }] },
+      }));
+    }) as typeof fetch);
+    const result = await provider.create({
+      amount: 115, currency: 'SAR', idempotencyKey: 'split-key', requestId: 'request_split', customerUid: 'customer_split',
+      customer: { first_name: 'Test', last_name: 'Customer', email: 'customer@example.test' },
+      metadata: { requestId: 'request_split' },
+      marketplaceSplit: { destinationId: '1234567890', amount: 90, currency: 'SAR' },
+    });
+    expect(payload.merchant).toEqual({ id: '68049852' });
+    expect(payload.destinations).toEqual({ destination: [{ id: '1234567890', amount: 90, currency: 'SAR' }] });
+    expect(result.marketplaceSplits).toEqual([{ destinationId: '1234567890', amount: 90, currency: 'SAR' }]);
+    await expect(provider.create({
+      amount: 115, currency: 'SAR', idempotencyKey: 'bad-split', requestId: 'request_split', customerUid: 'customer_split',
+      customer: { first_name: 'Test', last_name: 'Customer', email: 'customer@example.test' }, metadata: {},
+      marketplaceSplit: { destinationId: '1234567890', amount: 115, currency: 'SAR' },
+    })).rejects.toThrow('Invalid Marketplace split');
+  });
   test('Tap provider references are stable for retries and account customer data is validated', async () => {
     expect(await tapProviderReferences('customer_1', 'request_1')).toEqual(await tapProviderReferences('customer_1', 'request_1'));
     expect((await tapProviderReferences('customer_1', 'request_1')).order).not.toBe((await tapProviderReferences('customer_1', 'request_2')).order);
@@ -89,8 +114,18 @@ describe('payment trust core', () => {
       id: 'chg_TS123456', status: 'INITIATED', amount: 11.51, currency: 'SAR',
       transaction: { url: 'https://checkout.payments.tap.company/retrieved' },
       redirect: { url: 'https://merchant.invalid/return' },
+      destinations: { destination: [{ id: '1234567890', amount: 9, currency: 'SAR' }] },
     }))) as typeof fetch);
-    expect((await provider.retrieve('chg_TS123456')).checkoutUrl).toBe('https://checkout.payments.tap.company/retrieved');
+    const result = await provider.retrieve('chg_TS123456');
+    expect(result.checkoutUrl).toBe('https://checkout.payments.tap.company/retrieved');
+    expect(result.marketplaceSplits).toEqual([{ destinationId: '1234567890', amount: 9, currency: 'SAR' }]);
+  });
+  test('Tap retrieval fails closed on malformed Marketplace association data', async () => {
+    const provider = new TapPaymentProvider('test-credential', 'merchant-test-id', (async () => new Response(JSON.stringify({
+      id: 'chg_TS123456', status: 'INITIATED', amount: 11.51, currency: 'SAR',
+      destinations: { destination: [{ id: 'invalid destination', amount: 9, currency: 'SAR' }] },
+    }))) as typeof fetch);
+    await expect(provider.retrieve('chg_TS123456')).rejects.toThrow('Invalid Marketplace response');
   });
   test('Tap environment selection is explicit and incomplete configuration fails closed', () => {
     const env = { TAP_SECRET_KEY_TEST: 'test-credential', TAP_SECRET_KEY_LIVE: 'live-credential', TAP_MERCHANT_ID: 'merchant-id' };

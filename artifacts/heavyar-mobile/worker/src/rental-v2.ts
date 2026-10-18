@@ -360,7 +360,9 @@ export function v2TransitionAllowed(request: Record<string, any>, action: string
   const provider = request.providerUid === actorUid || admin, customer = request.customerUid === actorUid;
   if (!provider && !customer) return false;
   if (action === 'accept' || action === 'reject') return provider && request.status === 'pending';
-  if (action === 'start') return provider && request.status === 'accepted';
+  if (action === 'start') return provider && request.status === 'accepted' &&
+    request.paymentStatus === 'paid' && request.paymentState === 'paid' &&
+    typeof request.invoiceId === 'string' && request.invoiceId.length > 0;
   if (action === 'cancel') return (provider || customer) && ['pending', 'accepted'].includes(String(request.status)) && !request.actualStartAt;
   if (action === 'request_completion') return (provider || customer) && request.status === 'in_progress';
   if (action === 'complete') return request.status === 'completion_requested' && request.completionRequestedBy !== actorUid && (provider || customer);

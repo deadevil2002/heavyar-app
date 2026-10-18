@@ -16,6 +16,7 @@ export type PaymentQuote = {
 export type ProviderPayment = {
   id: string; status: string; amount: number; currency: string;
   checkoutUrl?: string; metadata?: Record<string, string>;
+  marketplaceSplits?: TapMarketplaceSplit[];
 };
 export type TapCustomer = {
   first_name: string;
@@ -23,9 +24,24 @@ export type TapCustomer = {
   email?: string;
   phone?: { country_code: string; number: string };
 };
+export type TapMarketplaceSplit = {
+  destinationId: string;
+  amount: number;
+  currency: string;
+};
+export type PaymentProviderCreateInput = {
+  amount: number;
+  currency: string;
+  metadata: Record<string, string>;
+  idempotencyKey: string;
+  requestId: string;
+  customerUid: string;
+  customer: TapCustomer;
+  marketplaceSplit?: TapMarketplaceSplit;
+};
 export interface PaymentProvider {
   readonly name: string;
-  create(input: { amount: number; currency: string; metadata: Record<string, string>; idempotencyKey: string; requestId: string; customerUid: string; customer: TapCustomer }): Promise<ProviderPayment>;
+  create(input: PaymentProviderCreateInput): Promise<ProviderPayment>;
   retrieve(providerReference: string): Promise<ProviderPayment>;
 }
 export type TapEnvironment = 'TEST' | 'LIVE';
@@ -71,6 +87,22 @@ export const TAP_WEBHOOK_URL = 'https://heavyar-api.heavyar-official.workers.dev
 export const TAP_REDIRECT_URL = 'https://heavyar-api.heavyar-official.workers.dev/api/payment/tap-redirect';
 const GCC_DIAL_CODES: Record<string, string> = { SA: '966', AE: '971', KW: '965', QA: '974', BH: '973', OM: '968' };
 
+function tapMarketplaceSplits(value: unknown): TapMarketplaceSplit[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new Error('Invalid Marketplace response');
+  return value.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('Invalid Marketplace response');
+    const raw = item as Record<string, unknown>;
+    const destinationId = String(raw.id || raw.destination_id || '');
+    const amount = Number(raw.amount);
+    const currency = String(raw.currency || '');
+    if (!/^[A-Za-z0-9_-]{3,128}$/.test(destinationId) || !Number.isFinite(amount) || amount <= 0 || !currency) {
+      throw new Error('Invalid Marketplace response');
+    }
+    return { destinationId, amount, currency };
+  });
+}
+
 function tapCheckoutUrl(value: unknown): string {
   if (typeof value !== 'string') return '';
   try {
@@ -111,15 +143,47 @@ export class TapPaymentProvider implements PaymentProvider {
     if (!r.ok) throw new Error('Payment provider unavailable');
     return data;
   }
-  async create(input: { amount: number; currency: string; metadata: Record<string, string>; idempotencyKey: string; requestId: string; customerUid: string; customer: TapCustomer }) {
+  async create(input: PaymentProviderCreateInput) {
+    if (input.marketplaceSplit && (
+      !/^[A-Za-z0-9_-]{3,128}$/.test(input.marketplaceSplit.destinationId) ||
+      !Number.isFinite(input.marketplaceSplit.amount) || input.marketplaceSplit.amount <= 0 ||
+      input.marketplaceSplit.amount >= input.amount || input.marketplaceSplit.currency !== input.currency
+    )) throw new Error('Invalid Marketplace split');
     const reference = await tapProviderReferences(input.customerUid, input.requestId);
     const redirectUrl = `${TAP_REDIRECT_URL}?requestId=${encodeURIComponent(input.requestId)}`;
-    const d = await this.call('/charges', { method: 'POST', headers: { 'Idempotency-Key': input.idempotencyKey }, body: JSON.stringify({ amount: input.amount, currency: input.currency, customer_initiated: true, threeDSecure: true, save_card: false, description: 'Heavyar rental payment', metadata: input.metadata, reference, customer: input.customer, source: { id: 'src_all' }, merchant: { id: this.merchantId }, post: { url: TAP_WEBHOOK_URL }, redirect: { url: redirectUrl } }) });
-    return { id: String(d.id), status: String(d.status || ''), amount: Number(d.amount), currency: String(d.currency), checkoutUrl: tapCheckoutUrl(d.transaction?.url), metadata: d.metadata || input.metadata };
+    const d = await this.call('/charges', { method: 'POST', headers: { 'Idempotency-Key': input.idempotencyKey }, body: JSON.stringify({
+      amount: input.amount,
+      currency: input.currency,
+      customer_initiated: true,
+      threeDSecure: true,
+      save_card: false,
+      description: 'Heavyar rental payment',
+      metadata: input.metadata,
+      reference,
+      customer: input.customer,
+      source: { id: 'src_all' },
+      merchant: { id: this.merchantId },
+      ...(input.marketplaceSplit ? { destinations: { destination: [{
+        id: input.marketplaceSplit.destinationId,
+        amount: input.marketplaceSplit.amount,
+        currency: input.marketplaceSplit.currency,
+      }] } } : {}),
+      post: { url: TAP_WEBHOOK_URL },
+      redirect: { url: redirectUrl },
+    }) });
+    return {
+      id: String(d.id), status: String(d.status || ''), amount: Number(d.amount), currency: String(d.currency),
+      checkoutUrl: tapCheckoutUrl(d.transaction?.url), metadata: d.metadata || input.metadata,
+      marketplaceSplits: tapMarketplaceSplits(d.destinations?.destination),
+    };
   }
   async retrieve(id: string) {
     const d = await this.call(`/charges/${encodeURIComponent(id)}`);
-    return { id: String(d.id), status: String(d.status || ''), amount: Number(d.amount), currency: String(d.currency), checkoutUrl: tapCheckoutUrl(d.transaction?.url), metadata: d.metadata || {} };
+    return {
+      id: String(d.id), status: String(d.status || ''), amount: Number(d.amount), currency: String(d.currency),
+      checkoutUrl: tapCheckoutUrl(d.transaction?.url), metadata: d.metadata || {},
+      marketplaceSplits: tapMarketplaceSplits(d.destinations?.destination),
+    };
   }
 }
 
