@@ -6,7 +6,9 @@ import { useRouter } from 'expo-router';
 import Colors from '@/constants/colors';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { getVerificationProfile, startVerification, type TrustStatus, type VerificationProfile } from '@/services/verificationService';
-import { IDENTITY_VERIFICATION_UI_ENABLED } from '@/constants/releaseCapabilities';
+import { IDENTITY_VERIFICATION_UI_ENABLED, PROVIDER_DOCUMENT_REVIEW_UI_ENABLED } from '@/constants/releaseCapabilities';
+import { useAuth } from '@/contexts/AuthContext';
+import ProviderDocumentVerification from '@/components/ProviderDocumentVerification';
 
 const labels: Record<TrustStatus, [string, string]> = {
   unverified: ['غير موثق', 'Unverified'],
@@ -24,14 +26,16 @@ const statusColors: Record<TrustStatus, string> = {
 
 export default function VerificationScreen() {
   const router = useRouter();
+  const { user, isAuthenticated } = useAuth();
+  const providerDocumentUid = PROVIDER_DOCUMENT_REVIEW_UI_ENABLED && isAuthenticated && user && ['provider', 'driver'].includes(user.role) ? user.uid : undefined;
 
   useEffect(() => {
-    if (!IDENTITY_VERIFICATION_UI_ENABLED) {
+    if (!IDENTITY_VERIFICATION_UI_ENABLED && !providerDocumentUid) {
       router.replace('/(tabs)/profile');
     }
-  }, [router]);
+  }, [providerDocumentUid, router]);
 
-  if (!IDENTITY_VERIFICATION_UI_ENABLED) {
+  if (!IDENTITY_VERIFICATION_UI_ENABLED && !providerDocumentUid) {
     return (
       <View style={styles.container} testID="verification-release-disabled">
         <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -43,19 +47,20 @@ export default function VerificationScreen() {
     );
   }
 
-  return <EnabledVerificationScreen />;
+  return <EnabledVerificationScreen identityEnabled={IDENTITY_VERIFICATION_UI_ENABLED} providerDocumentUid={providerDocumentUid} />;
 }
 
-function EnabledVerificationScreen() {
+function EnabledVerificationScreen({ identityEnabled, providerDocumentUid }: { identityEnabled: boolean; providerDocumentUid?: string }) {
   const { isRTL } = useLanguage();
   const router = useRouter();
   const tx = useCallback((ar: string, en: string) => isRTL ? ar : en, [isRTL]);
   const [profile, setProfile] = useState<VerificationProfile | null>(null);
-  const [busy, setBusy] = useState<boolean>(true);
+  const [busy, setBusy] = useState<boolean>(identityEnabled);
   const [starting, setStarting] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
 
   const load = useCallback(async () => {
+    if (!identityEnabled) return;
     setBusy(true);
     try {
       setProfile(await getVerificationProfile());
@@ -65,7 +70,7 @@ function EnabledVerificationScreen() {
     } finally {
       setBusy(false);
     }
-  }, [tx]);
+  }, [identityEnabled, tx]);
 
   useEffect(() => {
     void load();
@@ -86,11 +91,11 @@ function EnabledVerificationScreen() {
 
   const status = (value?: TrustStatus) => labels[value || 'unverified'][isRTL ? 0 : 1];
   const identityStatus = profile?.identity.status || 'unverified';
-  const components = useMemo(() => profile ? [
+  const components = useMemo(() => profile && identityEnabled ? [
     [tx('حالة الهوية', 'Identity'), profile.identity.status],
     [tx('المراجعة اليدوية', 'Manual review'), profile.manualReview.status],
     [tx('الثقة العامة', 'Overall trust'), profile.overallTrust.status],
-  ] as [string, TrustStatus][] : [], [profile, tx]);
+  ] as [string, TrustStatus][] : [], [identityEnabled, profile, tx]);
   const canStart = identityStatus !== 'verified' && identityStatus !== 'pending' && identityStatus !== 'manual_review';
   const webInsets = Platform.OS === 'web' ? { paddingTop: 67, paddingBottom: 34 } : undefined;
 
@@ -107,9 +112,9 @@ function EnabledVerificationScreen() {
               {isRTL ? <ChevronRight color={Colors.gold} size={20} /> : <ChevronLeft color={Colors.gold} size={20} />}
               <Text style={styles.backText}>{tx('الملف الشخصي', 'Profile')}</Text>
             </Pressable>
-            <Pressable onPress={() => void load()} style={styles.iconButton} accessibilityLabel={tx('تحديث الحالة', 'Refresh status')} testID="button-refresh-verification">
+            {identityEnabled ? <Pressable onPress={() => void load()} style={styles.iconButton} accessibilityLabel={tx('تحديث الحالة', 'Refresh status')} testID="button-refresh-verification">
               <RefreshCw color={Colors.gold} size={19} />
-            </Pressable>
+            </Pressable> : null}
           </View>
 
           <View style={[styles.hero, { alignItems: isRTL ? 'flex-end' : 'flex-start' }]}>
@@ -120,7 +125,7 @@ function EnabledVerificationScreen() {
 
           {busy && !profile ? <View style={styles.loading}><ActivityIndicator color={Colors.gold} /><Text style={styles.loadingText}>{tx('جاري تحميل حالتك…', 'Loading your status…')}</Text></View> : (
             <>
-              <View style={[styles.primaryCard, { borderColor: statusColors[identityStatus] }]}>
+              {identityEnabled ? <><View style={[styles.primaryCard, { borderColor: statusColors[identityStatus] }]}>
                 <Text style={styles.primaryLabel}>{tx('حالة التحقق', 'Verification status')}</Text>
                 <View style={[styles.statusRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                   <View style={[styles.statusDot, { backgroundColor: statusColors[identityStatus] }]} />
@@ -137,6 +142,8 @@ function EnabledVerificationScreen() {
               </Pressable>
               {!canStart && identityStatus !== 'verified' ? <Text style={styles.helper}>{tx('لديك طلب تحقق قيد المعالجة. سيتم تحديث الحالة عند اكتمال المراجعة.', 'Your verification request is being processed. Status updates when review is complete.')}</Text> : null}
               <View style={styles.notice}><Text style={styles.noticeText}>{tx('لا يظهر أي اعتماد رسمي لِنفاذ ما لم يتلقَّ خادم هيفيار نتيجة رسمية متحققاً منها.', 'No official Nafath verification is shown unless the Heavyar server receives and validates an official result.')}</Text></View>
+              </> : null}
+              {providerDocumentUid ? <ProviderDocumentVerification key={providerDocumentUid} uid={providerDocumentUid} /> : null}
             </>
           )}
         </ScrollView>

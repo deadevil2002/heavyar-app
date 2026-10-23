@@ -23,6 +23,7 @@ import { earlyAccessDeliveryProof, earlyAccessStateTimestamps } from './early-ac
 import { processEarlyAccessCampaigns } from './early-access-campaign-delivery';
 import { driverEligibility, driverDiscoveryMarket } from './driver-eligibility';
 import { effectiveDocumentStatus, regulatoryReviewStatuses } from './regulatory';
+import { PROVIDER_DOCUMENT_MEDIA_LIMITS, isProviderDocumentMedia, isProviderDocumentMediaForDocument } from './provider-document-media';
 import { normalizeTapEnvironment } from './payment';
 import {
   ADMIN_SEARCH_DEFAULT_LIMIT,
@@ -1386,7 +1387,11 @@ async function scanDeletionPreviewCollection(
   // valid while retaining one query stream per target subset.
   const chunkSize = Math.max(1, Math.floor(30 / fields.length));
   const pageSize = collection === 'equipment' ? DELETION_PREVIEW_EQUIPMENT_PAGE_SIZE : DELETION_PREVIEW_PAGE_SIZE;
-  const projection = [...new Set([...fields, ...(collection === 'equipment' ? ['images'] : [])])];
+  const projection = [...new Set([
+    ...fields,
+    ...(collection === 'equipment' ? ['images'] : []),
+    ...(collection === 'regulatoryDocuments' ? ['privateMedia'] : []),
+  ])];
   for (let offset = 0; offset < uids.length; offset += chunkSize) {
     const uidChunk = uids.slice(offset, offset + chunkSize), targetUids = new Set(uidChunk);
     let cursor: string | undefined;
@@ -1481,7 +1486,7 @@ async function deletionPreview(req: Request, env: Env, actor: AdminUser) {
   let uids: string[]; try { uids = await deletionTargets(env, body); } catch (error) { return { error: error instanceof Error ? error.message : 'Invalid request', status: (error as any)?.status || 400, ...(error as any)?.code ? { errorCode: (error as any).code } : {} }; }
   const MAX_PREVIEW_TARGETS = 20;
   if (uids.length > MAX_PREVIEW_TARGETS) return { error: 'Deletion preview is limited to 20 exact targets; narrow the selection', status: 413, errorCode: 'preview_too_large', maxSelectable: MAX_PREVIEW_TARGETS };
-  const impactFields: Record<string, string[]> = { equipment: ['ownerUid'], driverProfiles: ['uid'], phoneOwners: ['uid'], equipmentRequests: ['customerUid'], notifications: ['uid'], deviceTokens: ['uid'], complaints: ['customerUid'] };
+  const impactFields: Record<string, string[]> = { equipment: ['ownerUid'], regulatoryDocuments: ['ownerUid'], driverProfiles: ['uid'], phoneOwners: ['uid'], equipmentRequests: ['customerUid'], notifications: ['uid'], deviceTokens: ['uid'], complaints: ['customerUid'] };
   const retainedFields: Record<string, string[]> = { payments: ['customerUid', 'providerUid'], invoices: ['customerId', 'providerId'], refunds: ['customerUid', 'providerUid'], adminAudit: ['actorUid', 'targetId'] };
   try {
     // The fixed-size batch read proves target existence and protected-account
@@ -1510,6 +1515,9 @@ async function deletionPreview(req: Request, env: Env, actor: AdminUser) {
         for (const uid of owners) counts.set(uid, (counts.get(uid) || 0) + 1);
         if (collection === 'equipment') for (const uid of owners) {
           mediaByUser.set(uid, (mediaByUser.get(uid) || 0) + (Array.isArray(data.images) ? data.images.filter((image: any) => typeof image?.publicId === 'string').length : 0));
+        }
+        if (collection === 'regulatoryDocuments' && isProviderDocumentMedia(data.privateMedia)) for (const uid of owners) {
+          mediaByUser.set(uid, (mediaByUser.get(uid) || 0) + 1);
         }
       });
       (impactFields[collection] ? countMaps : retainedMaps).set(collection, counts);
@@ -1627,10 +1635,11 @@ async function processDeletionJob(env: Env, row: any) {
       let avatarProcessed = legacyCursor ? true : priorCursor.avatarProcessed === true;
       let equipmentDocumentName = legacyCursor || (typeof priorCursor.equipmentDocumentName === 'string' ? priorCursor.equipmentDocumentName : undefined);
       let imageIndex = Number.isInteger(Number(priorCursor.imageIndex)) && Number(priorCursor.imageIndex) >= 0 ? Number(priorCursor.imageIndex) : 0;
-      const ids: string[] = [];
+      let providerDocumentName = typeof priorCursor.providerDocumentName === 'string' ? priorCursor.providerDocumentName : undefined;
+      const assets: Array<{ publicId: string; resourceType: 'image' | 'raw'; authenticated: boolean }> = [];
       if (!avatarProcessed) {
         const person = await rawDoc(env, 'users', uid);
-        if (typeof person?.data?.avatarPublicId === 'string') ids.push(person.data.avatarPublicId);
+        if (typeof person?.data?.avatarPublicId === 'string') assets.push({ publicId: person.data.avatarPublicId, resourceType: 'image', authenticated: false });
         avatarProcessed = true;
       }
       const equipmentQuery: any = { from: [{ collectionId: 'equipment' }], where: { fieldFilter: { field: { fieldPath: 'ownerUid' }, op: 'EQUAL', value: jsonValue(uid) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 1 };
@@ -1641,29 +1650,48 @@ async function processDeletionJob(env: Env, row: any) {
         const listing = decode(equipmentDocument);
         const images = Array.isArray(listing.images) ? listing.images : [];
         let index = equipmentDocumentName === equipmentDocument.name && imageIndex > 0 ? imageIndex : 0;
-        while (index < images.length && ids.length < DELETION_MEDIA_DELETES_PER_TICK) {
+        while (index < images.length && assets.length < DELETION_MEDIA_DELETES_PER_TICK) {
           const publicId = images[index]?.publicId;
-          if (typeof publicId === 'string') ids.push(publicId);
+          if (typeof publicId === 'string') assets.push({ publicId, resourceType: 'image', authenticated: false });
           index += 1;
         }
         equipmentDocumentName = equipmentDocument.name;
         imageIndex = index < images.length ? index : 0;
         stageMore = true;
       }
-      const ownedIds = [...new Set(ids)].filter(id => id.startsWith(`${env.CLOUDINARY_FOLDER || 'heavyar'}/${uid}/`)).slice(0, DELETION_MEDIA_DELETES_PER_TICK);
+      if (assets.length < DELETION_MEDIA_DELETES_PER_TICK) {
+        const regulatoryQuery: any = { from: [{ collectionId: 'regulatoryDocuments' }], where: { fieldFilter: { field: { fieldPath: 'ownerUid' }, op: 'EQUAL', value: jsonValue(uid) } }, orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: 1 };
+        if (providerDocumentName) regulatoryQuery.startAt = { before: false, values: [{ referenceValue: providerDocumentName }] };
+        const regulatoryRows = await fs(env, ':runQuery', { method: 'POST', body: JSON.stringify({ structuredQuery: regulatoryQuery }) }) as any[] || [];
+        const regulatoryDocument = regulatoryRows.find((item: any) => item.document)?.document;
+        if (regulatoryDocument) {
+          const regulatory = decode(regulatoryDocument), media = regulatory.privateMedia;
+          if (isProviderDocumentMedia(media)) assets.push({ publicId: media.publicId, resourceType: media.resourceType, authenticated: true });
+          providerDocumentName = regulatoryDocument.name;
+          stageMore = true;
+        }
+      }
+      const ownedAssets = assets.filter((asset, index) => assets.findIndex(item => item.publicId === asset.publicId) === index)
+        .filter(asset => asset.authenticated
+          ? asset.publicId.startsWith(`${env.CLOUDINARY_FOLDER || 'heavyar'}/provider-documents/`)
+          : asset.publicId.startsWith(`${env.CLOUDINARY_FOLDER || 'heavyar'}/${uid}/`))
+        .slice(0, DELETION_MEDIA_DELETES_PER_TICK);
       if (!(env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET)) {
-        if (ownedIds.length) throw new Error('cloudinary_config_missing');
-      } else for (const publicId of ownedIds) {
+        if (ownedAssets.length) throw new Error('cloudinary_config_missing');
+      } else for (const asset of ownedAssets) {
+        const { publicId } = asset;
         const timestamp = String(Math.floor(Date.now() / 1000));
-        const digest = await crypto.subtle.digest('SHA-1', enc.encode(`public_id=${publicId}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`));
+        const signaturePayload = asset.authenticated ? `public_id=${publicId}&timestamp=${timestamp}&type=authenticated` : `public_id=${publicId}&timestamp=${timestamp}`;
+        const digest = await crypto.subtle.digest('SHA-1', enc.encode(`${signaturePayload}${env.CLOUDINARY_API_SECRET}`));
         const signature = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join('');
         const form = new FormData(); form.append('public_id', publicId); form.append('timestamp', timestamp); form.append('api_key', env.CLOUDINARY_API_KEY); form.append('signature', signature);
-        const response = await scheduledExternalFetch(env, 'cloudinary', `https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/image/destroy`, { method: 'POST', body: form });
+        if (asset.authenticated) form.append('type', 'authenticated');
+        const response = await scheduledExternalFetch(env, 'cloudinary', `https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/${asset.resourceType}/destroy`, { method: 'POST', body: form });
         const result: any = await response.json().catch(() => ({}));
         if (!response.ok || !['ok', 'not found'].includes(String(result.result || '').toLowerCase())) throw new Error('media_delete_failed');
         stageMedia += 1;
       }
-      mediaCursorNext = { avatarProcessed, ...(equipmentDocumentName ? { equipmentDocumentName } : {}), imageIndex };
+      mediaCursorNext = { avatarProcessed, ...(equipmentDocumentName ? { equipmentDocumentName } : {}), imageIndex, ...(providerDocumentName ? { providerDocumentName } : {}) };
     }
     if (stage === 'historical') {
       const writes: any[] = [];
@@ -1961,7 +1989,16 @@ async function enrichAdminItems(env: Env, collection: string, items: any[]) {
       if (customer) record.customer = { name: displayName(customer) };
       if (provider) record.provider = { name: displayName(provider) };
     }
-    return redact(record);
+    const safe = redact(record);
+    if (collection === 'regulatoryDocuments') {
+      return {
+        ...safe,
+        documentType: record.documentType,
+        hasPrivateFile: isProviderDocumentMedia(record.privateMedia),
+        fileMimeType: isProviderDocumentMedia(record.privateMedia) ? record.privateMedia.mimeType : null,
+      };
+    }
+    return safe;
   });
 }
 
@@ -2099,8 +2136,38 @@ export async function handleAdminDocument(req: Request, env: Env, user: AdminUse
   const url = new URL(req.url);
   const exportMatch = url.pathname.match(/^\/api\/admin\/exports\/([a-z_]+)\.xlsx$/);
   const invoiceMatch = url.pathname.match(/^\/api\/admin\/invoices\/([^/]+)\.pdf$/);
-  if (!exportMatch && !invoiceMatch) return null;
+  const regulatoryFileMatch = url.pathname.match(/^\/api\/admin\/regulatory-documents\/([^/]+)\/file$/);
+  if (!exportMatch && !invoiceMatch && !regulatoryFileMatch) return null;
   await requireAdmin(user, env);
+  if (regulatoryFileMatch) {
+    if (!can(user, 'verification.manage')) throw new Error('ADMIN_REQUIRED');
+    const documentId = decodeURIComponent(regulatoryFileMatch[1]);
+    if (!/^rd_[a-f0-9]{32}$/.test(documentId)) throw new Error('Document not found');
+    const record = await rawDoc(env, 'regulatoryDocuments', documentId);
+    const media = record?.data?.privateMedia;
+    if (!record?.data || !isProviderDocumentMediaForDocument(media, documentId) ||
+        !media.publicId.startsWith(`${env.CLOUDINARY_FOLDER || 'heavyar'}/provider-documents/`) ||
+        !env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) throw new Error('Document not found');
+    const timestamp = Math.floor(Date.now() / 1000), expiresAt = timestamp + PROVIDER_DOCUMENT_MEDIA_LIMITS.downloadTtlSeconds;
+    const params: Record<string, string | number> = {
+      expires_at: expiresAt, format: media.format === 'jpeg' ? 'jpg' : media.format,
+      public_id: media.publicId, timestamp, type: 'authenticated',
+    };
+    const payload = Object.entries(params).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => `${key}=${value}`).join('&');
+    const signatureBytes = await crypto.subtle.digest('SHA-1', enc.encode(`${payload}${env.CLOUDINARY_API_SECRET}`));
+    const signature = Array.from(new Uint8Array(signatureBytes)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const query = new URLSearchParams({
+      api_key: env.CLOUDINARY_API_KEY, expires_at: String(expiresAt), format: String(params.format),
+      public_id: media.publicId, signature, timestamp: String(timestamp), type: 'authenticated',
+    });
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(env.CLOUDINARY_CLOUD_NAME)}/${media.resourceType}/download?${query.toString()}`);
+    if (!response.ok) throw new Error('Document unavailable');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.length || bytes.length > PROVIDER_DOCUMENT_MEDIA_LIMITS.maxFileBytes) throw new Error('Document unavailable');
+    await recordDocumentDownload(env, user, 'regulatory_document_viewed', 'regulatoryDocument', documentId, 'private provider document reviewed');
+    const extension = media.mimeType === 'application/pdf' ? 'pdf' : media.format === 'jpeg' ? 'jpg' : media.format;
+    return { status: 200, contentType: media.mimeType, filename: `heavyar-provider-document-${documentId}.${extension}`, body: bytes };
+  }
   if (exportMatch) {
     const entity = exportMatch[1] as ExportEntity;
     if (!EXPORT_COLLECTIONS[entity]) throw new Error('Unsupported export entity');
@@ -2622,9 +2689,13 @@ async function action(req: Request, env: Env, u: AdminUser, suppliedBody?: any) 
     };
     if (!regulatoryReviewStatuses.includes(currentStatus) || !transitions[actionName].includes(currentStatus)) return { error: 'Invalid regulatory document transition', errorCode: 'TRANSITION_NOT_ALLOWED', status: 409 };
     if (actionName === 'approve_document' && current.expiryDate && Date.parse(String(current.expiryDate)) <= Date.now()) return { error: 'Expired regulatory document cannot be verified', errorCode: 'DOCUMENT_EXPIRED', status: 409 };
+    if (actionName === 'approve_document' && (current.submissionVersion !== 2 || !isProviderDocumentMediaForDocument(current.privateMedia, targetId) ||
+        current.supersededByDocumentId)) {
+      return { error: 'A current private document file is required before approval', errorCode: 'PRIVATE_DOCUMENT_REQUIRED', status: 409 };
+    }
     if (['reject_document', 'request_document_resubmission', 'revoke_document'].includes(actionName) && !reason) return { error: 'Reason is required', errorCode: 'VALIDATION_FAILED', status: 400 };
     const now = new Date().toISOString();
-    const next = actionName === 'begin_document_review' ? 'UNDER_REVIEW' : actionName === 'approve_document' ? 'VERIFIED' : actionName === 'reject_document' ? 'REJECTED' : actionName === 'revoke_document' ? 'REVOKED' : 'PENDING';
+    const next = actionName === 'begin_document_review' ? 'UNDER_REVIEW' : actionName === 'approve_document' ? 'VERIFIED' : actionName === 'reject_document' ? 'REJECTED' : actionName === 'revoke_document' ? 'REVOKED' : 'REJECTED';
     fields = {
       reviewStatus: jsonValue(next), updatedAt: { timestampValue: now },
       reviewedBy: jsonValue(u.uid), reviewMethod: jsonValue('HEAVYAR_MANUAL'),

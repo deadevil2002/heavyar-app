@@ -16,7 +16,7 @@ import { uploadImageToCloudinary, deleteCloudinaryImage } from '@/services/cloud
 import { getVerificationProfile, type VerificationProfile } from '@/services/verificationService';
 import { hasCapability, roleLabel } from '@/services/roleCapabilities';
 import { mobilePerformance } from '@/utils/mobilePerformance';
-import { IDENTITY_VERIFICATION_UI_ENABLED, shouldLoadIdentityVerification } from '@/constants/releaseCapabilities';
+import { IDENTITY_VERIFICATION_UI_ENABLED, PROVIDER_DOCUMENT_REVIEW_UI_ENABLED, shouldLoadIdentityVerification } from '@/constants/releaseCapabilities';
 
 export default function ProfileScreen() {
   mobilePerformance.countRender('Profile');
@@ -235,8 +235,8 @@ export default function ProfileScreen() {
     ...(hasCapability(user?.role, 'manageDriverProfile') ? [{ icon: HardHat, label: isRTL ? 'مسودات المشغّل والناقل' : 'Operator & transporter drafts', route: '/service-profile' as const }] : []),
     ...(hasCapability(user?.role, 'findDriver') ? [{ icon: Search, label: t('find_driver'), route: '/drivers' as const }] : []),
     ...(hasCapability(user?.role, 'manageEquipment') ? [{ icon: Package, label: t('my_equipment'), route: '/my-equipment' as const }] : []),
-    ...(IDENTITY_VERIFICATION_UI_ENABLED
-      ? [{ icon: Shield, label: isRTL ? 'التحقق والموثوقية' : 'Verification & trust', route: '/verification' as const }]
+    ...(IDENTITY_VERIFICATION_UI_ENABLED || PROVIDER_DOCUMENT_REVIEW_UI_ENABLED && ['provider', 'driver'].includes(String(user?.role || ''))
+      ? [{ icon: Shield, label: IDENTITY_VERIFICATION_UI_ENABLED ? (isRTL ? 'التحقق والموثوقية' : 'Verification & trust') : (isRTL ? 'مراجعة مستند النشاط' : 'Business document review'), route: '/verification' as const }]
       : []),
     { icon: Bell, label: t('notifications'), route: '/notifications' as const },
     { icon: Building2, label: isRTL ? 'فريق الشركة' : 'Company team', route: '/company-team' as const },

@@ -405,6 +405,15 @@ service cloud.firestore {
     match /verificationPolicies/{policyId} {
       allow read, write: if false;
     }
+    // Provider business/activity documents and private-media references are
+    // Worker-only. Owners receive a minimized status projection and reviewers
+    // fetch bytes through an independently authorized Admin endpoint.
+    match /regulatoryDocuments/{documentId} {
+      allow read, write: if false;
+    }
+    match /regulatoryExpiryQueue/{queueId} {
+      allow read, write: if false;
+    }
     match /heavyarConfig/{configId} {
       allow read, write: if false;
     }

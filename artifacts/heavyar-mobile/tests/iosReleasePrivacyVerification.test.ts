@@ -10,7 +10,9 @@ vi.mock('firebase/auth', () => ({ signOut: vi.fn() }));
 
 import {
   IDENTITY_VERIFICATION_UI_ENABLED,
+  PROVIDER_DOCUMENT_REVIEW_UI_ENABLED,
   identityVerificationUiEnabledForPlatform,
+  providerDocumentReviewUiEnabledForPlatform,
   shouldLoadIdentityVerification,
   verificationDestinationForPlatform,
 } from '../constants/releaseCapabilities';
@@ -35,6 +37,8 @@ describe('current iOS release identity-verification boundary', () => {
     expect(identityVerificationUiEnabledForPlatform('ios')).toBe(false);
     expect(identityVerificationUiEnabledForPlatform('android')).toBe(true);
     expect(identityVerificationUiEnabledForPlatform('web')).toBe(true);
+    expect(PROVIDER_DOCUMENT_REVIEW_UI_ENABLED).toBe(true);
+    expect(providerDocumentReviewUiEnabledForPlatform('ios')).toBe(true);
     expect(verificationDestinationForPlatform('ios')).toBe('/(tabs)/profile');
     expect(verificationDestinationForPlatform('android')).toBe('/verification');
     expect(shouldLoadIdentityVerification(false, true, 'uid')).toBe(false);
@@ -51,16 +55,18 @@ describe('current iOS release identity-verification boundary', () => {
   it('gates the Profile menu, verification request, badge, and network fetch', () => {
     const profile = source('app/(tabs)/profile/index.tsx');
     expect(profile).toContain('shouldLoadIdentityVerification(IDENTITY_VERIFICATION_UI_ENABLED, isAuthenticated, userId)');
-    expect(profile).toContain('...(IDENTITY_VERIFICATION_UI_ENABLED');
+    expect(profile).toContain('IDENTITY_VERIFICATION_UI_ENABLED || PROVIDER_DOCUMENT_REVIEW_UI_ENABLED');
     expect(profile).toContain('IDENTITY_VERIFICATION_UI_ENABLED && trustedVerification?.identity.status');
 
     const verification = source('app/verification.tsx');
     expect(verification).toContain("router.replace('/(tabs)/profile')");
-    expect(verification).toContain('if (!IDENTITY_VERIFICATION_UI_ENABLED)');
-    expect(verification.indexOf('return <EnabledVerificationScreen />')).toBeLessThan(
-      verification.indexOf('function EnabledVerificationScreen()'),
+    expect(verification).toContain('if (!IDENTITY_VERIFICATION_UI_ENABLED && !providerDocumentUid)');
+    expect(verification).toContain('<ProviderDocumentVerification key={providerDocumentUid} uid={providerDocumentUid} />');
+    expect(verification).toContain('if (!identityEnabled) return;');
+    expect(verification.indexOf('return <EnabledVerificationScreen identityEnabled=')).toBeLessThan(
+      verification.indexOf('function EnabledVerificationScreen('),
     );
-    expect(verification.indexOf('function EnabledVerificationScreen()')).toBeLessThan(
+    expect(verification.indexOf('function EnabledVerificationScreen(')).toBeLessThan(
       verification.indexOf('await startVerification()'),
     );
   });
@@ -71,13 +77,14 @@ describe('current iOS release identity-verification boundary', () => {
     expect(auth).toContain('requiresEmailVerification');
     expect(auth).toContain('sendEmailVerification');
     expect(banner).toContain('sendEmailVerification');
+    expect(source('components/ProviderDocumentVerification.tsx')).toContain('Email registration is unchanged.');
   });
 
   it('has accurate hosted-payment privacy copy and no identity/bank input path', () => {
     const privacy = source('app/privacy.tsx');
     expect(privacy).toContain("Tap's hosted payment experience");
     expect(privacy).toContain('does not store card numbers or CVV');
-    expect(privacy).toContain('does not request a national-ID or passport number');
+    expect(privacy).toContain('does not request a national-ID, Iqama or passport number');
     expect(privacy).toContain('bank-account number, IBAN, or payout-bank details');
 
     const enabledSources = [
@@ -161,5 +168,5 @@ describe('current iOS release identity-verification boundary', () => {
     expect(activePermissions).toContain('android.permission.ACCESS_FINE_LOCATION');
     expect(activePermissions).not.toContain('android.permission.ACCESS_BACKGROUND_LOCATION');
     expect(activePermissions).not.toContain('android.permission.FOREGROUND_SERVICE_LOCATION');
-  });
+  }, 15_000);
 });

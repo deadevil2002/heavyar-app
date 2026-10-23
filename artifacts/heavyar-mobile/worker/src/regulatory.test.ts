@@ -34,7 +34,17 @@ describe('regulatory capability evaluation', () => {
     const docs = required.map(item => item.documentType === 'ACTIVITY_LICENSE' ? { ...item, reviewStatus: status } : item);
     const result = evaluateCapabilities({ uid: 'provider-1', canonicalRole: 'provider', accountType: 'business', countryCode: 'SA', categoryId: 'trucks', transactionType: 'rental', documents: docs, now });
     expect(result.capabilities.CAN_ACCEPT_REGULATED_RENTAL).toBe(false);
-    expect(result.capabilities.CAN_RECEIVE_PAYOUT).toBe(true);
+    expect(result.capabilities.CAN_RECEIVE_PAYOUT).toBe(false);
+    expect(result.reasons.CAN_RECEIVE_PAYOUT).toEqual(['PAYMENT_PROVIDER_KYC_REQUIRED']);
+  });
+
+  test('business and freelance review never grant identity or payout eligibility', () => {
+    const business = evaluateCapabilities({ uid: 'provider-1', canonicalRole: 'provider', accountType: 'business', documents: [document('COMMERCIAL_REGISTRATION')], now });
+    const freelance = evaluateCapabilities({ uid: 'driver-1', canonicalRole: 'driver', accountType: 'individual', documents: [document('FREELANCE_CERTIFICATE', { ownerUid: 'driver-1' })], now });
+    expect(business.capabilities.CAN_RECEIVE_PAYOUT).toBe(false);
+    expect(business.badges[0]).toMatchObject({ labelEn: 'Reviewed by HEAVYAR' });
+    expect(freelance.badges).toEqual([expect.objectContaining({ scope: 'professional', labelEn: 'Reviewed by HEAVYAR' })]);
+    expect(freelance.capabilities.CAN_OPERATE_EQUIPMENT).toBe(false);
   });
 
   test('treats a verified but elapsed document as expired', () => {

@@ -11,6 +11,16 @@ export function identityVerificationUiEnabledForPlatform(platform: string): bool
 export const IDENTITY_VERIFICATION_UI_ENABLED =
   identityVerificationUiEnabledForPlatform(Platform.OS);
 
+// Provider business/activity documents are not government identity checks.
+// Keep this capability available on iOS while the separate identity flow is
+// release-disabled there.
+export function providerDocumentReviewUiEnabledForPlatform(platform: string): boolean {
+  return platform === 'ios' || platform === 'android' || platform === 'web';
+}
+
+export const PROVIDER_DOCUMENT_REVIEW_UI_ENABLED =
+  providerDocumentReviewUiEnabledForPlatform(Platform.OS);
+
 export function shouldLoadIdentityVerification(
   capabilityEnabled: boolean,
   isAuthenticated: boolean,

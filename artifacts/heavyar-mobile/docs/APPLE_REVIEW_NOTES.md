@@ -8,7 +8,9 @@ Heavyar is a marketplace that connects customers, equipment owners/providers, an
 
 All payments in the app relate exclusively to physical/off-app services. Heavyar does not sell digital content, subscriptions, virtual goods, consumables, or feature unlocks. Payment processing uses Tap's hosted payment experience. Heavyar sends only the customer and transaction context needed to create the charge, and verifies payment status server-side; a redirect alone never marks a payment as paid.
 
-The current iOS release does not provide an active Nafath or national-identity verification feature. The feature is disabled release-wide for every iOS user, not only reviewers. This release does not ask users to submit government-issued identity documents or identity numbers, and it does not ask users to submit bank-account or IBAN details. Provider commercial-registration information is ordinary marketplace/business information and is not presented as Nafath or government identity verification.
+Heavyar uses the existing email-address registration, email verification, password, and activation flow for customers, providers, and drivers. Email verification proves control of the email address; it is not presented as government identity verification.
+
+The current iOS release does not provide an active Nafath or national-identity verification feature. The feature is disabled release-wide for every iOS user, not only reviewers. Ordinary signup does not request a national ID, Iqama, passport, government identity document, selfie, biometric data, bank-account number, or IBAN. Eligible providers and drivers may separately upload one private image/PDF business, professional, ownership, activity, or operating document. The document remains pending until an authorized HEAVYAR reviewer approves, rejects with a reason, or requests a corrected resubmission. The app labels an approved document only as **“Reviewed by HEAVYAR”** and does not treat it as government identity verification or payment-provider KYC. Regulated activities remain independently blocked unless their specific legal, licence, ownership, booking, and payment prerequisites are satisfied.
 
 Authenticated customers, providers, and drivers can start account deletion directly in the app from either **Profile → Delete account** or **Settings → Delete account**. Both entry points use the same two-step confirmation and authenticated Worker request. The public account-deletion URL below is informational guidance and support documentation; normal deletion does not require a website login, a support email, or sharing credentials outside the app.
 
@@ -32,7 +34,7 @@ Dedicated Store Review accounts are available. Please use the Customer account f
 
 An additional driver alias exists for role-specific review if requested: `heavyar.official+review.driver@gmail.com`. Supply its password only in App Store Connect, never in repository documentation.
 
-The Apple Developer account is currently an individual account. Apple may display the seller name **Salem Alnaimi**. This is Apple account metadata; the app does not claim that Heavyar is a different incorporated legal entity.
+The Apple Developer account is currently an individual account. Apple may display the seller name **Salem Alnaimi**. This is Apple account metadata; the app does not claim that Heavyar is a different incorporated legal entity. If App Review determines that the app's regulated activities or document handling fall under Guideline 5.1.1(ix), submission by an eligible legal-entity organization account may still be required; source changes cannot resolve that account/legal requirement.
 
 ## Reviewer support
 
@@ -46,3 +48,4 @@ The Apple Developer account is currently an individual account. Apple may displa
 - Verify the exact submitted build against the accounts immediately before submission.
 - Do not enable financial settlement for Store Review accounts.
 - Do not describe Tap TEST as a reviewer-completable payment unless it has been separately verified for Apple's review environment.
+- Verify the submitted build shows provider document review separately from government identity verification, and keep the Ministry of Commerce lookup as an Admin-only manual review aid with no private query data in its URL.

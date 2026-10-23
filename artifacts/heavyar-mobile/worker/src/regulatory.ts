@@ -1,5 +1,6 @@
 export const regulatoryDocumentTypes = [
   'COMMERCIAL_REGISTRATION',
+  'FREELANCE_CERTIFICATE',
   'ACTIVITY_LICENSE',
   'OPERATING_CARD',
   'OWNERSHIP_AUTHORIZATION',
@@ -42,19 +43,24 @@ export type RegulatoryDocument = {
   revokedAt?: string | null;
   revocationReason?: string | null;
   updatedAt: string;
+  submissionVersion?: 1 | 2;
+  supersedesDocumentId?: string;
+  retentionClass?: 'provider_regulatory_record';
+  privateMedia?: import('./provider-document-media').ProviderDocumentMedia;
 };
 
 export type CapabilityDecision = {
   capabilities: Record<CapabilityName, boolean>;
   reasons: Partial<Record<CapabilityName, string[]>>;
-  badges: Array<{ scope: 'identity' | 'business' | 'activity_license' | 'operating_card'; labelAr: string; labelEn: string }>;
+  badges: Array<{ scope: 'identity' | 'business' | 'professional' | 'activity_license' | 'operating_card'; labelAr: string; labelEn: string }>;
 };
 
 const badgeCopy = {
   identity: { scope: 'identity', labelAr: 'هوية موثقة', labelEn: 'Identity Verified' },
-  business: { scope: 'business', labelAr: 'منشأة موثقة', labelEn: 'Verified Business' },
-  activity_license: { scope: 'activity_license', labelAr: 'ترخيص نشاط موثق', labelEn: 'Activity Licence Verified' },
-  operating_card: { scope: 'operating_card', labelAr: 'بطاقة تشغيل موثقة', labelEn: 'Operating Card Verified' },
+  business: { scope: 'business', labelAr: 'تمت المراجعة بواسطة هيفيار', labelEn: 'Reviewed by HEAVYAR' },
+  professional: { scope: 'professional', labelAr: 'تمت المراجعة بواسطة هيفيار', labelEn: 'Reviewed by HEAVYAR' },
+  activity_license: { scope: 'activity_license', labelAr: 'تمت المراجعة بواسطة هيفيار', labelEn: 'Reviewed by HEAVYAR' },
+  operating_card: { scope: 'operating_card', labelAr: 'تمت المراجعة بواسطة هيفيار', labelEn: 'Reviewed by HEAVYAR' },
 } as const;
 
 export function effectiveDocumentStatus(document: Pick<RegulatoryDocument, 'reviewStatus' | 'expiryDate'>, now = new Date()): RegulatoryReviewStatus {
@@ -102,6 +108,7 @@ export function evaluateCapabilities(input: {
   const blocked = input.suspended === true;
   const provider = ['provider', 'business', 'owner'].includes(String(input.canonicalRole || ''));
   const business = input.accountType === 'business' && has('COMMERCIAL_REGISTRATION');
+  const professional = has('FREELANCE_CERTIFICATE');
   const ownership = has('OWNERSHIP_AUTHORIZATION');
   const activity = has('ACTIVITY_LICENSE', 'truck_rental_without_driver');
   const operatingCard = has('OPERATING_CARD');
@@ -113,8 +120,11 @@ export function evaluateCapabilities(input: {
   capabilities.CAN_RENT_TRUCK_WITHOUT_DRIVER = !blocked && provider && business && activity && operatingCard && ownership;
   capabilities.CAN_OPERATE_EQUIPMENT = !blocked && ['driver', 'operator'].includes(String(input.canonicalRole || '')) && input.identityVerified === true;
   capabilities.CAN_ACCEPT_REGULATED_RENTAL = !regulatedTruckRental || capabilities.CAN_RENT_TRUCK_WITHOUT_DRIVER;
-  capabilities.CAN_RECEIVE_PAYOUT = !blocked && provider && business;
+  // Manual business-document review is not payment-provider KYC and must not
+  // independently make an account payout-eligible.
+  capabilities.CAN_RECEIVE_PAYOUT = false;
   const reasons: CapabilityDecision['reasons'] = {};
+  reasons.CAN_RECEIVE_PAYOUT = ['PAYMENT_PROVIDER_KYC_REQUIRED'];
   if (regulatedTruckRental && !capabilities.CAN_ACCEPT_REGULATED_RENTAL) {
     reasons.CAN_ACCEPT_REGULATED_RENTAL = [
       ...(!business ? ['VERIFIED_BUSINESS_REQUIRED'] : []),
@@ -127,6 +137,7 @@ export function evaluateCapabilities(input: {
   const badges: CapabilityDecision['badges'] = [];
   if (input.identityVerified) badges.push(badgeCopy.identity);
   if (business) badges.push(badgeCopy.business);
+  if (professional) badges.push(badgeCopy.professional);
   if (activity) badges.push(badgeCopy.activity_license);
   if (operatingCard) badges.push(badgeCopy.operating_card);
   return { capabilities, reasons, badges };
@@ -135,6 +146,8 @@ export function evaluateCapabilities(input: {
 export function validateRegulatoryDocumentSubmission(input: unknown): Omit<RegulatoryDocument, 'id' | 'ownerUid' | 'submittedAt' | 'reviewStatus' | 'updatedAt'> | null {
   if (!input || typeof input !== 'object') return null;
   const value = input as Record<string, unknown>;
+  const allowed = new Set(['documentType', 'documentNumber', 'issuingAuthority', 'activityScope', 'equipmentIds', 'issueDate', 'expiryDate', 'resubmissionOf']);
+  if (Object.keys(value).some(key => !allowed.has(key))) return null;
   if (!regulatoryDocumentTypes.includes(value.documentType as RegulatoryDocumentType) ||
       typeof value.documentNumber !== 'string' || !value.documentNumber.trim() || value.documentNumber.length > 100 ||
       typeof value.issuingAuthority !== 'string' || !value.issuingAuthority.trim() || value.issuingAuthority.length > 160) return null;
@@ -142,6 +155,7 @@ export function validateRegulatoryDocumentSubmission(input: unknown): Omit<Regul
   if (!date(value.issueDate) || !date(value.expiryDate)) return null;
   const strings = (candidate: unknown, max: number) => candidate === undefined || (Array.isArray(candidate) && candidate.length <= max && candidate.every(item => typeof item === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(item)));
   if (!strings(value.activityScope, 20) || !strings(value.equipmentIds, 50)) return null;
+  if (value.resubmissionOf !== undefined && (typeof value.resubmissionOf !== 'string' || !/^rd_[a-f0-9]{32}$/.test(value.resubmissionOf))) return null;
   return {
     documentType: value.documentType as RegulatoryDocumentType,
     documentNumber: value.documentNumber.trim(),
@@ -150,5 +164,6 @@ export function validateRegulatoryDocumentSubmission(input: unknown): Omit<Regul
     equipmentIds: Array.isArray(value.equipmentIds) ? [...new Set(value.equipmentIds as string[])] : [],
     issueDate: typeof value.issueDate === 'string' ? value.issueDate : null,
     expiryDate: typeof value.expiryDate === 'string' ? value.expiryDate : null,
+    ...(typeof value.resubmissionOf === 'string' ? { supersedesDocumentId: value.resubmissionOf } : {}),
   };
 }

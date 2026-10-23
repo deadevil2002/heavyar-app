@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { userErrorMessage } from '@/lib/error-messages';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
-import { CheckCircle2, ChevronDown, ClipboardList, FileClock, FileText, Search, ShieldCheck, UserRoundCheck } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ClipboardList, ExternalLink, Eye, FileClock, FileText, Search, ShieldCheck, UserRoundCheck } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   useActionMutation,
@@ -13,6 +13,7 @@ import {
   useVerificationProfileDetail,
   useVerificationProfiles,
   useRegulatoryDocuments,
+  fetchRegulatoryDocumentFile,
   type TrustFields,
 } from '@/lib/api';
 import { useAppState } from '@/lib/app-state';
@@ -42,7 +43,7 @@ const statusLabel = (status: string | undefined, language: 'ar' | 'en') => {
     unverified: ['غير موثق', 'Unverified'], pending: ['جاري التحقق', 'Pending'], verified: ['موثق', 'Verified'],
     rejected: ['مرفوض', 'Rejected'], expired: ['منتهي الصلاحية', 'Expired'], manual_review: ['تحت المراجعة', 'Manual review'],
     restricted: ['مقيّد', 'Restricted'],
-    PENDING: ['قيد الانتظار', 'Pending'], UNDER_REVIEW: ['تحت المراجعة', 'Under review'], VERIFIED: ['موثق بواسطة Heavyar', 'Heavyar verified'],
+    PENDING: ['قيد الانتظار', 'Pending'], UNDER_REVIEW: ['تحت المراجعة', 'Under review'], VERIFIED: ['تمت المراجعة بواسطة هيفيار', 'Reviewed by HEAVYAR'],
     REJECTED: ['مرفوض', 'Rejected'], EXPIRED: ['منتهي الصلاحية', 'Expired'], REVOKED: ['ملغى', 'Revoked'],
   };
   const label = labels[status || ''];
@@ -126,6 +127,8 @@ export default function Verification() {
   const [selectedUid, setSelectedUid] = useState<string>();
   const [selectedAttempt, setSelectedAttempt] = useState<string>();
   const [componentStates, setComponentStates] = useState<Record<string, string>>({});
+  const [viewingDocumentId, setViewingDocumentId] = useState<string>();
+  const [documentViewError, setDocumentViewError] = useState('');
   const { triggerAction, actionDialog } = useAdminAction();
   const attempts = useVerificationAttempts({ status: attemptStatus === 'all' ? undefined : attemptStatus, limit: 50 });
   const regulatoryDocuments = useRegulatoryDocuments({ limit: 50 });
@@ -161,11 +164,23 @@ export default function Verification() {
   };
   const reviewDocument = (item: any, action: string) => {
     const labels: Record<string, [string, string]> = {
-      begin_document_review: ['بدء مراجعة المستند', 'Begin document review'], approve_document: ['اعتماد المستند بواسطة Heavyar', 'Heavyar-verify document'],
+      begin_document_review: ['بدء مراجعة المستند', 'Begin document review'], approve_document: ['تمت المراجعة بواسطة هيفيار', 'Reviewed by HEAVYAR'],
       reject_document: ['رفض المستند', 'Reject document'], request_document_resubmission: ['طلب إعادة التقديم', 'Request resubmission'], revoke_document: ['إلغاء التحقق', 'Revoke verification'],
     };
     const [ar, en] = labels[action];
     triggerAction({ targetType: 'regulatoryDocument', targetId: item.id, action, title: t(ar, en), description: t('هذا تحقق يدوي من Heavyar ولا يمثل اعتماداً حكومياً.', 'This is Heavyar manual verification and is not government endorsement.') });
+  };
+  const viewDocument = async (item: any) => {
+    if (!item?.hasPrivateFile || viewingDocumentId) return;
+    setViewingDocumentId(item.id); setDocumentViewError('');
+    try {
+      const { blob } = await fetchRegulatoryDocumentFile(item.id);
+      const url = URL.createObjectURL(blob);
+      const opened = window.open(url, '_blank');
+      if (!opened) URL.revokeObjectURL(url);
+      else { opened.opener = null; window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
+    } catch { setDocumentViewError(t('تعذر فتح الملف الخاص بأمان.', 'The private file could not be opened securely.')); }
+    finally { setViewingDocumentId(undefined); }
   };
 
   return (
@@ -191,8 +206,8 @@ export default function Verification() {
           {selectedAttempt && <Card data-testid="card-attempt-history"><CardHeader><CardTitle className="text-base">{t('سجل المحاولة', 'Attempt history')} <span className="font-mono text-xs text-muted-foreground">{shortId(selectedAttempt)}</span></CardTitle><CardDescription>{t('أحداث التدقيق الآمنة فقط، دون حمولة الموفر.', 'Safe audit events only; no provider payloads are displayed.')}</CardDescription></CardHeader><CardContent className="space-y-2">{events.isLoading ? <p className="text-sm text-muted-foreground">{t('جاري التحميل…', 'Loading…')}</p> : events.data?.items?.length ? events.data.items.map((event: any) => <div key={event.id} className="flex items-center justify-between rounded-md border p-3"><div><p className="font-medium">{event.type || 'verification_event'}</p><p className="text-xs text-muted-foreground">{event.status || '—'}</p></div><p className="text-xs text-muted-foreground">{formatDate(event.timestamp, language)}</p></div>) : <p className="text-sm text-muted-foreground">{t('لا توجد أحداث آمنة مسجلة لهذه المحاولة.', 'No safe events were recorded for this attempt.')}</p>}</CardContent></Card>}
         </TabsContent>
         <TabsContent value="documents" className="space-y-4">
-          <Card><CardHeader><CardTitle>{t('المستندات التنظيمية', 'Regulatory documents')}</CardTitle><CardDescription>{t('مراجعة Heavyar اليدوية لا تعني اعتماداً من جهة حكومية. لا تظهر صور المستندات في القوائم العامة.', 'Heavyar manual review is not government endorsement. Document images are never exposed in public lists.')}</CardDescription></CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow><TableHead>{t('المالك', 'Owner')}</TableHead><TableHead>{t('النوع', 'Type')}</TableHead><TableHead>{t('الجهة المصدرة', 'Issuer')}</TableHead><TableHead>{t('الحالة', 'Status')}</TableHead><TableHead>{t('الانتهاء', 'Expiry')}</TableHead><TableHead>{t('الإجراءات', 'Actions')}</TableHead></TableRow></TableHeader><TableBody>
-            {regulatoryDocuments.isLoading ? <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{t('جاري التحميل…', 'Loading…')}</TableCell></TableRow> : regulatoryDocuments.data?.items?.length ? regulatoryDocuments.data.items.map((item: any) => <TableRow key={item.id}><TableCell className="font-mono text-xs">{shortId(item.ownerUid)}</TableCell><TableCell>{item.documentType}</TableCell><TableCell>{item.issuingAuthority || '—'}</TableCell><TableCell>{statusLabel(item.reviewStatus, language)}</TableCell><TableCell>{formatDate(item.expiryDate, language)}</TableCell><TableCell><div className="flex flex-wrap gap-1">{item.reviewStatus === 'PENDING' && <Button size="sm" variant="outline" onClick={() => reviewDocument(item, 'begin_document_review')}>{t('مراجعة', 'Review')}</Button>}{['PENDING', 'UNDER_REVIEW'].includes(item.reviewStatus) && <><Button size="sm" variant="outline" onClick={() => reviewDocument(item, 'approve_document')}>{t('اعتماد Heavyar', 'Heavyar verify')}</Button><Button size="sm" variant="destructive" onClick={() => reviewDocument(item, 'reject_document')}>{t('رفض', 'Reject')}</Button></>}{['PENDING', 'UNDER_REVIEW', 'REJECTED'].includes(item.reviewStatus) && <Button size="sm" variant="ghost" onClick={() => reviewDocument(item, 'request_document_resubmission')}>{t('إعادة تقديم', 'Resubmit')}</Button>}{item.reviewStatus === 'VERIFIED' && <Button size="sm" variant="destructive" onClick={() => reviewDocument(item, 'revoke_document')}>{t('إلغاء', 'Revoke')}</Button>}</div></TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{t('لا توجد مستندات.', 'No documents.')}</TableCell></TableRow>}
+          <Card><CardHeader><CardTitle>{t('المستندات التنظيمية', 'Regulatory documents')}</CardTitle><CardDescription>{t('مراجعة هيفيار اليدوية لا تعني اعتماداً من جهة حكومية. تفتح الملفات الخاصة فقط للمراجع المخوّل.', 'HEAVYAR manual review is not government endorsement. Private files open only for an authorized reviewer.')}</CardDescription><a href="https://mc.gov.sa/ar/eservices/Pages/Commercial-data.aspx" target="_blank" rel="noreferrer" className="inline-flex w-fit items-center gap-2 text-sm text-primary underline underline-offset-4"><ExternalLink className="h-4 w-4" />{t('الاستعلام اليدوي لدى وزارة التجارة', 'Manual Ministry of Commerce lookup')}</a>{documentViewError && <p className="text-sm text-destructive" role="alert">{documentViewError}</p>}</CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow><TableHead>{t('المالك', 'Owner')}</TableHead><TableHead>{t('النوع', 'Type')}</TableHead><TableHead>{t('الجهة المصدرة', 'Issuer')}</TableHead><TableHead>{t('الحالة', 'Status')}</TableHead><TableHead>{t('الانتهاء', 'Expiry')}</TableHead><TableHead>{t('الإجراءات', 'Actions')}</TableHead></TableRow></TableHeader><TableBody>
+            {regulatoryDocuments.isLoading ? <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{t('جاري التحميل…', 'Loading…')}</TableCell></TableRow> : regulatoryDocuments.data?.items?.length ? regulatoryDocuments.data.items.map((item: any) => <TableRow key={item.id}><TableCell className="font-mono text-xs">{shortId(item.ownerUid)}</TableCell><TableCell>{item.documentType}</TableCell><TableCell>{item.issuingAuthority || '—'}</TableCell><TableCell>{statusLabel(item.reviewStatus, language)}</TableCell><TableCell>{formatDate(item.expiryDate, language)}</TableCell><TableCell><div className="flex flex-wrap gap-1">{item.hasPrivateFile && <Button size="sm" variant="outline" disabled={!!viewingDocumentId} onClick={() => void viewDocument(item)}><Eye className="me-1 h-4 w-4" />{viewingDocumentId === item.id ? t('جارٍ الفتح…', 'Opening…') : t('عرض آمن', 'Secure view')}</Button>}{item.reviewStatus === 'PENDING' && <Button size="sm" variant="outline" onClick={() => reviewDocument(item, 'begin_document_review')}>{t('مراجعة', 'Review')}</Button>}{['PENDING', 'UNDER_REVIEW'].includes(item.reviewStatus) && <><Button size="sm" variant="outline" disabled={!item.hasPrivateFile} onClick={() => reviewDocument(item, 'approve_document')}>{t('تمت المراجعة بواسطة هيفيار', 'Reviewed by HEAVYAR')}</Button><Button size="sm" variant="destructive" onClick={() => reviewDocument(item, 'reject_document')}>{t('رفض', 'Reject')}</Button></>}{['PENDING', 'UNDER_REVIEW', 'REJECTED'].includes(item.reviewStatus) && <Button size="sm" variant="ghost" onClick={() => reviewDocument(item, 'request_document_resubmission')}>{t('طلب تصحيح', 'Request correction')}</Button>}{item.reviewStatus === 'VERIFIED' && <Button size="sm" variant="destructive" onClick={() => reviewDocument(item, 'revoke_document')}>{t('إلغاء', 'Revoke')}</Button>}</div></TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{t('لا توجد مستندات.', 'No documents.')}</TableCell></TableRow>}
           </TableBody></Table></CardContent></Card>
         </TabsContent>
         <TabsContent value="profiles" className="space-y-4">

@@ -139,6 +139,11 @@ export function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+export function fetchRegulatoryDocumentFile(documentId: string) {
+  if (!/^rd_[a-f0-9]{32}$/.test(documentId)) throw new ApiError('INVALID_DOCUMENT_ID', 400);
+  return fetchApiBinary(`/regulatory-documents/${encodeURIComponent(documentId)}/file`);
+}
+
 export type PaginatedResponse<T> = {
   items: T[];
   nextCursor?: string;

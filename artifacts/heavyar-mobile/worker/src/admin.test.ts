@@ -855,6 +855,80 @@ describe('admin authorization and operational boundary', () => {
     expect(JSON.stringify(document?.body).includes('never-export')).toBe(false);
   });
 
+  test('private regulatory files require verification permission and proxy only bounded bytes', async () => {
+    const documentId = `rd_${'b'.repeat(32)}`;
+    let media: any = { assetId: 'asset_123456', publicId: `heavyar/provider-documents/${'a'.repeat(43)}/${documentId}`, resourceType: 'image', format: 'jpg', mimeType: 'image/jpeg', bytes: 4, sha256: 'c'.repeat(64), uploadedAt: '2026-10-22T00:00:00.000Z', metadataProtection: 'force_strip_image' };
+    __adminTest.setFirestore((collection, id) => collection === 'regulatoryDocuments' && id === documentId ? { ownerUid: 'provider-1', privateMedia: media } : null);
+    const securedEnv = { ...env, CLOUDINARY_CLOUD_NAME: 'heavyar-cloud', CLOUDINARY_API_KEY: 'api-key', CLOUDINARY_API_SECRET: 'secret', CLOUDINARY_FOLDER: 'heavyar' } as Env;
+    let denied = false;
+    try {
+      await handleAdminDocument(new Request(`https://worker.test/api/admin/regulatory-documents/${documentId}/file`), securedEnv, { uid: 'support-1', admin: true, permissionRole: 'support', testInjected: true });
+    } catch (error) { denied = error instanceof Error && error.message === 'ADMIN_REQUIRED'; }
+    expect(denied).toBe(true);
+
+    __adminTest.captureCommits([]);
+    const originalFetch = globalThis.fetch;
+    const signedRequests: string[] = [];
+    globalThis.fetch = async input => {
+      signedRequests.push(String(input));
+      const bytes = media.mimeType === 'application/pdf' ? new TextEncoder().encode('%PDF-1.7\nprivate\n%%EOF') : new Uint8Array([0xff, 0xd8, 0xff, 1]);
+      return new Response(bytes, { status: 200, headers: { 'Content-Type': media.mimeType } });
+    };
+    try {
+      const response = await handleAdminDocument(new Request(`https://worker.test/api/admin/regulatory-documents/${documentId}/file`), securedEnv, { uid: 'reviewer-1', admin: true, permissionRole: 'verification', testInjected: true });
+      expect(response?.contentType).toBe('image/jpeg');
+      expect(response?.body).toEqual(new Uint8Array([0xff, 0xd8, 0xff, 1]));
+      expect(response?.filename).not.toContain(media.publicId);
+      const imageUrl = new URL(signedRequests[0]);
+      expect(Number(imageUrl.searchParams.get('expires_at')) - Number(imageUrl.searchParams.get('timestamp'))).toBe(60);
+      expect(imageUrl.searchParams.get('type')).toBe('authenticated');
+
+      media = { ...media, publicId: `${media.publicId}.pdf`, resourceType: 'raw', format: 'pdf', mimeType: 'application/pdf', bytes: 24, metadataProtection: 'no_metadata_extraction_pdf' };
+      const pdf = await handleAdminDocument(new Request(`https://worker.test/api/admin/regulatory-documents/${documentId}/file`), securedEnv, { uid: 'reviewer-1', admin: true, permissionRole: 'verification', testInjected: true });
+      expect(pdf?.contentType).toBe('application/pdf');
+      expect(pdf?.filename.endsWith('.pdf')).toBe(true);
+      const pdfUrl = new URL(signedRequests[1]);
+      expect(pdfUrl.pathname).toContain('/raw/download');
+      expect(pdfUrl.searchParams.get('public_id')).toBe(media.publicId);
+      expect(Number(pdfUrl.searchParams.get('expires_at')) - Number(pdfUrl.searchParams.get('timestamp'))).toBe(60);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  test('account deletion removes only the exact authenticated provider document asset', async () => {
+    const documentId = `rd_${'d'.repeat(32)}`;
+    const publicId = `heavyar/provider-documents/${'e'.repeat(43)}/${documentId}.pdf`;
+    const media = { assetId: 'asset_pdf_123', publicId, resourceType: 'raw', format: 'pdf', mimeType: 'application/pdf', bytes: 24, sha256: 'f'.repeat(64), uploadedAt: '2026-10-22T00:00:00.000Z', metadataProtection: 'no_metadata_extraction_pdf' };
+    const testEnv = { ...(await firestoreWorkerEnv('service@example.test')), CLOUDINARY_CLOUD_NAME: 'heavyar-cloud', CLOUDINARY_API_KEY: 'api-key', CLOUDINARY_API_SECRET: 'secret', CLOUDINARY_FOLDER: 'heavyar' } as Env;
+    const deletionRequest = { uid: 'provider-1', parentJobId: 'parent-1', status: 'partially_completed', actorUid: 'owner-1', completedStages: ['auth'], mediaCursor: { avatarProcessed: true } };
+    const originalFetch = globalThis.fetch;
+    const destroyed: Array<{ url: string; publicId: string; type: string | null }> = [];
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) return new Response(JSON.stringify({ access_token: 'token' }), { status: 200 });
+      if (url.includes('/raw/destroy')) {
+        const form = init?.body as FormData;
+        destroyed.push({ url, publicId: String(form.get('public_id')), type: form.get('type')?.toString() || null });
+        return new Response(JSON.stringify({ result: 'ok' }), { status: 200 });
+      }
+      if (url.includes('/documents/deletionJobs/parent-1')) return new Response(JSON.stringify(firestoreDocument('deletionJobs/parent-1', { status: 'processing', total: 1 })), { status: 200 });
+      if (url.includes(':runQuery')) {
+        const body = JSON.parse(String(init?.body || '{}')), collection = body.structuredQuery?.from?.[0]?.collectionId;
+        if (collection === 'deletionRequests') return new Response(JSON.stringify([{ document: firestoreDocument('deletionRequests/user%3Aprovider-1', deletionRequest) }]), { status: 200 });
+        if (collection === 'equipment') return new Response('[]', { status: 200 });
+        if (collection === 'regulatoryDocuments') return new Response(JSON.stringify([{ document: firestoreDocument(`regulatoryDocuments/${documentId}`, { ownerUid: 'provider-1', privateMedia: media }) }]), { status: 200 });
+      }
+      if (url.includes(':commit')) return new Response('{}', { status: 200 });
+      return new Response('{}', { status: 404 });
+    };
+    try {
+      await processDeletionJobs(testEnv);
+      expect(destroyed.length).toBe(1);
+      expect(destroyed[0].url.includes('/raw/destroy')).toBe(true);
+      expect(destroyed[0].publicId).toBe(publicId);
+      expect(destroyed[0].type).toBe('authenticated');
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
   test('missing editable configuration returns safe unsaved defaults without writes', async () => {
     __adminTest.setFirestore(() => null);
     const commits: unknown[][] = []; __adminTest.captureCommits(commits);
@@ -1215,12 +1289,13 @@ describe('admin authorization and operational boundary', () => {
     __test.setAuth({ uid: 'super-1', admin: true, role: 'super_admin' });
     __adminTest.setFirestore((collection) => collection === 'regulatoryDocuments' ? {
       ownerUid: 'provider-1', documentType: 'ACTIVITY_LICENSE', reviewStatus: 'UNDER_REVIEW',
-      expiryDate: '2030-01-01', issuingAuthority: 'Transport authority',
+      expiryDate: '2030-01-01', issuingAuthority: 'Transport authority', submissionVersion: 2,
+      privateMedia: { assetId: 'asset_123456', publicId: `heavyar/provider-documents/${'a'.repeat(43)}/rd_${'b'.repeat(32)}`, resourceType: 'image', format: 'jpg', mimeType: 'image/jpeg', bytes: 1024, sha256: 'c'.repeat(64), uploadedAt: '2026-10-22T00:00:00.000Z', metadataProtection: 'force_strip_image' },
     } : null);
     const commits: unknown[][] = [];
     __adminTest.captureCommits(commits);
     const approved = await worker.fetch(request('/api/admin/action', {
-      action: 'approve_document', targetType: 'regulatoryDocument', targetId: 'rd_1', reason: 'evidence reviewed',
+      action: 'approve_document', targetType: 'regulatoryDocument', targetId: `rd_${'b'.repeat(32)}`, reason: 'evidence reviewed',
     }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'regulatory-review-0001' }), env);
     expect(approved.status).toBe(200);
     const fields = (commits[0][0] as any).update.fields;
@@ -1232,9 +1307,35 @@ describe('admin authorization and operational boundary', () => {
       ownerUid: 'provider-1', documentType: 'ACTIVITY_LICENSE', reviewStatus: 'VERIFIED', expiryDate: '2030-01-01',
     } : null);
     const invalid = await worker.fetch(request('/api/admin/action', {
-      action: 'approve_document', targetType: 'regulatoryDocument', targetId: 'rd_1', reason: 'duplicate approval',
+      action: 'approve_document', targetType: 'regulatoryDocument', targetId: `rd_${'b'.repeat(32)}`, reason: 'duplicate approval',
     }, { Authorization: 'Bearer test', 'X-Correlation-ID': 'regulatory-review-0002' }), env);
     expect(invalid.status).toBe(409);
+  });
+
+  test('regulatory rejection and correction request remain audited without granting identity or payout', async () => {
+    const documentId = `rd_${'b'.repeat(32)}`;
+    const reviewer = { uid: 'reviewer-1', admin: true, permissionRole: 'verification', testInjected: true as const };
+    let document: any = { ownerUid: 'provider-1', documentType: 'FREELANCE_CERTIFICATE', reviewStatus: 'UNDER_REVIEW', submissionVersion: 2 };
+    __adminTest.setFirestore((collection) => collection === 'regulatoryDocuments' ? document : null);
+    const commits: unknown[][] = []; __adminTest.captureCommits(commits);
+    const rejected = await handleAdmin(request('/api/admin/action', { action: 'reject_document', targetType: 'regulatoryDocument', targetId: documentId, reason: 'Unreadable document' }), env, reviewer) as any;
+    expect(rejected.success).toBe(true);
+    const rejectedFields = (commits[0][0] as any).update.fields;
+    expect(rejectedFields.reviewStatus.stringValue).toBe('REJECTED');
+    expect(rejectedFields.rejectionReason.stringValue).toBe('Unreadable document');
+    expect(JSON.stringify(commits[0])).not.toContain('identityVerified');
+    expect(JSON.stringify(commits[0])).not.toContain('CAN_RECEIVE_PAYOUT');
+
+    document = { ...document, reviewStatus: 'REJECTED' };
+    const correction = await handleAdmin(request('/api/admin/action', { action: 'request_document_resubmission', targetType: 'regulatoryDocument', targetId: documentId, reason: 'Upload a clearer copy' }), env, reviewer) as any;
+    expect(correction.success).toBe(true);
+    const correctionFields = (commits[1][0] as any).update.fields;
+    expect(correctionFields.reviewStatus.stringValue).toBe('REJECTED');
+    expect(correctionFields.resubmissionReason.stringValue).toBe('Upload a clearer copy');
+    expect(typeof correctionFields.resubmissionRequestedAt.timestampValue).toBe('string');
+
+    const denied = await handleAdmin(request('/api/admin/action', { action: 'approve_document', targetType: 'regulatoryDocument', targetId: documentId, reason: 'unauthorized' }), env, { ...reviewer, permissionRole: 'support' }) as any;
+    expect(denied.status).toBe(403);
   });
 
   test('retention cleanup is super-admin-only, bounded, and uses guarded deletes', async () => {

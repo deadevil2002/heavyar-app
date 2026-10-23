@@ -91,6 +91,99 @@ describe('worker security boundary', () => {
     expect(__test.firestoreUrl(firestoreEnv, ':runQuery').endsWith('/documents:runQuery')).toBe(true);
   });
 
+  test('provider document endpoints deny customers before storage and project only the authenticated owner', async () => {
+    __test.setAuth({ uid: 'customer-1', admin: false, accountProfile: { uid: 'customer-1', role: 'customer', isActive: true, accountStatus: 'active', emailVerified: true } });
+    const deniedForm = new FormData();
+    deniedForm.append('metadata', JSON.stringify({ documentType: 'COMMERCIAL_REGISTRATION', documentNumber: '123', issuingAuthority: 'MOC' }));
+    deniedForm.append('file', new Blob([new Uint8Array([0xff, 0xd8, 0xff, 1])], { type: 'image/jpeg' }), 'proof.jpg');
+    const denied = await worker.fetch(new Request('https://worker.test/api/regulatory-documents', { method: 'POST', headers: { Authorization: 'Bearer test' }, body: deniedForm }), env);
+    expect(denied.status).toBe(403);
+
+    __test.setAuth({ uid: 'provider-1', admin: false, accountProfile: { uid: 'provider-1', role: 'provider', isActive: true, accountStatus: 'active', emailVerified: true } });
+    __test.setFirestore((collection, id) => collection === '__queries' && id === 'regulatoryDocuments' ? [
+      { id: `rd_${'a'.repeat(32)}`, ownerUid: 'provider-1', documentType: 'COMMERCIAL_REGISTRATION', documentNumber: '1234567890', issuingAuthority: 'MOC', reviewStatus: 'PENDING', submittedAt: '2026-10-22T00:00:00.000Z', updatedAt: '2026-10-22T00:00:00.000Z' },
+      { id: `rd_${'b'.repeat(32)}`, ownerUid: 'provider-2', documentType: 'COMMERCIAL_REGISTRATION', documentNumber: '9999999999', issuingAuthority: 'MOC', reviewStatus: 'VERIFIED', submittedAt: '2026-10-22T00:00:00.000Z', updatedAt: '2026-10-22T00:00:00.000Z' },
+    ] : null);
+    const listed = await worker.fetch(new Request('https://worker.test/api/regulatory-documents', { headers: { Authorization: 'Bearer test' } }), env);
+    const body = await listed.json() as any;
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({ id: `rd_${'a'.repeat(32)}`, documentNumberMasked: '***7890', hasPrivateFile: false });
+    expect(JSON.stringify(body)).not.toContain('1234567890');
+    expect(JSON.stringify(body)).not.toContain('provider-2');
+  });
+
+  test('provider document upload uses a server-owned authenticated asset and returns no raw reference', async () => {
+    __test.setAuth({ uid: 'provider-1', admin: false, accountProfile: { uid: 'provider-1', role: 'provider', isActive: true, accountStatus: 'active', emailVerified: true } });
+    __test.setAuthenticatedMutationLimiter(async () => ({ status: 'allowed' }));
+    const commits: unknown[] = []; __test.captureCommits(commits);
+    const providerEnv = { ...env, FIREBASE_PROJECT_ID: 'p', CLOUDINARY_CLOUD_NAME: 'heavyar-cloud', CLOUDINARY_API_KEY: 'api-key', CLOUDINARY_API_SECRET: 'secret', CLOUDINARY_FOLDER: 'heavyar' } as Env;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_input, init) => {
+      const upload = init?.body as FormData;
+      const publicId = String(upload.get('public_id'));
+      const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(`public_id=${publicId}&version=1secret`));
+      const signature = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+      return new Response(JSON.stringify({ public_id: publicId, resource_type: 'image', type: 'authenticated', asset_id: 'asset_123456', version: 1, bytes: 4, format: 'jpg', signature }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    try {
+      const form = new FormData();
+      form.append('metadata', JSON.stringify({ documentType: 'COMMERCIAL_REGISTRATION', documentNumber: '1234567890', issuingAuthority: 'MOC' }));
+      form.append('file', new Blob([new Uint8Array([0xff, 0xd8, 0xff, 1])], { type: 'image/jpeg' }), 'proof.jpg');
+      const response = await worker.fetch(new Request('https://worker.test/api/regulatory-documents', { method: 'POST', headers: { Authorization: 'Bearer test' }, body: form }), providerEnv);
+      const body = await response.json() as any;
+      expect(response.status).toBe(201);
+      expect(body.document).toMatchObject({ documentNumberMasked: '***7890', hasPrivateFile: true, fileMimeType: 'image/jpeg', reviewStatus: 'PENDING' });
+      expect(JSON.stringify(body)).not.toContain('privateMedia');
+      expect(JSON.stringify(body)).not.toContain('publicId');
+      expect(JSON.stringify(body)).not.toContain('1234567890');
+      expect(JSON.stringify(commits)).toContain('/provider-documents/');
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  test('provider PDF correction uses a private raw asset, binds the prior revision once, and accepts a format-less raw response', async () => {
+    const priorId = `rd_${'a'.repeat(32)}`;
+    const providerEnv = { ...env, FIREBASE_PROJECT_ID: 'p', CLOUDINARY_CLOUD_NAME: 'heavyar-cloud', CLOUDINARY_API_KEY: 'api-key', CLOUDINARY_API_SECRET: 'secret', CLOUDINARY_FOLDER: 'heavyar' } as Env;
+    __test.setAuth({ uid: 'provider-1', admin: false, accountProfile: { uid: 'provider-1', role: 'provider', isActive: true, accountStatus: 'active', emailVerified: true } });
+    __test.setAuthenticatedMutationLimiter(async () => ({ status: 'allowed' }));
+    let prior: any = { ownerUid: 'provider-1', documentType: 'FREELANCE_CERTIFICATE', reviewStatus: 'REJECTED', resubmissionRequestedAt: '2026-10-22T00:00:00.000Z' };
+    __test.setFirestore((collection, id) => collection === 'regulatoryDocuments' && id === priorId ? prior : null);
+    const commits: unknown[] = []; __test.captureCommits(commits);
+    const originalFetch = globalThis.fetch;
+    let uploadCalls = 0;
+    globalThis.fetch = async (input, init) => {
+      uploadCalls += 1;
+      expect(String(input)).toContain('/raw/upload');
+      const upload = init?.body as FormData;
+      const publicId = String(upload.get('public_id'));
+      expect(publicId).toMatch(/\/rd_[a-f0-9]{32}\.pdf$/);
+      expect(upload.get('type')).toBe('authenticated');
+      const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(`public_id=${publicId}&version=2secret`));
+      const signature = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+      return new Response(JSON.stringify({ public_id: publicId, resource_type: 'raw', type: 'authenticated', asset_id: 'asset_pdf_123', version: 2, bytes: 24, signature }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    const makeForm = () => {
+      const form = new FormData();
+      form.append('metadata', JSON.stringify({ documentType: 'FREELANCE_CERTIFICATE', documentNumber: 'FC-1234', issuingAuthority: 'Authority', resubmissionOf: priorId }));
+      form.append('file', new Blob([new TextEncoder().encode('%PDF-1.7\nprivate\n%%EOF')], { type: 'application/pdf' }), 'proof.pdf');
+      return form;
+    };
+    try {
+      const response = await worker.fetch(new Request('https://worker.test/api/regulatory-documents', { method: 'POST', headers: { Authorization: 'Bearer test' }, body: makeForm() }), providerEnv);
+      const body = await response.json() as any;
+      expect(response.status).toBe(201);
+      expect(body.document).toMatchObject({ hasPrivateFile: true, fileMimeType: 'application/pdf', reviewStatus: 'PENDING', supersedesDocumentId: priorId });
+      expect(JSON.stringify(body)).not.toContain('.pdf');
+      expect(JSON.stringify(commits)).toContain('.pdf');
+      expect(JSON.stringify(commits)).toContain('supersededByDocumentId');
+
+      prior = { ...prior, supersededByDocumentId: `rd_${'c'.repeat(32)}` };
+      const duplicate = await worker.fetch(new Request('https://worker.test/api/regulatory-documents', { method: 'POST', headers: { Authorization: 'Bearer test' }, body: makeForm() }), providerEnv);
+      expect(duplicate.status).toBe(409);
+      expect((await duplicate.json() as any).errorCode).toBe('INVALID_RESUBMISSION');
+      expect(uploadCalls).toBe(1);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
   test('CORS permits only configured sites and scoped Expo preview origins', async () => {
     const expoOrigin = 'https://preview-123.expo.sisko.replit.dev';
     const expoDirectOrigin = 'https://preview-123.sisko.replit.dev';

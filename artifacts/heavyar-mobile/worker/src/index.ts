@@ -18,6 +18,17 @@ import { activeInterval, assertListingAvailableForInterval, buildFinalPaymentHan
 import { mutationDiagnosticEvent, mutationRoute, responseErrorCode, type MutationDiagnostics, type MutationStage } from './observability';
 import { reserveCloudinaryUploadQuota as reserveCloudinaryUploadQuotaAttempt, type CloudinaryQuotaRecord } from './cloudinary-upload-quota';
 import { evaluateCapabilities, isSaudiTruckRentalWithoutDriver, validateRegulatoryDocumentSubmission, type RegulatoryDocument } from './regulatory';
+import {
+  PROVIDER_DOCUMENT_MEDIA_LIMITS,
+  isProviderDocumentMedia,
+  providerDocumentBytesMatchMime,
+  providerDocumentFormat,
+  providerDocumentMimeTypes,
+  providerDocumentPublicId,
+  providerDocumentResourceType,
+  type ProviderDocumentMedia,
+  type ProviderDocumentMimeType,
+} from './provider-document-media';
 import { CURRENT_POLICY_ACCEPTANCE_MODE, INCIDENT_TYPES, LEGACY_POLICY_ACCEPTANCE_COMPAT_ENABLED, LEGACY_POLICY_ACCEPTANCE_MODE, PRIVACY_REQUEST_TYPES, acceptanceIsCurrent, complaintServiceTargets, policyAcceptanceState, regulatoryDecision, requiredPolicyVersions, safeUserExport, validatePolicyAcceptance } from './compliance';
 import { googleServiceAccountToken as googleToken } from './google-auth';
 import { assertActivePrivilegedSession, PrivilegedAuthUnavailableError, PrivilegedSessionRevokedError } from './privileged-session';
@@ -197,7 +208,7 @@ export interface Env {
 }
 type User = { uid: string; admin: boolean; role?: AdminRole; permissionRole?: string; email?: string; emailVerified?: boolean; authTime?: number; testInjected?: true; accountProfile?: any; accountProfileRaw?: { data: any; updateTime?: string } | null; roleProfileRaw?: { data: any; updateTime?: string } | null };
 type TestUser = Omit<User, 'testInjected'> & { testInjected?: boolean };
-type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel' | 'service_contract_accept' | 'service_message_send' | 'service_execution_create' | 'service_execution_transition' | 'service_evidence_intent' | 'service_evidence_upload' | 'customer_project_mutation';
+type AuthenticatedMutationScope = 'listing_create' | 'driver_profile_save' | 'service_profile_save' | 'provider_document_submit' | 'organization_provision' | 'organization_invite' | 'organization_membership' | 'organization_equipment' | 'organization_booking' | 'organization_service' | 'operator_request_prepare' | 'transport_request_prepare' | 'service_rfq_create' | 'service_rfq_quote' | 'service_rfq_select' | 'service_rfq_cancel' | 'service_contract_accept' | 'service_message_send' | 'service_execution_create' | 'service_execution_transition' | 'service_evidence_intent' | 'service_evidence_upload' | 'customer_project_mutation';
 type AuthenticatedMutationRateLimitDecision =
   | { status: 'allowed' }
   | { status: 'limited'; retryAfterSeconds: number }
@@ -743,6 +754,7 @@ async function allowAuthenticatedMutation(env: Env, uid: string, scope: Authenti
     listing_create: { windowMs: 10 * 60_000, limit: 10 },
     driver_profile_save: { windowMs: 60_000, limit: 30 },
     service_profile_save: { windowMs: 60_000, limit: 20 },
+    provider_document_submit: { windowMs: 10 * 60_000, limit: 10 },
     organization_provision: { windowMs: 60 * 60_000, limit: 3 },
     organization_invite: { windowMs: 10 * 60_000, limit: 10 },
     organization_membership: { windowMs: 10 * 60_000, limit: 20 },
@@ -1789,23 +1801,122 @@ async function regulatoryDocumentsForOwner(env: Env, ownerUid: string): Promise<
   })) as RegulatoryDocument[];
 }
 function safeRegulatoryDocument(document: RegulatoryDocument) {
-  const { documentNumber, ...safe } = document;
-  return { ...safe, documentNumberMasked: documentNumber.length <= 4 ? '****' : `***${documentNumber.slice(-4)}` };
+  const { documentNumber, privateMedia, ownerUid: _ownerUid, ...safe } = document;
+  const rawDocumentNumber = typeof documentNumber === 'string' ? documentNumber : '';
+  return {
+    ...safe,
+    documentNumberMasked: rawDocumentNumber.length <= 4 ? '****' : `***${rawDocumentNumber.slice(-4)}`,
+    hasPrivateFile: isProviderDocumentMedia(privateMedia),
+    fileMimeType: isProviderDocumentMedia(privateMedia) ? privateMedia.mimeType : null,
+  };
 }
 async function regulatoryDocumentList(req: Request, env: Env, u: User) {
   const documents = await regulatoryDocumentsForOwner(env, u.uid);
   return out(env, req, { success: true, items: documents.map(safeRegulatoryDocument) });
 }
 async function submitRegulatoryDocument(req: Request, env: Env, u: User) {
-  let body: unknown; try { body = await req.json(); } catch { return out(env, req, { success: false, error: 'Invalid document submission', errorCode: 'VALIDATION_FAILED' }, 400); }
-  const valid = validateRegulatoryDocumentSubmission(body);
+  const account = u.accountProfile;
+  if (!account || !['provider', 'driver'].includes(String(account.role || u.role || '')) || isStoreReviewAccount(account) ||
+      isOperationallyBlocked(account) || account.isActive === false || account.accountStatus !== undefined && account.accountStatus !== 'active') {
+    return out(env, req, { success: false, error: 'Provider document access is unavailable', errorCode: 'PROVIDER_DOCUMENT_NOT_AUTHORIZED' }, 403);
+  }
+  if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET || !PRIVATE_EVIDENCE_FOLDER.test(env.CLOUDINARY_FOLDER || 'heavyar')) {
+    return out(env, req, { success: false, error: 'Private document storage is unavailable', errorCode: 'PRIVATE_DOCUMENT_STORAGE_UNAVAILABLE' }, 503);
+  }
+  const limit = await allowAuthenticatedMutation(env, u.uid, 'provider_document_submit');
+  const limited = authenticatedMutationRateLimitResponse(req, env, limit, 'Too many provider document submissions');
+  if (limited) return limited;
+  const declaredLength = Number(req.headers.get('Content-Length') || 0);
+  if (declaredLength > PROVIDER_DOCUMENT_MEDIA_LIMITS.maxFileBytes + 128 * 1024) return payloadTooLargeResponse(req, env);
+  const form: any = await req.formData().catch(() => null);
+  if (!form || Array.from(form.keys() as Iterable<string>).some(key => !['metadata', 'file'].includes(key))) {
+    return out(env, req, { success: false, error: 'Invalid document submission', errorCode: 'VALIDATION_FAILED' }, 400);
+  }
+  const file = form.get('file'), metadataText = form.get('metadata');
+  if (!(file instanceof Blob) || typeof metadataText !== 'string' || file.size < 1 || file.size > PROVIDER_DOCUMENT_MEDIA_LIMITS.maxFileBytes ||
+      !providerDocumentMimeTypes.includes(file.type as ProviderDocumentMimeType)) {
+    return out(env, req, { success: false, error: 'Invalid private document file', errorCode: 'INVALID_DOCUMENT_FILE' }, 400);
+  }
+  let metadata: unknown;
+  try { metadata = JSON.parse(metadataText); } catch { metadata = null; }
+  const valid = validateRegulatoryDocumentSubmission(metadata);
   if (!valid) return out(env, req, { success: false, error: 'Invalid document submission', errorCode: 'VALIDATION_FAILED' }, 400);
+  const fileBytes = new Uint8Array(await file.arrayBuffer());
+  if (!providerDocumentBytesMatchMime(fileBytes, file.type as ProviderDocumentMimeType)) {
+    return out(env, req, { success: false, error: 'File content does not match its declared type', errorCode: 'INVALID_DOCUMENT_SIGNATURE' }, 400);
+  }
+  const priorId = valid.supersedesDocumentId;
+  let priorRaw: { data: any; updateTime?: string } | null = null;
+  if (priorId) {
+    priorRaw = await getRawDoc(env, 'regulatoryDocuments', priorId);
+    if (!priorRaw?.data || priorRaw.data.ownerUid !== u.uid || !['REJECTED', 'PENDING'].includes(String(priorRaw.data.reviewStatus || '')) ||
+        !priorRaw.data.resubmissionRequestedAt || priorRaw.data.supersededByDocumentId || priorRaw.data.documentType !== valid.documentType) {
+      return out(env, req, { success: false, error: 'Invalid resubmission target', errorCode: 'INVALID_RESUBMISSION' }, 409);
+    }
+  }
   const id = `rd_${crypto.randomUUID().replace(/-/g, '')}`, now = new Date().toISOString();
-  const document: RegulatoryDocument = { id, ownerUid: u.uid, ...valid, submittedAt: now, reviewStatus: 'PENDING', updatedAt: now };
+  const mimeType = file.type as ProviderDocumentMimeType, resourceType = providerDocumentResourceType(mimeType);
+  const publicId = providerDocumentPublicId(env.CLOUDINARY_FOLDER || 'heavyar', await hashedId(`provider-document-owner:${u.uid}`), id, mimeType);
+  if (!publicId) return out(env, req, { success: false, error: 'Private document storage is unavailable', errorCode: 'PRIVATE_DOCUMENT_STORAGE_UNAVAILABLE' }, 503);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const params: Record<string, string | number | boolean> = {
+    overwrite: false, public_id: publicId, timestamp, type: 'authenticated',
+    ...(resourceType === 'image' ? { transformation: 'fl_force_strip' } : {}),
+  };
+  const upload = new FormData();
+  upload.append('file', file); upload.append('overwrite', 'false'); upload.append('public_id', publicId);
+  upload.append('timestamp', String(timestamp)); upload.append('type', 'authenticated'); upload.append('api_key', env.CLOUDINARY_API_KEY);
+  if (resourceType === 'image') upload.append('transformation', 'fl_force_strip');
+  upload.append('signature', await signCloudinaryParams(params, env.CLOUDINARY_API_SECRET));
+  const uploadResponse = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(env.CLOUDINARY_CLOUD_NAME)}/${resourceType}/upload`, { method: 'POST', body: upload });
+  const result: any = await uploadResponse.json().catch(() => null);
+  const expectedFormat = providerDocumentFormat(mimeType);
+  const responseFormatValid = resourceType === 'raw'
+    ? result?.format === undefined || result?.format === null || result?.format === expectedFormat
+    : mimeType === 'image/jpeg' ? ['jpg', 'jpeg'].includes(result?.format) : result?.format === expectedFormat;
+  const responseValid = uploadResponse.ok && result?.public_id === publicId && result?.resource_type === resourceType && result?.type === 'authenticated' &&
+    typeof result?.asset_id === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(result.asset_id) && Number.isSafeInteger(result.version) && result.version > 0 &&
+    Number.isSafeInteger(result.bytes) && result.bytes > 0 && result.bytes <= PROVIDER_DOCUMENT_MEDIA_LIMITS.maxFileBytes &&
+    responseFormatValid &&
+    typeof result.signature === 'string' && /^[a-f0-9]{40}$/.test(result.signature) &&
+    constantTimeBytesEqual(enc.encode(await sha1Hex(`public_id=${publicId}&version=${result.version}${env.CLOUDINARY_API_SECRET}`)), enc.encode(result.signature));
+  if (!responseValid) {
+    if (uploadResponse.ok) await destroyProviderDocumentAsset(env, publicId, resourceType).catch(() => false);
+    return out(env, req, { success: false, error: 'Private document upload could not be verified', errorCode: 'DOCUMENT_UPLOAD_VERIFICATION_FAILED' }, 502);
+  }
+  const privateMedia: ProviderDocumentMedia = {
+    assetId: result.asset_id, publicId, resourceType, format: expectedFormat, mimeType, bytes: result.bytes,
+    sha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', fileBytes))).map(byte => byte.toString(16).padStart(2, '0')).join(''),
+    uploadedAt: now,
+    metadataProtection: resourceType === 'image' ? 'force_strip_image' : 'no_metadata_extraction_pdf',
+  };
+  const document: RegulatoryDocument = {
+    id, ownerUid: u.uid, ...valid, submittedAt: now, reviewStatus: 'PENDING', updatedAt: now,
+    submissionVersion: 2, retentionClass: 'provider_regulatory_record', privateMedia,
+  };
   const writes: any[] = [{ update: { name: fullName(env, `regulatoryDocuments/${id}`), fields: Object.fromEntries(Object.entries(document).filter(([, value]) => value !== undefined).map(([key, value]) => [key, firestoreValue(value)])) }, currentDocument: { exists: false } }];
   if (valid.expiryDate) writes.push({ update: { name: fullName(env, `regulatoryExpiryQueue/${id}`), fields: { documentId: { stringValue: id }, ownerUid: { stringValue: u.uid }, expiresAt: { timestampValue: `${valid.expiryDate}T00:00:00.000Z` }, createdAt: { timestampValue: now } } }, currentDocument: { exists: false } });
-  await commitWrites(env, writes);
+  if (priorRaw?.updateTime && priorId) writes.push({
+    update: { name: fullName(env, `regulatoryDocuments/${priorId}`), fields: { supersededAt: { timestampValue: now }, supersededByDocumentId: { stringValue: id }, updatedAt: { timestampValue: now } } },
+    updateMask: { fieldPaths: ['supersededAt', 'supersededByDocumentId', 'updatedAt'] }, currentDocument: { updateTime: priorRaw.updateTime },
+  });
+  try { await commitWrites(env, writes); }
+  catch (error) {
+    await destroyProviderDocumentAsset(env, publicId, resourceType).catch(() => false);
+    throw error;
+  }
   return out(env, req, { success: true, document: safeRegulatoryDocument(document) }, 201);
+}
+
+async function destroyProviderDocumentAsset(env: Env, publicId: string, resourceType: 'image' | 'raw') {
+  if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) return false;
+  const timestamp = Math.floor(Date.now() / 1000), params = { public_id: publicId, timestamp, type: 'authenticated' };
+  const form = new FormData(); form.append('public_id', publicId); form.append('timestamp', String(timestamp));
+  form.append('type', 'authenticated'); form.append('api_key', env.CLOUDINARY_API_KEY);
+  form.append('signature', await signCloudinaryParams(params, env.CLOUDINARY_API_SECRET));
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(env.CLOUDINARY_CLOUD_NAME)}/${resourceType}/destroy`, { method: 'POST', body: form });
+  const result: any = await response.json().catch(() => null);
+  return response.ok && ['ok', 'not found'].includes(String(result?.result || '').toLowerCase());
 }
 export async function processRegulatoryExpiry(env: Env) {
   const now = new Date().toISOString();

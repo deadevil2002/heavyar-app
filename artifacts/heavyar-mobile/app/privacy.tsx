@@ -25,6 +25,10 @@ export default function PrivacyScreen() {
         <Text style={[styles.sectionTitle, textStyle]}>{tx('1) بيانات الحساب والملف', '1) Account and profile data')}</Text>
         <Text style={[styles.listItem, textStyle]}>{tx('• الاسم والبريد الإلكتروني ورقم الجوال ومعرّف الحساب.', '• Name, email address, phone number, and account identifier.')}</Text>
         <Text style={[styles.listItem, textStyle]}>{tx('• صورة الملف، ونوع مقدم الخدمة، والسجل التجاري عند تقديمه، والدولة والمنطقة والمدينة أو الحي.', '• Profile photo, provider type, commercial-registration number when supplied, and country, region, city, or district.')}</Text>
+        <Text style={[styles.listItem, textStyle]}>{tx(
+          '• يمكن لمقدم الخدمة أو السائق، عند الحاجة للنشاط، إرسال صورة أو PDF لمستند تجاري أو مهني أو تنظيمي لمراجعة هيفيار اليدوية. يُحفظ الملف بشكل خاص لدى Cloudinary، ولا يظهر للعملاء أو مقدمي الخدمة الآخرين. لا تمنح هذه المراجعة توثيق هوية حكومية أو أهلية دفع، ويُحذف الملف ضمن معالجة حذف الحساب ما لم يلزم الاحتفاظ المحدود به لالتزام نظامي أو نزاع.',
+          '• A provider or driver may, when relevant to the activity, submit an image or PDF of a business, professional, or regulatory document for HEAVYAR manual review. The file is stored privately with Cloudinary and is not shown to customers or other providers. This review is not government identity verification or payment eligibility. The file is deleted through account-deletion processing unless limited retention is legally required for compliance or a dispute.',
+        )}</Text>
 
         <Text style={[styles.sectionTitle, textStyle]}>{tx('2) محتوى السوق والخدمة', '2) Marketplace and service content')}</Text>
         <Text style={[styles.listItem, textStyle]}>{tx('• صور المعدات وأوصافها وأسعارها وتوفرها.', '• Equipment images, descriptions, pricing, and availability.')}</Text>
@@ -49,8 +53,8 @@ export default function PrivacyScreen() {
 
         <Text style={[styles.sectionTitle, textStyle]}>{tx('5) بيانات أخرى غير مطلوبة في إصدار iOS الحالي', '5) Other data not requested in the current iOS release')}</Text>
         <Text style={[styles.paragraph, textStyle]}>{tx(
-          'لا يطلب إصدار iOS الحالي رقم هوية وطنية أو جواز سفر أو مستند هوية حكومي، ولا يطلب رقم حساب بنكي أو IBAN أو تفاصيل بنك الصرف. كما لا يطلب جهات الاتصال أو الميكروفون أو إذن الموقع في الخلفية.',
-          'The current iOS release does not request a national-ID or passport number, a government identity document, a bank-account number, IBAN, or payout-bank details. It also does not request contacts, microphone access, or background-location permission.',
+          'لا يطلب إصدار iOS الحالي رقم هوية وطنية أو إقامة أو جواز سفر أو مستند هوية حكومي أو صورة ذاتية أو بيانات حيوية، ولا يطلب رقم حساب بنكي أو IBAN أو تفاصيل بنك الصرف. مستندات النشاط الاختيارية منفصلة عن توثيق الهوية. كما لا يطلب جهات الاتصال أو الميكروفون أو إذن الموقع في الخلفية.',
+          'The current iOS release does not request a national-ID, Iqama or passport number, a government identity document, selfie, or biometric data; it also does not request a bank-account number, IBAN, or payout-bank details. Optional activity documents are separate from identity verification. The app does not request contacts, microphone access, or background-location permission.',
         )}</Text>
 
         <Text style={[styles.sectionTitle, textStyle]}>{tx('6) المشاركة والمعالجة', '6) Sharing and processing')}</Text>

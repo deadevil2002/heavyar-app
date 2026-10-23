@@ -476,6 +476,9 @@ describe('Firestore authorization baseline', () => {
     await assertFails(setDoc(doc(db, 'verificationEvents/event-1'), { uid: 'provider-1', type: 'verification_completed' }));
     await assertFails(setDoc(doc(db, 'verificationPolicies/default'), { enabled: false }));
     await assertFails(setDoc(doc(db, 'verificationRateLimits/provider-1'), { count: 0 }));
+    await assertFails(getDoc(doc(db, 'regulatoryDocuments/rd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')));
+    await assertFails(setDoc(doc(db, 'regulatoryDocuments/rd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), { ownerUid: 'provider-1' }));
+    await assertFails(getDoc(doc(db, 'regulatoryExpiryQueue/rd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')));
     await assertFails(setDoc(doc(db, 'heavyarConfig/pricing'), { platformFeeRate: 0.1 }));
   });
 
