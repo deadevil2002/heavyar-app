@@ -53,6 +53,7 @@ Never place passwords, private keys, service-account keys, access/OAuth tokens, 
 
 - Architecture, product, backend: `PROJECT_CONTEXT.md`
 - Environments and release runbook: `DEPLOYMENT.md`
+- Cross-session resumable checkpoint: `PROJECT_STATE.md`
 - Current versions, worktree, validation, open work: `CURRENT_STATE.md`
 - Regulated, financial, privacy, monetization, advertising, and permission work: `COMPLIANCE.md`
 - Product, UX, and growth planning: `PRODUCT_ROADMAP.md`
@@ -60,17 +61,39 @@ Never place passwords, private keys, service-account keys, access/OAuth tokens, 
 
 ## Project handoff / required reading
 
-Read **only the `Live checkpoint` at the start of `CURRENT_STATE.md`** after
-this file. Other docs, including `HANDOFF.md` and `docs/mobile-data-flow.md`,
-are detailed, optional context; load them only for relevant tasks. Code/config
-and proven runtime evidence outrank historical notes.
+Read `PROJECT_STATE.md`, then **only the `Live checkpoint` at the start of
+`CURRENT_STATE.md`**, after this file. Other docs, including `HANDOFF.md` and
+`docs/mobile-data-flow.md`, are detailed, optional context; load them only for
+relevant tasks. Code/config and proven runtime evidence outrank historical notes.
 
 Code and configuration are authoritative. If documentation conflicts with them, report the mismatch and update documentation only after verification.
 
+## Cross-Session Continuity Protocol
+
+- Every new Codex or ChatGPT development session must read `AGENTS.md` and
+  `PROJECT_STATE.md` before changing the repository. Read the `CURRENT_STATE.md`
+  Live checkpoint when implementation or release status is relevant.
+- `PROJECT_STATE.md` is the concise cross-session entry point. Keep it aligned
+  with the detailed `CURRENT_STATE.md` Live checkpoint and verified repository
+  evidence; do not turn it into a duplicate chronological ledger.
+- After significant source, test, release, deployment, or product-decision
+  changes, update `PROJECT_STATE.md` before completing the development session.
+  Record the latest verified commit, implementation/deployment state, PASS/FAIL/
+  NOT TESTED evidence, blockers, constraints, and one exact next task.
+- Never fabricate or promote assumptions into facts. Mark unavailable evidence
+  `UNKNOWN`, distinguish source readiness from deployed Production state, and
+  never overwrite newer work with an older checkpoint or remembered context.
+- Do not repeat completed work without fresh evidence that it regressed or needs
+  rework. Preserve unrelated local changes and reconcile the current Git diff
+  before updating any checkpoint.
+- Commit and push continuity documentation only with appropriate authorization
+  and after repository/remote/branch checks. Never deploy, release, build, alter
+  Production, or change external systems merely because a checkpoint was updated.
+
 ## Canonical status ledger and token-efficient execution
 
-- `CURRENT_STATE.md` -> `Live checkpoint` is the **only** volatile status ledger. Do not create competing progress Markdown files. `AGENTS.md` contains permanent rules; `HANDOFF.md` retains historical context.
-- At task start, read this file and the live checkpoint; inspect only relevant source/tests/doc sections. No whole-file/log dumps, repetitive audits or unrelated refactors.
+- `CURRENT_STATE.md` -> `Live checkpoint` remains the detailed volatile implementation ledger. `PROJECT_STATE.md` is its concise cross-session entry point, not a competing history file. `AGENTS.md` contains permanent rules; `HANDOFF.md` retains historical context.
+- At task start, read this file, `PROJECT_STATE.md`, and the Live checkpoint when status is relevant; inspect only relevant source/tests/doc sections. No whole-file/log dumps, repetitive audits or unrelated refactors.
 - At material phase completion, update only changed status/date, code SHA, source-only vs Production artifact ID, verified tests, unresolved blockers and one next action in the checkpoint.
 - Include status update in the **same owner-authorized commit** as implementation. Read-only tasks or tasks without commit authorization must return a concise suggested status delta, without any repo mutation. After Production deployment, record separately verified live status in the next approved documentation update.
 - No automatic Git push, builds or deployments; follow explicit owner scope. Preserve existing work. Mark unverified state clearly and never infer a Production deployment from a source commit.
@@ -102,6 +125,7 @@ If compliance is uncertain, report the uncertainty, identify what needs official
 ### Token-efficient reading
 
 - Always read `AGENTS.md` first.
+- Then read `PROJECT_STATE.md` for the cross-session checkpoint.
 - Read only the `Live checkpoint` in `CURRENT_STATE.md` for current status; the rest is scope-specific history.
 - Read `PROJECT_CONTEXT.md` only when architecture or broader project context is needed.
 - Read `COMPLIANCE.md`, `DEPLOYMENT.md`, or `PRODUCT_ROADMAP.md` only when the task touches their respective compliance, release, or product-planning scopes.
