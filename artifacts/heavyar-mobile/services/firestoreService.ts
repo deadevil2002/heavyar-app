@@ -160,6 +160,8 @@ function parseEquipment(id: string, data: Record<string, unknown>): Equipment {
       || data.moderationStatus === 'rejected' || data.moderationStatus === 'suspended'
       ? data.moderationStatus
       : undefined,
+    moderationReason: typeof data.moderationReason === 'string' ? data.moderationReason : undefined,
+    rejectionReason: typeof data.rejectionReason === 'string' ? data.rejectionReason : undefined,
     createdAt: toISOString(data.createdAt),
     updatedAt: toISOString(data.updatedAt),
   };

@@ -21,6 +21,7 @@ import { HeavyarLoadingState } from "@/components/ui/heavyar";
 import { useLanguage } from "@/contexts/LanguageContext";
 import PolicyReacceptanceScreen from "@/components/PolicyReacceptanceScreen";
 import { enableQaPerformanceMode } from "@/utils/qaPerformance";
+import { mobilePerformance } from "@/utils/mobilePerformance";
 
 void SplashScreen.preventAutoHideAsync();
 enableQaPerformanceMode();
@@ -63,13 +64,14 @@ function RootLayoutNav() {
       <Stack.Screen name="report" options={{ headerShown: false }} />
       <Stack.Screen name="verification" options={{ headerShown: false }} />
       <Stack.Screen name="notifications" options={{ headerShown: false }} />
+      <Stack.Screen name="notification-settings" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false, presentation: "modal" }} />
       <Stack.Screen name="register" options={{ headerShown: false, presentation: "modal" }} />
       <Stack.Screen name="onboarding" options={{ headerShown: false }} />
       <Stack.Screen name="create-listing" options={{ headerShown: false, presentation: "modal" }} />
       <Stack.Screen name="edit-equipment" options={{ headerShown: false }} />
       <Stack.Screen name="invoices" options={{ headerShown: false }} />
-      <Stack.Screen name="performance-report" options={{ headerShown: false }} />
+      {mobilePerformance.isQaBuild() ? <Stack.Screen name="performance-report" options={{ headerShown: false }} /> : null}
       <Stack.Screen name="company-team" options={{ headerShown: false }} />
       <Stack.Screen name="operator-request-prepare" options={{ headerShown: false }} />
       <Stack.Screen name="transport-request-prepare" options={{ headerShown: false }} />

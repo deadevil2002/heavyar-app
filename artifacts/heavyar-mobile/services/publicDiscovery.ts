@@ -4,6 +4,23 @@ import { isMarketEnabled, listingCountryCode, listingMatchesLocation, type Marke
 export type DiscoveryFilters = { countryCode: string; region: string; city: string; category: string; text: string };
 export const PUBLIC_EQUIPMENT_QUERY_KEY = ['equipment', 'public', 'approved-visible-active'] as const;
 
+export type ListingPublicationState =
+  | 'public'
+  | 'store_review_isolated'
+  | 'pending_review'
+  | 'rejected'
+  | 'suspended'
+  | 'archived'
+  | 'hidden';
+
+type ListingPublicationInput = {
+  isActive?: boolean;
+  visibility?: Equipment['visibility'];
+  moderationStatus?: Equipment['moderationStatus'];
+  accountPurpose?: unknown;
+  moderationReason?: unknown;
+};
+
 export function defaultDiscoveryCountry(configuredCountry?: string, markets?: readonly MarketAvailability[]): string {
   return configuredCountry && isMarketEnabled(configuredCountry, markets) ? configuredCountry : 'SA';
 }
@@ -20,6 +37,16 @@ export function updateDiscoveryFilter(filters: DiscoveryFilters, key: keyof Disc
 
 export function isPublicEquipment(item: Pick<Equipment, 'isActive' | 'visibility' | 'moderationStatus'>): boolean {
   return item.isActive === true && item.visibility === 'visible' && item.moderationStatus === 'approved';
+}
+
+/** Mirrors the Worker public-discovery boundary for owner-facing status copy. */
+export function listingPublicationState(item: ListingPublicationInput): ListingPublicationState {
+  if (item.accountPurpose === 'store_review' || item.moderationReason === 'store_review_qa_only') return 'store_review_isolated';
+  if (item.visibility === 'archived') return 'archived';
+  if (item.moderationStatus === 'pending_review') return 'pending_review';
+  if (item.moderationStatus === 'rejected') return 'rejected';
+  if (item.moderationStatus === 'suspended') return 'suspended';
+  return item.isActive === true && item.visibility === 'visible' && item.moderationStatus === 'approved' ? 'public' : 'hidden';
 }
 
 /** Home and Search intentionally use exactly the same inventory and intersection. */

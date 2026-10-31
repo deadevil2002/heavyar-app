@@ -65,6 +65,7 @@ export type NotificationPreferences = {
   verification: boolean;
   complaint: boolean;
   security: boolean;
+  marketing: boolean;
 };
 
 const defaultPreferences: NotificationPreferences = {
@@ -74,6 +75,7 @@ const defaultPreferences: NotificationPreferences = {
   verification: true,
   complaint: true,
   security: true,
+  marketing: true,
 };
 const INSTALLATION_TOKEN_KEY = 'heavyar_installation_push_token';
 

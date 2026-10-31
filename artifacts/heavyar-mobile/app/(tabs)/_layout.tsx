@@ -11,9 +11,10 @@ import { HeavyarLoadingState } from "@/components/ui/heavyar";
 import { markFirstAuthenticatedScreenVisible } from "@/utils/authPerformance";
 import { prewarmRequestsRouteCode } from '@/services/routePrewarm';
 import { markRouteStage, startRoutePress } from '@/utils/routePerformance';
+import { bottomTabLayout } from '@/services/tabLayoutPolicy';
 
 export default function TabLayout() {
-  const { t } = useLanguage();
+  const { t, language, isReady: languageReady } = useLanguage();
   const { isAuthenticated, isLoading, isResolvingSession, accountState, user } = useAuth();
   // A fixed tabBarStyle height disables React Navigation's own inset handling,
   // so the Android system navigation bar (edge-to-edge) must be added here.
@@ -22,6 +23,7 @@ export default function TabLayout() {
     && isAuthenticated
     && accountState === 'authenticated_complete'
     && user?.role === 'provider';
+  const tabDirection = bottomTabLayout(language);
   mobilePerformance.countRender('Tabs');
 
   useEffect(() => {
@@ -46,7 +48,7 @@ export default function TabLayout() {
     };
   }, [accountState, isAuthenticated, isResolvingSession, user?.uid]);
 
-  if (isResolvingSession) {
+  if (isResolvingSession || !languageReady) {
     return <View style={styles.sessionLoading}>
       <HeavyarLoadingState />
     </View>;
@@ -72,6 +74,7 @@ export default function TabLayout() {
         tabBarActiveTintColor: Colors.gold,
         tabBarInactiveTintColor: Colors.textMuted,
         tabBarStyle: {
+          direction: tabDirection.direction,
           backgroundColor: Colors.tabBar,
           borderTopColor: Colors.border,
           borderTopWidth: 1,
@@ -80,6 +83,7 @@ export default function TabLayout() {
           paddingBottom: 8 + bottomInset,
         },
         tabBarLabelStyle: {
+          writingDirection: tabDirection.labelWritingDirection,
           fontSize: 10,
           fontWeight: '700' as const,
         },

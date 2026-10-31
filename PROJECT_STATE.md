@@ -1,13 +1,12 @@
 # HEAVYAR Cross-Session Project State
 
-> Updated: 2026-10-30. Evidence sources: Git at `ff53999ee61e5ec6515edcd78cedfdfd6b30e4cf`, the `CURRENT_STATE.md` Live checkpoint, repository configuration, and the verified EAS build listed below. Code/configuration and newer verified runtime evidence override this summary.
+> Updated: 2026-10-31. Evidence sources: Git at `0da74c5d6f0f9a5a4ec39c21ba59915696e93fab`, the local Mobile diff, the `CURRENT_STATE.md` Live checkpoint, repository configuration, and the verified EAS build listed below. Code/configuration and newer verified runtime evidence override this summary.
 
 ## START HERE — NEXT SESSION
 
 1. Read `AGENTS.md`, then this file, then only the `CURRENT_STATE.md` Live checkpoint needed for the task.
 2. Verify the Git root, `origin`, active branch, remote HEAD, and worktree before any mutation. Preserve unrelated work.
-3. **Exact next task:** perform a separately authorized provider-document release-readiness review that compares commit `ff53999` with the deployed Worker, Firestore Rules/indexes, Admin, and Mobile contracts; produce the exact safe deployment/rollback/smoke-test sequence. Do not deploy without separate explicit authorization.
-4. After an authorized compatible backend release, use the existing internal Android APK with dedicated test accounts and disposable records for real-device image/PDF upload, Admin review, approve/reject/resubmit, temporary access/expiry, and deletion QA.
+3. **Exact next task:** create a separately authorized internal APK and run the focused real-device matrix: regular versus Store Review listing discovery, notification preferences/permission, and Arabic/English tabs across cold start, restart, logout/login, and language switching. Do not build or deploy without that separate authorization.
 
 ## 1. Project identity, purpose, architecture, and stack
 
@@ -21,13 +20,13 @@
 ## 2. Git and verified source checkpoint
 
 - **Default/active/tracked branch:** `main` / `main` / `origin/main`.
-- **Latest verified commit:** `ff53999ee61e5ec6515edcd78cedfdfd6b30e4cf` — `feat(verification): add secure provider document review`.
-- **State before this documentation update:** local HEAD equals `origin/main`; worktree clean.
+- **Latest verified commit:** `0da74c5d6f0f9a5a4ec39c21ba59915696e93fab` — `docs: add cross-session continuity checkpoint`; latest feature commit remains `ff53999ee61e5ec6515edcd78cedfdfd6b30e4cf`.
+- **Current checkpoint:** Mobile QA/notifications/listing-status/tab-direction corrections are source-committed with this checkpoint and remain not deployed; read the current Git HEAD for the resulting commit SHA.
 - **Pull request:** UNKNOWN; the verified work was committed directly to `main`.
 
 ## 3. Current phase and overall status
 
-- **Current phase:** release-readiness closure across equipment rental, operator, and transporter services.
+- **Current phase:** Mobile release-UI corrections source-committed, pending internal-build and physical-device QA within release-readiness closure across all three services.
 - **Overall:** substantial functionality is source-committed, but most post-M1 Worker/Rules/Admin/Mobile capabilities remain **NOT DEPLOYED** and Production activation gates remain OFF.
 - **Latest feature:** provider document verification is **SOURCE COMMITTED / NOT DEPLOYED**. It preserves email registration/verification and adds private bounded provider image/PDF submission, audited Admin review, rejection/correction, resubmission, private temporary access, and deletion contracts.
 - **Internal build:** EAS Android `preview` build `52388135-da48-494e-85d0-c177567751c1` finished from `ff53999`; app `1.1.2`, versionCode `5`, package `com.heavyar.app`, APK artifact available through the Expo build page. It is not a store release and physical-device QA is not complete.
@@ -57,6 +56,7 @@
 - Mobile, Worker, and Admin TypeScript checks: **PASS**.
 - Focused Mobile/Worker lint: **zero errors** (54 existing warnings); diff validation: **PASS**.
 - EAS preview build: **FINISHED**, Android APK, source SHA `ff53999`.
+- Current Mobile corrections: release/listing/discovery/performance **53/53 PASS**; notification lifecycle/identity/permission **46/46 PASS**; Worker public-equipment search **10/10 PASS**; Mobile TypeScript **PASS**; focused ESLint **zero errors** (11 existing warnings); diff validation **PASS**.
 
 ### FAIL
 
@@ -66,6 +66,7 @@
 
 - Real provider-document Cloudinary upload, temporary signed access expiry, and deletion against the deployed runtime.
 - Physical-device Android image/PDF picker/preview and end-to-end provider/Admin workflow.
+- Physical-device verification of locale-stable tab order, notification permission/preferences, and regular-provider versus Store Review equipment discovery; the exact reported missing-listing record/cause was not inspected and remains **UNVERIFIED**.
 - Signed iOS archive, TestFlight/App Store Review, and final Google Play testing.
 - Production source parity for the many post-M1 source commits; source commit is not proof of deployment.
 - The 200,000-concurrent-user engineering target; no Production load test is authorized.
@@ -74,19 +75,20 @@
 
 - **Last ledger-verified Production Worker baseline:** `heavyar-api` M1 version `3f5e3e8b-ea9e-4dcf-925a-5eca2e2f6a51`, sourced from `4d90f776f29a777b927f0200049566b4b39630f2`. Its current runtime version/provenance must be reverified before release.
 - **Last ledger-verified Production Firestore Rules baseline:** `5ff1f12e-fe3d-4466-8823-72ba1977cf5c`, source-identical to `4d90f776f29a777b927f0200049566b4b39630f2`. Current parity must be reverified before release.
-- **Latest Git source (`ff53999`):** not deployed to Worker, Rules, Admin, Mobile stores, or Production data.
+- **Source after this checkpoint:** Mobile release-UI corrections are committed but not deployed; verify the current Git HEAD for the scoped commit SHA. Feature source remains not deployed to Worker, Rules, Admin, Mobile stores, or Production data.
 - **EAS preview APK:** internal test artifact only; not OTA, not uploaded to Google Play, and not an iOS build.
 - Production RFQ, execution, private media, Project Hub, messaging, and financial activation remain OFF unless the detailed Live checkpoint explicitly records otherwise.
 
 ## 8. Known bugs, blockers, and unfinished work
 
-1. Provider-document runtime and physical-device workflow remain unverified until a compatible backend/Rules release is separately authorized.
-2. Production runs an older M1 backend while many later contracts are source-only; release order and rollback must be verified before deployment.
-3. Required source-only Firestore indexes include DP-010 equipment discovery and DP-012 Early Access counting; deploy and verify only under a separate release authorization.
-4. Payment/Admin TEST/LIVE parity, Tap provider onboarding/destination binding, actual split/settlement/refund behavior, and legal/accounting approvals remain launch blockers.
-5. Operator/transporter regulatory eligibility, public activation, binding commercial prerequisites, dispatch, settlement, and native QA remain incomplete.
-6. Legacy provider phone-ownership conflict is intentionally unresolved and needs a separate recovery/migration plan.
-7. Android/iOS performance percentiles, representative upload timings, and full role/device regression matrices remain unverified.
+1. Current Mobile UI corrections require a separately authorized new internal APK and focused physical-device QA; no backend deployment is required for these Mobile-only corrections.
+2. Provider-document runtime and physical-device workflow remain unverified until a compatible backend/Rules release is separately authorized.
+3. Production runs an older M1 backend while many later contracts are source-only; release order and rollback must be verified before deployment.
+4. Required source-only Firestore indexes include DP-010 equipment discovery and DP-012 Early Access counting; deploy and verify only under a separate release authorization.
+5. Payment/Admin TEST/LIVE parity, Tap provider onboarding/destination binding, actual split/settlement/refund behavior, and legal/accounting approvals remain launch blockers.
+6. Operator/transporter regulatory eligibility, public activation, binding commercial prerequisites, dispatch, settlement, and native QA remain incomplete.
+7. Legacy provider phone-ownership conflict is intentionally unresolved and needs a separate recovery/migration plan.
+8. Android/iOS performance percentiles, representative upload timings, and full role/device regression matrices remain unverified.
 
 ## 9. Pending decisions and constraints
 
@@ -98,9 +100,9 @@
 
 ## 10. Ordered next work
 
-1. Provider-document deployment-readiness comparison and exact coordinated release/rollback plan — **next task; not yet authorized**.
-2. If separately approved, deploy compatible Worker/Rules/indexes/Admin in the verified order and smoke-test without real customer data.
-3. Run Android real-device provider document and M1 map/location QA with dedicated test accounts and disposable records; record PASS/FAIL without claiming iOS coverage.
+1. Separately authorized internal APK plus focused real-device notification/listing/tab-direction QA using the existing project and dedicated test accounts — **next task; not yet authorized**.
+2. Provider-document deployment-readiness comparison and exact coordinated release/rollback plan.
+3. If separately approved, deploy compatible Worker/Rules/indexes/Admin in the verified order and smoke-test without real customer data.
 4. Close payment/Admin parity, Tap TEST onboarding/destination, operator/transporter legal eligibility, settlement, and contract prerequisites before any commercial activation.
 5. Complete final Android/iOS release QA and handoff only after all launch gates close.
 

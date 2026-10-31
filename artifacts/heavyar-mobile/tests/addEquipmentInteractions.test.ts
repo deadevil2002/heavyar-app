@@ -223,7 +223,10 @@ describe('Add Equipment local interaction isolation', () => {
       return uploaded;
     });
     if (supportCode) effects.create.mockRejectedValue({ supportCode, code, status, message: 'private internal data' });
-    else effects.create.mockResolvedValue({ id: 'test' });
+    else effects.create.mockResolvedValue({
+      id: 'test',
+      listing: { isActive: true, visibility: 'visible', moderationStatus: 'approved' },
+    });
     // ImagesSection is memoized, so its original handler is still live.
     expect(imageButton).toBeTruthy();
     await act(() => imageButton!.props.onPress());
@@ -293,6 +296,10 @@ describe('Add Equipment local interaction isolation', () => {
     if (supportCode === 'ABCDEF1234') expect(dialog!.props.message).toContain('Support code: ABCDEF1234');
     if (supportCode === '<private>') expect(dialog!.props.message).not.toContain('<private>');
     expect(dialog!.props.message).not.toContain('private internal data');
+    if (!supportCode && !ambiguous) {
+      expect(dialog!.props.message).toBe('listing_published_public');
+      expect(dialog!.props.buttons.map((button: { text: string }) => button.text)).toContain('view_my_equipment');
+    }
     if (ambiguous) {
       expect(effects.deleteImage).not.toHaveBeenCalled();
       expect(dialog!.props.message).toContain('Publishing result could not be confirmed.');

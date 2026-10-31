@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Switch } from 'react-native';
+import React, { useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Globe, Bell, Info, FileText, HelpCircle, ChevronLeft, ChevronRight, Trash2, ShieldCheck, Gauge } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
@@ -17,7 +17,6 @@ export default function SettingsScreen() {
   const { isRTL, t, language, setLanguage } = useLanguage();
   const { isAuthenticated, user } = useAuth();
   const router = useRouter();
-  const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(true);
   const { dialog, showDialog, hideDialog } = useAppDialog();
   const handleAccountDeletion = useAccountDeletion(showDialog);
 
@@ -53,20 +52,20 @@ export default function SettingsScreen() {
               <ChevronIcon size={20} color={Colors.textMuted} />
             </Pressable>
 
-            <View style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('notification_preferences')}
+              style={[styles.menuItem, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}
+              onPress={() => router.navigate('/notification-settings' as never)}
+            >
               <View style={[styles.menuLeft, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                 <View style={styles.menuIcon}>
                   <Bell size={20} color={Colors.gold} />
                 </View>
-                <Text style={styles.menuLabel}>{t('notifications')}</Text>
+                <Text style={styles.menuLabel}>{t('notification_preferences')}</Text>
               </View>
-              <Switch
-                value={notificationsEnabled}
-                onValueChange={setNotificationsEnabled}
-                trackColor={{ false: Colors.surface, true: Colors.gold }}
-                thumbColor={Colors.white}
-              />
-            </View>
+              <ChevronIcon size={20} color={Colors.textMuted} />
+            </Pressable>
           </View>
 
           <View style={styles.section}>

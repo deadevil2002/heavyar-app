@@ -25,6 +25,7 @@ import {
   buildListingPricing,
   ListingPricingInput,
 } from '@/services/listingPricing';
+import { listingPublicationState } from '@/services/publicDiscovery';
 
 const initialPricing = (): ListingPricingInput => ({
   hourlyEnabled: false, hourlyAmount: '', dailyEnabled: true, dailyAmount: '',
@@ -300,7 +301,7 @@ function AddEquipmentForm({ auth, activeUid }: {
       setUploadProgress(t('saving'));
 
       listingSubmitted = true;
-      await mobilePerformance.trackOperation('publish.create_listing', () => createListing({
+      const created = await mobilePerformance.trackOperation('publish.create_listing', () => createListing({
         titleAr,
         titleEn: titleEn || titleAr,
         descriptionAr: descAr,
@@ -322,12 +323,29 @@ function AddEquipmentForm({ auth, activeUid }: {
       }, submitUid));
       listingCommitted = true;
       if (!isCurrentSubmission()) return;
+      const publicationState = listingPublicationState((created.listing || {}) as {
+        isActive?: boolean;
+        visibility?: 'visible' | 'hidden' | 'archived';
+        moderationStatus?: 'pending_review' | 'approved' | 'rejected' | 'suspended';
+        accountPurpose?: unknown;
+        moderationReason?: unknown;
+      });
+      const successMessage = publicationState === 'public'
+        ? t('listing_published_public')
+        : publicationState === 'store_review_isolated'
+          ? t('listing_store_review_isolated')
+          : publicationState === 'pending_review'
+            ? t('listing_pending_review_visibility')
+            : t('listing_hidden_visibility');
       // useLayoutEffect closes this at the first committed React outcome. This
       // is JS/React evidence only, not a native frame-presented timestamp.
       publishUiMeasurement.current = mobilePerformance.startOperation('publish.success_ui_visible');
       pendingPublishOutcome.current = { failed: false };
       outcomeScheduled = true;
-      showDialog(t('success'), '', [{ text: t('confirm'), style: 'default' }]);
+      showDialog(t('success'), successMessage, [
+        { text: t('view_my_equipment'), style: 'default', onPress: () => router.push('/my-equipment') },
+        { text: t('confirm'), style: 'cancel' },
+      ]);
       setTitleAr('');
       setTitleEn('');
       setDescAr('');
@@ -366,7 +384,7 @@ function AddEquipmentForm({ auth, activeUid }: {
         setUploadProgress('');
       }
     }
-  }, [titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, location, images, user, t, showDialog, requiresEmailVerification, isRTL, ownsDraft, activeUid]);
+  }, [titleAr, titleEn, descAr, descEn, category, customCategory, region, city, customCity, district, location, images, user, t, showDialog, requiresEmailVerification, isRTL, ownsDraft, activeUid, router]);
 
   const selectedCategory = mockCategories.find(c => c.id === category);
 

@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Redirect } from 'expo-router';
 import Colors from '@/constants/colors';
 import SettingsHeader from '@/components/SettingsHeader';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -11,6 +12,7 @@ export default function PerformanceReportScreen() {
   const { isRTL } = useLanguage();
   const [revision, setRevision] = useState(0);
   const report = useMemo(() => qaPerformanceReport(), [revision]);
+  if (!mobilePerformance.isQaBuild()) return <Redirect href="/settings" />;
   const durations = [...(report?.metrics || [])]
     .filter(metric => metric.count > 0 && metric.maxDurationMs > 0)
     .sort((a, b) => (b.p95DurationMs || b.maxDurationMs) - (a.p95DurationMs || a.maxDurationMs));

@@ -16,6 +16,7 @@ import { getFirstImageUrl } from '@/utils/imageHelpers';
 import { setListingControls, archiveListing, deleteListing, WorkerError } from '@/services/workerClient';
 import ListingPriceDisplay from '@/components/ListingPriceDisplay';
 import { mobilePerformance } from '@/utils/mobilePerformance';
+import { listingPublicationState } from '@/services/publicDiscovery';
 
 export default function MyEquipmentScreen() {
   mobilePerformance.countRender('MyEquipment');
@@ -149,6 +150,14 @@ export default function MyEquipmentScreen() {
     const title = localizedText(item.titleAr, item.titleEn);
     const isDeleting = deletingId === item.id;
     const isUpdating = updatingId === item.id;
+    const publicationState = listingPublicationState(item);
+    const publiclyVisible = publicationState === 'public';
+    const moderationLabel = item.moderationStatus === 'approved' ? t('moderation_approved')
+      : item.moderationStatus === 'pending_review' ? t('moderation_pending_review')
+        : item.moderationStatus === 'rejected' ? t('moderation_rejected')
+          : item.moderationStatus === 'suspended' ? t('moderation_suspended') : t('moderation_unknown');
+    const moderationColor = item.moderationStatus === 'approved' ? Colors.success
+      : item.moderationStatus === 'pending_review' ? Colors.gold : Colors.error;
     return (
       <View style={[styles.card, isDeleting && styles.cardDeleting]}>
         <View style={[styles.cardContent, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -160,10 +169,15 @@ export default function MyEquipmentScreen() {
               isRTL={isRTL}
               compact
             />
-            <View style={[styles.statusRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              {item.isActive ? <Eye size={14} color={Colors.success} /> : <EyeOff size={14} color={Colors.textMuted} />}
-              <Text style={[styles.statusText, { color: item.isActive ? Colors.success : Colors.textMuted }]}>
-                {item.isActive ? t('active') : t('inactive')}
+            <View style={styles.statusGroup}>
+              <View style={[styles.statusRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+                {publiclyVisible ? <Eye size={14} color={Colors.success} /> : <EyeOff size={14} color={Colors.textMuted} />}
+                <Text style={[styles.statusText, { color: publiclyVisible ? Colors.success : Colors.textMuted }]}>
+                  {t('public_visibility')}: {publiclyVisible ? t('publicly_visible') : t('not_publicly_visible')}
+                </Text>
+              </View>
+              <Text style={[styles.statusText, { color: moderationColor, textAlign: isRTL ? 'right' : 'left' }]}>
+                {t('moderation_status')}: {moderationLabel}
               </Text>
             </View>
             {(item.moderationReason || item.rejectionReason) && (
@@ -285,6 +299,7 @@ const styles = StyleSheet.create({
   itemTitle: { fontSize: 16, lineHeight: 22, fontWeight: '800' as const, color: Colors.textPrimary },
   price: { fontSize: 14, fontWeight: '700' as const, color: Colors.gold },
   statusRow: { alignItems: 'center', gap: 4 },
+  statusGroup: { gap: 3 },
   statusText: { fontSize: 12, fontWeight: '500' as const },
   moderationReason: { color: Colors.error, fontSize: 11, marginTop: 4, maxWidth: 190 },
   actions: { gap: 10, borderTopWidth: 1, borderTopColor: Colors.divider, paddingTop: 10 },

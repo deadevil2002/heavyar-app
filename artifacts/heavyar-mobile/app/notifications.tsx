@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Bell, CheckCheck, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
@@ -10,17 +10,12 @@ import { useAuth } from '@/contexts/AuthContext';
 import { createNotificationOperationGuard } from '@/services/notificationOperationGuard';
 import { notificationUnreadKey } from '@/services/notificationUnreadPolicy';
 import {
-  defaultPreferences,
-  enablePushNotifications,
-  getNotificationPreferences,
-  updateNotificationPreferences,
   listNotifications,
   markAllNotificationsRead,
   markNotificationRead,
   mergeNotificationPage,
   notificationActionRoute,
   type NotificationItem,
-  type NotificationPreferences,
 } from '@/services/notificationService';
 import { mobilePerformance } from '@/utils/mobilePerformance';
 
@@ -36,7 +31,6 @@ export default function NotificationsScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [items, setItems] = useState<NotificationItem[]>([]);
-  const [preferences, setPreferences] = useState<NotificationPreferences>(defaultPreferences);
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -44,9 +38,7 @@ export default function NotificationsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [mutationBusy, setMutationBusy] = useState(false);
-  const [savingPreference, setSavingPreference] = useState<string | null>(null);
   const [readAllRemaining, setReadAllRemaining] = useState(0);
-  const [enablingPush, setEnablingPush] = useState(false);
 
   const load = useCallback(async (append = false) => {
     if (!uid) return;
@@ -56,21 +48,14 @@ export default function NotificationsScreen() {
     else setLoading(true);
     setError(null);
     try {
-      const [pageResult, prefsResult] = await Promise.allSettled([
-        listNotifications(append ? nextPageToken : null, uid),
-        append ? Promise.resolve(preferences) : getNotificationPreferences(uid),
-      ]);
+      const page = await listNotifications(append ? nextPageToken : null, uid);
       if (!isCurrent()) return;
-      if (pageResult.status === 'rejected') throw pageResult.reason;
-      const page = pageResult.value;
       setItems((current) => mergeNotificationPage(current, page.notifications, append));
       setNextPageToken(page.nextPageToken || null);
       if (operations.mutationIsCurrent(mutationSnapshot)) {
         setUnreadCount(page.unreadCount);
         queryClient.setQueryData(notificationUnreadKey(uid), page.unreadCount);
       }
-      if (!append && prefsResult.status === 'fulfilled') setPreferences(prefsResult.value);
-      if (prefsResult.status === 'rejected') setError(t('notifications_error'));
     } catch (e) {
       if (!isCurrent()) return;
       setError((e as Error).message === 'SESSION_EXPIRED' ? t('session_expired') : t('notifications_error'));
@@ -80,16 +65,14 @@ export default function NotificationsScreen() {
         setLoadingMore(false);
       }
     }
-  }, [uid, nextPageToken, operations, preferences, queryClient, t]);
+  }, [uid, nextPageToken, operations, queryClient, t]);
 
   useEffect(() => {
     setItems([]);
     setUnreadCount(0);
     setNextPageToken(null);
-    setPreferences(defaultPreferences);
     setOpeningId(null);
     setMutationBusy(false);
-    setSavingPreference(null);
     setLoadingMore(false);
     setReadAllRemaining(0);
     setError(null);
@@ -165,36 +148,8 @@ export default function NotificationsScreen() {
     }
   }, [load, operations, queryClient, t, unreadCount, uid]);
 
-  const togglePreference = useCallback(async (category: keyof NotificationPreferences) => {
-    if (!uid || category === 'payment' || category === 'verification' || category === 'security' || savingPreference) return;
-    const isCurrent = operations.begin(uid, 'preference');
-    const next = { ...preferences, [category]: !preferences[category] };
-    setPreferences(next);
-    setSavingPreference(category);
-    try {
-      const saved = await updateNotificationPreferences(next, uid);
-      if (!isCurrent()) return;
-      setPreferences(saved);
-    } catch {
-      if (!isCurrent()) return;
-      setPreferences(preferences);
-      setError(t('notifications_error'));
-    } finally {
-      if (isCurrent()) setSavingPreference(null);
-    }
-  }, [operations, preferences, savingPreference, t, uid]);
-
   const Chevron = isRTL ? ChevronLeft : ChevronRight;
   const BackChevron = isRTL ? ChevronRight : ChevronLeft;
-  const enablePush = useCallback(async () => {
-    if (!uid || enablingPush) return;
-    setEnablingPush(true); setError(null);
-    try {
-      const result = await enablePushNotifications(uid);
-      if (result.status !== 'registered') setError(isRTL ? 'لم يتم منح إذن الإشعارات.' : 'Notification permission was not granted.');
-    } catch { setError(t('notifications_error')); }
-    finally { setEnablingPush(false); }
-  }, [enablingPush, isRTL, t, uid]);
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={[styles.header, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -207,34 +162,6 @@ export default function NotificationsScreen() {
           <Text style={[styles.markAllText, !unreadCount && styles.markAllTextDisabled]}>{t('mark_all_read')}</Text>
         </Pressable>
       </View>
-      <View style={[styles.preferenceBar, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-        <Text style={styles.preferenceText}>{t('notification_preferences')}</Text>
-        <Text style={styles.preferenceValue}>{Object.values(preferences).filter(Boolean).length}/{Object.keys(preferences).length}</Text>
-      </View>
-      <View style={styles.preferenceList}>
-        {(Object.keys(preferences) as (keyof NotificationPreferences)[]).map((category) => {
-          const critical = category === 'payment' || category === 'verification' || category === 'security';
-          return (
-            <View key={category} style={[styles.preferenceRow, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-              <Text style={styles.preferenceLabel}>{t(`notification_${category}` as never)}{critical ? ` (${t('required')})` : ''}</Text>
-              <Switch
-                accessibilityRole="switch"
-                accessibilityLabel={t(`notification_${category}` as never)}
-                accessibilityState={{ checked: preferences[category], disabled: critical || savingPreference !== null }}
-                value={preferences[category]}
-                disabled={critical || savingPreference !== null}
-                onValueChange={() => void togglePreference(category)}
-                trackColor={{ false: Colors.border, true: Colors.goldDark }}
-                thumbColor={preferences[category] ? Colors.gold : Colors.textMuted}
-              />
-            </View>
-          );
-        })}
-      </View>
-      <Pressable accessibilityRole="button" accessibilityLabel={isRTL ? 'تفعيل إشعارات الجهاز' : 'Enable device notifications'} accessibilityState={{ busy: enablingPush }} disabled={!uid || enablingPush} onPress={() => void enablePush()} style={styles.pushPermissionButton}>
-        {enablingPush ? <ActivityIndicator color={Colors.primary} /> : <Bell size={18} color={Colors.primary} />}
-        <Text style={styles.retryText}>{isRTL ? 'تفعيل إشعارات الجهاز' : 'Enable device notifications'}</Text>
-      </Pressable>
       {loading ? <View style={styles.center}><ActivityIndicator color={Colors.gold} /><Text style={styles.muted}>{t('loading')}</Text></View> :
         error && !items.length ? <View style={styles.center}><Text style={styles.error}>{error}</Text><Pressable accessibilityRole="button" accessibilityLabel={t('try_again')} onPress={() => void load()} style={styles.retry}><RefreshCw size={17} color={Colors.primary} /><Text style={styles.retryText}>{t('try_again')}</Text></Pressable></View> :
           <FlatList
@@ -277,13 +204,6 @@ const styles = StyleSheet.create({
   header: { alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
   iconButton: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   title: { color: Colors.textPrimary, fontSize: 20, fontWeight: '800' },
-  preferenceBar: { alignItems: 'center', justifyContent: 'space-between', margin: 16, padding: 14, borderRadius: 18, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border },
-  preferenceText: { color: Colors.textPrimary, fontSize: 14, fontWeight: '600' },
-  preferenceValue: { color: Colors.gold, fontWeight: '700' },
-  preferenceList: { marginHorizontal: 16, marginBottom: 8, gap: 2 },
-  preferenceRow: { minHeight: 48, alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, borderRadius: 10, backgroundColor: Colors.card },
-  preferenceLabel: { color: Colors.textPrimary, fontSize: 13 },
-  pushPermissionButton: { minHeight: 48, marginHorizontal: 16, marginBottom: 8, paddingHorizontal: 16, borderRadius: 12, backgroundColor: Colors.gold, flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' },
   list: { padding: 16, gap: 10 },
   emptyList: { flexGrow: 1 },
   card: { minHeight: 92, alignItems: 'center', gap: 10, padding: 14, borderRadius: 18, backgroundColor: Colors.card, borderWidth: 1, borderColor: Colors.border },
